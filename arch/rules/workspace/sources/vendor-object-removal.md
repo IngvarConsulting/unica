@@ -1,12 +1,5 @@
 ---
 id: INV.SOURCE.VENDOR-OBJECT-REMOVAL
-check:
-  - crates/unica-coder/src/infrastructure/native_operations/apply_families/mod.rs::vendor_object_removal_keeps_editable_objects_on_support_under_every_policy
-  - crates/unica-coder/src/infrastructure/native_operations/apply_families/mod.rs::vendor_object_removal_of_locked_objects_follows_the_support_policy
-  - crates/unica-coder/src/infrastructure/native_operations/apply_families/mod.rs::vendor_object_removal_with_locked_children_follows_the_support_policy
-  - crates/unica-coder/src/infrastructure/native_operations/apply_families/mod.rs::vendor_object_removal_preserves_allowed_support_states
-  - crates/unica-coder/src/infrastructure/native_operations/apply_families/mod.rs::support_removal_and_object_removal_require_separate_batches_under_every_policy
-  - tests/ci/test_acceptance_scenarios.py::AcceptanceCorpusRunTests.test_every_wire_answers_its_frozen_classes
 ---
 
 # Удаление объекта поставщика следует его правилу поддержки
@@ -14,15 +7,26 @@ check:
 Объект поставщика с правилом «редактируется с сохранением поддержки»
 удаляется без снятия с поддержки при любой
 [политике проекта](../support-policy.md), как в конфигураторе.
+Так же удаляется подчинённый узел объекта со своей записью поддержки:
+реквизит, табличная часть и её реквизит, измерение, ресурс, форма, макет,
+команда, вложенная подсистема. Ниже «объект» — и такой узел. Запрет
+на узле выше удаляемого закрывает удаление как правку по
+[гейту поддержки](../support-locked-owner.md).
 
 Если у самого объекта правило «не редактируется» или объект на поддержке
-и такое правило у его дочернего объекта — реквизита, табличной части,
-формы, макета, команды, — реакция определяется политикой. При `deny`
-удаление отказывает до записи, называет закрытый объект и подсказывает
+и такое правило у любого узла под ним со своей записью — реквизита,
+табличной части и её реквизита, измерения, ресурса, формы, макета,
+команды, вложенной подсистемы, — реакция определяется политикой. При `deny`
+удаление отказывает до записи, называет закрытые узлы и подсказывает
 снять удаляемый объект с поддержки `supportRule.set` с правилом
-`off-support`. Снятие выполняется
-[отдельным применением](support-separate-apply.md); снятый с поддержки
-объект удаляется, даже если его дочерние объекты остались закрытыми.
+`off-support`. С отказом Unica спрашивает человека: «Объект «<объект>»
+на поддержке поставщика: удалить его можно только после снятия с
+поддержки.», вариант «Снять с поддержки и удалить» — обновления
+поставщика по объекту прекратятся, объект будет удалён; код
+`support.remove_locked`. Выбор готовит один план снятия и удаления. Без
+выбора снятие выполняется [отдельным применением](support-separate-apply.md);
+снятый с поддержки объект удаляется, даже если узлы под ним остались
+закрытыми.
 При `warn` объект удаляется, а результат несёт предупреждение
 `support_locked`. При `off` объект удаляется без предупреждения.
 

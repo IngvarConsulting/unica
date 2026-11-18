@@ -196,14 +196,14 @@ class ReleaseProofTests(unittest.TestCase):
         self.assertTrue(all(item["status"] == "deferred" for item in report["lifecycle"].values()))
         # Отчёт утверждает только наблюдённое. «Нет бампа, тега, публикации»
         # наблюдением не является — это устройство джобы, и приколочено оно в
-        # test_unica_workflow, а не литералом в JSON (#696).
+        # test_unica_workflow, а не литералом в JSON.
         self.assertNotIn("guards", report)
         self.assertNotIn("guards", self.module.render_summary(report))
 
     def test_proof_holds_no_copy_of_the_surface(self) -> None:
         # Поверхность нормирует arch/rules/mcp/mcp-tool-profiles.md, а показывает
         # порождаемая ведомость docs/tool-surface.md. Proof читает её, а не
-        # держит четвёртую копию имён (#699).
+        # держит четвёртую копию имён.
         self.assertFalse(hasattr(self.module, "NATIVE_TOOLS"))
         self.assertFalse(hasattr(self.module, "COMPATIBILITY_TOOLS"))
         self.assertEqual(
@@ -312,7 +312,7 @@ class ReleaseProofTests(unittest.TestCase):
     def test_tree_hash_frames_the_executable_bit(self) -> None:
         # Пакет несёт исполняемый bootstrap; потеря бита исполнения при
         # переупаковке или в транспорте — настоящая поломка, и идентичность
-        # пакета обязана её видеть (#700).
+        # пакета обязана её видеть.
         root = Path(self.tempdir.name)
         plain = root / "plain-tree"
         executable = root / "executable-tree"
@@ -421,7 +421,7 @@ class ReleaseProofTests(unittest.TestCase):
     def test_proof_has_a_single_dry_mode_by_construction(self) -> None:
         # Сценарии жизненного цикла доказываются только на опубликованных байтах,
         # а этот proof идёт до публикации: второго режима у него нет ни в
-        # сигнатуре, ни в CLI, ни в отчёте (#697).
+        # сигнатуре, ни в CLI, ни в отчёте.
         self.assertNotIn("mode", inspect.signature(self.module.evaluate_proof).parameters)
 
         report = self.evaluate()
@@ -454,7 +454,7 @@ class ReleaseProofTests(unittest.TestCase):
         # Продюсер писал `versionBumped`/`published`/`tag` литералами, а proof
         # сверял их с теми же литералами: условие не могло стать ложным ни при
         # какой правке репозитория. Такие поля не читаются — ни как гарантия,
-        # ни как отказ (#696).
+        # ни как отказ.
         report = self.evaluate(
             package=self.package(versionBumped=True, published=True, tag="v0.12.0")
         )

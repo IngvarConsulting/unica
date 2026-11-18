@@ -3,7 +3,6 @@
 pub mod codec;
 mod planner;
 mod primitives;
-mod recovery;
 pub mod schema;
 mod xml;
 

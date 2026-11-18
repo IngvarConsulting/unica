@@ -26,10 +26,10 @@ use unica_workspace::discovery::ProjectDiscoveryReader;
 use unica_workspace::paths::normalize_path_identity;
 use unica_xml_format::text::*;
 const FORM_KINDS: &[&str] = &["Form", "CommonForm"];
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 type FormCompileAfterParentOwnerProbeHook = Box<dyn FnOnce(&Path)>;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     static FORM_COMPILE_AFTER_PARENT_OWNER_PROBE_HOOK:
         std::cell::RefCell<Option<FormCompileAfterParentOwnerProbeHook>> =
@@ -75,7 +75,14 @@ fn validate_form_inner(
             Some((_, source)) => source.to_string(),
             None => read_utf8_sig(&form_path)?,
         };
-        validate_form_image(args, &reader, &form_path, &text, signatures)
+        validate_form_image(
+            args,
+            &reader,
+            &form_path,
+            &text,
+            signatures,
+            unica_forms_designer::root::declared_platform_line(&text),
+        )
     })();
     form_validation_outcome(result)
 }
@@ -117,8 +124,13 @@ pub(crate) fn form_validation_outcome(
 pub(crate) fn form_validation_requires_module(
     text: &str,
     metadata_owner: Option<unica_address::address::NodeKind>,
+    platform_line: Option<unica_source_contract::format_identity::PlatformLine>,
 ) -> bool {
-    unica_forms_designer::codec::form_validation_requires_module(text, metadata_owner)
+    unica_forms_designer::codec::form_validation_requires_module(
+        text,
+        metadata_owner,
+        platform_line,
+    )
 }
 
 /// Связывает сохранённые факты чтения с кодеком формы.
@@ -128,6 +140,7 @@ pub(crate) fn validate_form_input(
     module: Option<&str>,
     config_context: bool,
     metadata_owner: Option<unica_address::address::NodeKind>,
+    platform_line: Option<unica_source_contract::format_identity::PlatformLine>,
 ) -> AdapterOutcome {
     form_validation_outcome(
         unica_forms_designer::codec::validate_form_image_with_context(
@@ -138,6 +151,7 @@ pub(crate) fn validate_form_input(
                 config_context,
                 metadata_owner,
                 module,
+                platform_line,
             },
         ),
     )
@@ -205,7 +219,13 @@ pub(crate) fn analyze_form_info_with_data(
         let support = support_reader
             .object_support(&selection.target)
             .map_err(|error| error.to_string())?;
-        let data = parse_form_info_xml(&text, form_name, object_context, support)?;
+        let data = parse_form_info_xml(
+            &text,
+            form_name,
+            object_context,
+            support,
+            unica_forms_designer::root::declared_platform_line(&text),
+        )?;
 
         Ok((data, form_path))
     })();
@@ -271,7 +291,11 @@ pub(crate) fn add_form_with_data(
         validate_metadata_owner_shape_8_3_27(&object_xml_full, context, "form.add")?;
         let object_source = read_utf8_sig_snapshot(&object_xml_full)?;
         let object_source_text = object_source.text;
-        let mut object_text = object_source_text.clone();
+        // Registration and the default-form property are written in the
+        // default-namespace spelling; a prefixed owner gets its prefix back.
+        let (mut object_text, object_form) =
+            unica_xml_format::prefix_form::PrefixForm::normalize(&object_source_text)
+                .map_err(|message| format!("form.add: {message}"))?;
         let (object_type, object_name) = detect_form_add_object(&object_text)?;
         let format_version = detect_format_version(&object_xml_full, context)?.to_string();
 
@@ -330,6 +354,9 @@ pub(crate) fn add_form_with_data(
                 updated
             }
         };
+        let object_text = object_form
+            .restore(&object_text)
+            .map_err(|message| format!("form.add: {message}"))?;
         let object_replacement = utf8_bom_bytes(
             &lxml_tree_serialized_text_like_source_preserving_final_newline(
                 &object_text,
@@ -701,7 +728,7 @@ pub(crate) fn compile_form(
         ) {
             transaction.guard_path_absent(owner_path)?;
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         run_form_compile_after_parent_owner_probe_hook(&output_path);
         if let (Some(owner_path), Some(_)) = (
             owner_candidate.as_deref(),
@@ -881,6 +908,7 @@ fn form_edit_with_mode_data(
         let (mut xml_text, bom, form_root_start) =
             form_edit_decode_image(&original_bytes, &form_path)?;
         let original_xml_text = xml_text.clone();
+        let platform_line = unica_forms_designer::root::declared_platform_line(&xml_text);
         let FormEditApplied {
             added_elements,
             added_attrs,
@@ -896,6 +924,7 @@ fn form_edit_with_mode_data(
             &form_path,
             form_root_start,
             Some(LEGACY_FORM_TEXT_LANGUAGE),
+            platform_line,
         )?;
         form_edit_require_valid(validate_form_for_edit(
             args,
@@ -1103,7 +1132,7 @@ pub(crate) fn invoke_mutation(
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn with_form_compile_after_parent_owner_probe_hook<T>(
     hook: impl FnOnce(&Path) + 'static,
     action: impl FnOnce() -> T,
@@ -1123,7 +1152,7 @@ fn with_form_compile_after_parent_owner_probe_hook<T>(
     action()
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn run_form_compile_after_parent_owner_probe_hook(path: &Path) {
     if let Some(hook) =
         FORM_COMPILE_AFTER_PARENT_OWNER_PROBE_HOOK.with(|slot| slot.borrow_mut().take())
@@ -1165,7 +1194,7 @@ struct FormEditSuccess {
 
 #[cfg(test)]
 #[path = "../../tests/platform/form_read_selector.rs"]
-pub(crate) mod form_read_selector_bridge_tests;
+pub(crate) mod medium_form_read_selector_bridge_tests;
 #[cfg(test)]
 #[path = "../../tests/platform/form_composition.rs"]
 pub(crate) mod tests;

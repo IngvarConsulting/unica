@@ -1,6 +1,5 @@
 ---
 id: INV.PKG.STARTUP-NOTICE-RETENTION
-check: []
 gap: https://github.com/IngvarConsulting/unica/issues/925
 ---
 

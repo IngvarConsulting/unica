@@ -96,7 +96,7 @@ Prose resembling JSON: `"SubsystemPath": "Subsystems/Ложная/Subsystems"`.
         self.assertIn("SUBSYSTEM_ADDRESS_MAX_DEPTH", subsystem)
         self.assertIn('"СтандартныеПодсистемы.Обсуждения"', subsystem)
         self.assertNotIn("SUBSYSTEM_ADDRESS_MAX_SEGMENTS", source_target)
-        self.assertIn('profile.parse("Subsystem.A.B").is_err()', source_target)
+        self.assertIn('MetadataAddress::parse_logical("Subsystem.A.B").is_err()', source_target)
 
     def test_subsystem_result_owns_structure_not_object_memberships(self) -> None:
         runtime = (
@@ -104,7 +104,7 @@ Prose resembling JSON: `"SubsystemPath": "Subsystems/Ложная/Subsystems"`.
             / "crates/unica-metadata/src/subsystem.rs"
         ).read_text(encoding="utf-8")
         application = (
-            REPO_ROOT / "crates/unica-coder/src/application/mod.rs"
+            REPO_ROOT / "crates/unica-application/src/application/mod.rs"
         ).read_text(encoding="utf-8")
 
         answer_item = re.search(
@@ -127,7 +127,7 @@ Prose resembling JSON: `"SubsystemPath": "Subsystems/Ложная/Subsystems"`.
         self.assertNotIn("full or focused registered tree", application)
 
         tool_contracts = (
-            REPO_ROOT / "crates/unica-coder/src/application/tool_contracts.rs"
+            REPO_ROOT / "crates/unica-application/src/application/tool_contracts.rs"
         ).read_text(encoding="utf-8")
         self.assertNotIn("whole `Subsystems/` folder for `Mode=tree`", tool_contracts)
 

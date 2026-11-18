@@ -1,7 +1,6 @@
 use super::{ProviderReadAuthority, ViewError};
 use serde_json::{json, Value};
 use unica_address::source_target::MetadataAddress;
-use unica_metadata_designer::job_schedule::parse_job_schedule;
 use unica_refusal::RefusalDetail;
 
 impl ProviderReadAuthority {
@@ -19,7 +18,9 @@ impl ProviderReadAuthority {
         };
         let text =
             std::str::from_utf8(&bytes).map_err(|_| unreadable("Schedule.xml is not UTF-8"))?;
-        let result = parse_job_schedule(text).map_err(unreadable);
+        let result = crate::infrastructure::family_codecs::metadata_read_codec()
+            .job_schedule(text)
+            .map_err(unreadable);
         checkpoint()?;
         result
     }

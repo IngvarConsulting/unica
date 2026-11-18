@@ -402,18 +402,11 @@ mod platform_marker_tests {
     /// Текст маркера без BOM — так его получают писатели.
     fn marker(name: &str) -> String {
         let bytes: &[u8] = match name {
-            "off" => {
-                include_bytes!("../../../tests/fixtures/platform_8_3_27/support-markers/off.bin")
-                    .as_slice()
+            "off" => include_bytes!("../tests/fixtures/support-markers/off.bin").as_slice(),
+            "editable" => {
+                include_bytes!("../tests/fixtures/support-markers/editable.bin").as_slice()
             }
-            "editable" => include_bytes!(
-                "../../../tests/fixtures/platform_8_3_27/support-markers/editable.bin"
-            )
-            .as_slice(),
-            "locked" => {
-                include_bytes!("../../../tests/fixtures/platform_8_3_27/support-markers/locked.bin")
-                    .as_slice()
-            }
+            "locked" => include_bytes!("../tests/fixtures/support-markers/locked.bin").as_slice(),
             other => panic!("no support marker fixture `{other}`"),
         };
         let text = String::from_utf8(bytes.to_vec()).unwrap();
@@ -421,7 +414,7 @@ mod platform_marker_tests {
     }
 
     /// Включение изменений пишет тот же маркер, что платформа 8.3.27 после
-    /// «Включить возможность изменения» с правилом «на замке» (#1976).
+    /// «Включить возможность изменения» с правилом «на замке».
     #[test]
     fn enabling_changes_writes_the_platform_marker() {
         let (written, data) = plan_capability_data(

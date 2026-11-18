@@ -1,0 +1,28 @@
+{
+  "area": "Подсистемы и интерфейс",
+  "task": "Включить справочник в состав подсистемы",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Subsystem.Администрирование",
+        "ops": [
+          {
+            "op": "content.add",
+            "args": {
+              "items": [
+                {
+                  "object": "Catalog.Валюты"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S206"
+}

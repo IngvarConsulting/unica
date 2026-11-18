@@ -1,10 +1,5 @@
 ---
 id: INV.CONFIG.OPERATIONAL-LAYERS
-check:
-  - crates/unica-coder/src/infrastructure/operational_config.rs::local_config_overrides_fields_and_inherits_the_rest
-  - crates/unica-coder/src/infrastructure/operational_config.rs::local_config_is_valid_without_shared_config
-  - crates/unica-coder/src/infrastructure/operational_config.rs::a_changed_file_is_observed_by_the_next_load_only
-  - crates/unica-coder/src/infrastructure/operational_config.rs::separate_workspaces_do_not_share_a_process_global_snapshot
 ---
 
 # Операционные настройки загружаются отдельно для рабочего пространства

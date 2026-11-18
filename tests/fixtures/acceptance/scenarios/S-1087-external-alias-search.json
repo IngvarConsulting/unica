@@ -1,0 +1,249 @@
+{
+  "id": "S-1087-external-alias-search",
+  "issue": 1087,
+  "area": "Поиск",
+  "task": "Найти текст и открыть строку метода EPF/ERF с XMLName, отличающимся от descriptor/payload; logical owner scope, Module.Object, physical resolve и продолжение страницы сохраняют один owner binding.",
+  "workspace": "tests/fixtures/acceptance/workspace-external-alias",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "erf:ExternalReport.SyntheticReport"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "ExternalReport"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "at": "erf:ExternalReport.SyntheticReport.Module.Object"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/path",
+          "eq": "report-source/Ext/ObjectModule.bsl"
+        }
+      ]
+    },
+    {
+      "tool": "unica.search",
+      "args": {
+        "query": "Результат = 0;",
+        "scope": "erf:ExternalReport.SyntheticReport"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/totals/matches",
+          "eq": 1
+        },
+        {
+          "pointer": "/data/matches/0/at",
+          "eq": "erf:ExternalReport.SyntheticReport.Module.Object.Method.Total.Body#L2"
+        },
+        {
+          "pointer": "/data/matches/1",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.search",
+      "args": {
+        "query": "Результат",
+        "scope": "erf:ExternalReport.SyntheticReport.Module.Object",
+        "limit": 1
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/totals/matches",
+          "eq": 4
+        },
+        {
+          "pointer": "/data/matches/0/at",
+          "eq": "erf:ExternalReport.SyntheticReport.Module.Object.Method.Total.Body#L2"
+        }
+      ],
+      "captures": {
+        "found_erf": {
+          "pointer": "/data/matches/0/at"
+        },
+        "cursor_erf": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.found_erf"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Body"
+        }
+      ]
+    },
+    {
+      "tool": "unica.search",
+      "args": {
+        "query": "Результат",
+        "scope": "erf:ExternalReport.SyntheticReport.Module.Object",
+        "limit": 1,
+        "cursor": "$capture.cursor_erf"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/matches/0/at",
+          "eq": "erf:ExternalReport.SyntheticReport.Module.Object.Method.Total.Body#L4"
+        },
+        {
+          "pointer": "/data/totals",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "epf:ExternalDataProcessor.SyntheticProcessor"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "ExternalDataProcessor"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "at": "epf:ExternalDataProcessor.SyntheticProcessor.Module.Object"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/path",
+          "eq": "source/Ext/ObjectModule.bsl"
+        }
+      ]
+    },
+    {
+      "tool": "unica.search",
+      "args": {
+        "query": "Результат = 0;",
+        "scope": "epf:ExternalDataProcessor.SyntheticProcessor"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/totals/matches",
+          "eq": 1
+        },
+        {
+          "pointer": "/data/matches/0/at",
+          "eq": "epf:ExternalDataProcessor.SyntheticProcessor.Module.Object.Method.Total.Body#L2"
+        },
+        {
+          "pointer": "/data/matches/1",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.search",
+      "args": {
+        "query": "Результат",
+        "scope": "epf:ExternalDataProcessor.SyntheticProcessor.Module.Object",
+        "limit": 1
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/totals/matches",
+          "eq": 4
+        },
+        {
+          "pointer": "/data/matches/0/at",
+          "eq": "epf:ExternalDataProcessor.SyntheticProcessor.Module.Object.Method.Total.Body#L2"
+        }
+      ],
+      "captures": {
+        "found_epf": {
+          "pointer": "/data/matches/0/at"
+        },
+        "cursor_epf": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.found_epf"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Body"
+        }
+      ]
+    },
+    {
+      "tool": "unica.search",
+      "args": {
+        "query": "Результат",
+        "scope": "epf:ExternalDataProcessor.SyntheticProcessor.Module.Object",
+        "limit": 1,
+        "cursor": "$capture.cursor_epf"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/matches/0/at",
+          "eq": "epf:ExternalDataProcessor.SyntheticProcessor.Module.Object.Method.Total.Body#L4"
+        },
+        {
+          "pointer": "/data/totals",
+          "absent": true
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,73 @@
+{
+  "id": "S437",
+  "name": "module-interface-slices-publish-only-routable-addresses",
+  "issue": 1467,
+  "area": "Навигация и чтение",
+  "task": "Прочитать срез Interface по опубликованному адресу и открыть метод по исходному адресу.",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.Module.Manager.Interface"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/interface",
+          "eq": "Public"
+        },
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Catalog.Валюты.Module.Manager.Interface.Public"
+        },
+        {
+          "pointer": "/data/items/0/methods/0",
+          "eq": "main:Catalog.Валюты.Module.Manager.Method.ВалютаПоКоду"
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:Catalog.Валюты.Module.Manager.Interface"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "readable",
+      "validators": []
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.Module.Manager.Interface.Public"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Catalog.Валюты.Module.Manager.Method.ВалютаПоКоду"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.Module.Manager.Method.ВалютаПоКоду"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Catalog.Валюты.Module.Manager.Method.ВалютаПоКоду"
+        }
+      ]
+    }
+  ]
+}

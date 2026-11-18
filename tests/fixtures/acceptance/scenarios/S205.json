@@ -1,0 +1,26 @@
+{
+  "area": "Подсистемы и интерфейс",
+  "task": "Создать подсистему Продажи",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "subsystem.create",
+            "args": {
+              "values": {
+                "name": "Продажи"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S205"
+}

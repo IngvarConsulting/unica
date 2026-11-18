@@ -89,7 +89,7 @@ class VerifyReleaseAssetsTests(unittest.TestCase):
 
     def test_report_checks_are_observations_of_the_verifier_not_literals(self) -> None:
         # Четыре ключа `checks` обязаны отвечать за четыре шага верификатора:
-        # проверка, которой не было, в отчёте остаётся `false` (#701, п. 1).
+        # проверка, которой не было, в отчёте остаётся `false` (п. 1).
         verifier = load_module(REPO_ROOT / "scripts/ci/verify-release-assets.py", "asset_verifier")
 
         def only_composition(asset_dir: Path, target: str, checks: dict) -> str:
@@ -308,7 +308,7 @@ class VerifyReleaseAssetsTests(unittest.TestCase):
 
             shutil.copy2(
                 assets / "unica-runtime-linux-x64.tar.gz",
-                assets / "rlm-tools-bsl-runtime-linux-x64.tar.gz",
+                assets / "tools-archive-runtime-linux-x64.tar.gz",
             )
             with self.assertRaisesRegex(SystemExit, "must be \\[unica\\]"):
                 verifier.verify_release_target(assets, "linux-x64")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -61,6 +62,7 @@ class JunitTranslationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.module = load_module()
         self.root = Path(tempfile.mkdtemp(prefix="allure-results-"))
+        self.addCleanup(shutil.rmtree, self.root)
         (self.root / "crates" / "unica-coder" / "src").mkdir(parents=True)
         (self.root / "crates" / "unica-coder" / "src" / "lib.rs").write_text(RUST_SOURCE, encoding="utf-8")
         self.junit = self.root / "junit.xml"

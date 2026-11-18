@@ -5,10 +5,11 @@ use std::path::{Component, Path, PathBuf};
 
 pub use crate::platform::filesystem::{
     encode_relative_source_path, host_directory_child_identity, host_directory_child_names_equal,
-    host_filesystem_case_sensitive, host_path_components_equal, host_path_text,
-    is_foreign_absolute_path, is_link_loop_error, metadata_is_link_or_reparse_point,
-    path_lock_identity, path_starts_with_host_root, provider_state_path_identity,
-    stable_path_identity_bytes, strip_windows_extended_length_prefix, EncodedRelativePath,
+    host_filesystem_case_sensitive, host_path_components_equal, host_path_relative_to,
+    host_path_text, is_foreign_absolute_path, is_link_loop_error,
+    metadata_is_link_or_reparse_point, path_lock_identity, path_starts_with_host_root,
+    provider_state_path_identity, same_host_path, stable_path_identity_bytes,
+    strip_windows_extended_length_prefix, EncodedRelativePath,
 };
 
 /// The generated cache. It sits inside the source root but is not source, so

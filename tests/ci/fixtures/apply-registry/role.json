@@ -1,0 +1,23 @@
+{
+  "family": "Role",
+  "operations": [
+    {
+      "variant": "Create",
+      "operation": "role.create",
+      "applicability": "Configuration",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "RightAdd",
+      "operation": "right.add",
+      "applicability": "Role",
+      "skeleton": "Items"
+    },
+    {
+      "variant": "RightSet",
+      "operation": "right.set",
+      "applicability": "RoleRight",
+      "skeleton": "Values"
+    }
+  ]
+}

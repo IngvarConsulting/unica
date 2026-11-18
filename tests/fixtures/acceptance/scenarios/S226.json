@@ -1,0 +1,36 @@
+{
+  "area": "Проверки качества",
+  "task": "Убедиться, что превью не тронуло исходники (дифф равенства)",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "только превью"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.diff",
+      "args": {
+        "left": "main:Catalog.Валюты",
+        "right": "main:Catalog.Валюты"
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S226"
+}

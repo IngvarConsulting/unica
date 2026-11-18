@@ -16,6 +16,12 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+# Размер тестов модуля (scripts/ci/python_sizes.py).
+# Дым MCP: сокет и процесс продукта.
+MEDIUM = ("SmokeUnicaMcpTests",)
+# Очередь исполняет при выборе тестов: смоук продукта.
+QUEUE_KEEPS_MEDIUM = ("SmokeUnicaMcpTests",)
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SMOKE_SCRIPT = REPO_ROOT / "scripts" / "ci" / "smoke-unica-mcp.py"
@@ -254,7 +260,7 @@ def assert_processes_exit(test: unittest.TestCase, module, pids, message: str) -
 class SmokeUnicaMcpTests(unittest.TestCase):
     def test_v13_contract_allows_path_only_as_the_resolve_bridge_input(self) -> None:
         # `unica.resolve` — аварийный мост между адресом и раскладкой, и путь на
-        # входе разрешён только ему (#801, решение зонтика #871). Остальные схемы
+        # входе разрешён только ему. Остальные схемы
         # ключ `path` по-прежнему не несут; дым обязан различать эти два случая.
         module = load_module()
 
@@ -2355,10 +2361,6 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                             bsl_section[code_search_root_field] = "private-root"
                         payload["data"] = {
                             "sections": [
-                                {
-                                    "provider": "rlm", "status": "empty", "hits": [],
-                                    "diagnostics": [], "artifacts": [],
-                                },
                                 bsl_section,
                                 {
                                     "provider": "git-grep", "status": "empty", "hits": [],
@@ -2608,7 +2610,6 @@ class SmokeUnicaMcpTests(unittest.TestCase):
         payload = {
             "data": {
                 "sections": [
-                    {"provider": "rlm", "status": "empty", "hits": []},
                     {
                         "provider": "bsl-analyzer",
                         "status": "unavailable",
@@ -2629,13 +2630,6 @@ class SmokeUnicaMcpTests(unittest.TestCase):
         payload = {
             "data": {
                 "sections": [
-                    {
-                        "provider": "rlm",
-                        "status": "empty",
-                        "hits": [],
-                        "diagnostics": [],
-                        "artifacts": [],
-                    },
                     {
                         "provider": "bsl-analyzer",
                         "status": "timedOut",
@@ -2669,7 +2663,6 @@ class SmokeUnicaMcpTests(unittest.TestCase):
             "ok": False,
             "data": {
                 "sections": [
-                    {"provider": "rlm", "status": "empty", "hits": []},
                     {
                         "provider": "bsl-analyzer",
                         "status": "timedOut",
@@ -2687,7 +2680,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
         }
         ready = json.loads(json.dumps(unavailable))
         ready["ok"] = True
-        ready["data"]["sections"][1] = {
+        ready["data"]["sections"][0] = {
             "provider": "bsl-analyzer",
             "status": "ok",
             "hits": [

@@ -1,0 +1,321 @@
+{
+  "id": "S-2292-catalog-code-series",
+  "issue": 2292,
+  "area": "Метаданные",
+  "task": "Изменить серию кодов подчинённого справочника, проверить контракт, read-only preview, обратное чтение и побайтовое восстановление исходника",
+  "workspace": "tests/fixtures/acceptance/workspace-catalog-code-series",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "initial": {
+          "file": "src/Catalogs/Items.xml",
+          "kind": "sha256"
+        },
+        "catalog": {
+          "pointer": "/data/items/1/at"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/items/1/at",
+          "eq": "main:Catalog.Items"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/CodeSeries/enum",
+          "eq": [
+            "WholeCatalog",
+            "WithinOwnerSubordination",
+            "WithinSubordination"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.catalog",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "CodeSeries": "WithinOwnerSubordination"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.catalog"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/CodeSeries",
+          "eq": "WithinOwnerSubordination"
+        },
+        {
+          "pointer": "/data/props/CheckUnique",
+          "eq": true
+        }
+      ],
+      "captures": {
+        "after": {
+          "file": "src/Catalogs/Items.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.catalog",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "CodeSeries": "WithinOwnerSubordination"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.after"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.catalog"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/CodeSeries",
+          "eq": "WithinOwnerSubordination"
+        },
+        {
+          "pointer": "/data/props/CheckUnique",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.catalog",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "CodeSeries": "WithinSubordination"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.catalog"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/CodeSeries",
+          "eq": "WithinSubordination"
+        },
+        {
+          "pointer": "/data/props/CheckUnique",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.catalog",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "CodeSeries": "WholeCatalog"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.catalog"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/CodeSeries",
+          "eq": "WholeCatalog"
+        },
+        {
+          "pointer": "/data/props/CheckUnique",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.catalog",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "CodeSeries": "WithinParent"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial"
+        }
+      ],
+      "refusal": "bad_value: property `CodeSeries` value `WithinParent` is invalid; expected one of: WholeCatalog, WithinOwnerSubordination, WithinSubordination"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.catalog",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "CodeSeries": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial"
+        }
+      ],
+      "refusal": "bad_value: property value must be a string"
+    }
+  ]
+}

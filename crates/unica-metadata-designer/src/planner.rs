@@ -1,5 +1,9 @@
 //! Canonical metadata descriptor/resource planning over an issued proposal and read observations.
+mod predefined_code_type_plan;
+pub use predefined_code_type_plan::PredefinedCodeTypePlan;
+
 use crate::decode::*;
+use crate::dialect::root_version;
 use crate::edit::apply_typed_operations_to_image_with_seed;
 use crate::layout::metadata_layout;
 use crate::template_catalog::MetadataTemplateSource;
@@ -49,6 +53,7 @@ pub fn validate_final_object_integrity(
     source_set_name: &str,
     source_kind: SourceSetKind,
 ) -> Result<(), ApplyPlanError> {
+    crate::language_code::validate_final(staged, source_kind)?;
     for change in staged.planned_changes() {
         let StagedFileState::Bytes(bytes) = &change.current else {
             continue;
@@ -99,6 +104,42 @@ pub fn validate_final_object_integrity(
         }
         crate::integrity_check::check_meta_object_integrity(kind, bytes).map_err(|diagnostic| {
             ApplyPlanError::new(ApplyPlanErrorKind::BadValue, diagnostic.message).at_path(at)
+        })?;
+    }
+    Ok(())
+}
+
+/// All addressed numerator edits are checked after every family has staged
+/// its contribution, including equivalent edits that stage no changed file.
+pub fn validate_final_numerators<'a>(
+    staged: &mut ApplyProposal<'_>,
+    operations: impl IntoIterator<Item = (usize, &'a MetadataPlanOperation)>,
+) -> Result<(), ApplyPlanError> {
+    let mut targets = std::collections::BTreeMap::new();
+    for (index, operation) in operations {
+        if let MetadataPlanKind::DescriptorProperties {
+            relative,
+            name,
+            changes: DescriptorPropertyChanges::DocumentNumerator(_),
+        } = &operation.kind
+        {
+            targets.insert(relative, (name, index));
+        }
+    }
+    for (relative, (name, index)) in targets {
+        let path = format!("ops[{index}].args.values");
+        let bytes = staged
+            .read(relative)
+            .map_err(|error| ApplyPlanError::staging(error, path.clone()))?
+            .ok_or_else(|| {
+                ApplyPlanError::new(
+                    ApplyPlanErrorKind::NotFound,
+                    "DocumentNumerator descriptor was not found",
+                )
+                .at_path(path.clone())
+            })?;
+        crate::numerator_write::validate(&bytes, name).map_err(|message| {
+            ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(path)
         })?;
     }
     Ok(())
@@ -236,6 +277,7 @@ pub fn plan_metadata_batch<R: MetadataPlanningRead>(
     staged: &mut ApplyProposal<'_>,
     authority: &dyn ApplySourceAuthority,
     operations: &[IndexedPlanOperation<MetadataPlanOperation>],
+    code_type_plan: &PredefinedCodeTypePlan,
 ) -> Result<Vec<ProvisionalApplyEffect>, ApplyPlanError> {
     if operations.is_empty() {
         return Err(empty_apply_family_batch());
@@ -279,6 +321,7 @@ pub fn plan_metadata_batch<R: MetadataPlanningRead>(
                     *kind,
                     change,
                     op_index,
+                    code_type_plan.render_type(op_index),
                     &mut provisional,
                 )?;
                 continue;
@@ -407,6 +450,34 @@ pub fn plan_metadata_batch<R: MetadataPlanningRead>(
             )
             .at_path(format!("ops[{op_index}].args.at"))
         })?;
+        if let MetaEditOperation::Add { collection, .. } = edit {
+            if authority.source_kind() == SourceSetKind::Extension
+                && unica_source_designer::extension_mode::descriptor_is_borrowed(&preimage)
+            {
+                use unica_source_contract::compatibility::ExtensionOperation;
+                let operation = match collection {
+                    MetaCollection::Attributes => ExtensionOperation::AddAttributeToBorrowed,
+                    MetaCollection::TabularSections => {
+                        ExtensionOperation::AddTabularSectionToBorrowed
+                    }
+                    _ => ExtensionOperation::AddChildToBorrowed,
+                };
+                unica_source_designer::extension_mode::admit_extension_operation(
+                    staged,
+                    authority.source_kind(),
+                    operation,
+                    &format!("ops[{op_index}]"),
+                )?;
+            }
+        }
+        crate::edit_type::guard(
+            staged,
+            authority.source_kind(),
+            target,
+            &preimage,
+            edit,
+            op_index,
+        )?;
         let mut postimage = source.to_string();
         let (actual_kind, actual_name) = crate::edit::meta_edit_object_identity(&postimage)
             .map_err(|message| {
@@ -457,8 +528,8 @@ pub fn plan_metadata_batch<R: MetadataPlanningRead>(
                 | MetaDiagnosticCode::CapabilityUnavailable => ApplyPlanErrorKind::BadValue,
                 MetaDiagnosticCode::TargetNotFound => ApplyPlanErrorKind::NotFound,
                 MetaDiagnosticCode::ValidationFailed => ApplyPlanErrorKind::Postcondition,
-                MetaDiagnosticCode::AlreadyExists
-                | MetaDiagnosticCode::SupportLocked
+                MetaDiagnosticCode::AlreadyExists => ApplyPlanErrorKind::BadValue,
+                MetaDiagnosticCode::SupportLocked
                 | MetaDiagnosticCode::ValidationWarning
                 | MetaDiagnosticCode::RedundantListPresentation
                 | MetaDiagnosticCode::CommandTextRecommendedLimit
@@ -734,6 +805,23 @@ pub fn stage_object_create<R: MetadataPlanningRead>(
     op_index: usize,
     provisional: &mut Vec<ProvisionalApplyEffect>,
 ) -> Result<(), ApplyPlanError> {
+    let own = match kind {
+        MetadataKind::Catalog => {
+            Some(unica_source_contract::compatibility::ExtensionOperation::AddOwnCatalog)
+        }
+        MetadataKind::InformationRegister => Some(
+            unica_source_contract::compatibility::ExtensionOperation::AddOwnInformationRegister,
+        ),
+        _ => None,
+    };
+    if let Some(operation) = own {
+        unica_source_designer::extension_mode::admit_extension_operation(
+            staged,
+            source_kind,
+            operation,
+            &format!("ops[{op_index}]"),
+        )?;
+    }
     reader.with_creation_source(op_index, &mut |source| {
         // The new descriptor's synonym is written in the source set's default
         // language, read from the staged image like every other edit (#909).
@@ -1291,6 +1379,23 @@ pub fn set_ml_property(
     })
 }
 
+/// Writes a multilingual property of the descriptor's own `<Properties>` as
+/// exactly the given languages (#2163).
+fn set_localized_property(
+    text: &str,
+    tag: &str,
+    indent: &str,
+    items: &[unica_metadata::LocalizedItem],
+) -> Option<String> {
+    let values = items
+        .iter()
+        .map(|item| (item.language.clone(), item.content.clone()))
+        .collect::<Vec<_>>();
+    edit_descriptor_property(text, tag, |source, property| {
+        unica_xml_format::localized::replace_language_values(source, property, indent, &values)
+    })
+}
+
 /// Sets a plain-text property of the descriptor's own `<Properties>`,
 /// spelled with the element name the source uses.
 fn set_plain_property(text: &str, tag: &str, value: &str) -> Option<String> {
@@ -1313,6 +1418,77 @@ fn set_plain_property(text: &str, tag: &str, value: &str) -> Option<String> {
     })
 }
 
+fn set_configuration_name(source: &str, value: &str) -> Result<String, String> {
+    use unica_source_designer::owner::{validate_source_set_owner, MD_CLASSES_NS};
+    use unica_xml_format::read::{child_element_in_namespace, child_elements_in_namespace};
+
+    let doc = roxmltree::Document::parse(source).map_err(|error| error.to_string())?;
+    let root = doc.root_element();
+    validate_source_set_owner(
+        root,
+        SourceSetKind::Configuration,
+        Path::new("Configuration.xml"),
+    )
+    .map_err(|error| error.message)?;
+    let artifact = child_element_in_namespace(root, "Configuration", MD_CLASSES_NS)
+        .expect("validated configuration owner");
+    let properties = child_elements_in_namespace(artifact, "Properties", MD_CLASSES_NS);
+    let [properties] = properties.as_slice() else {
+        return Err("the configuration root must have one Properties element".into());
+    };
+    let names = child_elements_in_namespace(*properties, "Name", MD_CLASSES_NS);
+    let [name] = names.as_slice() else {
+        return Err("the configuration root must have one Name property".into());
+    };
+    if name.children().any(|child| child.is_element()) {
+        return Err("the configuration Name must contain only text".into());
+    }
+    // Configuration view reports the first DOM text node. Use the same
+    // value for the no-op check, including when comments split the text.
+    if name.text().unwrap_or_default() == value {
+        return Ok(source.to_string());
+    }
+
+    let range = name.range();
+    let tag = source[range.start + 1..range.end]
+        .split(|ch: char| ch.is_whitespace() || ch == '>' || ch == '/')
+        .next()
+        .expect("parsed Name element");
+    let escaped = unica_xml_format::text::escape_xml_text(value).replace('\r', "&#13;");
+    let mut updated = source.to_string();
+    updated.replace_range(range, &format!("<{tag}>{escaped}</{tag}>"));
+    Ok(updated)
+}
+
+/// Rewrites the named parts of the composite property `tag` of the first
+/// `<Properties>`, each in its own spelling; a part the file lacks gives
+/// `None`. The values are closed platform names and need no escaping.
+fn set_property_parts(text: &str, tag: &str, parts: &[(&str, String)]) -> Option<String> {
+    let document = roxmltree::Document::parse(text).ok()?;
+    let property = document
+        .descendants()
+        .find(|node| node.is_element() && node.tag_name().name() == "Properties")?
+        .children()
+        .find(|node| node.is_element() && node.tag_name().name() == tag)?;
+    let mut edits = Vec::new();
+    for (part, value) in parts {
+        let node = property
+            .children()
+            .find(|node| node.is_element() && node.tag_name().name() == *part)?;
+        let open = &text[node.range().start + 1..];
+        let name = &open[..open
+            .find(|ch: char| ch.is_whitespace() || ch == '>' || ch == '/')
+            .unwrap_or(open.len())];
+        edits.push((node.range(), format!("<{name}>{value}</{name}>")));
+    }
+    edits.sort_by_key(|(range, _)| std::cmp::Reverse(range.start));
+    let mut updated = text.to_string();
+    for (range, replacement) in edits {
+        updated.replace_range(range, &replacement);
+    }
+    Some(updated)
+}
+
 /// Rewrites the property `tag` of the first `<Properties>` of the document,
 /// which is the descriptor object's own; `replace` builds the new element
 /// from the source text and the property node.
@@ -1333,8 +1509,16 @@ fn edit_descriptor_property(
     Some(updated)
 }
 
-/// Replaces the first `<Tag>…</Tag>` or `<Tag/>` inside `<Properties>`.
+/// Replaces the first `<Tag>…</Tag>` or `<Tag/>` inside `<Properties>`. A
+/// prefixed descriptor is edited in the default-namespace spelling and keeps
+/// its prefix.
 fn replace_property_block(text: &str, tag: &str, replacement: &str) -> Option<String> {
+    let (normalized, form) = unica_xml_format::prefix_form::PrefixForm::normalize(text).ok()?;
+    let updated = replace_default_property_block(&normalized, tag, replacement)?;
+    form.restore(&updated).ok()
+}
+
+fn replace_default_property_block(text: &str, tag: &str, replacement: &str) -> Option<String> {
     let open = format!("<{tag}>");
     let close = format!("</{tag}>");
     let empty = format!("<{tag}/>");
@@ -1389,6 +1573,405 @@ fn stage_descriptor_properties(
         .at_path(at_path.clone())
     })?;
     let (kind, postimage_text) = match changes {
+        DescriptorPropertyChanges::LanguageCode { code, comment } => {
+            let invalid = |message: String| {
+                ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                    .at_path(at_path.clone())
+            };
+            // The target is a registered language whether or not the code
+            // changes; the final code guard runs only for a changed code.
+            let root_path = Path::new("Configuration.xml");
+            let root = staged
+                .read(root_path)
+                .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
+                .ok_or_else(|| {
+                    ApplyPlanError::new(
+                        ApplyPlanErrorKind::NotFound,
+                        "configuration descriptor was not found",
+                    )
+                    .at_path(at_path.clone())
+                })?;
+            let root = unica_source_designer::owner::prove_already_read_source_set_owner(
+                root_path,
+                &root,
+                source_kind,
+            )
+            .map_err(|error| invalid(error.message))?;
+            if !root.registers("Language", name) {
+                return Err(ApplyPlanError::new(
+                    ApplyPlanErrorKind::NotFound,
+                    "metadata owner is not registered",
+                )
+                .at_path(at_path.clone()));
+            }
+            // Comment goes through the shared descriptor Comment writer; the
+            // code is then replaced on that image.
+            let commented = comment
+                .as_deref()
+                .map(|comment| {
+                    crate::descriptor_comment::set_comment(
+                        &source,
+                        NodeKind::Language,
+                        name,
+                        comment,
+                    )
+                })
+                .transpose()
+                .map_err(invalid)?;
+            let base = commented.as_deref().unwrap_or(&source);
+            let text = crate::language_code::replace(base, name, code).map_err(invalid)?;
+            (NodeKind::Language, text)
+        }
+        DescriptorPropertyChanges::FormDescriptor(target) => {
+            let not_registered = |what: &str| {
+                ApplyPlanError::new(
+                    ApplyPlanErrorKind::NotFound,
+                    format!("{what} is not registered"),
+                )
+                .at_path(at_path.clone())
+            };
+            let read = |staged: &mut ApplyProposal<'_>, path: &Path, what: &str| {
+                staged
+                    .read(path)
+                    .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
+                    .ok_or_else(|| {
+                        ApplyPlanError::new(
+                            ApplyPlanErrorKind::NotFound,
+                            format!("{what} was not found"),
+                        )
+                        .at_path(at_path.clone())
+                    })
+            };
+            if let Some((kind, owner)) = &target.registered {
+                let root_path = Path::new("Configuration.xml");
+                let root = read(staged, root_path, "configuration descriptor")?;
+                let root = unica_source_designer::owner::prove_already_read_source_set_owner(
+                    root_path,
+                    &root,
+                    source_kind,
+                )
+                .map_err(|error| {
+                    ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, error.message)
+                        .at_path(at_path.clone())
+                })?;
+                if !root.registers(kind, owner) {
+                    return Err(not_registered("metadata owner"));
+                }
+            }
+            if let Some(owner_relative) = &target.owner_relative {
+                let owner = read(staged, owner_relative, "form owner descriptor")?;
+                if !crate::form_descriptor::owner_registers_form(&owner, name) {
+                    return Err(not_registered("form"));
+                }
+            }
+            let kind = if target.values.common {
+                NodeKind::CommonForm
+            } else {
+                NodeKind::Form
+            };
+            let text = crate::form_descriptor::set_form_descriptor_properties(
+                &source,
+                kind,
+                name,
+                &target.values.changes,
+            )
+            .map_err(|message| {
+                ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                    .at_path(at_path.clone())
+            })?;
+            (kind, text)
+        }
+        DescriptorPropertyChanges::CommentOnly { kind, comment } => {
+            let root_path = std::path::Path::new("Configuration.xml");
+            let root = staged
+                .read(root_path)
+                .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
+                .ok_or_else(|| {
+                    ApplyPlanError::new(
+                        ApplyPlanErrorKind::NotFound,
+                        "configuration descriptor was not found",
+                    )
+                    .at_path(at_path.clone())
+                })?;
+            let root = unica_source_designer::owner::prove_already_read_source_set_owner(
+                root_path,
+                &root,
+                source_kind,
+            )
+            .map_err(|error| {
+                ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, error.message)
+                    .at_path(at_path.clone())
+            })?;
+            if !root.registers(kind.as_str(), name) {
+                return Err(ApplyPlanError::new(
+                    ApplyPlanErrorKind::NotFound,
+                    "metadata owner is not registered",
+                )
+                .at_path(at_path.clone()));
+            }
+            let text = crate::descriptor_comment::set_comment(&source, *kind, name, comment)
+                .map_err(|message| {
+                    ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                        .at_path(at_path.clone())
+                })?;
+            (*kind, text)
+        }
+        DescriptorPropertyChanges::DocumentNumerator(changes) => {
+            let invalid = |message: String| {
+                ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                    .at_path(at_path.clone())
+            };
+            let root_path = Path::new("Configuration.xml");
+            let root = staged
+                .read(root_path)
+                .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
+                .ok_or_else(|| invalid("configuration descriptor was not found".to_string()))?;
+            let root = unica_source_designer::owner::prove_already_read_source_set_owner(
+                root_path,
+                &root,
+                source_kind,
+            )
+            .map_err(|error| invalid(error.message))?;
+            if !root.registers("DocumentNumerator", name) {
+                return Err(invalid(format!(
+                    "DocumentNumerator `{name}` is not registered in Configuration.xml"
+                )));
+            }
+            // Comment goes through the shared descriptor Comment writer; the
+            // numerator scalars are then patched on that image.
+            let commented = changes
+                .comment
+                .as_deref()
+                .map(|comment| {
+                    crate::descriptor_comment::set_comment(
+                        &source,
+                        NodeKind::DocumentNumerator,
+                        name,
+                        comment,
+                    )
+                })
+                .transpose()
+                .map_err(invalid)?;
+            let base = commented.as_deref().unwrap_or(&source);
+            let text = crate::numerator_write::patch(base, name, changes).map_err(|message| {
+                ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                    .at_path(at_path.clone())
+            })?;
+            (NodeKind::DocumentNumerator, text)
+        }
+        DescriptorPropertyChanges::WSReference(values) => {
+            let invalid = |message: String| {
+                ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                    .at_path(at_path.clone())
+            };
+            let root_path = std::path::Path::new("Configuration.xml");
+            let root = staged
+                .read(root_path)
+                .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
+                .ok_or_else(|| invalid("configuration descriptor was not found".to_string()))?;
+            let root = unica_source_designer::owner::prove_already_read_source_set_owner(
+                root_path,
+                &root,
+                source_kind,
+            )
+            .map_err(|error| invalid(error.message))?;
+            let owner = unica_source_designer::owner::prove_already_read_metadata_owner(
+                relative, &preimage,
+            )
+            .map_err(|error| invalid(error.message))?;
+            if source_kind != SourceSetKind::Configuration
+                || !root_version::is_writable(root.version())
+                || !root_version::is_writable(owner.version())
+                || !root.registers("WSReference", name)
+                || owner.artifact_kind() != "WSReference"
+                || owner.artifact_name() != Some(name)
+            {
+                return Err(invalid("WSReference must match an existing registered configuration descriptor in format 2.20".to_string()));
+            }
+            let text = crate::ws_reference::patch_location_url(&source, name, &values.location_url)
+                .map_err(invalid)?;
+            let text = if let Some(comment) = &values.comment {
+                crate::descriptor_comment::set_comment(&text, NodeKind::WsReference, name, comment)
+                    .map_err(invalid)?
+            } else {
+                text
+            };
+            (NodeKind::WsReference, text)
+        }
+        DescriptorPropertyChanges::Queue(values) => {
+            let invalid = |message: String| {
+                ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                    .at_path(at_path.clone())
+            };
+            let root_path = std::path::Path::new("Configuration.xml");
+            let root = staged
+                .read(root_path)
+                .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
+                .ok_or_else(|| invalid("configuration descriptor was not found".to_string()))?;
+            let root = unica_source_designer::owner::prove_already_read_source_set_owner(
+                root_path,
+                &root,
+                source_kind,
+            )
+            .map_err(|error| invalid(error.message))?;
+            let owner = unica_source_designer::owner::prove_already_read_metadata_owner(
+                relative, &preimage,
+            )
+            .map_err(|error| invalid(error.message))?;
+            if source_kind != SourceSetKind::Configuration
+                || !root.registers("Queue", name)
+                || owner.artifact_kind() != "Queue"
+                || owner.artifact_name() != Some(name)
+            {
+                return Err(invalid(
+                    "Queue must match an existing registered configuration descriptor".to_string(),
+                ));
+            }
+            let mut text = source.clone();
+            for (key, value) in values.descriptor_values() {
+                text = crate::queue_write::patch_property(&text, name, key, &value)
+                    .map_err(invalid)?;
+            }
+            let text = if let Some(comment) = &values.comment {
+                crate::descriptor_comment::set_comment(&text, NodeKind::Queue, name, comment)
+                    .map_err(invalid)?
+            } else {
+                text
+            };
+            (NodeKind::Queue, text)
+        }
+        DescriptorPropertyChanges::PaletteColor(values) => {
+            let invalid = |message: String| {
+                ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                    .at_path(at_path.clone())
+            };
+            let root_path = std::path::Path::new("Configuration.xml");
+            let root = staged
+                .read(root_path)
+                .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
+                .ok_or_else(|| invalid("configuration descriptor was not found".to_string()))?;
+            let root = unica_source_designer::owner::prove_already_read_source_set_owner(
+                root_path,
+                &root,
+                source_kind,
+            )
+            .map_err(|error| invalid(error.message))?;
+            let owner = unica_source_designer::owner::prove_already_read_metadata_owner(
+                relative, &preimage,
+            )
+            .map_err(|error| invalid(error.message))?;
+            if source_kind != SourceSetKind::Configuration
+                || !root.registers("PaletteColor", name)
+                || owner.artifact_kind() != "PaletteColor"
+                || owner.artifact_name() != Some(name)
+            {
+                return Err(invalid(
+                    "PaletteColor must match an existing registered configuration descriptor"
+                        .to_string(),
+                ));
+            }
+            let text = match &values.color {
+                Some(color) => crate::palette_color_write::patch_color(&source, name, color)
+                    .map_err(invalid)?,
+                None => source.clone(),
+            };
+            let text = if let Some(comment) = &values.comment {
+                crate::descriptor_comment::set_comment(&text, NodeKind::PaletteColor, name, comment)
+                    .map_err(invalid)?
+            } else {
+                text
+            };
+            (NodeKind::PaletteColor, text)
+        }
+        DescriptorPropertyChanges::StyleItem(values) => {
+            let color = &values.color;
+            let root_relative = Path::new("Configuration.xml");
+            let root = staged
+                .read(root_relative)
+                .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
+                .ok_or_else(|| {
+                    ApplyPlanError::new(ApplyPlanErrorKind::NotFound, "source-set owner is absent")
+                        .at_path(at_path.clone())
+                })?;
+            let image = crate::style_color::StyleColorImage::parse_registered(
+                &source,
+                name,
+                relative,
+                &root,
+                source_kind,
+            )
+            .map_err(|error| {
+                let kind = match &error {
+                    crate::style_color::ColorIssue::NotFound(_) => ApplyPlanErrorKind::NotFound,
+                    crate::style_color::ColorIssue::Invalid(_) => ApplyPlanErrorKind::InvalidSource,
+                    crate::style_color::ColorIssue::ReadOnly(_) => ApplyPlanErrorKind::InvalidState,
+                };
+                ApplyPlanError::new(kind, error.to_string()).at_path(at_path.clone())
+            })?;
+            let postimage = image.replace(*color);
+            let checked = crate::style_color::StyleColorImage::parse(&postimage, name, relative)
+                .map_err(|error| {
+                    ApplyPlanError::new(
+                        ApplyPlanErrorKind::Postcondition,
+                        format!("StyleItem Color postimage is invalid: {error}"),
+                    )
+                    .at_path(at_path.clone())
+                })?;
+            if checked.color() != *color {
+                return Err(ApplyPlanError::new(
+                    ApplyPlanErrorKind::Postcondition,
+                    "StyleItem Color postimage does not contain the requested color",
+                )
+                .at_path(at_path.clone()));
+            }
+            let postimage = if let Some(comment) = &values.comment {
+                crate::descriptor_comment::set_comment(
+                    &postimage,
+                    NodeKind::StyleItem,
+                    name,
+                    comment,
+                )
+                .map_err(|message| {
+                    ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                        .at_path(at_path.clone())
+                })?
+            } else {
+                postimage
+            };
+            (NodeKind::StyleItem, postimage)
+        }
+        DescriptorPropertyChanges::FunctionalOption(values) => {
+            let text =
+                crate::functional_option::patch(&source, name, values).map_err(|message| {
+                    ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                        .at_path(at_path.clone())
+                })?;
+            let (location, _) = crate::functional_option::read(&text, name).map_err(|message| {
+                ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                    .at_path(at_path.clone())
+            })?;
+            crate::functional_option::validate_location(staged, source_kind, &location).map_err(
+                |message| {
+                    ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message)
+                        .at_path(format!("ops[{op_index}].args.values.Location"))
+                },
+            )?;
+            let text = if let Some(comment) = &values.comment {
+                crate::descriptor_comment::set_comment(
+                    &text,
+                    NodeKind::FunctionalOption,
+                    name,
+                    comment,
+                )
+                .map_err(|message| {
+                    ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                        .at_path(at_path.clone())
+                })?
+            } else {
+                text
+            };
+            (NodeKind::FunctionalOption, text)
+        }
         DescriptorPropertyChanges::Role(unica_metadata::property_input::RolePropertyChanges {
             synonym,
             comment,
@@ -1396,13 +1979,8 @@ fn stage_descriptor_properties(
             let mut text = source.clone();
             let indent = "\t\t\t";
             if let Some(synonym) = synonym {
-                let lang = unica_source_designer::language::staged_text_language(
-                    staged,
-                    source_kind,
-                    op_index,
-                )?;
                 text =
-                    set_ml_property(&text, "Synonym", indent, &lang, synonym).ok_or_else(|| {
+                    set_localized_property(&text, "Synonym", indent, synonym).ok_or_else(|| {
                         ApplyPlanError::new(
                             ApplyPlanErrorKind::InvalidSource,
                             "the role descriptor has no Synonym property",
@@ -1458,40 +2036,17 @@ fn stage_descriptor_properties(
                 )
                 .at_path(at_path.clone())
             };
-            let lang = if synonym.is_some() || explanation.is_some() {
-                Some(unica_source_designer::language::staged_text_language(
-                    staged,
-                    source_kind,
-                    op_index,
-                )?)
-            } else {
-                None
-            };
             if let Some(synonym) = synonym {
-                text = set_ml_property(
-                    &text,
-                    "Synonym",
-                    indent,
-                    lang.as_deref()
-                        .expect("localized patch retained its language"),
-                    synonym,
-                )
-                .ok_or_else(|| missing("Synonym"))?;
+                text = set_localized_property(&text, "Synonym", indent, synonym)
+                    .ok_or_else(|| missing("Synonym"))?;
             }
             if let Some(comment) = comment {
                 text = set_plain_property(&text, "Comment", comment)
                     .ok_or_else(|| missing("Comment"))?;
             }
             if let Some(explanation) = explanation {
-                text = set_ml_property(
-                    &text,
-                    "Explanation",
-                    indent,
-                    lang.as_deref()
-                        .expect("localized patch retained its language"),
-                    explanation,
-                )
-                .ok_or_else(|| missing("Explanation"))?;
+                text = set_localized_property(&text, "Explanation", indent, explanation)
+                    .ok_or_else(|| missing("Explanation"))?;
             }
             if let Some(value) = include_help_in_contents {
                 text = set_plain_property(&text, "IncludeHelpInContents", &value.to_string())
@@ -1518,43 +2073,50 @@ fn stage_descriptor_properties(
                 )
                 .at_path(at_path.clone())
             };
-            let lang = if changes.iter().any(|(property, _)| property.localized()) {
-                Some(unica_source_designer::language::staged_text_language(
-                    staged,
-                    source_kind,
-                    op_index,
-                )?)
-            } else {
-                None
-            };
             for (property, value) in changes {
                 let tag = property.names()[0];
-                let value = match value {
-                    DescriptorPropertyValue::Text(value) => value.clone(),
-                    DescriptorPropertyValue::Boolean(value) => value.to_string(),
-                };
-                text = if property.localized() {
-                    set_ml_property(
-                        &text,
-                        tag,
-                        "\t\t\t",
-                        lang.as_deref()
-                            .expect("localized patch retained its language"),
-                        &value,
-                    )
-                } else {
-                    set_plain_property(&text, tag, &value)
+                text = match value {
+                    DescriptorPropertyValue::Languages(items) => {
+                        set_localized_property(&text, tag, "\t\t\t", items)
+                    }
+                    DescriptorPropertyValue::Text(value) if tag == "Name" => {
+                        Some(set_configuration_name(&text, value).map_err(|message| {
+                            ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                                .at_path(at_path.clone())
+                        })?)
+                    }
+                    DescriptorPropertyValue::Text(value) => set_plain_property(&text, tag, value),
+                    DescriptorPropertyValue::Boolean(value) => {
+                        set_plain_property(&text, tag, &value.to_string())
+                    }
+                    DescriptorPropertyValue::Parts(parts) => set_property_parts(&text, tag, parts),
+                    DescriptorPropertyValue::List(_) => return Err(missing(tag)),
                 }
                 .ok_or_else(|| missing(tag))?;
             }
             (NodeKind::Configuration, text)
         }
     };
-    let postimage = unica_source_designer::registration::preserve_descriptor_image(
-        &preimage,
-        &source,
-        &postimage_text,
-    );
+    let postimage = if matches!(
+        changes,
+        DescriptorPropertyChanges::CommentOnly { .. }
+            | DescriptorPropertyChanges::FormDescriptor(_)
+            | DescriptorPropertyChanges::StyleItem(_)
+            | DescriptorPropertyChanges::PaletteColor(_)
+            | DescriptorPropertyChanges::Queue(_)
+            | DescriptorPropertyChanges::WSReference(_)
+    ) || matches!(changes, DescriptorPropertyChanges::FunctionalOption(values) if values.comment.is_some())
+    {
+        let mut image = preimage[..preimage.len() - source.len()].to_vec();
+        image.extend_from_slice(postimage_text.as_bytes());
+        image
+    } else {
+        unica_source_designer::registration::preserve_descriptor_image(
+            &preimage,
+            &source,
+            &postimage_text,
+        )
+    };
     if postimage == preimage {
         return Ok(());
     }
@@ -1570,10 +2132,10 @@ fn stage_descriptor_properties(
                 _ if source_kind == SourceSetKind::Extension => DomainEventKind::CfeChanged,
                 _ => DomainEventKind::ConfigXmlChanged,
             },
-            if kind == NodeKind::Configuration {
-                name.to_string()
-            } else {
-                format!("{}.{name}", kind.as_str())
+            match changes {
+                DescriptorPropertyChanges::FormDescriptor(target) => target.form.clone(),
+                _ if kind == NodeKind::Configuration => name.to_string(),
+                _ => format!("{}.{name}", kind.as_str()),
             },
         ),
         op_index,
@@ -1601,7 +2163,7 @@ fn template_descriptor_xml(
     };
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<MetaDataObject {} version=\"{format_version}\">\r\n\t<Template uuid=\"{uuid}\">\r\n\t\t<Properties>\r\n\t\t\t<Name>{name}</Name>\r\n{synonym_xml}\r\n\t\t\t<Comment/>\r\n\t\t\t<TemplateType>{}</TemplateType>\r\n\t\t</Properties>\r\n\t</Template>\r\n</MetaDataObject>",
-        unica_source_designer::layout::full_md_namespace_declarations(),
+        unica_source_designer::layout::full_md_namespace_declarations(format_version),
         kind.as_str()
     )
 }
@@ -1767,17 +2329,18 @@ fn stage_exchange_content(
         .read(&relative)
         .map_err(|e| ApplyPlanError::staging(e, path.clone()))?;
     let template = if borrowed {
-        crate::exchange_content::EMPTY_EXTENSION_CONTENT.as_bytes()
+        crate::exchange_content::empty_extension_content(authority.expected_format())
     } else {
-        crate::exchange_content::EMPTY_CONTENT.as_bytes()
+        crate::exchange_content::empty_content(authority.expected_format())
     };
-    let text = std::str::from_utf8(before.as_deref().unwrap_or(template)).map_err(|_| {
-        ApplyPlanError::new(
-            ApplyPlanErrorKind::InvalidSource,
-            "ExchangePlan Content.xml is not UTF-8",
-        )
-        .at_path(path.clone())
-    })?;
+    let text =
+        std::str::from_utf8(before.as_deref().unwrap_or(template.as_bytes())).map_err(|_| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::InvalidSource,
+                "ExchangePlan Content.xml is not UTF-8",
+            )
+            .at_path(path.clone())
+        })?;
     let after = crate::exchange_content::update_content(text, items, borrowed)
         .map_err(|e| {
             ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, e).at_path(path.clone())
@@ -1785,7 +2348,7 @@ fn stage_exchange_content(
         .into_bytes();
     let changed = match before {
         Some(before) if before != after => staged.replace(&relative, &before, after).map(|()| true),
-        None if after != template => staged.create(&relative, after).map(|()| true),
+        None if after != template.as_bytes() => staged.create(&relative, after).map(|()| true),
         _ => Ok(false),
     };
     let changed = changed.map_err(|e| ApplyPlanError::staging(e, path))?;
@@ -1818,20 +2381,22 @@ pub fn final_exchange_content(
             ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message).at_path("ops")
         };
         let relative = metadata_descriptor_relative(&owner, source_kind).map_err(fail)?;
-        if staged
+        let Some(descriptor) = staged
             .read(&relative)
             .map_err(|e| ApplyPlanError::staging(e, "ops"))?
-            .is_none()
-        {
+        else {
             continue;
-        }
+        };
         let content = relative.with_extension("").join("Ext/Content.xml");
         let bytes = staged
             .read(&content)
             .map_err(|e| ApplyPlanError::staging(e, "ops"))?;
         // An absent file is the platform's empty composition.
-        let bytes =
-            bytes.unwrap_or_else(|| crate::exchange_content::EMPTY_CONTENT.as_bytes().to_vec());
+        let bytes = bytes.unwrap_or_else(|| {
+            let version =
+                crate::dialect::root_version::of_set(&String::from_utf8_lossy(&descriptor));
+            crate::exchange_content::empty_content(&version).into_bytes()
+        });
         let text = std::str::from_utf8(&bytes).map_err(|e| fail(e.to_string()))?;
         let observed = crate::exchange_content::read_content(text).map_err(fail)?;
         if !observed.errors.is_empty() {
@@ -1907,7 +2472,21 @@ fn stage_template_add(
     use unica_metadata::MetaTemplateKind;
     let (owner_relative, owner_preimage, owner_source) =
         owner_descriptor_and_text(staged, authority, owner, op_index)?;
-    let mut owner_text = owner_source.clone();
+    if unica_source_designer::extension_mode::descriptor_is_borrowed(&owner_preimage) {
+        unica_source_designer::extension_mode::admit_extension_operation(
+            staged,
+            authority.source_kind(),
+            unica_source_contract::compatibility::ExtensionOperation::AddChildToBorrowed,
+            &format!("ops[{op_index}]"),
+        )?;
+    }
+    // The registration writes `<Template>` in the default namespace; a
+    // prefixed owner is edited in that form and restored before writing.
+    let (mut owner_text, owner_form) =
+        unica_xml_format::prefix_form::PrefixForm::normalize(&owner_source).map_err(|message| {
+            ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                .at_path(format!("ops[{op_index}].args.at"))
+        })?;
     let templates_dir = owner_relative.with_extension("").join("Templates");
     let lang = unica_source_designer::language::staged_text_language(
         staged,
@@ -1925,10 +2504,17 @@ fn stage_template_add(
             .at_path(name_path));
         }
         let content = match kind {
-            MetaTemplateKind::SpreadsheetDocument => {
-                (template_seed.0)()
+            MetaTemplateKind::SpreadsheetDocument => unica_source_designer::layout::declare_format_namespaces(
+                (template_seed.0)(),
+                authority.expected_format(),
+            ),
+            MetaTemplateKind::DataCompositionSchema => {
+                unica_source_designer::layout::declare_element_format_namespaces(
+                    empty_data_composition_schema_xml(),
+                    "dcsset:settings",
+                    authority.expected_format(),
+                )
             }
-            MetaTemplateKind::DataCompositionSchema => empty_data_composition_schema_xml(),
             MetaTemplateKind::TextDocument | MetaTemplateKind::HtmlDocument | MetaTemplateKind::BinaryData => {
                 return Err(ApplyPlanError::new(
                     ApplyPlanErrorKind::BadValue,
@@ -1985,6 +2571,10 @@ fn stage_template_add(
             .at_path(format!("ops[{op_index}].args.at"))
         })?;
     }
+    let owner_text = owner_form.restore(&owner_text).map_err(|message| {
+        ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+            .at_path(format!("ops[{op_index}].args.at"))
+    })?;
     let owner_postimage = unica_source_designer::registration::preserve_descriptor_image(
         &owner_preimage,
         &owner_source,
@@ -2014,6 +2604,11 @@ fn stage_template_set(
     let at_path = format!("ops[{op_index}].args.at");
     let (owner_relative, _, owner_source) =
         owner_descriptor_and_text(staged, authority, owner, op_index)?;
+    let owner_source = unica_xml_format::prefix_form::PrefixForm::normalize(&owner_source)
+        .map_err(|message| {
+            ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message).at_path(at_path.clone())
+        })?
+        .0;
     if !owner_source.contains(&format!("<Template>{name}</Template>")) {
         return Err(ApplyPlanError::new(
             ApplyPlanErrorKind::NotFound,
@@ -2047,6 +2642,13 @@ fn stage_template_set(
         .at_path(at_path.clone())
     })?;
     let source_text = text.clone();
+    // The template descriptor is edited in the default-namespace spelling and
+    // gets its own prefix back before writing.
+    let (normalized, template_form) = unica_xml_format::prefix_form::PrefixForm::normalize(&text)
+        .map_err(|message| {
+        ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message).at_path(at_path.clone())
+    })?;
+    text = normalized;
     let string_value = |key: &str| -> Result<Option<String>, ApplyPlanError> {
         match values.get(key) {
             None => Ok(None),
@@ -2060,12 +2662,12 @@ fn stage_template_set(
     };
     let indent = "\t\t\t";
     if let Some(synonym) = string_value("synonym")? {
-        let lang = unica_source_designer::language::staged_text_language(
-            staged,
-            authority.source_kind(),
-            op_index,
-        )?;
-        text = set_ml_property(&text, "Synonym", indent, &lang, &synonym).ok_or_else(|| {
+        // The whole value in NStr form names its languages (#2163).
+        let items = unica_metadata::parse_nstr(&synonym).map_err(|message| {
+            ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message)
+                .at_path(format!("ops[{op_index}].args.values.synonym"))
+        })?;
+        text = set_localized_property(&text, "Synonym", indent, &items).ok_or_else(|| {
             ApplyPlanError::new(
                 ApplyPlanErrorKind::InvalidSource,
                 "the template descriptor has no Synonym property",
@@ -2111,6 +2713,9 @@ fn stage_template_set(
             .at_path(at_path.clone())
         })?;
     }
+    let text = template_form.restore(&text).map_err(|message| {
+        ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message).at_path(at_path.clone())
+    })?;
     let postimage = unica_source_designer::registration::preserve_descriptor_image(
         &preimage,
         &source_text,
@@ -2339,6 +2944,7 @@ fn stage_template_remove(
 /// batch is visible to a later `set` or `remove` of the same batch. `set` and
 /// `remove` find the item by the name in their address; the platform keeps
 /// predefined names unique within the owner, nested items included.
+#[allow(clippy::too_many_arguments)]
 fn stage_predefined(
     staged: &mut ApplyProposal<'_>,
     authority: &dyn ApplySourceAuthority,
@@ -2346,6 +2952,7 @@ fn stage_predefined(
     kind: MetadataKind,
     change: &PredefinedChange,
     op_index: usize,
+    final_code_type: Option<crate::predefined::PredefinedCodeType>,
     provisional: &mut Vec<ProvisionalApplyEffect>,
 ) -> Result<(), ApplyPlanError> {
     let at_path = format!("ops[{op_index}].args.at");
@@ -2398,13 +3005,23 @@ fn stage_predefined(
             op_index,
         )?),
     };
-    let post_image = crate::predefined::predefined_post_image(
-        kind,
-        owner,
-        &owner_source,
-        original.as_deref(),
-        &operation,
-    )
+    let post_image = match final_code_type {
+        Some(code_type) => crate::predefined::predefined_post_image_for_final_code_type(
+            kind,
+            owner,
+            &owner_source,
+            original.as_deref(),
+            &operation,
+            code_type,
+        ),
+        None => crate::predefined::predefined_post_image(
+            kind,
+            owner,
+            &owner_source,
+            original.as_deref(),
+            &operation,
+        ),
+    }
     .map_err(|failure| {
         // A name or id already taken is the caller's to change: the
         // refusal asks for another value rather than for a human.
@@ -2547,4 +3164,46 @@ fn stage_help_create<R: MetadataPlanningRead>(
         op_index,
     ));
     Ok(())
+}
+
+#[cfg(test)]
+mod prefixed_property_block_tests {
+    #[test]
+    fn configuration_name_noop_uses_the_value_observed_by_view() {
+        let prefixed = concat!(
+            "<md:MetaDataObject xmlns:md=\"http://v8.1c.ru/8.3/MDClasses\">",
+            "<md:Configuration><md:Properties><md:Name>A<!--memo-->B</md:Name></md:Properties>",
+            "</md:Configuration></md:MetaDataObject>"
+        );
+        assert_eq!(
+            super::set_configuration_name(prefixed, "A").unwrap(),
+            prefixed
+        );
+        assert_eq!(
+            super::set_configuration_name(prefixed, "AB").unwrap(),
+            prefixed.replace("A<!--memo-->B", "AB")
+        );
+    }
+
+    #[test]
+    fn a_prefixed_descriptor_keeps_its_prefix_in_the_replaced_block() {
+        let prefixed = concat!(
+            "<md:MetaDataObject xmlns:md=\"http://v8.1c.ru/8.3/MDClasses\">",
+            "<md:Role><md:Properties><md:Name>Q</md:Name><md:Comment/></md:Properties></md:Role>",
+            "</md:MetaDataObject>"
+        );
+        let updated =
+            super::replace_property_block(prefixed, "Comment", "<Comment>Reader</Comment>")
+                .unwrap();
+        assert_eq!(
+            updated,
+            prefixed.replace("<md:Comment/>", "<md:Comment>Reader</md:Comment>")
+        );
+        let default = prefixed.replace("md:", "").replace("xmlns:md=", "xmlns=");
+        assert_eq!(
+            super::replace_property_block(&default, "Comment", "<Comment>Reader</Comment>")
+                .unwrap(),
+            default.replace("<Comment/>", "<Comment>Reader</Comment>")
+        );
+    }
 }

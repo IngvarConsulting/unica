@@ -72,7 +72,7 @@ fn subsystem_list_patch_refuses_ambiguous_direct_containers() {
 
 /// Выгрузка 8.3.27 (BOM, CRLF, табуляции): удалённый элемент уходит вместе со
 /// строкой, добавленный встаёт своей строкой с отступом соседей, опустевший
-/// список становится пустым тегом, как пишет платформа (#1889).
+/// список становится пустым тегом, как пишет платформа.
 #[test]
 fn subsystem_list_patch_keeps_the_platform_layout_of_a_dump() {
     let source = std::fs::read_to_string(concat!(

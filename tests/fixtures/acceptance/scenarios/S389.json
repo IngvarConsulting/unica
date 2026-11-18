@@ -1,0 +1,44 @@
+{
+  "id": "S389",
+  "name": "diagnostics-engine-exit-failure",
+  "issue": 1338,
+  "area": "Код BSL",
+  "task": "Движок анализа завершился ошибкой: отказ называет причину и действие без stderr движка",
+  "workspace": "tests/fixtures/acceptance/workspace-diagnostics",
+  "profile": "fault-injection",
+  "driver": "analyzer-jsonl-fault",
+  "evaluation": "exit-failure",
+  "wire": [
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:CommonModule.Пример"
+      },
+      "expect": [
+        "provider"
+      ],
+      "assertions": [
+        {
+          "pointer": "/ok",
+          "eq": false
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "provider_unavailable"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "eq": "BSL analysis did not complete, so the module is unproven: bsl-analyzer: analysis engine exited with an error before producing a result. Repeat the call; if the problem persists, report this reason."
+        },
+        {
+          "pointer": "/diagnostics/0/detailCode",
+          "absent": true
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ]
+    }
+  ]
+}

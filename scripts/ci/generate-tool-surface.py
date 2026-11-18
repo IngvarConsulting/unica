@@ -19,9 +19,14 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from cargo_target import cargo_target_dir  # noqa: E402
+from provider_fixture import provider_fixture_environment  # noqa: E402
+from temp_tree import temp_tree  # noqa: E402
+
 REVIEW_PATH = REPO_ROOT / "tests/fixtures/v013/tool-surface-review.json"
 LEDGER_PATH = REPO_ROOT / "docs/tool-surface.md"
-DEFAULT_BINARY = REPO_ROOT / "target/debug/unica"
+DEFAULT_BINARY = cargo_target_dir(REPO_ROOT) / "debug" / "unica"
 
 # Above this count a tool is publishing the shared XML/DSL argument list rather
 # than its own, so enumerating every entry would describe the list, not the
@@ -88,18 +93,16 @@ def read_registry(binary: Path) -> list[dict]:
         {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
     ]
     payload = "".join(json.dumps(m, ensure_ascii=False) + "\n" for m in messages)
-    # Один запрос `tools/list` — и всё. Тёплый демон после него никому не
-    # нужен, а живёт он по умолчанию четверть часа: на раннере такие остатки
-    # копятся от вызова к вызову, пока подключение не начинает отказывать.
-    environment = dict(os.environ, UNICA_DAEMON_IDLE_GRACE_MS="5000")
-    process = subprocess.run(
-        [str(binary), "mcp"],
-        input=payload,
-        capture_output=True,
-        text=True,
-        timeout=300,
-        env=environment,
-    )
+    with temp_tree("unica-tool-surface-") as temporary:
+        environment = provider_fixture_environment(os.environ, Path(temporary) / "provider-state")
+        process = subprocess.run(
+            [str(binary), "mcp"],
+            input=payload,
+            capture_output=True,
+            text=True,
+            timeout=300,
+            env=environment,
+        )
     for line in process.stdout.splitlines():
         try:
             response = json.loads(line)
@@ -355,7 +358,7 @@ def render(tools: list[dict], review: dict) -> str:
         " [`tool-surface-review.json`](../tests/fixtures/v013/tool-surface-review.json): контракт"
         " результата и сценарии. Имена, описания и аргументы принадлежат"
         " реестру v0.13 в"
-        " `crates/unica-coder/src/application/v13/tool_catalog.rs`; здесь они"
+        " `crates/unica-application/src/application/v13/tool_catalog.rs`; здесь они"
         " лишь показаны рядом."
     )
     out.append("")

@@ -1,0 +1,21 @@
+{
+  "area": "СКД",
+  "task": "Удалить поле из схемы",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Field.РазмерДанных",
+        "ops": [
+          {
+            "op": "field.remove"
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S183"
+}

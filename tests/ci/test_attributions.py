@@ -3,8 +3,6 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
-import os
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -79,11 +77,8 @@ class AttributionTests(unittest.TestCase):
             module.expected_markers(self.repo_root()),
             {
                 ("project", "unica"),
-                ("library", "ureq"),
                 ("tool", "bsl-analyzer"),
                 ("tool", "v8-runner"),
-                ("tool", "rlm-bsl-mcp"),
-                ("tool", "rlm-bsl-index"),
                 ("adapter", "v8std"),
                 ("upstream", "cc-1c-skills"),
                 ("upstream", "ai-rules-1c"),
@@ -104,104 +99,19 @@ class AttributionTests(unittest.TestCase):
             sections.get(("upstream", "1c-design-guide"), ""),
         )
 
-    def test_patched_library_notices_match_published_sources(self) -> None:
-        root = self.repo_root()
-        vendor = root / "vendor/ureq"
-        source = json.loads((vendor / "UPSTREAM.json").read_text(encoding="utf-8"))
-        section = load_attribution_module().parse_sections(
-            (root / "plugins/unica/ATTRIBUTIONS.md").read_text(encoding="utf-8")
-        )[("library", "ureq")]
-        for name in ("LICENSE-MIT", "LICENSE-APACHE", "src/chunked/LICENSE-MIT", "src/chunked/LICENSE-APACHE"):
-            with self.subTest(name=name):
-                relative = f"third-party/licenses/ureq/{name}"
-                self.assertIn(relative, section)
-                published_hash = source["upstreamFiles"][name]
-                self.assertEqual(hashlib.sha256((vendor / name).read_bytes()).hexdigest(), published_hash)
-                self.assertEqual(
-                    hashlib.sha256((root / "plugins/unica" / relative).read_bytes()).hexdigest(),
-                    published_hash,
-                )
-
-    def test_vendored_source_changes_are_declared_against_the_pinned_archive(self) -> None:
-        root = self.repo_root()
-        vendor = root / "vendor/ureq"
-        source = json.loads((vendor / "UPSTREAM.json").read_text(encoding="utf-8"))
-        self.assertEqual(source["archiveSha256"], "02d1a66277ed75f640d608235660df48c8e3c19f3b4edb6a263315626cc3c01d")
-        modified = set(source["modifiedFiles"])
-        self.assertLessEqual(modified, set(source["upstreamFiles"]))
-        for name, expected in source["upstreamFiles"].items():
-            if name not in modified:
-                with self.subTest(name=name):
-                    self.assertEqual(hashlib.sha256((vendor / name).read_bytes()).hexdigest(), expected)
-        files = subprocess.check_output(
-            ["git", "ls-files", "--cached", "--others", "--exclude-standard", "vendor/ureq"], cwd=root, text=True,
-        ).splitlines()
-        self.assertEqual(
-            {Path(name).relative_to("vendor/ureq").as_posix() for name in files},
-            set(source["upstreamFiles"]) | set(source["addedFiles"]),
-        )
-
-    def test_hashed_vendor_sources_and_delivered_licenses_survive_autocrlf_checkout(self) -> None:
-        root = self.repo_root()
-        source = json.loads((root / "vendor/ureq/UPSTREAM.json").read_text(encoding="utf-8"))
-        names = {"vendor/ureq/" + name for name in source["upstreamFiles"]}
-        names.update("vendor/ureq/" + name for name in source["addedFiles"])
-        names.update("plugins/unica/third-party/licenses/ureq/" + name for name in (
-            "LICENSE-MIT", "LICENSE-APACHE", "src/chunked/LICENSE-MIT", "src/chunked/LICENSE-APACHE",
-        ))
-        original = {name: (root / name).read_bytes() for name in names}
-        with tempfile.TemporaryDirectory(prefix="vendor-checkout-") as temporary:
-            base = Path(temporary)
-            repo, checkout = base / "source", base / "checkout"
-            repo.mkdir()
-            empty_attributes = base / "empty-attributes"
-            empty_attributes.write_bytes(b"")
-            environment = {**os.environ, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull, "GIT_ATTR_NOSYSTEM": "1"}
-            def git(*arguments: str, autocrlf: str = "false") -> None:
-                subprocess.run([
-                    "git", "-c", "core.attributesFile=" + str(empty_attributes),
-                    "-c", "core.autocrlf=" + autocrlf, "-c", "core.safecrlf=false", *arguments,
-                ], cwd=repo, env=environment, check=True, capture_output=True)
-            git("init", "-q")
-            (repo / ".gitattributes").write_bytes((root / ".gitattributes").read_bytes())
-            for name, data in original.items():
-                target = repo / name
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(data)
-            (repo / "conversion-control.txt").write_bytes(b"first\nsecond\n")
-            git("add", "--all")
-            git("checkout-index", "--all", "--force", "--prefix=" + checkout.as_posix() + "/", autocrlf="true")
-            self.assertEqual((checkout / "conversion-control.txt").read_bytes(), b"first\r\nsecond\r\n")
-            for name, data in original.items():
-                with self.subTest(path=name):
-                    self.assertEqual((checkout / name).read_bytes(), data)
-
-    def test_patched_library_requires_a_packaged_license(self) -> None:
-        root = self.repo_root()
-        text = (root / "plugins/unica/ATTRIBUTIONS.md").read_text(encoding="utf-8")
-        text = text.replace("(third-party/licenses/ureq/LICENSE-MIT)", "(https://example.invalid/LICENSE)")
-        with tempfile.TemporaryDirectory() as raw:
-            path = Path(raw) / "ATTRIBUTIONS.md"
-            path.write_text(text, encoding="utf-8")
-            self.assertIn(
-                "library ureq: license link must point to a packaged file",
-                load_attribution_module().validate_attributions(root, path),
-            )
-
     def test_bsl_analyzer_packages_the_complete_upstream_license_set(self) -> None:
         root = self.repo_root()
         license_dir = root / "plugins/unica/third-party/licenses/bsl-analyzer"
+        # Since 0.4 the whole bsl-analyzer workspace is MIT: LICENSE-MIT is
+        # the only license text it publishes.
         expected_hashes = {
-            "LICENSE-APACHE": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
-            "LICENSE-GPL": "fb981668c18a279e285fc4d83fba1e836cc84dd4daa73c9697d3cfd2d8aca6e0",
-            "LICENSE-LGPL": "996af0513df21f7496288951c41428a03c174e9e4a9d63665c57d670f845ccb1",
             "LICENSE-MIT": "eabf424905be03c7e86b9ba3905ee0935936f85ad98afce697716f3d046ac838",
         }
 
         self.assertEqual(
             {path.name for path in license_dir.iterdir() if path.name.startswith("LICENSE-")},
             set(expected_hashes),
-            "the package must carry the four license texts published with bsl-analyzer",
+            "the package must carry the license texts published with bsl-analyzer",
         )
         for name, expected_hash in expected_hashes.items():
             actual_hash = hashlib.sha256((license_dir / name).read_bytes()).hexdigest()
@@ -255,25 +165,14 @@ class AttributionTests(unittest.TestCase):
         module = load_attribution_module()
 
         sections = module.parse_sections(
-            "## RLM\n"
-            "<!-- unica-attribution: tool rlm-bsl-mcp -->\n"
-            "<!-- unica-attribution: tool rlm-bsl-index -->\n"
+            "## Archive\n"
+            "<!-- unica-attribution: tool archive-tool-server -->\n"
+            "<!-- unica-attribution: tool archive-tool-index -->\n"
             "Общий текст.\n"
         )
 
-        self.assertEqual(sections[("tool", "rlm-bsl-mcp")], sections[("tool", "rlm-bsl-index")])
-        self.assertIn("Общий текст", sections[("tool", "rlm-bsl-mcp")])
-
-    def test_rlm_attribution_identifies_current_immutable_build(self) -> None:
-        root = self.repo_root()
-        section = load_attribution_module().parse_sections(
-            (root / "plugins/unica/ATTRIBUTIONS.md").read_text(encoding="utf-8")
-        )[("tool", "rlm-bsl-mcp")]
-
-        self.assertIn("`1.42.0`", section)
-        self.assertIn("`9a84f24f0c156630e1d4e757b30070a13a56d0e0`", section)
-        self.assertIn("`rlm-tools-bsl-v1.42.0-build.1`", section)
-        self.assertIn("Nuitka", section)
+        self.assertEqual(sections[("tool", "archive-tool-server")], sections[("tool", "archive-tool-index")])
+        self.assertIn("Общий текст", sections[("tool", "archive-tool-server")])
 
     def test_parse_sections_rejects_duplicate_markers(self) -> None:
         module = load_attribution_module()
@@ -285,6 +184,7 @@ class AttributionTests(unittest.TestCase):
             )
 
     def test_validation_reports_missing_unknown_and_invalid_repository_links(self) -> None:
+        """rule: INV.PKG.ATTRIBUTION"""
         module = load_attribution_module()
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -316,6 +216,7 @@ class AttributionTests(unittest.TestCase):
         self.assertIn("tool other: license link must point to a packaged file", errors)
 
     def test_repository_attribution_page_is_complete_and_linked(self) -> None:
+        """rule: INV.PKG.ATTRIBUTION"""
         module = load_attribution_module()
         repo_root = self.repo_root()
 

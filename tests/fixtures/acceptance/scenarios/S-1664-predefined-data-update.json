@@ -1,0 +1,1748 @@
+{
+  "id": "S-1664-predefined-data-update",
+  "issue": 1664,
+  "area": "Метаданные",
+  "task": "Изменить режим обновления предопределённых данных четырёх владельцев, сохраняя непустые элементы и иерархию; проверить конфликт.",
+  "workspace": "tests/fixtures/acceptance/workspace-predefined-data-update",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/PredefinedDataUpdate/enum",
+          "eq": [
+            "Auto",
+            "AutoUpdate",
+            "DontAutoUpdate"
+          ]
+        }
+      ],
+      "captures": {
+        "unchanged1": {
+          "file": "src/Catalogs/Codes/Ext/Predefined.xml",
+          "kind": "sha256"
+        },
+        "unchanged2": {
+          "file": "src/Catalogs/Codes.xml",
+          "kind": "sha256"
+        },
+        "unchanged3": {
+          "file": "src/ChartsOfAccounts/Codes.xml",
+          "kind": "sha256"
+        },
+        "unchanged4": {
+          "file": "src/ChartsOfAccounts/Codes/Ext/Predefined.xml",
+          "kind": "sha256"
+        },
+        "unchanged5": {
+          "file": "src/ChartsOfCharacteristicTypes/Codes.xml",
+          "kind": "sha256"
+        },
+        "unchanged6": {
+          "file": "src/ChartsOfCharacteristicTypes/Codes/Ext/Predefined.xml",
+          "kind": "sha256"
+        },
+        "unchanged7": {
+          "file": "src/ChartsOfCalculationTypes/Codes.xml",
+          "kind": "sha256"
+        },
+        "unchanged8": {
+          "file": "src/ChartsOfCalculationTypes/Codes/Ext/Predefined.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_0": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "PredefinedDataUpdate": "DontAutoUpdate"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_0"
+        },
+        {
+          "path": "src/Catalogs/Codes/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}Properties/{*}PredefinedDataUpdate",
+          "eq": [
+            "DontAutoUpdate"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Codes/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/PredefinedDataUpdate",
+          "eq": "DontAutoUpdate"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_1": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "PredefinedDataUpdate": "AutoUpdate"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_1"
+        },
+        {
+          "path": "src/Catalogs/Codes/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}Properties/{*}PredefinedDataUpdate",
+          "eq": [
+            "AutoUpdate"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Codes/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/PredefinedDataUpdate",
+          "eq": "AutoUpdate"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_2": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "PredefinedDataUpdate": "Auto"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_2"
+        },
+        {
+          "path": "src/Catalogs/Codes/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}Properties/{*}PredefinedDataUpdate",
+          "eq": [
+            "Auto"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Codes/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/PredefinedDataUpdate",
+          "eq": "Auto"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged1"
+        },
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_3": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "PredefinedDataUpdate": "Auto"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_3"
+        },
+        {
+          "path": "src/Catalogs/Codes/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}Properties/{*}PredefinedDataUpdate",
+          "eq": [
+            "Auto"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Codes/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/PredefinedDataUpdate",
+          "eq": "Auto"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged1"
+        },
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfAccounts.Codes.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/PredefinedDataUpdate/enum",
+          "eq": [
+            "Auto",
+            "AutoUpdate",
+            "DontAutoUpdate"
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfAccounts/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged3"
+        },
+        {
+          "path": "src/ChartsOfAccounts/Codes/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfAccounts.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_0": {
+          "kind": "sha256",
+          "file": "src/ChartsOfAccounts/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ChartOfAccounts.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "PredefinedDataUpdate": "DontAutoUpdate"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfAccounts/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_0"
+        },
+        {
+          "path": "src/ChartsOfAccounts/Codes/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfAccounts/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}ChartOfAccounts/{*}Properties/{*}PredefinedDataUpdate",
+          "eq": [
+            "DontAutoUpdate"
+          ]
+        },
+        {
+          "path": "src/ChartsOfAccounts/Codes/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfAccounts.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/PredefinedDataUpdate",
+          "eq": "DontAutoUpdate"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfAccounts/Codes/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfAccounts.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_1": {
+          "kind": "sha256",
+          "file": "src/ChartsOfAccounts/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ChartOfAccounts.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "PredefinedDataUpdate": "AutoUpdate"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfAccounts/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_1"
+        },
+        {
+          "path": "src/ChartsOfAccounts/Codes/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfAccounts/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}ChartOfAccounts/{*}Properties/{*}PredefinedDataUpdate",
+          "eq": [
+            "AutoUpdate"
+          ]
+        },
+        {
+          "path": "src/ChartsOfAccounts/Codes/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfAccounts.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/PredefinedDataUpdate",
+          "eq": "AutoUpdate"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfAccounts/Codes/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfAccounts.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_2": {
+          "kind": "sha256",
+          "file": "src/ChartsOfAccounts/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ChartOfAccounts.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "PredefinedDataUpdate": "Auto"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfAccounts/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_2"
+        },
+        {
+          "path": "src/ChartsOfAccounts/Codes/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfAccounts/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}ChartOfAccounts/{*}Properties/{*}PredefinedDataUpdate",
+          "eq": [
+            "Auto"
+          ]
+        },
+        {
+          "path": "src/ChartsOfAccounts/Codes/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfAccounts.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/PredefinedDataUpdate",
+          "eq": "Auto"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfAccounts/Codes/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged4"
+        },
+        {
+          "path": "src/ChartsOfAccounts/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfAccounts.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_3": {
+          "kind": "sha256",
+          "file": "src/ChartsOfAccounts/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ChartOfAccounts.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "PredefinedDataUpdate": "Auto"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfAccounts/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_3"
+        },
+        {
+          "path": "src/ChartsOfAccounts/Codes/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfAccounts/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}ChartOfAccounts/{*}Properties/{*}PredefinedDataUpdate",
+          "eq": [
+            "Auto"
+          ]
+        },
+        {
+          "path": "src/ChartsOfAccounts/Codes/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfAccounts.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/PredefinedDataUpdate",
+          "eq": "Auto"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfAccounts/Codes/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged4"
+        },
+        {
+          "path": "src/ChartsOfAccounts/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Codes.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/PredefinedDataUpdate/enum",
+          "eq": [
+            "Auto",
+            "AutoUpdate",
+            "DontAutoUpdate"
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged5"
+        },
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Codes/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged6"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before2_0": {
+          "kind": "sha256",
+          "file": "src/ChartsOfCharacteristicTypes/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "PredefinedDataUpdate": "DontAutoUpdate"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before2_0"
+        },
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Codes/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged6"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}ChartOfCharacteristicTypes/{*}Properties/{*}PredefinedDataUpdate",
+          "eq": [
+            "DontAutoUpdate"
+          ]
+        },
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Codes/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged6"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/PredefinedDataUpdate",
+          "eq": "DontAutoUpdate"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Codes/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged6"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before2_1": {
+          "kind": "sha256",
+          "file": "src/ChartsOfCharacteristicTypes/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "PredefinedDataUpdate": "AutoUpdate"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before2_1"
+        },
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Codes/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged6"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}ChartOfCharacteristicTypes/{*}Properties/{*}PredefinedDataUpdate",
+          "eq": [
+            "AutoUpdate"
+          ]
+        },
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Codes/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged6"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/PredefinedDataUpdate",
+          "eq": "AutoUpdate"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Codes/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged6"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before2_2": {
+          "kind": "sha256",
+          "file": "src/ChartsOfCharacteristicTypes/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "PredefinedDataUpdate": "Auto"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before2_2"
+        },
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Codes/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged6"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}ChartOfCharacteristicTypes/{*}Properties/{*}PredefinedDataUpdate",
+          "eq": [
+            "Auto"
+          ]
+        },
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Codes/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged6"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/PredefinedDataUpdate",
+          "eq": "Auto"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Codes/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged6"
+        },
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged5"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before2_3": {
+          "kind": "sha256",
+          "file": "src/ChartsOfCharacteristicTypes/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "PredefinedDataUpdate": "Auto"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before2_3"
+        },
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Codes/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged6"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}ChartOfCharacteristicTypes/{*}Properties/{*}PredefinedDataUpdate",
+          "eq": [
+            "Auto"
+          ]
+        },
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Codes/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged6"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/PredefinedDataUpdate",
+          "eq": "Auto"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Codes/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged6"
+        },
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged5"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCalculationTypes.Codes.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/PredefinedDataUpdate/enum",
+          "eq": [
+            "Auto",
+            "AutoUpdate",
+            "DontAutoUpdate"
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCalculationTypes/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged7"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/Codes/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged8"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCalculationTypes.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before3_0": {
+          "kind": "sha256",
+          "file": "src/ChartsOfCalculationTypes/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ChartOfCalculationTypes.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "PredefinedDataUpdate": "DontAutoUpdate"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCalculationTypes/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before3_0"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/Codes/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged8"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCalculationTypes/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}ChartOfCalculationTypes/{*}Properties/{*}PredefinedDataUpdate",
+          "eq": [
+            "DontAutoUpdate"
+          ]
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/Codes/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged8"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCalculationTypes.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/PredefinedDataUpdate",
+          "eq": "DontAutoUpdate"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCalculationTypes/Codes/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged8"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCalculationTypes.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before3_1": {
+          "kind": "sha256",
+          "file": "src/ChartsOfCalculationTypes/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ChartOfCalculationTypes.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "PredefinedDataUpdate": "AutoUpdate"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCalculationTypes/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before3_1"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/Codes/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged8"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCalculationTypes/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}ChartOfCalculationTypes/{*}Properties/{*}PredefinedDataUpdate",
+          "eq": [
+            "AutoUpdate"
+          ]
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/Codes/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged8"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCalculationTypes.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/PredefinedDataUpdate",
+          "eq": "AutoUpdate"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCalculationTypes/Codes/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged8"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCalculationTypes.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before3_2": {
+          "kind": "sha256",
+          "file": "src/ChartsOfCalculationTypes/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ChartOfCalculationTypes.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "PredefinedDataUpdate": "Auto"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCalculationTypes/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before3_2"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/Codes/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged8"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCalculationTypes/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}ChartOfCalculationTypes/{*}Properties/{*}PredefinedDataUpdate",
+          "eq": [
+            "Auto"
+          ]
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/Codes/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged8"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCalculationTypes.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/PredefinedDataUpdate",
+          "eq": "Auto"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCalculationTypes/Codes/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged8"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged7"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCalculationTypes.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before3_3": {
+          "kind": "sha256",
+          "file": "src/ChartsOfCalculationTypes/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ChartOfCalculationTypes.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "PredefinedDataUpdate": "Auto"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCalculationTypes/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before3_3"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/Codes/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged8"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCalculationTypes/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}ChartOfCalculationTypes/{*}Properties/{*}PredefinedDataUpdate",
+          "eq": [
+            "Auto"
+          ]
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/Codes/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged8"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCalculationTypes.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/PredefinedDataUpdate",
+          "eq": "Auto"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCalculationTypes/Codes/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged8"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged7"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "PredefinedDataUpdate": "DontAutoUpdate"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "stale": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "External change"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "changed": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.stale"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "stale_revision: retained apply preimage changed: Catalogs/Codes.xml; input `Catalogs/Codes.xml`: source write target; the plan retains its original state to prevent overwriting",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "stale_revision"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.changed"
+        }
+      ]
+    }
+  ]
+}

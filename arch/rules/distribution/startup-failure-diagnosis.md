@@ -1,7 +1,5 @@
 ---
 id: INV.PKG.STARTUP-FAILURE-DIAGNOSIS
-check:
-  - crates/unica-bootstrap/tests/host/cli_contract.rs::a_broken_installation_names_its_reason_its_place_and_its_cure
 gap: https://github.com/IngvarConsulting/unica/issues/952
 ---
 

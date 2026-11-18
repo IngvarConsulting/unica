@@ -1,6 +1,5 @@
 ---
 id: INV.APP.RUNTIME-CLEANUP-DEADLINE
-check: []
 gap: https://github.com/IngvarConsulting/unica/issues/947
 ---
 

@@ -1,14 +1,5 @@
 ---
 id: INV.APP.COMPONENT-DEPENDENCIES
-check:
-  - tests/ci/test_component_boundaries.py::ComponentBoundaryTests.test_real_workspace_retains_component_direction
-  - tests/ci/test_component_boundaries.py::ComponentBoundaryTests.test_owner_edges_reject_hidden_concrete_dependencies
-  - tests/ci/test_component_boundaries.py::ComponentBoundaryTests.test_dcs_family_and_its_codec_keep_their_own_boundary
-  - tests/ci/test_component_boundaries.py::ComponentBoundaryTests.test_composition_selects_the_dcs_codec_in_one_place
-  - tests/ci/test_component_boundaries.py::ComponentBoundaryTests.test_target_specific_alias_cannot_hide_a_composition_backedge
-  - tests/ci/test_component_boundaries.py::ComponentBoundaryTests.test_workspace_inherited_parser_alias_keeps_the_upstream_boundary
-  - tests/ci/test_component_boundaries.py::ComponentBoundaryTests.test_workspace_owner_depends_only_on_a_closed_list
-  - tests/ci/test_component_boundaries.py::ComponentBoundaryTests.test_cycles_through_the_workspace_owner_are_rejected_for_every_edge_kind
 ---
 
 # Компоненты не зависят от продуктовой сборки и реализаций своих портов
@@ -31,22 +22,36 @@ execution, а не транспортному слою.
 
 Продуктовая composition выбирает реализацию семейного кодека в одном модуле;
 остальной код вызывает trait семьи. Крейт конкретного кодека в Rust-коде
-называют только этот модуль, пакет самого кодека
-и `unica-<семейство>-integration-tests`. Страж пока охватывает перенесённые
-семейства (`PORTED_FAMILIES` в `scripts/ci/check-component-boundaries.py`)
-и расширяется по мере переноса остальных. Он ищет путь к крейту и не
-распознаёт переэкспорт типа кодека из модуля выбора или переименование
+называют только этот модуль, пакет самого кодека и интеграционные тесты
+семейства. Проверка пока охватывает только перенесённые семейства. Она не
+распознаёт переэкспорт типа кодека из модуля выбора и переименование
 зависимости в Cargo.
+
+Метаданные переносятся по частям. Запись метаданных пока называет кодек
+напрямую, поэтому проверка семейство метаданных не охватывает. Чтение
+метаданных в composition, включая его тесты, разбирает дескрипторы только
+через порт чтения семейства и не называет крейт Designer-кодека метаданных.
+Типы, которые передаёт порт, принадлежат семейству; кодек переэкспортирует их
+по прежним путям.
 
 ProjectHealth наблюдает исходники и ресурсы через source contracts, общий
 Designer layout, workspace и process. Он не импортирует исполнение,
 предметные семейства или их кодеки и движки; связывание с исполнением
 остаётся в продуктовой composition.
 
-Ни компонент, ни его unit target не зависят от `unica-coder`. Межкомпонентные
-проверки, которым нужна продуктовая композиция, принадлежат её integration
-target. Ограничение действует и на build/dev и платформенные зависимости:
-псевдоним зависимости не меняет её владельца.
+Продуктовая композиция — три пакета: нижний слой, демон и пакет продукта.
+Ни компонент, ни его unit target не зависят от нижнего слоя и демона;
+от нижнего слоя зависит только демон, от демона — только пакет продукта.
+Пакет продукта объявляет исполняемый файл продукта и межкомпонентные проверки,
+которым нужна продуктовая композиция. От него не зависит никто. Пакеты
+приложения и предметной модели не зависят ни от адаптеров, ни от
+Designer-кодеков; приложение вызывает их через порты. Ограничение действует
+и на build/dev и платформенные зависимости: псевдоним зависимости не меняет
+её владельца.
 
-MCP SDK принадлежит `unica-coder`. Внешние Rust-типы parser/syntax скрывает
-`unica-bsl-parser`; потребители используют его нормализованные факты.
+Двери MCP и LSP переводят вызовы своих клиентов — инструменты агента
+и запросы редактора — в протокол демона. От продуктовой композиции они
+не зависят: подключение к демону им передаёт пакет продукта.
+
+MCP SDK принадлежит двери MCP. Внешние Rust-типы parser/syntax скрывает
+пакет разбора BSL; потребители используют его нормализованные факты.

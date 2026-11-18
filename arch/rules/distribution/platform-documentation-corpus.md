@@ -1,7 +1,5 @@
 ---
 id: INV.PKG.PLATFORM-DOCUMENTATION-CORPUS
-check:
-  - tests/ci/test_package_unica_plugin.py::PackageUnicaPluginTests.test_plugin_source_copy_excludes_vendor_corpus_outside_the_plugin_root
 gap: https://github.com/IngvarConsulting/unica/issues/953
 ---
 

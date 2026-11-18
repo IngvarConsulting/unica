@@ -1,0 +1,54 @@
+{
+  "id": "S287",
+  "area": "Поддержка поставщика",
+  "task": "Снять замок с объекта поставщика и после этого изменить его свойство",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Enum.НастройкиПоставщика",
+        "ops": [
+          {
+            "op": "supportRule.set",
+            "args": {
+              "values": {
+                "rule": "editable"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Enum.НастройкиПоставщика",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Правка после снятия замка"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ]
+}

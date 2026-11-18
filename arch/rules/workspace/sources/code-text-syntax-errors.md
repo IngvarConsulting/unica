@@ -1,9 +1,5 @@
 ---
 id: INV.SOURCE.CODE-TEXT-SYNTAX-ERRORS
-check:
-  - crates/unica-coder/tests/platform/code_patch_composition.rs::a_text_that_breaks_the_module_names_every_syntax_error_by_its_place
-  - crates/unica-coder/tests/platform/code_patch_composition.rs::a_module_that_did_not_parse_names_its_errors_as_the_source
-  - crates/unica-execution-contract/src/source_text_budget.rs::refusal_diagnostics_fill_the_budget_and_count_the_rest
 ---
 
 # Синтаксическая ошибка в тексте правки называет свои места

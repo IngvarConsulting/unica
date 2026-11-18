@@ -3,10 +3,8 @@ use super::template_source::MetadataDependencyReadAdapter;
 use crate::infrastructure::platform_xml_source_targets::ClosedPlatformXmlTarget;
 use std::path::Path;
 use unica_address::source_target::MetadataAddress;
-#[cfg(test)]
-use unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20;
 use unica_metadata::support_state::SupportStateReader;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_metadata::MetaElementData;
 use unica_metadata_designer::info_read::{
     RegistrarProcessingPhase, SubsystemEvidenceProcessingPhase,
@@ -16,17 +14,17 @@ use unica_source_contract::workspace::WorkspaceContext;
 use unica_work_control::cancellation::CancellationToken;
 use unica_work_control::provider_deadline::ProviderDeadline;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 type MetaInfoDescriptorImageHook = Box<dyn FnOnce(&[u8]) -> Vec<u8>>;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     static META_INFO_DESCRIPTOR_IMAGE_HOOK:
         std::cell::RefCell<Option<MetaInfoDescriptorImageHook>> =
         const { std::cell::RefCell::new(None) };
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn with_meta_info_descriptor_image_hook<T>(
     hook: impl FnOnce(&[u8]) -> Vec<u8> + 'static,
     action: impl FnOnce() -> T,
@@ -43,22 +41,22 @@ pub(crate) fn with_meta_info_descriptor_image_hook<T>(
     action()
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn meta_info_descriptor_image_for_test(bytes: &[u8]) -> Option<Vec<u8>> {
     META_INFO_DESCRIPTOR_IMAGE_HOOK.with(|slot| slot.borrow_mut().take().map(|hook| hook(bytes)))
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 type RegistrarProcessingHook = Box<dyn FnMut(&RegistrarProcessingPhase)>;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     static REGISTRAR_PROCESSING_HOOK:
         std::cell::RefCell<Option<RegistrarProcessingHook>> =
         const { std::cell::RefCell::new(None) };
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn with_registrar_processing_hook<T>(
     hook: impl FnMut(&RegistrarProcessingPhase) + 'static,
     action: impl FnOnce() -> T,
@@ -76,27 +74,27 @@ pub(crate) fn with_registrar_processing_hook<T>(
 }
 
 pub(super) fn emit_registrar_processing_phase(phase: RegistrarProcessingPhase) {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     REGISTRAR_PROCESSING_HOOK.with(|slot| {
         if let Some(hook) = slot.borrow_mut().as_mut() {
             hook(&phase);
         }
     });
-    #[cfg(not(test))]
+    #[cfg(not(any(test, feature = "test-support")))]
     let _ = phase;
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 type SubsystemEvidenceProcessingHook = Box<dyn FnMut(&SubsystemEvidenceProcessingPhase)>;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     static SUBSYSTEM_EVIDENCE_PROCESSING_HOOK:
         std::cell::RefCell<Option<SubsystemEvidenceProcessingHook>> =
         const { std::cell::RefCell::new(None) };
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn with_subsystem_evidence_processing_hook<T>(
     hook: impl FnMut(&SubsystemEvidenceProcessingPhase) + 'static,
     action: impl FnOnce() -> T,
@@ -115,24 +113,24 @@ pub(crate) fn with_subsystem_evidence_processing_hook<T>(
 }
 
 pub(super) fn emit_subsystem_evidence_processing_phase(phase: SubsystemEvidenceProcessingPhase) {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     SUBSYSTEM_EVIDENCE_PROCESSING_HOOK.with(|slot| {
         if let Some(hook) = slot.borrow_mut().as_mut() {
             hook(&phase);
         }
     });
-    #[cfg(not(test))]
+    #[cfg(not(any(test, feature = "test-support")))]
     let _ = phase;
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(super) fn typed_elements(
     xml: &str,
     parent: Option<roxmltree::Node<'_, '_>>,
     tag: &str,
     nested_attributes: bool,
 ) -> Vec<MetaElementData> {
-    let target = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Test").unwrap();
+    let target = MetadataAddress::parse_logical("Catalog.Test").unwrap();
     unica_metadata_designer::info::typed_elements_with_diagnostics(
         xml,
         parent,
@@ -159,13 +157,13 @@ pub(crate) fn read_typed_meta_info(
     ),
     unica_metadata::request::MetaFailure,
 > {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     let test_descriptor_image = meta_info_descriptor_image_for_test(&resolved.descriptor_preimage);
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     let descriptor_preimage = test_descriptor_image
         .as_deref()
         .unwrap_or(&resolved.descriptor_preimage);
-    #[cfg(not(test))]
+    #[cfg(not(any(test, feature = "test-support")))]
     let descriptor_preimage = resolved.descriptor_preimage.as_slice();
     unica_metadata_designer::info_read::read_typed_meta_info(
         &MetadataDependencyReadAdapter::new(context),
@@ -217,7 +215,7 @@ impl unica_metadata_designer::info_read::MetadataInfoRead for MetadataDependency
         emit_subsystem_evidence_processing_phase(phase)
     }
 }
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(super) fn typed_registrar_document_images(
     source_root: &Path,
     kind: unica_metadata::MetadataKind,

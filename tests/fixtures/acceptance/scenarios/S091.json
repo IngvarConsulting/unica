@@ -1,0 +1,46 @@
+{
+  "area": "Реквизиты и состав",
+  "task": "Ошибочный ключ аргументов ведёт к подсказке скелета (само-восстановление агента)",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "props": {
+                "Comment": "не тот ключ"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: operation does not accept argument `props`; `props.set` expects `values`"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "тот ключ"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S091"
+}

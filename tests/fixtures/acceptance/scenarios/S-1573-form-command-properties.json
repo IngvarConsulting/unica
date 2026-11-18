@@ -1,0 +1,427 @@
+{
+  "id": "S-1573-form-command-properties",
+  "issue": 1573,
+  "area": "Формы",
+  "workspace": "tests/fixtures/acceptance/workspace-form-command-properties",
+  "task": "Прочитать коллекцию и детали команд с контекстом таблицы, functionalOptions и true/false прозрачности. Большой список читается целиком по Props, повреждение флага ограничивает только его, кнопка не наследует свойства команды. Исходный XML сохраняется.",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Команды.Form.ФормаСписка.Command"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/props/pictureLoadTransparent",
+          "eq": false
+        },
+        {
+          "pointer": "/data/items/1/props/pictureLoadTransparent",
+          "eq": true
+        },
+        {
+          "pointer": "/data/items/0/props/VendorOnly",
+          "absent": true
+        }
+      ],
+      "captures": {
+        "xml": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Команды/Forms/ФормаСписка/Ext/Form.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Команды.Form.ФормаСписка.Command.AFalse"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/currentRowUse",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/modifiesSavedData",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/associatedTableElementId",
+          "eq": "Товары"
+        },
+        {
+          "pointer": "/data/props/picture",
+          "eq": "CommonPicture.Fill"
+        },
+        {
+          "pointer": "/data/props/pictureLoadTransparent",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/functionalOptions",
+          "eq": [
+            "FunctionalOption.Prices",
+            "FunctionalOption.Taxes"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Команды.Form.ФормаСписка.Command.BTrue"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/currentRowUse",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/modifiesSavedData",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/associatedTableElementId",
+          "eq": "Товары"
+        },
+        {
+          "pointer": "/data/props/picture",
+          "eq": "CommonPicture.Fill"
+        },
+        {
+          "pointer": "/data/props/pictureLoadTransparent",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/functionalOptions",
+          "eq": [
+            "FunctionalOption.Prices",
+            "FunctionalOption.Taxes"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Команды.Form.ФормаСписка.Command.CLarge"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/functionalOptions",
+          "absent": true
+        },
+        {
+          "pointer": "/data/limits",
+          "contains": "functionalOptions exceeds the compact property limit of 2048 bytes; read it whole at main:Catalog.Команды.Form.ФормаСписка.Command.CLarge.Props.functionalOptions"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Команды.Form.ФормаСписка.Command.CLarge.Props.functionalOptions"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/functionalOptions",
+          "eq": [
+            "FunctionalOption.Option0",
+            "FunctionalOption.Option1",
+            "FunctionalOption.Option2",
+            "FunctionalOption.Option3",
+            "FunctionalOption.Option4",
+            "FunctionalOption.Option5",
+            "FunctionalOption.Option6",
+            "FunctionalOption.Option7",
+            "FunctionalOption.Option8",
+            "FunctionalOption.Option9",
+            "FunctionalOption.Option10",
+            "FunctionalOption.Option11",
+            "FunctionalOption.Option12",
+            "FunctionalOption.Option13",
+            "FunctionalOption.Option14",
+            "FunctionalOption.Option15",
+            "FunctionalOption.Option16",
+            "FunctionalOption.Option17",
+            "FunctionalOption.Option18",
+            "FunctionalOption.Option19",
+            "FunctionalOption.Option20",
+            "FunctionalOption.Option21",
+            "FunctionalOption.Option22",
+            "FunctionalOption.Option23",
+            "FunctionalOption.Option24",
+            "FunctionalOption.Option25",
+            "FunctionalOption.Option26",
+            "FunctionalOption.Option27",
+            "FunctionalOption.Option28",
+            "FunctionalOption.Option29",
+            "FunctionalOption.Option30",
+            "FunctionalOption.Option31",
+            "FunctionalOption.Option32",
+            "FunctionalOption.Option33",
+            "FunctionalOption.Option34",
+            "FunctionalOption.Option35",
+            "FunctionalOption.Option36",
+            "FunctionalOption.Option37",
+            "FunctionalOption.Option38",
+            "FunctionalOption.Option39",
+            "FunctionalOption.Option40",
+            "FunctionalOption.Option41",
+            "FunctionalOption.Option42",
+            "FunctionalOption.Option43",
+            "FunctionalOption.Option44",
+            "FunctionalOption.Option45",
+            "FunctionalOption.Option46",
+            "FunctionalOption.Option47",
+            "FunctionalOption.Option48",
+            "FunctionalOption.Option49",
+            "FunctionalOption.Option50",
+            "FunctionalOption.Option51",
+            "FunctionalOption.Option52",
+            "FunctionalOption.Option53",
+            "FunctionalOption.Option54",
+            "FunctionalOption.Option55",
+            "FunctionalOption.Option56",
+            "FunctionalOption.Option57",
+            "FunctionalOption.Option58",
+            "FunctionalOption.Option59",
+            "FunctionalOption.Option60",
+            "FunctionalOption.Option61",
+            "FunctionalOption.Option62",
+            "FunctionalOption.Option63",
+            "FunctionalOption.Option64",
+            "FunctionalOption.Option65",
+            "FunctionalOption.Option66",
+            "FunctionalOption.Option67",
+            "FunctionalOption.Option68",
+            "FunctionalOption.Option69",
+            "FunctionalOption.Option70",
+            "FunctionalOption.Option71",
+            "FunctionalOption.Option72",
+            "FunctionalOption.Option73",
+            "FunctionalOption.Option74",
+            "FunctionalOption.Option75",
+            "FunctionalOption.Option76",
+            "FunctionalOption.Option77",
+            "FunctionalOption.Option78",
+            "FunctionalOption.Option79",
+            "FunctionalOption.Option80",
+            "FunctionalOption.Option81",
+            "FunctionalOption.Option82",
+            "FunctionalOption.Option83",
+            "FunctionalOption.Option84",
+            "FunctionalOption.Option85",
+            "FunctionalOption.Option86",
+            "FunctionalOption.Option87",
+            "FunctionalOption.Option88",
+            "FunctionalOption.Option89",
+            "FunctionalOption.Option90",
+            "FunctionalOption.Option91",
+            "FunctionalOption.Option92",
+            "FunctionalOption.Option93",
+            "FunctionalOption.Option94",
+            "FunctionalOption.Option95",
+            "FunctionalOption.Option96",
+            "FunctionalOption.Option97",
+            "FunctionalOption.Option98",
+            "FunctionalOption.Option99",
+            "FunctionalOption.Option100",
+            "FunctionalOption.Option101",
+            "FunctionalOption.Option102",
+            "FunctionalOption.Option103",
+            "FunctionalOption.Option104",
+            "FunctionalOption.Option105",
+            "FunctionalOption.Option106",
+            "FunctionalOption.Option107",
+            "FunctionalOption.Option108",
+            "FunctionalOption.Option109",
+            "FunctionalOption.Option110",
+            "FunctionalOption.Option111",
+            "FunctionalOption.Option112",
+            "FunctionalOption.Option113",
+            "FunctionalOption.Option114",
+            "FunctionalOption.Option115",
+            "FunctionalOption.Option116",
+            "FunctionalOption.Option117",
+            "FunctionalOption.Option118",
+            "FunctionalOption.Option119",
+            "FunctionalOption.Option120",
+            "FunctionalOption.Option121",
+            "FunctionalOption.Option122",
+            "FunctionalOption.Option123",
+            "FunctionalOption.Option124",
+            "FunctionalOption.Option125",
+            "FunctionalOption.Option126",
+            "FunctionalOption.Option127",
+            "FunctionalOption.Option128",
+            "FunctionalOption.Option129",
+            "FunctionalOption.Option130",
+            "FunctionalOption.Option131",
+            "FunctionalOption.Option132",
+            "FunctionalOption.Option133",
+            "FunctionalOption.Option134",
+            "FunctionalOption.Option135",
+            "FunctionalOption.Option136",
+            "FunctionalOption.Option137",
+            "FunctionalOption.Option138",
+            "FunctionalOption.Option139",
+            "FunctionalOption.Option140",
+            "FunctionalOption.Option141",
+            "FunctionalOption.Option142",
+            "FunctionalOption.Option143",
+            "FunctionalOption.Option144",
+            "FunctionalOption.Option145",
+            "FunctionalOption.Option146",
+            "FunctionalOption.Option147",
+            "FunctionalOption.Option148",
+            "FunctionalOption.Option149",
+            "FunctionalOption.Option150",
+            "FunctionalOption.Option151",
+            "FunctionalOption.Option152",
+            "FunctionalOption.Option153",
+            "FunctionalOption.Option154",
+            "FunctionalOption.Option155",
+            "FunctionalOption.Option156",
+            "FunctionalOption.Option157",
+            "FunctionalOption.Option158",
+            "FunctionalOption.Option159",
+            "FunctionalOption.Option160",
+            "FunctionalOption.Option161",
+            "FunctionalOption.Option162",
+            "FunctionalOption.Option163",
+            "FunctionalOption.Option164",
+            "FunctionalOption.Option165",
+            "FunctionalOption.Option166",
+            "FunctionalOption.Option167",
+            "FunctionalOption.Option168",
+            "FunctionalOption.Option169",
+            "FunctionalOption.Option170",
+            "FunctionalOption.Option171",
+            "FunctionalOption.Option172",
+            "FunctionalOption.Option173",
+            "FunctionalOption.Option174",
+            "FunctionalOption.Option175",
+            "FunctionalOption.Option176",
+            "FunctionalOption.Option177",
+            "FunctionalOption.Option178",
+            "FunctionalOption.Option179"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Команды.Form.ФормаСписка.Command.DDamaged"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/currentRowUse",
+          "eq": "Use"
+        },
+        {
+          "pointer": "/data/props/modifiesSavedData",
+          "eq": null
+        },
+        {
+          "pointer": "/data/props/picture",
+          "eq": "CommonPicture.Keep"
+        },
+        {
+          "pointer": "/data/limits",
+          "contains": "ModifiesSavedData is unreadable: malformed or duplicate command property"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Команды.Form.ФормаСписка.Item.Button"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/modifiesSavedData",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Команды/Forms/ФормаСписка/Ext/Form.xml",
+          "eq": "$capture.xml"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Команды.Form.ФормаСписка.Command",
+        "limit": 1
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/props/pictureLoadTransparent",
+          "eq": false
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "limit"
+        }
+      ],
+      "captures": {
+        "nextCommand": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Команды.Form.ФормаСписка.Command",
+        "limit": 1,
+        "cursor": "$capture.nextCommand"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/props/pictureLoadTransparent",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Команды/Forms/ФормаСписка/Ext/Form.xml",
+          "eq": "$capture.xml"
+        }
+      ]
+    }
+  ]
+}

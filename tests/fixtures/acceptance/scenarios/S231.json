@@ -1,0 +1,17 @@
+{
+  "area": "Проверки качества",
+  "task": "Проверить модуль на читаемость",
+  "wire": [
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:CommonModule.GoogleПереводчик"
+      },
+      "expect": [
+        "ok",
+        "provider"
+      ]
+    }
+  ],
+  "id": "S231"
+}

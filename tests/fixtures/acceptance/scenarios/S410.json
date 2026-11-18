@@ -1,0 +1,322 @@
+{
+  "id": "S410",
+  "name": "incomplete-borrowed-metadata-without-parent",
+  "issue": 1304,
+  "area": "Навигация и чтение",
+  "task": "Прочитать неполные заимствованные метаданные без родителя: сохранить локальные факты и исходник BSL; вычисленные контексты не публикуются, зависимый фильтр отказывает без записи файлов.",
+  "workspace": "tests/fixtures/acceptance/workspace-incomplete-borrowed",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "ext:CommonModule.CorpusModule"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/commonModule",
+          "eq": {
+            "global": null,
+            "clientManagedApplication": null,
+            "server": null,
+            "externalConnection": null,
+            "clientOrdinaryApplication": null,
+            "serverCall": null,
+            "privileged": null,
+            "returnValuesReuse": null
+          }
+        },
+        {
+          "pointer": "/data/limits",
+          "contains": "compilation contexts are unknown because the borrowed common module does not state its execution environment"
+        }
+      ],
+      "captures": {
+        "unchanged1": {
+          "file": "src/Catalogs/CorpusCatalog.xml",
+          "kind": "sha256"
+        },
+        "unchanged2": {
+          "file": "src/ChartsOfCalculationTypes/CorpusCalculationTypes.xml",
+          "kind": "sha256"
+        },
+        "unchanged3": {
+          "file": "src/CommonModules/CorpusModule/Ext/Module.bsl",
+          "kind": "sha256"
+        },
+        "unchanged4": {
+          "file": "src/CommonModules/CorpusModule.xml",
+          "kind": "sha256"
+        },
+        "unchanged5": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "unchanged6": {
+          "file": "src/Documents/CorpusDocument.xml",
+          "kind": "sha256"
+        },
+        "unchanged7": {
+          "file": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "sha256"
+        },
+        "unchanged8": {
+          "file": "src/Languages/Русский.xml",
+          "kind": "sha256"
+        },
+        "unchanged9": {
+          "file": "v8project.yaml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "ext:CommonModule.CorpusModule.Method"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "ext:CommonModule.CorpusModule.Method.Проверка"
+        },
+        {
+          "pointer": "/data/items/0/props/export",
+          "eq": true
+        },
+        {
+          "pointer": "/data/items/0/props/compile",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/1",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "ext:CommonModule.CorpusModule.Method.Проверка"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/compile",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/export",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "ext:CommonModule.CorpusModule.Body"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "absent": true
+        },
+        {
+          "pointer": "/sourceText",
+          "eq": "#Если Сервер Тогда\nПроцедура Проверка() Экспорт\nКонецПроцедуры\n#КонецЕсли\n"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "ext:Catalog.CorpusCatalog"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Hierarchical",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/CodeLength",
+          "eq": 3
+        },
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/CodeType",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/parentStatus",
+          "eq": "unavailable"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "ext:Document.CorpusDocument"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/Posting",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/parentStatus",
+          "eq": "unavailable"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "ext:InformationRegister.CorpusRegister"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/WriteMode",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/parentStatus",
+          "eq": "unavailable"
+        },
+        {
+          "pointer": "/data/limits",
+          "contains": "relations.registrars не прочитано: registrar applicability is unknown because WriteMode is absent"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "ext:ChartOfCalculationTypes.CorpusCalculationTypes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/CodeType",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/parentStatus",
+          "eq": "unavailable"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "ext:Catalog.CorpusCatalog.Relation"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/limits",
+          "contains": "relations.owners is absent; the relation list may be incomplete"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "ext:ChartOfCalculationTypes.CorpusCalculationTypes.Relation"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/limits",
+          "contains": "details.baseCalculationTypes is absent; the relation list may be incomplete"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/CorpusCatalog.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged1"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/CorpusCalculationTypes.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged2"
+        },
+        {
+          "path": "src/CommonModules/CorpusModule/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged3"
+        },
+        {
+          "path": "src/CommonModules/CorpusModule.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged4"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged5"
+        },
+        {
+          "path": "src/Documents/CorpusDocument.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged6"
+        },
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged7"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged8"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged9"
+        }
+      ]
+    }
+  ]
+}

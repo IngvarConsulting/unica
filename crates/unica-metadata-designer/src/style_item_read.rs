@@ -202,10 +202,21 @@ impl StyleItem {
                     .and_then(|node| item.text(node, "properties.borderStyle"));
                 item.value = Some(StyleValue::Border { width, style });
             }
-            Some("Color") if item.typed(value, UI, "Color", "properties.Value") => {
-                item.value = item.text(value, "properties.Value").map(StyleValue::Color);
-            }
-            Some("Font" | "Border" | "Color") => {}
+            Some("Color") => match crate::style_color::color_value(value) {
+                Ok(unica_metadata::style_color::StyleItemColor::Rgb(_)) => {
+                    item.value = Some(StyleValue::Color(unica_xml_format::read::direct_text(
+                        value,
+                    )));
+                }
+                Ok(color) => item.value = Some(StyleValue::Color(color.public_text())),
+                Err(crate::style_color::ColorIssue::ReadOnly(_)) => {
+                    item.value = Some(StyleValue::Color(unica_xml_format::read::direct_text(
+                        value,
+                    )));
+                }
+                Err(error) => item.damaged("properties.Value", error.to_string()),
+            },
+            Some("Font" | "Border") => {}
             _ => item.damaged(
                 "properties.Value",
                 "Value type is outside the observed StyleItem profile",

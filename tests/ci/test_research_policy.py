@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-CRATE = REPO_ROOT / "crates" / "unica-coder"
+CRATE = REPO_ROOT / "crates" / "unica-product"
 
 
 class ResearchPolicyTests(unittest.TestCase):

@@ -13,14 +13,34 @@ use crate::receipt_ledger::{ReceiptLedgerCatalogSnapshot, ReceiptLedgerCatalogSn
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::mpsc::{self, SyncSender, TrySendError};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 use unica_execution_contract::invocation::SafeIdentityHash;
 use unica_work_control::operation_deadline::OperationDeadline;
 
+// resource-limit: receipt.ledger-actor-queue
+// class: concurrency
+// unit: count
+// scope: daemon
+// value: 64
+// resource: Ёмкость очереди команд к актору журнала квитанций.
+// status: unproven
+// origin: коммит 7f6b8536e (feat(v13): add receipt actor and exact recovery)
+// problem: неизвестно
+// on-reach: отправитель ждёт места в очереди до своего срока, затем DeadlineExceeded
 const RECEIPT_LEDGER_CHANNEL_CAPACITY: usize = 64;
 const READY: u8 = 0;
 const RECOVERY_REQUIRED: u8 = 1;
+// resource-limit: receipt.ledger-enqueue-retry
+// class: step
+// unit: ms
+// scope: daemon
+// value: 1
+// resource: Пауза перед повторной постановкой команды в заполненную очередь актора журнала квитанций.
+// status: unproven
+// origin: коммит 7f6b8536e (feat(v13): add receipt actor and exact recovery)
+// problem: неизвестно
+// on-reach: попытки повторяются до срока операции, затем ReceiptLedgerError::DeadlineExceeded
 const ENQUEUE_RETRY_SLICE: Duration = Duration::from_millis(1);
 
 struct HeavyResultSlot {
@@ -34,6 +54,14 @@ impl HeavyResultSlot {
             occupied: Mutex::new(false),
             changed: Condvar::new(),
         }
+    }
+
+    /// The guarded state is one `bool`: a panic elsewhere while the mutex is
+    /// held cannot leave it half-written, so poisoning carries no information.
+    /// Releasing a permit must not fail because of someone else's panic: its
+    /// `Drop` runs exactly while that panic unwinds.
+    fn occupied(&self) -> MutexGuard<'_, bool> {
+        self.occupied.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     fn acquire(
@@ -50,10 +78,7 @@ impl HeavyResultSlot {
         health: &ActorHealth,
         mut before_wait: impl FnMut(),
     ) -> Result<HeavyResultPermit, ReceiptLedgerError> {
-        let mut occupied = self
-            .occupied
-            .lock()
-            .expect("receipt heavy-result permit mutex poisoned");
+        let mut occupied = self.occupied();
         loop {
             if !health.is_ready() {
                 return Err(ReceiptLedgerError::StoreUnavailable);
@@ -75,13 +100,13 @@ impl HeavyResultSlot {
                 Some(remaining) => {
                     self.changed
                         .wait_timeout(occupied, remaining)
-                        .expect("receipt heavy-result permit mutex poisoned while waiting")
+                        .unwrap_or_else(PoisonError::into_inner)
                         .0
                 }
                 None => self
                     .changed
                     .wait(occupied)
-                    .expect("receipt heavy-result permit mutex poisoned while waiting"),
+                    .unwrap_or_else(PoisonError::into_inner),
             };
         }
     }
@@ -90,10 +115,7 @@ impl HeavyResultSlot {
         // Synchronize health changes with the same mutex used by `acquire`.
         // Otherwise fail-stop could be published after the waiter checks
         // health but before it enters the condvar, losing the only wake-up.
-        let occupied = self
-            .occupied
-            .lock()
-            .expect("receipt heavy-result permit mutex poisoned while waking");
+        let occupied = self.occupied();
         self.changed.notify_all();
         drop(occupied);
     }
@@ -104,13 +126,12 @@ struct HeavyResultPermit {
 }
 
 impl Drop for HeavyResultPermit {
+    /// Never panics: a panic here during unwinding aborts the daemon.
     fn drop(&mut self) {
-        let mut occupied = self
-            .slot
-            .occupied
-            .lock()
-            .expect("receipt heavy-result permit mutex poisoned while releasing");
-        debug_assert!(*occupied, "receipt heavy-result permit released only once");
+        let mut occupied = self.slot.occupied();
+        if !*occupied {
+            eprintln!("receipt heavy-result permit released while its slot was already free");
+        }
         *occupied = false;
         self.slot.changed.notify_all();
     }
@@ -3158,6 +3179,7 @@ mod tests {
             .expect("worker exits and releases the port without self-join");
     }
 
+    /// rule: INV.RUNTIME.TIMERS-PRESERVE-WORK
     #[test]
     fn no_deadline_actor_queue_waits_for_running_port_then_returns_success() {
         let (entered, observed_entry) = mpsc::channel();
@@ -3212,6 +3234,7 @@ mod tests {
         assert!(!actor.restart_required());
     }
 
+    /// rule: INV.RUNTIME.TIMERS-PRESERVE-WORK
     #[test]
     fn no_deadline_mutation_keeps_late_successful_completion_authority() {
         let health = ActorHealth::ready(Duration::ZERO);
@@ -3225,6 +3248,36 @@ mod tests {
         ticket.finish_at(Ok(41), Instant::now() + Duration::from_secs(3_600), &health);
         assert_eq!(ticket.wait(&health), Ok(41));
         assert!(health.is_ready());
+    }
+
+    #[test]
+    fn a_permit_is_released_while_unwinding_through_a_poisoned_slot() {
+        let health = Arc::new(ActorHealth::ready(Duration::ZERO));
+        let permit = health
+            .acquire_heavy_result_permit(OperationDeadline::NoDeadline)
+            .expect("hold permit");
+        let slot = Arc::clone(&health.heavy_result_slot);
+        std::thread::spawn(move || {
+            let _held = slot.occupied.lock();
+            panic!("another thread panics while holding the heavy-result slot");
+        })
+        .join()
+        .expect_err("the poisoning thread panics");
+        assert!(health.heavy_result_slot.occupied.is_poisoned());
+
+        // A panic in the permit's Drop during this unwind would abort the test
+        // binary instead of returning here.
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _permit = permit;
+            panic!("an operation fails while it holds the permit");
+        }));
+        assert!(unwound.is_err());
+        assert!(!*health.heavy_result_slot.occupied());
+        drop(
+            health
+                .acquire_heavy_result_permit(OperationDeadline::NoDeadline)
+                .expect("the released slot admits the next heavy result"),
+        );
     }
 
     #[test]
@@ -3818,6 +3871,7 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
+    /// rule: INV.APP.DAEMON-STORE-FAIL-STOP
     #[test]
     fn expired_command_queued_behind_running_reserve_never_reaches_the_port() {
         let (entered, entered_wait) = mpsc::channel();
@@ -3920,10 +3974,11 @@ mod tests {
         }
     }
 
-    /// #1387: a step queued behind a slow one starts with little of its
+    /// A step queued behind a slow one starts with little of its
     /// caller's deadline left. Once begun it is held to the actor's running
     /// floor from its own start, not to the caller's remainder: overrunning
     /// the caller's deadline is neither uncertain nor a fail-stop.
+    /// rule: INV.APP.DAEMON-STORE-FAIL-STOP
     #[test]
     fn step_begun_late_in_its_deadline_gets_the_running_floor_from_its_start() {
         let floor = Duration::from_secs(3);
@@ -3987,6 +4042,7 @@ mod tests {
         assert!(!actor.restart_required(), "no fail-stop");
     }
 
+    /// rule: INV.APP.DAEMON-STORE-FAIL-STOP
     #[test]
     fn running_reserve_deadline_is_commit_uncertain_and_fail_stops_actor() {
         let (entered, entered_wait) = mpsc::channel();
@@ -4035,6 +4091,7 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
+    /// rule: INV.APP.DAEMON-STORE-FAIL-STOP
     #[test]
     fn reserve_panic_is_commit_uncertain_and_fail_stops_actor() {
         let actor = ReceiptLedgerActor::spawn(PanickingPort);
@@ -4410,6 +4467,7 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
+    /// rule: INV.APP.DAEMON-STORE-FAIL-STOP
     #[test]
     fn expired_direct_terminal_queued_behind_running_reserve_never_reaches_the_port() {
         let (entered, entered_wait) = mpsc::channel();

@@ -30,7 +30,7 @@ SCHEMA = 1
 ORDINARY_FEATURES = ["default"]
 # One local build per process and checkout; CI never reaches it.
 _LOCAL_BUILDS: dict[Path, Path] = {}
-LOCAL_BUILD = ["cargo", "build", "--quiet", "--locked", "-p", "unica-coder", "--bin", "unica"]
+LOCAL_BUILD = ["cargo", "build", "--quiet", "--locked", "-p", "unica-product", "--bin", "unica"]
 
 
 def digest(path: Path) -> str:
@@ -148,7 +148,7 @@ def build(root: Path, destination: Path, target_dir: Path = PRODUCT_TARGET) -> P
     # A shared target may later be rebuilt with other features (Receipt):
     # the copy below, outside the target, is what Python executes.
     target = root / target_dir
-    command = ["cargo", "build", "--locked", "-p", "unica-coder", "--bin", "unica",
+    command = ["cargo", "build", "--locked", "-p", "unica-product", "--bin", "unica",
                "--target", before["target"], "--target-dir", str(target), "--message-format", "json"]
     completed = subprocess.run(command, cwd=root, text=True, stdout=subprocess.PIPE, check=True)
     artifacts = []

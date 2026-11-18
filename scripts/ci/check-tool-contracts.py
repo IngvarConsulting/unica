@@ -29,19 +29,13 @@ TOOL_HELP_CHECKS = [
         ["mcp", "serve", "--help"],
         ["--profile", "--source-dir", "--mode", "stdio"],
     ),
-    ("rlm-bsl-index build", "rlm-bsl-index", ["index", "build", "--help"], ["build"]),
-    ("rlm-bsl-index update", "rlm-bsl-index", ["index", "update", "--help"], ["update"]),
-    ("rlm-bsl-index info", "rlm-bsl-index", ["index", "info", "--help"], ["info"]),
-    (
-        "rlm-bsl-mcp server",
-        "rlm-bsl-mcp",
-        ["--help"],
-        ["--transport", "stdio", "streamable-http"],
-    ),
     ("v8-runner version", "v8-runner", ["--version"], ["v8-runner"]),
     # На Windows справка называет программу `v8-runner.exe`: строка использования
     # сверяется по частям, а не целиком.
     ("v8-runner push", "v8-runner", ["push", "--help"], ["Usage: v8-runner", " push"]),
+    # Полная выгрузка продукта — `dump --force` (FULL_DUMP_FLAG адаптера):
+    # раннер 0.15 убрал `--mode full`.
+    ("v8-runner full dump", "v8-runner", ["pull", "--help"], ["Usage: v8-runner", " pull", "--force"]),
 ]
 
 V8_RUNNER_BOUNDED_OUTPUT_MARKER = "bounded-platform-out"
@@ -49,18 +43,10 @@ V8_RUNNER_BOUNDED_OUTPUT_MARKER = "bounded-platform-out"
 V8_RUNNER_LOCAL_CONFIG = "v8project.local.yaml"
 V8_RUNNER_BOUNDED_STDERR_MARKER = "bounded-client-stderr"
 V8_RUNNER_STUB_COMPILE_TIMEOUT_SECONDS = 60
-# Две фазы контракта rlm ограничены раздельно: одноразовый процесс индекса
-# (сборка, info) и MCP-сессия. Сужение срока одной фазы не должно отнимать
-# время у другой.
-RLM_INDEX_PROCESS_TIMEOUT_SECONDS = 120.0
-RLM_MCP_CONTRACT_TIMEOUT_SECONDS = 120.0
-RLM_PYTHON_UTF8_ENV = {
-    "PYTHONUTF8": "1",
-    "PYTHONIOENCODING": "utf-8:surrogateescape",
-}
 COMMAND_DIAGNOSTIC_LIMIT = 4_000
+MCP_READER_TIMEOUT_SECONDS = 120.0
 
-RLM_CONTRACT_CONFIGURATION_XML = """<?xml version="1.0" encoding="UTF-8"?>
+CONTRACT_CONFIGURATION_XML = """<?xml version="1.0" encoding="UTF-8"?>
 <MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">
   <Configuration uuid="00000000-0000-0000-0000-000000000001">
     <Properties><Name>ContractMain</Name><NamePrefix/></Properties>
@@ -135,15 +121,17 @@ def validate_v8_runner_failed_partial_receipt(
         value: object,
         expected_keys: set[str],
         label: str,
+        optional_keys: frozenset[str] = frozenset(),
     ) -> dict[str, object] | None:
         if not isinstance(value, dict):
             errors.append(f"{label} must be an object")
             return None
         actual_keys = set(value)
-        if actual_keys != expected_keys:
+        if not expected_keys <= actual_keys <= expected_keys | optional_keys:
             errors.append(
-                f"{label} is not a closed object: expected {sorted(expected_keys)}, "
-                f"got {sorted(actual_keys)}"
+                f"{label} is not a closed object: expected {sorted(expected_keys)}"
+                + (f" and optional {sorted(optional_keys)}" if optional_keys else "")
+                + f", got {sorted(actual_keys)}"
             )
             return None
         return value
@@ -164,10 +152,14 @@ def validate_v8_runner_failed_partial_receipt(
     # `provider_dispatched`. Квитанция с `platform_failure` — след вызванного
     # провайдера, поэтому здесь признак обязан быть `true`: `false` означал бы,
     # что раннер отказал до платформы, а ошибку подписал платформенной.
+    # Ключи сверены со схемой `docs/schemas/command-data/push.schema.json`
+    # раннера 0.17 (push-data v6): `detection` и `sessions` необязательны,
+    # `provider` схема тоже не требует, но квитанция `platform_failure` его несёт.
     data = closed_mapping(
         root["data"],
         {"ok", "provider_dispatched", "provider", "steps", "duration_ms"},
         "build data",
+        frozenset({"detection", "sessions"}),
     )
     # С 0.12 отказ может назвать шаг выхода `next`; его форма — дело раннера, а
     # квитанция частичной загрузки читается по коду, роду и сообщению.
@@ -400,7 +392,7 @@ fn main() {
             "push",
         ]
         # Runner 0.14 refuses a push into an infobase it has no memory of
-        # (`no_memory`); the baseline load is the explicit overwrite.
+        # (`untracked_base`); the baseline load is the explicit overwrite.
         initial = subprocess.run(
             [*command, "--force"],
             cwd=root,
@@ -730,17 +722,22 @@ def validate_v8_runner_external_build_calls(
     calls: list[str],
     configuration_root: Path,
     work_path: Path,
+    cached: bool = False,
 ) -> list[str]:
-    """Сверить шаги платформы, которыми раннер 0.14 собрал внешнюю обработку.
+    """Сверить шаги платформы, которыми раннер собрал внешнюю обработку.
 
-    Сборка идёт во временной базе: создание базы, загрузка основной конфигурации
+    Сборка идёт в базе раннера: создание базы, загрузка основной конфигурации
     проекта без `-Extension`, затем загрузка и обратная выгрузка обработки.
-    Временная база после прогона убрана.
+    С 0.17 база сборки — кэш раннера под workPath: она остаётся после прогона,
+    и повторная сборка при неизменной конфигурации (`cached`) только загружает
+    и выгружает обработку.
     """
 
     errors: list[str] = []
     steps = [call.split("\t", 1)[0] for call in calls]
-    expected_steps = ["create", "load-config", "load-external", "dump-external"]
+    expected_steps = ["load-external", "dump-external"]
+    if not cached:
+        expected_steps = ["create", "load-config", *expected_steps]
     if steps != expected_steps:
         errors.append(
             f"platform steps must be {expected_steps}, got {steps}"
@@ -765,26 +762,23 @@ def validate_v8_runner_external_build_calls(
                 )
         if extension != "extension=false":
             errors.append("configuration load must not pass -Extension")
-    # Корень временных баз остаётся после прогона: его отсутствие значит, что база
-    # создавалась не под workPath, и проверка остатка прошла бы вхолостую.
-    try:
-        roots = [
-            root
-            for root in work_path.rglob("throwaway-infobases")
-            if root.is_dir()
-        ]
-        retained = sorted(
-            str(base.relative_to(work_path))
-            for root in roots
-            for base in root.iterdir()
-        )
-    except OSError as error:
-        errors.append(f"throwaway infobase root could not be inspected: {error}")
-    else:
-        if not roots:
-            errors.append(f"throwaway infobase root was not found under {work_path}")
-        if retained:
-            errors.append(f"throwaway infobase was retained: {retained}")
+    for call in calls:
+        if not call.startswith("create"):
+            continue
+        fields = call.split("\t")
+        if len(fields) != 2 or not fields[1]:
+            errors.append(f"infobase creation call is malformed: {call!r}")
+            continue
+        try:
+            database = Path(fields[1]).resolve()
+            inside = database.is_relative_to(work_path.resolve())
+        except OSError as error:
+            errors.append(f"build infobase path could not be resolved: {error}")
+            continue
+        if not inside:
+            errors.append(
+                f"build infobase must be created under workPath {work_path}, got {fields[1]}"
+            )
     return errors
 
 
@@ -1021,7 +1015,7 @@ def check_v8_runner_windows_external_publication_contract(
         call_log = root / "platform-calls.log"
         configuration_root.mkdir(parents=True)
         (configuration_root / "Configuration.xml").write_text(
-            RLM_CONTRACT_CONFIGURATION_XML,
+            CONTRACT_CONFIGURATION_XML,
             encoding="utf-8",
         )
         source_root.mkdir(parents=True)
@@ -1051,7 +1045,20 @@ fn main() -> Result<(), Box<dyn Error>> {
     for (index, argument) in arguments.iter().enumerate() {
         let argument = argument.to_string_lossy();
         let step = if argument.eq_ignore_ascii_case("CREATEINFOBASE") {
-            Some("create".to_owned())
+            // С раннера 0.17 `make` проверяет, что файл базы появился.
+            let connection = arguments[index + 1].to_string_lossy();
+            let database = connection
+                .split(';')
+                .find_map(|part| {
+                    let (key, value) = part.split_once('=')?;
+                    key.trim()
+                        .eq_ignore_ascii_case("File")
+                        .then(|| value.trim().trim_matches(['"', '\u{27}']).to_owned())
+                })
+                .ok_or("CREATEINFOBASE without File=")?;
+            fs::create_dir_all(&database)?;
+            fs::write(std::path::Path::new(&database).join("1Cv8.1CD"), b"issue-3082-infobase")?;
+            Some(format!("create\t{database}"))
         } else if argument.eq_ignore_ascii_case("/LoadConfigFromFiles") {
             let source = arguments[index + 1].to_string_lossy();
             let extension = arguments
@@ -1147,7 +1154,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             "Deploy",
         ]
 
-        def run_make() -> tuple[object | None, list[str]]:
+        def run_make(cached: bool) -> tuple[object | None, list[str]]:
             try:
                 platform_marker.unlink(missing_ok=True)
                 call_log.unlink(missing_ok=True)
@@ -1196,6 +1203,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 calls,
                 configuration_root,
                 work_path,
+                cached,
             )
             if call_errors:
                 return None, [f"{label}: {error}" for error in call_errors]
@@ -1204,7 +1212,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             except json.JSONDecodeError as error:
                 return None, [f"{label}: runner returned invalid JSON: {error}"]
 
-        first_envelope, first_errors = run_make()
+        first_envelope, first_errors = run_make(cached=False)
         if first_errors:
             return first_errors
         first_result_errors = validate_v8_runner_windows_external_publication_result(
@@ -1223,7 +1231,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         except OSError as error:
             return [f"{label}: failed to prepare replacement target: {error}"]
 
-        second_envelope, second_errors = run_make()
+        second_envelope, second_errors = run_make(cached=True)
         if second_errors:
             return second_errors
         result_errors = validate_v8_runner_windows_external_publication_result(
@@ -1248,372 +1256,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                 f"{label}: replacement publish retained unexpected EPF files: "
                 f"{output_packages}"
             ]
-        return []
-
-
-def _ordinary_v8_runner_publication_path(value: str) -> str:
-    normalized = value.replace("/", "\\")
-    if normalized.casefold().startswith("\\\\?\\unc\\"):
-        return "\\\\" + normalized[8:]
-    if normalized.startswith("\\\\?\\"):
-        return normalized[4:]
-    return value
-
-
-def validate_v8_runner_publication_frame(
-    frame: object, phase: str, nonce: str | None,
-    source: Path, stage: Path, platform: Path,
-) -> list[str]:
-    import uuid
-
-    keys = {
-        "selected": {"phase", "version", "nonce", "provider", "executor"},
-        "ready": {"phase", "version", "nonce", "command", "requested_mode", "mode",
-                  "mode_reason", "extension", "provider_dispatched", "source_set",
-                  "target_path", "stage_path", "snapshot", "snapshot_warning"},
-        "terminal": {"phase", "version", "nonce", "publication", "memory", "result"},
-    }
-    if not isinstance(frame, dict) or set(frame) != keys[phase]:
-        return [f"{phase} frame must have its closed fields"]
-    errors = []
-    if frame["phase"] != phase or type(frame["version"]) is not int or frame["version"] != 1:
-        errors.append(f"{phase} identity must use the expected phase and version1")
-    value = frame["nonce"]
-    try:
-        if not isinstance(value, str) or str(uuid.UUID(value)) != value:
-            raise ValueError("noncanonical nonce")
-    except (ValueError, AttributeError):
-        errors.append(f"{phase} nonce must be a UUID")
-    if nonce is not None and value != nonce:
-        errors.append(f"{phase} nonce differs from selected")
-
-    def same_path(value: object, expected: Path) -> bool:
-        if isinstance(value, str) and os.name == "nt":
-            value = _ordinary_v8_runner_publication_path(value)
-        return isinstance(value, str) and Path(value).is_absolute() and Path(value).resolve() == expected.resolve()
-
-    if phase == "selected":
-        provider = frame["provider"]
-        executor = frame["executor"]
-        required_provider = {"selected", "origin"}
-        allowed_provider = required_provider | {"skipped", "endpoint"}
-        if (not isinstance(provider, dict) or not required_provider <= set(provider)
-                or not set(provider) <= allowed_provider):
-            errors.append("selected provider must have its closed receipt fields")
-        else:
-            if provider["selected"] != "designer":
-                errors.append("selected provider must be designer")
-            origin = provider["origin"]
-            # The fixture chooses designer in the primary project file; the
-            # runner reports this layer's filename, not its absolute path.
-            if (not isinstance(origin, dict) or set(origin) != {"kind", "file"}
-                    or origin.get("kind") != "override" or origin.get("file") != "v8project.yaml"):
-                errors.append("selected provider origin must name the configured project override")
-            if provider.get("skipped", []) != [] or provider.get("endpoint") is not None:
-                errors.append("selected local override must not skip providers or open a session")
-        if not isinstance(executor, dict) or set(executor) != {"kind", "executable", "endpoint"}:
-            errors.append("selected executor must have its closed fields")
-        elif (executor["kind"] != "local" or executor["endpoint"] is not None
-              or not same_path(executor["executable"], platform)):
-            errors.append("selected executor must be the controlled local platform")
-    if phase == "ready":
-        for key, expected in {"command": "pull", "requested_mode": "FULL", "mode": "FULL",
-                              "mode_reason": None, "extension": None, "source_set": "main",
-                              "snapshot": "prepared", "snapshot_warning": None}.items():
-            if frame[key] != expected:
-                errors.append(f"ready {key} differs from the prepared operation")
-        if frame["provider_dispatched"] is not True:
-            errors.append("ready must prove platform dispatch")
-        for key, expected in [("target_path", source), ("stage_path", stage)]:
-            if not same_path(frame[key], expected):
-                errors.append(f"ready {key} differs from the guarded path")
-    if phase == "terminal":
-        result = frame["result"]
-        required_result = {"ok", "command", "duration_ms", "data", "warnings", "steps"}
-        if (not isinstance(result, dict) or not required_result <= set(result)
-                or not set(result) <= required_result | {"error"}):
-            errors.append("terminal result must have its closed common envelope fields")
-        else:
-            if type(result["ok"]) is not bool or result["command"] != "pull":
-                errors.append("terminal result must name a boolean pull outcome")
-            duration = result["duration_ms"]
-            if type(duration) is not int or duration < 0:
-                errors.append("terminal result duration_ms must be a non-negative integer")
-            warnings = result["warnings"]
-            if not isinstance(warnings, list) or any(not isinstance(item, str) for item in warnings):
-                errors.append("terminal result warnings must be a list of strings")
-            # This CLI path constructs the common envelope without top-level
-            # steps. Pull data keeps its separate Ready/result comparisons.
-            if result["steps"] != []:
-                errors.append("terminal result common steps must be empty")
-            error = result.get("error")
-            if result["ok"] is True:
-                if error is not None:
-                    errors.append("successful terminal result must not contain an error")
-            elif result["ok"] is False:
-                # Rejected and EOF are the two failures exercised here. Their
-                # control errors have no next step or generation metadata.
-                if (not isinstance(error, dict) or set(error) != {"code", "kind", "message"}
-                        or any(not isinstance(error.get(key), str) or not error[key]
-                               for key in ("code", "kind", "message"))):
-                    errors.append("failed terminal result must contain its closed control error")
-                elif (error["code"], error["kind"]) not in {
-                    ("invalid_argument", "validation"), ("runtime_failure", "runtime")
-                }:
-                    errors.append("failed terminal result must name a rejected or lost control decision")
-    return errors
-
-
-def validate_v8_runner_post_pull_preview(
-    envelope: object, returncode: int, *, changed: bool,
-) -> list[str]:
-    if not isinstance(envelope, dict) or returncode != 0 or envelope.get("ok") is not True:
-        return ["post-pull push preview must succeed, including remembered final source identity"]
-    data = envelope.get("data")
-    if envelope.get("command") != "push" or not isinstance(data, dict) or data.get("ok") is not True:
-        return ["post-pull preview must contain successful push data"]
-    if data.get("provider_dispatched") is not False:
-        return ["post-pull preview must not dispatch the platform"]
-    steps = data.get("steps")
-    if not isinstance(steps, list) or not steps:
-        return ["post-pull preview must contain nonempty steps"]
-    modes = []
-    for step in steps:
-        if (not isinstance(step, dict) or step.get("source_set") != "main"
-                or step.get("ok") is not True or step.get("applied") is not False):
-            return ["post-pull preview step must name the unexecuted main operation"]
-        mode = step.get("mode")
-        if mode not in ("skipped", "full"):
-            partial = mode.get("partial") if isinstance(mode, dict) and set(mode) == {"partial"} else None
-            count = partial.get("file_count") if isinstance(partial, dict) and set(partial) == {"file_count"} else None
-            if type(count) is not int or count <= 0:
-                return ["post-pull preview step has an unsupported mode"]
-        modes.append(mode)
-    if all(mode == "skipped" for mode in modes) == changed:
-        return ["late or unacknowledged published bytes became baseline" if changed
-                else "unchanged final source did not retain its baseline"]
-    return []
-
-
-def validate_v8_runner_publication_tree(
-    actual: dict[str, bytes], expected: dict[str, bytes],
-) -> list[str]:
-    errors = []
-    if set(actual) != set(expected):
-        errors.append("source tree file inventory differs from the caller's tree")
-    for name, payload in expected.items():
-        if actual.get(name) != payload:
-            errors.append(f"source tree {name} bytes differ from the caller's tree")
-    return errors
-
-
-def check_v8_runner_full_pull_publication_contract(runner: Path, target: str) -> list[str]:
-    import queue
-
-    label = "v8-runner full-pull publication contract"
-    if not runner.is_file():
-        return [f"{label}: binary not found: {runner}"]
-    shared = load_shared_mcp_smoke_module()
-    with tempfile.TemporaryDirectory(prefix="unica-v8-runner-full-pull-") as directory:
-        root = Path(directory).resolve()
-        platform = root / "8.3.27.2074" / "bin" / ("1cv8.exe" if target == "win-x64" else "1cv8")
-        platform.parent.mkdir(parents=True)
-        stub = root / "platform.rs"
-        stub.write_text(r'''
-use std::{env, fs, io::Write, path::Path};
-fn main() {
-    let args = env::args_os().skip(1).collect::<Vec<_>>();
-    let out = args.windows(2).find(|p| p[0] == "/Out").map(|p| &p[1]);
-    let dump = args.windows(2).find(|p| p[0] == "/DumpConfigToFiles").map(|p| &p[1]);
-    let generation = args.iter().any(|a| a == "/GetConfigGenerationID");
-    let probe = args.iter().any(|a| matches!(a.to_string_lossy().to_ascii_lowercase().as_str(),
-        "--version" | "-version" | "/version" | "/getversion"));
-    let mut calls = fs::OpenOptions::new().create(true).append(true)
-        .open(env::var_os("UNICA_FULL_PULL_CALLS").expect("fixture call log")).unwrap();
-    writeln!(calls, "{}", if dump.is_some() {"dump"} else if generation {"generation"} else if probe {"probe"} else {"unexpected"}).unwrap();
-    if generation {
-        fs::write(out.expect("generation output"), b"1111111111111111111111111111111111111111\n").unwrap();
-        return;
-    }
-    if let Some(dump) = dump {
-        let path = Path::new(dump);
-        fs::create_dir_all(path).unwrap();
-        fs::write(path.join("Configuration.xml"), br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties/></Configuration></MetaDataObject>
-"#).unwrap();
-        fs::write(path.join("Module.bsl"), env::var("UNICA_FULL_PULL_MODULE").unwrap()).unwrap();
-        fs::write(path.join("ConfigDumpInfo.xml"), b"<ConfigDumpInfo xmlns=\"http://v8.1c.ru/8.3/xcf/dumpinfo\" version=\"2.20\"/>\n").unwrap();
-        if let Some(out) = out { fs::write(out, b"controlled dump\n").unwrap(); }
-        return;
-    }
-    if probe {
-        println!("8.3.27.2074");
-        return;
-    }
-    eprintln!("unsupported controlled platform request");
-    std::process::exit(2);
-}
-'''.lstrip(), encoding="utf-8")
-        errors = compile_rust_platform_stub(stub, platform, root, label)
-        if errors:
-            return errors
-        for case in ["published", "late-edit", "rejected", "eof-after-publish"]:
-            home = root / case
-            home.mkdir()
-            source, stage, work, ib = [home / name for name in ("sources", "stage", "work", "ib")]
-            for path in (source, stage, work, ib):
-                path.mkdir()
-            (ib / "1Cv8.1CD").write_bytes(b"controlled file infobase")
-            calls = home / "platform-calls.log"
-            config = home / "v8project.yaml"
-            quote = lambda path: "'" + str(path).replace("'", "''") + "'"
-            config.write_text(
-                f"format: DESIGNER\nworkPath: {quote(work)}\n"
-                "providers: {pull: designer, push: designer}\n"
-                "source-set:\n  - name: main\n    type: CONFIGURATION\n    path: sources\n"
-                f"tools:\n  platform:\n    path: {quote(platform)}\n"
-                "    version: 8.3.27.2074\n    strict: true\n", encoding="utf-8")
-            (home / V8_RUNNER_LOCAL_CONFIG).write_text(
-                f"infobases:\n  origin:\n    connection: 'File={str(ib).replace(chr(39), chr(39) * 2)}'\n", encoding="utf-8")
-            config_bytes = config.read_bytes()
-            before, prepared, edited = [f"Procedure {name}()\nEndProcedure\n" for name in ("Before", "Prepared", "LateEdit")]
-            environment = {**os.environ, "UNICA_FULL_PULL_CALLS": str(calls), "UNICA_FULL_PULL_MODULE": before}
-            deadline = time.monotonic() + 60
-
-            def require(condition: bool, message: str) -> None:
-                if not condition:
-                    raise ValueError(message)
-
-            def remaining() -> float:
-                value = deadline - time.monotonic()
-                if value <= 0:
-                    raise TimeoutError("case exceeded its 60s aggregate deadline")
-                return value
-
-            def start(arguments: list[str]):
-                return shared.McpSession([str(runner), "--config", str(config), *arguments],
-                                         environment, remaining(), cwd=home, deadline=deadline)
-
-            def finish(session) -> tuple[int, list[str]]:
-                if not session.process.stdin.closed:
-                    session.process.stdin.close()
-                status = session.process.wait(timeout=remaining())
-                for reader in (session.reader, session.error_reader):
-                    reader.join(timeout=remaining())
-                    require(not reader.is_alive(), "process retained its output handles")
-                lines = []
-                while not session.lines.empty():
-                    line = session.lines.get_nowait()
-                    if line:
-                        lines.append(line)
-                return status, lines
-
-            def native(arguments: list[str]) -> tuple[int, object]:
-                session = start(["--json-message", *arguments])
-                try:
-                    status, lines = finish(session)
-                    return status, json.loads("".join(lines))
-                finally:
-                    terminate_shared_mcp_session(session, home)
-
-            def preview(changed: bool) -> None:
-                old_calls = calls.read_bytes()
-                status, envelope = native(["push", "main", "--dry-run"])
-                failures = validate_v8_runner_post_pull_preview(envelope, status, changed=changed)
-                require(not failures, "; ".join(failures))
-                require(calls.read_bytes() == old_calls, "push preview dispatched the platform")
-
-            def tree(path: Path) -> dict[str, bytes]:
-                return {str(item.relative_to(path)): item.read_bytes() for item in path.rglob("*") if item.is_file()}
-
-            session = None
-            try:
-                status, seed = native(["pull", "main", "--force"])
-                require(status == 0 and isinstance(seed, dict) and seed.get("ok") is True,
-                        "ordinary seed pull did not establish a baseline")
-                preview(False)
-                original = tree(source)
-                calls.write_bytes(b"")
-                environment["UNICA_FULL_PULL_MODULE"] = prepared
-                session = start(["pull", "main", "--force", "--publication-stdio", str(stage)])
-
-                def frame(phase: str, nonce: str | None) -> dict:
-                    try:
-                        line = session.lines.get(timeout=remaining())
-                    except queue.Empty as error:
-                        raise TimeoutError(f"missing {phase} frame") from error
-                    require(bool(line), f"process exited before {phase}")
-                    value = json.loads(line)
-                    failures = validate_v8_runner_publication_frame(value, phase, nonce, source, stage, platform)
-                    require(not failures, "; ".join(failures))
-                    return value
-
-                selected = frame("selected", None)
-                require(all(call == "probe" for call in calls.read_text().splitlines()),
-                        "platform work was dispatched before Continue")
-                require(tree(source) == original and not tree(stage), "Selected changed the source or stage")
-                session.notify({"version": 1, "nonce": selected["nonce"], "phase": "selected", "decision": "continue"})
-                ready = frame("ready", selected["nonce"])
-                require("dump" in calls.read_text().splitlines(), "Ready did not invoke the controlled dump")
-                require(tree(source) == original, "Ready replaced the final source before caller publication")
-                prepared_tree = tree(stage)
-                require(set(prepared_tree) == {"Configuration.xml", "Module.bsl", "ConfigDumpInfo.xml"}
-                        and prepared_tree["Module.bsl"] == prepared.encode("utf-8"),
-                        "Ready did not contain the prepared tree")
-                ready_calls = calls.read_bytes()
-                if case != "rejected":
-                    source.rename(home / "previous-sources")
-                    stage.rename(source)
-                if case == "late-edit":
-                    (source / "Module.bsl").write_bytes(edited.encode("utf-8"))
-                if case == "eof-after-publish":
-                    session.process.stdin.close()
-                else:
-                    session.notify({"version": 1, "nonce": ready["nonce"], "phase": "ready",
-                                    "decision": "rejected" if case == "rejected" else "published"})
-                terminal = frame("terminal", selected["nonce"])
-                status, tail = finish(session)
-                require(not tail, "process emitted an extra frame after terminal")
-                successful = case in {"published", "late-edit"}
-                require((status == 0) == successful, "terminal and OS process outcome disagree")
-                require(terminal["publication"] == ("not_published" if case == "rejected" else
-                        "unknown" if case == "eof-after-publish" else "published"), "terminal publication is not factual")
-                require(terminal["memory"] == ("saved" if successful else "unchanged"), "terminal memory is not factual")
-                result = terminal["result"]
-                require(isinstance(result, dict) and result.get("ok") is successful and result.get("command") == "pull",
-                        "terminal command result disagrees with publication")
-                data = result.get("data")
-                require(isinstance(data, dict), "terminal result lacks pull data")
-                for field in ("requested_mode", "mode", "mode_reason", "extension", "provider_dispatched", "source_set", "target_path"):
-                    require(data.get(field) == ready[field], f"terminal changed Ready {field}")
-                require(calls.read_bytes() == ready_calls, "platform work ran after Ready")
-                require(config.read_bytes() == config_bytes, "protocol rewrote the final project config")
-                expected_tree = dict(original if case == "rejected" else prepared_tree)
-                if case == "late-edit":
-                    expected_tree["Module.bsl"] = edited.encode("utf-8")
-                failures = validate_v8_runner_publication_tree(tree(source), expected_tree)
-                require(not failures, "; ".join(failures))
-                preview(case in {"late-edit", "eof-after-publish"})
-                if case == "late-edit":
-                    (source / "Module.bsl").write_bytes(prepared.encode("utf-8"))
-                    preview(False)
-                if case == "eof-after-publish":
-                    # A changed B can also be a full fallback after lost hashes.
-                    # Restoring our A must recover the unchanged-baseline answer.
-                    for name, payload in original.items():
-                        (source / name).write_bytes(payload)
-                    preview(False)
-                    for name, payload in prepared_tree.items():
-                        (source / name).write_bytes(payload)
-                    failures = validate_v8_runner_publication_tree(tree(source), prepared_tree)
-                    require(not failures, "; ".join(failures))
-                    preview(True)
-            except (ValueError, OSError, TimeoutError, subprocess.TimeoutExpired, SystemExit) as error:
-                reason = bounded_command_diagnostics(str(error), home)
-                detail = bounded_command_diagnostics("".join(session.diagnostics), home) if session is not None else ""
-                return [f"{label}: {case}: {reason}" + (f"; stderr: {detail}" if detail else "")]
-            finally:
-                if session is not None:
-                    terminate_shared_mcp_session(session, home)
         return []
 
 
@@ -1701,11 +1343,9 @@ def check_tool_contracts(tools_dir: Path, target: str | None = None) -> list[str
         if not tool.exists():
             errors.append(f"{label}: binary not found: {tool}")
             continue
-        command_env = RLM_PYTHON_UTF8_ENV if tool_name.startswith("rlm-bsl-") else None
         status, output = run_command(
             [str(tool), *args],
             tools_dir,
-            env=command_env,
         )
         if status != 0:
             diagnostics = bounded_command_diagnostics(output, tools_dir)
@@ -1737,197 +1377,7 @@ def check_tool_contracts(tools_dir: Path, target: str | None = None) -> list[str
                 target,
             )
         )
-        errors.extend(
-            check_v8_runner_full_pull_publication_contract(
-                tool_executable(tools_dir, "v8-runner", target),
-                target,
-            )
-        )
     return errors
-
-
-def prepare_rlm_contract_workspace(
-    root: Path,
-    label: str,
-) -> tuple[Path | None, list[Path], list[str]]:
-    # v1.33 extension discovery scans siblings one and two ancestors above the
-    # configuration. Keep both ancestors inside this fixture instead of exposing
-    # an arbitrarily large shared system temp directory to the contract probe.
-    workspace = root / "fixture" / "workspace"
-    modules = [
-        workspace / "src" / "CommonModules" / name / "Module.bsl"
-        for name in ("ContractOne", "ContractTwo")
-    ]
-    for number, module in enumerate(modules, start=1):
-        module.parent.mkdir(parents=True)
-        module.write_text(
-            f"Процедура ContractTest{number}() Экспорт\n"
-            "    Возврат;\n"
-            "КонецПроцедуры\n",
-            encoding="utf-8",
-        )
-    workspace.joinpath("Configuration.xml").write_text(
-        RLM_CONTRACT_CONFIGURATION_XML,
-        encoding="utf-8",
-    )
-    git_without_signing = [
-        "git",
-        "-c",
-        "commit.gpgsign=false",
-        "-c",
-        "tag.gpgSign=false",
-    ]
-    git_commands = [
-        [*git_without_signing, "init", "-q"],
-        [*git_without_signing, "config", "user.email", "unica-ci@example.invalid"],
-        [*git_without_signing, "config", "user.name", "Unica CI"],
-        [*git_without_signing, "add", "."],
-        [*git_without_signing, "commit", "-q", "-m", "fixture"],
-    ]
-    for command in git_commands:
-        status, _output = run_command(command, workspace)
-        if status != 0:
-            return None, [], [
-                f"{label}: failed to prepare clean Git fixture: {' '.join(command)}"
-            ]
-    return workspace, modules, []
-
-
-def check_rlm_mtime_recovery_contract(
-    tool: Path,
-    *,
-    run_rlm: Callable[
-        [list[str], Path, dict[str, str]], tuple[int, str]
-    ]
-    | None = None,
-) -> list[str]:
-    errors: list[str] = []
-    runner = run_rlm or run_rlm_contract_process
-    with tempfile.TemporaryDirectory(prefix="unica-rlm-mtime-") as tmp:
-        root = Path(tmp)
-        workspace, modules, fixture_errors = prepare_rlm_contract_workspace(
-            root,
-            "rlm mtime recovery",
-        )
-        if fixture_errors or workspace is None:
-            return fixture_errors
-
-        env = {
-            **RLM_PYTHON_UTF8_ENV,
-            "RLM_INDEX_DIR": str(root / "index"),
-            "RLM_INDEX_SAMPLE_SIZE": "1000",
-            "RLM_INDEX_SAMPLE_THRESHOLD": "0",
-            "RLM_INDEX_SKIP_SAMPLE_HOURS": "0",
-        }
-
-        def invoke(action: str) -> str | None:
-            command = [str(tool), "index", action, str(workspace)]
-            status, output = runner(command, workspace, env)
-            if status != 0:
-                errors.append(
-                    f"rlm mtime recovery: {action} exited with {status}: {output.strip()}"
-                )
-                return None
-            return output
-
-        if invoke("build") is None:
-            return errors
-        initial_info = invoke("info")
-        if initial_info is None:
-            return errors
-        if "fresh" not in initial_info.lower():
-            errors.append("rlm mtime recovery: initial build did not produce fresh info")
-            return errors
-
-        for module in modules:
-            original = module.stat()
-            drifted_mtime_ns = original.st_mtime_ns + 2_000_000_000
-            os.utime(module, ns=(original.st_atime_ns, drifted_mtime_ns))
-            if module.stat().st_size != original.st_size:
-                errors.append("rlm mtime recovery: mtime drift changed fixture size")
-                return errors
-        git_status, git_output = run_command(
-            ["git", "status", "--porcelain", "--untracked-files=no"],
-            workspace,
-        )
-        if git_status != 0 or git_output.strip():
-            errors.append(
-                "rlm mtime recovery: mtime-only fixture is not Git-clean: "
-                f"{git_output.strip()}"
-            )
-            return errors
-
-        stale_info = invoke("info")
-        if stale_info is None:
-            return errors
-        if "stale (content)" not in stale_info.lower():
-            errors.append(
-                "rlm mtime recovery: mtime drift did not produce stale (content): "
-                f"{stale_info.strip()}"
-            )
-            return errors
-
-        head_status, head_before_update = run_command(
-            ["git", "rev-parse", "HEAD"],
-            workspace,
-        )
-        if head_status != 0 or not head_before_update.strip():
-            errors.append(
-                "rlm mtime recovery: failed to read Git HEAD before update: "
-                f"{head_before_update.strip()}"
-            )
-            return errors
-        update = invoke("update")
-        if update is None:
-            return errors
-        head_status, head_after_update = run_command(
-            ["git", "rev-parse", "HEAD"],
-            workspace,
-        )
-        if head_status != 0 or not head_after_update.strip():
-            errors.append(
-                "rlm mtime recovery: failed to read Git HEAD after update: "
-                f"{head_after_update.strip()}"
-            )
-            return errors
-        if head_after_update.strip() != head_before_update.strip():
-            errors.append(
-                "rlm mtime recovery: Git HEAD changed during update: "
-                f"{head_before_update.strip()} -> {head_after_update.strip()}"
-            )
-            return errors
-        if "Changed: 0" not in update or "Fast path: True" not in update:
-            errors.append(
-                "rlm mtime recovery: update did not report Changed: 0 and Fast path: True"
-            )
-            return errors
-
-        post_update_info = invoke("info")
-        if post_update_info is None:
-            return errors
-        if "stale (content)" not in post_update_info.lower():
-            errors.append(
-                "rlm mtime recovery: fast-path update did not remain stale (content)"
-            )
-            return errors
-
-        if invoke("build") is None:
-            return errors
-        final_info = invoke("info")
-        if final_info is None:
-            return errors
-        if "fresh" not in final_info.lower():
-            errors.append("rlm mtime recovery: full rebuild did not restore fresh info")
-    return errors
-
-
-def rlm_mcp_command(tool: Path) -> list[str]:
-    suffix = tool.suffix.lower()
-    if suffix == ".py":
-        return [sys.executable, str(tool)]
-    if os.name == "nt" and suffix in {".bat", ".cmd"}:
-        return [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/s", "/c", str(tool)]
-    return [str(tool)]
 
 
 def load_shared_mcp_smoke_module():
@@ -1944,7 +1394,7 @@ def terminate_shared_mcp_session(
     session, root: Path, reader_timeout_seconds: float | None = None
 ) -> None:
     if reader_timeout_seconds is None:
-        reader_timeout_seconds = RLM_MCP_CONTRACT_TIMEOUT_SECONDS
+        reader_timeout_seconds = MCP_READER_TIMEOUT_SECONDS
     session.terminate_tree(root)
     for reader in (session.reader, session.error_reader):
         reader.join(timeout=reader_timeout_seconds)
@@ -1960,310 +1410,6 @@ def terminate_shared_mcp_session(
                 pass
 
 
-def run_rlm_contract_process(
-    command: list[str],
-    cwd: Path,
-    env: dict[str, str],
-) -> tuple[int, str]:
-    timeout_seconds = RLM_INDEX_PROCESS_TIMEOUT_SECONDS
-    shared = load_shared_mcp_smoke_module()
-    session = shared.McpSession(
-        command,
-        {**os.environ, **env},
-        timeout_seconds,
-        cwd=cwd,
-    )
-    try:
-        if session.process.stdin is not None:
-            session.process.stdin.close()
-        try:
-            status = session.process.wait(timeout=timeout_seconds)
-        except subprocess.TimeoutExpired:
-            return 1, f"timed out after {timeout_seconds}s"
-        for reader in (session.reader, session.error_reader):
-            reader.join(timeout=timeout_seconds)
-        if session.reader.is_alive() or session.error_reader.is_alive():
-            return 1, f"timed out after {timeout_seconds}s"
-        stdout: list[str] = []
-        while not session.lines.empty():
-            line = session.lines.get_nowait()
-            if line:
-                stdout.append(line)
-        return status, "".join(stdout) + "".join(session.diagnostics)
-    finally:
-        terminate_shared_mcp_session(session, cwd, timeout_seconds)
-
-
-def rlm_mcp_tool_text(response: dict[str, object], label: str) -> tuple[str | None, str | None]:
-    if "error" in response:
-        return None, f"rlm MCP contract: {label} returned a JSON-RPC error"
-    result = response.get("result")
-    if not isinstance(result, dict):
-        return None, f"rlm MCP contract: {label} response is missing result"
-    if result.get("isError") is True:
-        return None, f"rlm MCP contract: {label} returned a tool error"
-    content = result.get("content")
-    if not isinstance(content, list):
-        return None, f"rlm MCP contract: {label} response is missing content"
-    parts = [
-        item.get("text")
-        for item in content
-        if isinstance(item, dict) and isinstance(item.get("text"), str)
-    ]
-    if not parts:
-        return None, f"rlm MCP contract: {label} response has no text content"
-    return "\n".join(parts), None
-
-
-def rlm_mcp_metadata_errors(payload: object, label: str) -> list[str]:
-    errors: list[str] = []
-
-    def visit(value: object) -> None:
-        if isinstance(value, list):
-            for item in value:
-                visit(item)
-            return
-        if not isinstance(value, dict):
-            return
-        metadata = value.get("_meta")
-        if "_meta" in value and not isinstance(metadata, dict):
-            errors.append(f"rlm MCP contract: {label} _meta must be an object")
-        elif isinstance(metadata, dict):
-            for key in ("truncated", "total_is_lower_bound"):
-                if key in metadata and not isinstance(metadata[key], bool):
-                    errors.append(
-                        f"rlm MCP contract: {label} _meta.{key} must be boolean"
-                    )
-        for item in value.values():
-            visit(item)
-
-    visit(payload)
-    return errors
-
-
-def check_rlm_mcp_contract(mcp_tool: Path, index_tool: Path) -> list[str]:
-    if not mcp_tool.is_file():
-        return [f"rlm MCP contract: {mcp_tool.name} binary not found"]
-    if not index_tool.is_file():
-        return [f"rlm MCP contract: {index_tool.name} binary not found"]
-
-    errors: list[str] = []
-    with tempfile.TemporaryDirectory(prefix="unica-rlm-mcp-") as tmp:
-        root = Path(tmp)
-        workspace, _modules, fixture_errors = prepare_rlm_contract_workspace(
-            root,
-            "rlm MCP contract",
-        )
-        if fixture_errors or workspace is None:
-            return fixture_errors
-        env = {
-            **RLM_PYTHON_UTF8_ENV,
-            "RLM_INDEX_DIR": str(root / "index"),
-            "RLM_INDEX_SAMPLE_SIZE": "1000",
-            "RLM_INDEX_SAMPLE_THRESHOLD": "0",
-            "RLM_INDEX_SKIP_SAMPLE_HOURS": "0",
-        }
-        index_status, index_output = run_rlm_contract_process(
-            [*rlm_mcp_command(index_tool), "index", "build", str(workspace)],
-            workspace,
-            env,
-        )
-        if index_status != 0:
-            if "timed out" in index_output:
-                return ["rlm MCP contract: index build timed out"]
-            return [f"rlm MCP contract: index build exited with {index_status}"]
-
-        session = None
-        try:
-            shared = load_shared_mcp_smoke_module()
-            session = shared.McpSession(
-                rlm_mcp_command(mcp_tool),
-                {**os.environ, **env},
-                RLM_MCP_CONTRACT_TIMEOUT_SECONDS,
-                cwd=workspace,
-            )
-        except SystemExit:
-            return [*errors, "rlm MCP contract: failed to start MCP transport"]
-        except (OSError, RuntimeError):
-            return [*errors, "rlm MCP contract: failed to start MCP transport"]
-
-        try:
-            def request(payload: dict[str, object], request_id: int) -> dict[str, object] | None:
-                try:
-                    return session.request(payload)
-                except SystemExit as error:
-                    detail = str(error).lower()
-                    if "timed out" in detail or "deadline" in detail:
-                        errors.append(
-                            f"rlm MCP contract: request {request_id} timed out"
-                        )
-                    else:
-                        errors.append(
-                            f"rlm MCP contract: request {request_id} transport failed"
-                        )
-                    return None
-
-            initialize = {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": "2025-03-26",
-                    "capabilities": {},
-                    "clientInfo": {"name": "unica-contract", "version": "1"},
-                },
-            }
-            if request(initialize, 1) is None:
-                return errors
-            try:
-                session.notify(
-                    {"jsonrpc": "2.0", "method": "notifications/initialized"}
-                )
-            except (BrokenPipeError, OSError, UnicodeError):
-                return [*errors, "rlm MCP contract: failed to write initialized notification"]
-
-            next_id = 2
-
-            def call_tool(name: str, arguments: dict[str, object]) -> object | None:
-                nonlocal next_id
-                request_id = next_id
-                next_id += 1
-                response = request(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": request_id,
-                        "method": "tools/call",
-                        "params": {"name": name, "arguments": arguments},
-                    },
-                    request_id,
-                )
-                if response is None:
-                    return None
-                text, text_error = rlm_mcp_tool_text(response, name)
-                if text_error:
-                    errors.append(text_error)
-                    return None
-                try:
-                    return json.loads(text or "")
-                except json.JSONDecodeError:
-                    errors.append(f"rlm MCP contract: {name} text is not valid JSON")
-                    return None
-
-            start_payload = call_tool(
-                "rlm_start",
-                {
-                    "path": str(workspace),
-                    "query": "ContractTest1",
-                    "effort": "low",
-                    "max_output_chars": 100_000,
-                    "max_execute_calls": 10_000,
-                    "execution_timeout_seconds": 30,
-                    "include_metadata": False,
-                    "domains": [],
-                },
-            )
-            if not isinstance(start_payload, dict):
-                if not errors:
-                    errors.append("rlm MCP contract: rlm_start text is not a JSON object")
-                return errors
-            if isinstance(start_payload.get("error"), str):
-                return [*errors, "rlm MCP contract: rlm_start returned an error"]
-            session_id = start_payload.get("session_id")
-            if not isinstance(session_id, str) or not session_id:
-                return [*errors, "rlm MCP contract: rlm_start is missing session_id"]
-
-            helpers = [
-                (
-                    "search",
-                    'import json\n_result = search("ContractTest", scope="all", limit=20)\nprint(json.dumps(_result, ensure_ascii=False))',
-                ),
-                (
-                    "find_definition",
-                    'import json\n_result = find_definition("ContractTest1", module_hint=None, limit=20)\nprint(json.dumps(_result, ensure_ascii=False))',
-                ),
-                (
-                    "get_object_profile",
-                    'import json\n_result = get_object_profile("CommonModule.ContractOne", sections=None, include_flow=False, include_code_usages=False, limit=20)\nprint(json.dumps(_result, ensure_ascii=False))',
-                ),
-            ]
-            helper_payloads: dict[str, object] = {}
-            for helper_name, code in helpers:
-                execute_payload = call_tool(
-                    "rlm_execute",
-                    {
-                        "session_id": session_id,
-                        "code": code,
-                        "detail_level": "compact",
-                    },
-                )
-                if not isinstance(execute_payload, dict):
-                    if not errors:
-                        errors.append(
-                            f"rlm MCP contract: {helper_name} execute text is not a JSON object"
-                        )
-                    continue
-                if isinstance(execute_payload.get("error"), str):
-                    errors.append(f"rlm MCP contract: {helper_name} execute returned an error")
-                    continue
-                stdout = execute_payload.get("stdout")
-                if not isinstance(stdout, str):
-                    errors.append(f"rlm MCP contract: {helper_name} execute is missing stdout")
-                    continue
-                try:
-                    helper_payload = json.loads(stdout)
-                except json.JSONDecodeError:
-                    errors.append(f"rlm MCP contract: {helper_name} stdout is not valid JSON")
-                    continue
-                if (
-                    isinstance(helper_payload, dict)
-                    and isinstance(helper_payload.get("error"), str)
-                    and helper_payload["error"]
-                ):
-                    errors.append(f"rlm MCP contract: {helper_name} returned an error")
-                    continue
-                helper_payloads[helper_name] = helper_payload
-                errors.extend(rlm_mcp_metadata_errors(helper_payload, helper_name))
-
-            definitions = helper_payloads.get("find_definition")
-            if "search" in helper_payloads and not isinstance(
-                helper_payloads["search"], list
-            ):
-                errors.append("rlm MCP contract: search must return a list")
-            if "get_object_profile" in helper_payloads and not isinstance(
-                helper_payloads["get_object_profile"], dict
-            ):
-                errors.append(
-                    "rlm MCP contract: get_object_profile must return an object"
-                )
-            if "find_definition" in helper_payloads and not isinstance(
-                definitions,
-                dict,
-            ):
-                errors.append("rlm MCP contract: find_definition must return an object")
-            elif isinstance(definitions, dict):
-                entries = definitions.get("definitions")
-                if not isinstance(entries, list) or not entries:
-                    errors.append(
-                        "rlm MCP contract: find_definition must return definitions"
-                    )
-                elif any(
-                    not isinstance(entry, dict)
-                    or not isinstance(entry.get("params"), list)
-                    for entry in entries
-                ):
-                    errors.append(
-                        "rlm MCP contract: find_definition definitions[].params must be a list"
-                    )
-
-            call_tool("rlm_end", {"session_id": session_id})
-        except (OSError, RuntimeError):
-            errors.append("rlm MCP contract: MCP transport failed")
-        finally:
-            if session is not None:
-                terminate_shared_mcp_session(session, root)
-    return errors
-
-
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--target", default=None)
@@ -2273,12 +1419,6 @@ def main() -> None:
     target = args.target or detect_target()
     tools_dir = args.tools_dir or Path("plugins/unica/bin") / target
     errors = check_tool_contracts(tools_dir, target)
-    rlm_index = tool_executable(tools_dir.resolve(), "rlm-bsl-index", target)
-    rlm_mcp = tool_executable(tools_dir.resolve(), "rlm-bsl-mcp", target)
-    if rlm_index.exists():
-        errors.extend(check_rlm_mtime_recovery_contract(rlm_index))
-    if rlm_mcp.exists() and rlm_index.exists():
-        errors.extend(check_rlm_mcp_contract(rlm_mcp, rlm_index))
 
     if errors:
         print("Tool contract check failed:")

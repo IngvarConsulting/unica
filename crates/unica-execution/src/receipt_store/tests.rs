@@ -28,7 +28,8 @@ use unica_workspace::test_support::{
 };
 
 #[cfg(test)]
-mod crash_process_tests;
+#[path = "tests/crash_process_tests.rs"]
+mod medium_crash_process_tests;
 
 const INVOCATION_A: &str = "11111111-1111-4111-8111-111111111111";
 const INVOCATION_B: &str = "22222222-2222-4222-8222-222222222222";
@@ -387,6 +388,7 @@ fn first_generation_publication_survives_a_crash_after_staging_creation() {
     );
 }
 
+/// rule: INV.APP.RECEIPT-CANCEL-RESERVATION
 #[test]
 fn cancel_reserved_persists_without_expiry_or_result_entitlement() {
     let root = tempfile::tempdir().expect("temporary root");
@@ -502,6 +504,7 @@ fn legacy_cancel_duplicate_after_expiry_preserves_bytes_and_identity() {
     assert_eq!(fs::read(row).unwrap(), before);
 }
 
+/// rule: INV.APP.RECEIPT-CANCEL-RESERVATION
 #[test]
 fn historical_cancel_deletion_releases_indexes_without_resurrection() {
     let root = tempfile::tempdir().expect("temporary root");
@@ -559,6 +562,7 @@ fn historical_cancel_deletion_allows_new_incarnation_without_replaying_deletion(
     );
 }
 
+/// rule: INV.APP.RECEIPT-CANCEL-RESERVATION
 #[test]
 fn mixed_legacy_and_persistent_cancel_rows_preserve_identity_across_reopen() {
     let root = tempfile::tempdir().expect("temporary root");
@@ -616,6 +620,7 @@ fn mixed_legacy_and_persistent_cancel_rows_preserve_identity_across_reopen() {
     }
 }
 
+/// rule: INV.APP.RECEIPT-CANCEL-RESERVATION
 #[test]
 fn cancellation_schema_rejects_malformed_legacy_expiry_and_incompatible_v2_rows() {
     for case in [
@@ -1087,114 +1092,6 @@ fn expiry_reopen_cleans_witness_after_crash_at_visible_generation_replace() {
 }
 
 #[test]
-fn early_cancellations_cross_the_former_live_quota_without_reserving_results() {
-    let root = tempfile::tempdir().expect("temporary root");
-    let receipts = fs::canonicalize(root.path()).unwrap().join("receipts");
-    let store = ReceiptLedgerStore::open(&receipts).unwrap();
-    let mut expected = Vec::new();
-    for index in 0..65 {
-        let key = receipt_key_with_ids(
-            InvocationId::new(),
-            TaskId::new(),
-            &format!("cancel-workspace-{index}"),
-        );
-        let receipt = match store
-            .request_cancel_or_reserve(key.clone(), 1_000, reserve_deadline())
-            .expect("live count must not reject a cancellation")
-        {
-            CancelResolution::NewlyReserved(receipt) => receipt,
-            _ => panic!("new cancellation key"),
-        };
-        expected.push((key, receipt));
-    }
-    {
-        let catalog = store.writer.lock().unwrap();
-        assert_eq!(catalog.live_count(), 65);
-        assert_eq!(catalog.reserved_result_bytes, 0);
-        assert_eq!(catalog.invocation_index.len(), 65);
-        assert_eq!(catalog.reserved_task_index.len(), 65);
-    }
-    assert_eq!(store.generation().unwrap(), 65);
-    drop(store);
-    let reopened =
-        ReceiptLedgerStore::open(&receipts).expect("reopen every accepted early cancellation");
-    assert_eq!(
-        reopened
-            .recovery_keys(Some(reserve_deadline()))
-            .unwrap()
-            .len(),
-        65
-    );
-    for (key, receipt) in expected {
-        assert_eq!(
-            reopened.recover_exact(&key, reserve_deadline()).unwrap(),
-            ReceiptState::CancelReserved(receipt)
-        );
-    }
-}
-
-#[test]
-fn submit_admission_preserves_unrelated_cancellations_past_the_former_live_quota() {
-    let root = tempfile::tempdir().expect("temporary root");
-    let receipts = fs::canonicalize(root.path())
-        .expect("physical temporary root")
-        .join("receipts");
-    let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
-
-    for index in 0..64 {
-        let key = receipt_key_with_ids(
-            InvocationId::new(),
-            TaskId::new(),
-            &format!("persistent-cancel-workspace-{index}"),
-        );
-        assert!(matches!(
-            store.request_cancel_or_reserve(key, 1_000, Instant::now() + Duration::from_secs(7),),
-            Ok(CancelResolution::NewlyReserved(_))
-        ));
-    }
-
-    let admitted_key = receipt_key_with_ids(
-        InvocationId::new(),
-        TaskId::new(),
-        "admitted-alongside-persistent-cancels",
-    );
-    let cutoff =
-        OriginalCutoffDescriptor::new(8_125, 7_000).expect("valid post-expiry submit cutoff");
-    let admitted = store
-        .reserve(
-            admitted_key.clone(),
-            cutoff,
-            Instant::now() + Duration::from_secs(7),
-        )
-        .expect("independent admission must preserve existing cancellation reservations")
-        .into_reservation()
-        .expect("new submit remains reserved");
-
-    assert_eq!(admitted.key(), &admitted_key);
-    assert_eq!(admitted.mutation_sequence(), 65);
-    assert_eq!(store.generation().expect("admission without eviction"), 65);
-    let catalog = store.writer.lock().expect("inspect reclaimed catalog");
-    assert_eq!(catalog.records.len(), 65);
-    assert_eq!(catalog.invocation_index.len(), 65);
-    assert_eq!(catalog.reserved_task_index.len(), 65);
-    assert_eq!(
-        catalog
-            .records
-            .values()
-            .filter(|entry| matches!(
-                entry.record.lifecycle,
-                StoredActiveLifecycleV1::CancelReserved { .. }
-            ))
-            .count(),
-        64
-    );
-    assert_eq!(
-        catalog.reserved_result_bytes,
-        admitted.reserved_result_bytes()
-    );
-}
-
-#[test]
 fn partial_identity_rejection_preserves_an_unrelated_delayed_cancel() {
     let root = tempfile::tempdir().expect("temporary root");
     let receipts = fs::canonicalize(root.path())
@@ -1302,6 +1199,7 @@ fn exact_reserve_winner_preserves_an_unrelated_delayed_cancel() {
     ));
 }
 
+/// rule: INV.APP.RECEIPT-CANCEL-RESERVATION
 #[test]
 fn exact_submit_atomically_converts_cancel_reserved_to_full_cancelled_reservation() {
     let root = tempfile::tempdir().expect("temporary root");
@@ -2727,6 +2625,7 @@ fn direct_ack_compacts_payload_to_restart_stable_idempotent_tombstone() {
     assert!(committed.encoded_bytes() > acknowledged.encoded_bytes());
 }
 
+/// rule: INV.APP.RECEIPT-ACK-CAPACITY
 #[test]
 fn compact_tombstone_fits_512_bytes_at_the_maximum_valid_epoch_and_longest_tool_name() {
     let key = ReceiptKey::new(
@@ -3170,6 +3069,7 @@ fn expired_tombstone_releases_partial_identity_for_new_admission_only_at_expiry(
         .exists());
 }
 
+/// rule: INV.APP.RECEIPT-ACK-CAPACITY
 #[test]
 fn tombstone_pool_does_not_consume_the_sixty_four_live_receipt_slots() {
     let root = tempfile::tempdir().expect("temporary root");
@@ -3219,6 +3119,7 @@ fn tombstone_pool_does_not_consume_the_sixty_four_live_receipt_slots() {
         .expect("separate tombstone pool cannot block live admission");
 }
 
+/// rule: INV.APP.RECEIPT-ACKNOWLEDGEMENT
 #[test]
 fn rejected_ack_does_not_reclaim_an_unrelated_expired_tombstone() {
     let root = tempfile::tempdir().expect("temporary root");
@@ -4685,6 +4586,7 @@ fn exact_duplicate_returns_original_cutoff_without_generation_or_file_mutation()
     );
 }
 
+/// rule: INV.APP.RECEIPT-IDENTITY-COLLISION
 #[test]
 fn invocation_id_collision_rejects_before_any_mutation() {
     let root = tempfile::tempdir().expect("temporary root");
@@ -4772,6 +4674,7 @@ fn collision_rejection_requires_post_catalog_named_authority() {
     }
 }
 
+/// rule: INV.APP.RECEIPT-IDENTITY-COLLISION
 #[test]
 fn reserved_task_id_collision_rejects_before_any_mutation() {
     let root = tempfile::tempdir().expect("temporary root");
@@ -4963,6 +4866,7 @@ impl ReceiptLedgerPort for DelayedActualReservePort {
     }
 }
 
+/// rule: INV.RUNTIME.TIMERS-PRESERVE-WORK
 #[test]
 fn no_deadline_actor_returns_late_real_store_commit_and_reopens() {
     use crate::receipt_ledger_actor::ReceiptLedgerActor;
@@ -5025,6 +4929,7 @@ fn no_deadline_actor_returns_late_real_store_commit_and_reopens() {
     assert_eq!(committed.original_cutoff(), &cutoff);
 }
 
+/// rule: INV.RUNTIME.TIMERS-PRESERVE-WORK
 #[test]
 fn no_deadline_row_commit_survives_delayed_sync_and_exact_reopen() {
     let root = tempfile::tempdir().expect("temporary root");
@@ -5072,6 +4977,7 @@ fn no_deadline_row_commit_survives_delayed_sync_and_exact_reopen() {
     assert_eq!(recovered.terminal().outcome(), terminal.outcome());
 }
 
+/// rule: INV.RUNTIME.TIMERS-PRESERVE-WORK
 #[test]
 fn no_deadline_keeps_visible_io_failure_commit_uncertain() {
     let root = tempfile::tempdir().expect("temporary root");
@@ -5397,6 +5303,7 @@ fn concurrent_reserve_waits_for_generation_capability_swap_under_the_writer_lock
     assert_eq!(store.generation().expect("both reserves committed"), 2);
 }
 
+/// rule: INV.APP.RECEIPT-IDENTITY-COLLISION
 #[test]
 fn persisted_dual_index_collision_fails_reopen_before_temporary_cleanup_or_mutation() {
     let root = tempfile::tempdir().expect("temporary root");
@@ -5723,6 +5630,7 @@ fn reopen_rejects_reserved_epoch_that_disagrees_with_the_accepted_epoch() {
     );
 }
 
+/// rule: INV.APP.RECEIPT-RECOVERY-BOUNDS
 #[test]
 fn oversized_live_persisted_row_is_corruption_and_fail_stops_the_store() {
     let root = tempfile::tempdir().expect("temporary root");
@@ -5894,6 +5802,7 @@ fn reopen_cleans_identity_bound_quarantine_left_by_interrupted_staging_cleanup()
     assert!(!active_quarantine_path.exists());
 }
 
+/// rule: INV.APP.RECEIPT-RECOVERY-BOUNDS
 #[test]
 fn expired_recovery_deadline_fails_before_staging_cleanup_or_catalog_mutation() {
     let root = tempfile::tempdir().expect("temporary root");
@@ -6030,120 +5939,6 @@ fn recovery_deadline_is_rechecked_after_generation_healing_publication() {
     let reopened = ReceiptLedgerStore::open(&receipts)
         .expect("a later bounded reopen adopts the visible generation heal");
     assert_eq!(reopened.generation().expect("healed generation"), 1);
-}
-
-#[test]
-fn default_recovery_completes_after_former_automatic_timeout() {
-    for retained_directory in [false, true] {
-        let root = tempfile::tempdir().expect("temporary root");
-        let receipts = fs::canonicalize(root.path()).unwrap().join("receipts");
-        {
-            let store = ReceiptLedgerStore::open(&receipts).unwrap();
-            assert_eq!(store.generation().unwrap(), 0);
-        }
-        let key = receipt_key(INVOCATION_A, TASK_A, "workspace-a");
-        let cutoff = OriginalCutoffDescriptor::new(1_000, 7_000).unwrap();
-        write_reserved_row_fixture(&receipts, key.clone(), cutoff, 1);
-        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
-        let (release_tx, release_rx) = std::sync::mpsc::channel();
-        let (finished_tx, finished_rx) = std::sync::mpsc::channel();
-        let worker_receipts = receipts.clone();
-        let worker = std::thread::spawn(move || {
-            set_after_generation_replace_hook_for_test(move || {
-                entered_tx.send(()).unwrap();
-                release_rx
-                    .recv()
-                    .expect("release held recovery publication");
-            });
-            let result = if retained_directory {
-                let directory = StateDirectory::open(&worker_receipts).unwrap();
-                ReceiptLedgerStore::open_retained_directory(directory)
-            } else {
-                ReceiptLedgerStore::open(&worker_receipts)
-            };
-            finished_tx.send(result).unwrap();
-        });
-        entered_rx
-            .recv_timeout(Duration::from_secs(10))
-            .expect("recovery reached publication gate");
-        let held = finished_rx.recv_timeout(Duration::from_millis(5_050));
-        release_tx.send(()).unwrap();
-        let result = finished_rx
-            .recv_timeout(Duration::from_secs(10))
-            .expect("recovery returns after release");
-        worker.join().unwrap();
-        assert!(
-            matches!(held, Err(std::sync::mpsc::RecvTimeoutError::Timeout)),
-            "recovery must retain ownership until publication returns"
-        );
-        let store =
-            result.expect("default recovery must not expire while validating the full catalog");
-        assert_eq!(store.generation().unwrap(), 1);
-        assert!(matches!(
-            store.recover_exact(&key, reserve_deadline()).unwrap(),
-            ReceiptState::Reserved(_)
-        ));
-    }
-}
-
-#[test]
-fn live_receipts_cross_former_count_and_byte_quotas_without_losing_exact_reservations() {
-    let root = tempfile::tempdir().expect("temporary root");
-    let receipts = fs::canonicalize(root.path()).unwrap().join("receipts");
-    let store = ReceiptLedgerStore::open(&receipts).unwrap();
-    let cutoff = OriginalCutoffDescriptor::new(1_000, 7_000).unwrap();
-    let mut expected = Vec::new();
-    let mut actual_bytes = 0_u64;
-    let mut reserved_bytes = 0_u64;
-    for index in 0..65 {
-        let key = receipt_key_with_ids(
-            InvocationId::new(),
-            TaskId::new(),
-            &format!("workspace-{index}"),
-        );
-        let digest = crate::receipt_ledger::receipt_key_digest(&key);
-        let reservation = store
-            .reserve(key.clone(), cutoff, reserve_deadline())
-            .expect("live count and aggregate entitlement must not reject a receipt")
-            .into_reservation()
-            .unwrap();
-        assert_eq!(
-            reservation.encoded_bytes() + reservation.reserved_result_bytes(),
-            8_454_144
-        );
-        actual_bytes += reservation.encoded_bytes();
-        reserved_bytes += reservation.reserved_result_bytes();
-        expected.push((digest, key, reservation));
-    }
-    assert!(actual_bytes + reserved_bytes > 541_065_216);
-    assert_eq!(store.generation().unwrap(), 65);
-    {
-        let catalog = store.writer.lock().unwrap();
-        assert_eq!(catalog.live_count(), 65);
-        assert_eq!(catalog.actual_bytes, actual_bytes);
-        assert_eq!(catalog.reserved_result_bytes, reserved_bytes);
-        assert_eq!(catalog.invocation_index.len(), 65);
-        assert_eq!(catalog.reserved_task_index.len(), 65);
-    }
-    drop(store);
-    let reopened =
-        ReceiptLedgerStore::open(&receipts).expect("reopen all accepted receipts past old quotas");
-    assert_eq!(reopened.generation().unwrap(), 65);
-    assert_eq!(
-        reopened
-            .recovery_keys(Some(reserve_deadline()))
-            .unwrap()
-            .len(),
-        65
-    );
-    for (digest, key, reservation) in expected {
-        let recovered = reopened
-            .read_reserved(&digest)
-            .unwrap()
-            .expect("every reservation is retained");
-        assert_eq!(recovered, reservation);
-        assert_eq!(recovered.key(), &key);
-    }
 }
 
 #[test]
@@ -6783,87 +6578,7 @@ fn named_generation_replacement_invalidates_the_retained_owner() {
     }
 }
 
-#[cfg(feature = "receipt-ledger-test-support")]
-#[test]
-fn batched_live_receipts_and_actor_snapshot_cross_former_quotas_and_reopen() {
-    use crate::receipt_ledger_actor::ReceiptLedgerActor;
-    let root = tempfile::tempdir().unwrap();
-    let receipts = fs::canonicalize(root.path()).unwrap().join("receipts");
-    let store = ReceiptLedgerStore::open(&receipts).unwrap();
-    let cutoff = OriginalCutoffDescriptor::new(1_000, 7_000).unwrap();
-    let requests = (0..65)
-        .map(|index| {
-            (
-                receipt_key_with_ids(
-                    InvocationId::new(),
-                    TaskId::new(),
-                    &format!("batch-{index}"),
-                ),
-                cutoff,
-            )
-        })
-        .collect::<Vec<_>>();
-    let mut bound = Vec::new();
-    let workspace_identity = SafeIdentityHash::from_sha256([0x77; 32]);
-    for chunk in requests.chunks(32) {
-        let reserved = store
-            .reserve_batch(chunk.to_vec(), reserve_deadline())
-            .unwrap()
-            .into_iter()
-            .map(|outcome| outcome.into_reservation().unwrap())
-            .collect::<Vec<_>>();
-        bound.extend(
-            store
-                .bind_reserved_actor_batch(
-                    reserved
-                        .iter()
-                        .map(|receipt| {
-                            (
-                                receipt.key().clone(),
-                                receipt.record_version(),
-                                workspace_identity.clone(),
-                            )
-                        })
-                        .collect(),
-                    reserve_deadline(),
-                )
-                .unwrap(),
-        );
-    }
-    let actual_bytes = bound
-        .iter()
-        .map(|receipt| receipt.encoded_bytes())
-        .sum::<u64>();
-    let reserved_bytes = bound
-        .iter()
-        .map(|receipt| receipt.reserved_result_bytes())
-        .sum::<u64>();
-    assert!(actual_bytes + reserved_bytes > 541_065_216);
-    let actor = ReceiptLedgerActor::spawn(store);
-    let snapshot = actor.snapshot_catalog(reserve_deadline()).unwrap();
-    assert_eq!(snapshot.live_count(), 65);
-    assert_eq!(snapshot.generation(), 130);
-    assert_eq!(snapshot.actual_bytes(), actual_bytes);
-    assert_eq!(snapshot.reserved_result_bytes(), reserved_bytes);
-    assert_eq!(snapshot.keys().len(), 65);
-    for (key, _) in &requests {
-        assert!(snapshot.keys().contains(key));
-        assert!(snapshot.invocation_index().contains(key));
-        assert!(snapshot.reserved_task_index().contains(key));
-    }
-    assert_eq!(snapshot.invocation_index().len(), 65);
-    assert_eq!(snapshot.reserved_task_index().len(), 65);
-    drop(actor);
-    let reopened = ReceiptLedgerStore::open(&receipts).unwrap();
-    assert_eq!(reopened.generation().unwrap(), 130);
-    for receipt in bound {
-        assert_eq!(
-            reopened.read_reserved(receipt.key_digest()).unwrap(),
-            Some(receipt)
-        );
-    }
-}
-
+/// rule: INV.APP.RECEIPT-POOL-CAPACITY
 #[test]
 fn live_catalog_arithmetic_overflow_rejects_single_and_batch_mutations_before_commit() {
     let root = tempfile::tempdir().unwrap();
@@ -7018,6 +6733,7 @@ fn recovery_cleanup_preserves_external_targets_of_replaced_active_and_generation
     }
 }
 
+/// rule: INV.WIRE.SOURCE-TEXT-RESPONSE-BUDGET
 #[test]
 fn body_read_hint_survives_receipt_reopen_and_tampering_is_rejected() {
     for hint in [
@@ -7308,7 +7024,8 @@ use unica_workspace::state_fs::test_support::{
 
 /// INV.APP.RECEIPT-RESULT-RESERVATION: memory held for committed results does
 /// not grow with their number or size, and a repeat after reopening returns
-/// exactly the committed result (#1119).
+/// exactly the committed result.
+/// rule: INV.APP.RECEIPT-RESULT-RESERVATION
 #[test]
 fn committed_results_are_not_held_in_catalog_memory_and_recover_exactly() {
     let root = tempfile::tempdir().expect("temporary root");

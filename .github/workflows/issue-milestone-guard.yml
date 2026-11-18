@@ -1,0 +1,28 @@
+name: Issue milestone guard
+
+# Веха на issue — отметка владельца «вычитано». Чужую сторож снимает, поэтому проверка
+# пропуска верит любой вехе на issue. Запуск тестов это не будит: `ci.yml` слушает только
+# события самого PR, а снятие токеном прогона других workflow не запускает.
+# Агенты под токеном владельца выглядят как он: от них сторож не защищает.
+on:
+  issues:
+    types: [milestoned]
+
+permissions:
+  issues: write
+
+jobs:
+  guard:
+    name: Снять чужую веху
+    if: ${{ github.event.sender.login != 'zeegin' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Снять веху и объяснить
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          gh issue edit "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --remove-milestone
+          gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "Веху ставит владелец после чтения issue"

@@ -1,0 +1,27 @@
+{
+  "area": "XDTO и обмены",
+  "task": "Добавить тип-значение в XDTO-пакет",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.EnterpriseData_1_17_3",
+        "ops": [
+          {
+            "op": "valueType.add",
+            "args": {
+              "values": {
+                "name": "КодВалюты",
+                "base": "xs:string"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S214"
+}

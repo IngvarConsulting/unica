@@ -1,0 +1,286 @@
+{
+  "id": "S379",
+  "name": "dcs-total-group-binding-list",
+  "issue": 1310,
+  "area": "СКД",
+  "task": "Один итог имеет несколько explicit group bindings; set заменяет весь список, пустой список снимает привязки, соседний итог сохраняется",
+  "workspace": "tests/fixtures/acceptance/workspace-dcs",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report",
+        "ops": [
+          {
+            "op": "template.add",
+            "args": {
+              "items": [
+                {
+                  "name": "PrimitiveTotalGroups",
+                  "templateType": "DataCompositionSchema"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTotalGroups/Ext/Template.xml",
+          "kind": "exists",
+          "eq": false
+        }
+      ],
+      "captures": {
+        "createToken": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.createToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTotalGroups/Ext/Template.xml",
+          "kind": "exists",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveTotalGroups"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "phase2Before": {
+          "file": "src/cf/Reports/F05Report/Templates/PrimitiveTotalGroups/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveTotalGroups",
+        "ops": [
+          {
+            "op": "total.add",
+            "args": {
+              "items": [
+                {
+                  "field": "Amount",
+                  "expression": "Сумма(Amount)",
+                  "group": [
+                    "ByAmount",
+                    "ByAmount Hierarchy",
+                    "Overall"
+                  ]
+                },
+                {
+                  "field": "Count",
+                  "expression": "Количество(Count)",
+                  "group": "ByItem"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTotalGroups/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.phase2Before"
+        }
+      ],
+      "captures": {
+        "phase2Token": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.phase2Token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTotalGroups/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}totalField[{http://v8.1c.ru/8.1/data-composition-system/schema}dataPath='Amount']/{http://v8.1c.ru/8.1/data-composition-system/schema}group",
+          "eq": [
+            "ByAmount",
+            "ByAmount Hierarchy",
+            "Overall"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTotalGroups/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}totalField[{http://v8.1c.ru/8.1/data-composition-system/schema}dataPath='Count']/{http://v8.1c.ru/8.1/data-composition-system/schema}group",
+          "eq": [
+            "ByItem"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveTotalGroups"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "phase4Before": {
+          "file": "src/cf/Reports/F05Report/Templates/PrimitiveTotalGroups/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveTotalGroups",
+        "ops": [
+          {
+            "op": "total.set",
+            "args": {
+              "at": "cf:Report.F05Report.Template.PrimitiveTotalGroups.Total.Amount",
+              "values": {
+                "expression": "Максимум(Amount)",
+                "group": [
+                  "ByPeriod",
+                  "Overall"
+                ]
+              }
+            }
+          },
+          {
+            "op": "total.set",
+            "args": {
+              "at": "cf:Report.F05Report.Template.PrimitiveTotalGroups.Total.Count",
+              "values": {
+                "group": []
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTotalGroups/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.phase4Before"
+        }
+      ],
+      "captures": {
+        "phase4Token": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.phase4Token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTotalGroups/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}totalField[{http://v8.1c.ru/8.1/data-composition-system/schema}dataPath='Amount']/{http://v8.1c.ru/8.1/data-composition-system/schema}group",
+          "eq": [
+            "ByPeriod",
+            "Overall"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTotalGroups/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}totalField[{http://v8.1c.ru/8.1/data-composition-system/schema}dataPath='Amount']/{http://v8.1c.ru/8.1/data-composition-system/schema}expression",
+          "eq": [
+            "Максимум(Amount)"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTotalGroups/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}totalField[{http://v8.1c.ru/8.1/data-composition-system/schema}dataPath='Count']/{http://v8.1c.ru/8.1/data-composition-system/schema}group",
+          "eq": []
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTotalGroups/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}totalField[{http://v8.1c.ru/8.1/data-composition-system/schema}dataPath='Count']/{http://v8.1c.ru/8.1/data-composition-system/schema}expression",
+          "eq": [
+            "Количество(Count)"
+          ]
+        }
+      ]
+    }
+  ]
+}

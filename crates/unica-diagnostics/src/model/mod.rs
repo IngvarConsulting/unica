@@ -59,12 +59,32 @@ pub const BSL_ANALYZER_PROVIDER: DiagnosticProviderId =
 
 pub const LIVE_DIAGNOSTIC_PROVIDERS: &[DiagnosticProviderId] = &[BSL_ANALYZER_PROVIDER];
 
+// resource-limit: diagnostics.default-limit
+// class: step
+// unit: count
+// scope: request
+// value: 200
+// resource: Число диагностик в ответе координатора диагностики, если limit не задан.
+// status: unproven
+// origin: коммит 9214a5e20 (provider-neutral domain model)
+// problem: неизвестно
+// on-reach: список усекается до limit, ответ помечен truncated: true с полным items_total
 pub const DIAGNOSTIC_LIMIT_DEFAULT: usize = 200;
 
 /// Budget for the resident actions that never resolve an `OperationalConfig`
 /// (INV-APP-CONFIG-SNAPSHOT): `findings`, `status` and `catalog` of the
 /// retired `code.diagnostics` surface. `analyze`, the action `check` runs,
 /// does not use it: without a configured timeout it has no deadline.
+// resource-limit: diagnostics.resident-action-budget
+// class: deadline
+// unit: ms
+// scope: request
+// value: 120000
+// resource: Срок резидентных действий диагностики findings, status и catalog без снимка настроек.
+// status: unproven
+// origin: коммит 2401f0e8f (localize mapping failures)
+// problem: неизвестно
+// on-reach: действие прерывается по сроку поставщика; analyze этим сроком не ограничен
 pub const DIAGNOSTIC_BUDGET_WITHOUT_CONFIG: Duration = Duration::from_secs(120);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -365,6 +385,25 @@ pub enum DiagnosticReadinessState {
 pub struct DiagnosticReadiness {
     pub state: DiagnosticReadinessState,
     pub retryable: bool,
+    /// What the provider tells of its build, when it tells anything.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progress: Option<DiagnosticBuildProgress>,
+}
+
+/// The facts a provider gives about building its database. Each is absent
+/// when the provider does not tell it; none is a percentage it lacks.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagnosticBuildProgress {
+    /// Modules served once the database is ready.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub files: Option<usize>,
+    /// Failed builds in a row the current one retries.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attempts: Option<u32>,
+    /// Milliseconds since the current build started.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub elapsed_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -466,6 +505,16 @@ impl DiagnosticProviderDescriptor {
     }
 }
 
+/// Unica's neutral wording for a diagnostic rule without a mapped message.
+pub fn generic_editor_message(severity: DiagnosticSeverity) -> &'static str {
+    match severity {
+        DiagnosticSeverity::Error => "Ошибка, найденная анализом кода",
+        DiagnosticSeverity::Warning => "Предупреждение анализа кода",
+        DiagnosticSeverity::Info => "Замечание анализа кода",
+        DiagnosticSeverity::Hint => "Подсказка анализа кода",
+    }
+}
+
 pub trait DiagnosticProvider: Send + Sync {
     fn descriptor(&self) -> &'static DiagnosticProviderDescriptor;
 
@@ -476,6 +525,11 @@ pub trait DiagnosticProvider: Send + Sync {
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
     ) -> DiagnosticProviderOutcome;
+
+    /// The Unica message for an editor finding. The rule code is carried separately.
+    fn editor_message(&self, _code: &str, severity: DiagnosticSeverity) -> &'static str {
+        generic_editor_message(severity)
+    }
 }
 
 pub struct DiagnosticProviderRegistry {
@@ -662,9 +716,7 @@ mod tests {
     use serde_json::{json, Value};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
-    use unica_address::source_target::{
-        MetadataAddress, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
-    };
+    use unica_address::source_target::{MetadataAddress, TargetKind};
 
     const BSL_LANGUAGE_SERVER_PROVIDER: DiagnosticProviderId =
         DiagnosticProviderId::new_const("bsl-language-server");
@@ -706,6 +758,7 @@ mod tests {
         Arc::new(StubProvider(descriptor))
     }
 
+    /// rule: INV.APP.DIAGNOSTIC-FOCUS
     #[test]
     fn zero_width_observation_range_matches_the_requested_range_that_contains_its_caret() {
         let requested = DiagnosticRange {
@@ -742,7 +795,7 @@ mod tests {
     }
 
     fn metadata_address(value: &str) -> MetadataAddress {
-        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, value).unwrap()
+        MetadataAddress::parse_logical(value).unwrap()
     }
 
     #[test]

@@ -5,17 +5,91 @@
 use crate::operations::FormOperation;
 use serde_json::{json, Map, Value};
 use unica_metadata::event::FormCallType;
-use unica_operation_contract::{object, text, OperationContract};
+use unica_operation_contract::{object, text, FormatValidator, OperationContract};
+use unica_source_contract::format_identity::{
+    member_property_exists, member_property_since, PlatformLine,
+};
 
 const FORM_HELP: &str = "skills/form-edit/SKILL.md";
 
+/// Тип JSON, в котором писатель элемента (`emit_form_*`) читает ключ.
+/// Контракт `item.add` уточняет его схемой ключа, компиляция формы
+/// отвергает значение другого типа по имени ключа.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ElementKeyType {
+    /// Любое значение: различитель вида или ключ, который писатель проверяет
+    /// сам с более точным отказом (`width`, `height`).
+    Any,
+    Str,
+    Bool,
+    /// Целое число или строка с ним.
+    Integer,
+    /// Строка или словарь языков.
+    Text,
+    /// Строка или объект (ссылка на стиль или его части).
+    StrOrObject,
+    Array,
+    Object,
+}
+
+impl ElementKeyType {
+    pub fn accepts(self, value: &Value) -> bool {
+        match self {
+            Self::Any => true,
+            Self::Str => value.is_string(),
+            Self::Bool => value.is_boolean(),
+            Self::Integer => {
+                value.as_i64().is_some()
+                    || value
+                        .as_str()
+                        .is_some_and(|s| s.trim().parse::<i64>().is_ok())
+            }
+            Self::Text | Self::StrOrObject => value.is_string() || value.is_object(),
+            Self::Array => value.is_array(),
+            Self::Object => value.is_object(),
+        }
+    }
+
+    pub const fn describe(self) -> &'static str {
+        match self {
+            Self::Any => "any value",
+            Self::Str => "a string",
+            Self::Bool => "a boolean",
+            Self::Integer => "a number",
+            Self::Text => "a string or a language map",
+            Self::StrOrObject => "a string or an object",
+            Self::Array => "an array",
+            Self::Object => "an object",
+        }
+    }
+}
+
+/// Ключи писателя элемента с типом, в котором он их читает.
+pub type ElementKeys = &'static [(&'static str, ElementKeyType)];
+
 /// Вид элемента, который создаёт `item.add`: имя вида в `type`, его
-/// синонимы и ключи, которые генератор элемента (`form::emit_form_*`)
-/// записывает в XML этого вида.
+/// синонимы, различитель вида в описании формы и ключи, которые генератор
+/// элемента (`form::emit_form_*`) записывает в XML этого вида. Один список
+/// служит и контракту `item.add`, и компиляции формы.
 pub struct FormElementKind {
     pub kind: &'static str,
     pub aliases: &'static [&'static str],
-    pub keys: &'static [&'static str],
+    /// Различитель вида в описании формы (`input`, `table`, …).
+    pub description_key: &'static str,
+    pub keys: ElementKeys,
+}
+
+impl FormElementKind {
+    pub fn key_names(&self) -> impl Iterator<Item = &'static str> {
+        self.keys.iter().map(|(key, _)| *key)
+    }
+}
+
+/// Вид элемента по его различителю в описании формы.
+pub fn form_element_kind_by_description_key(key: &str) -> Option<&'static FormElementKind> {
+    FORM_ELEMENT_KINDS
+        .iter()
+        .find(|kind| kind.description_key == key)
 }
 
 /// Флаги, которые пишет `emit_form_common_flags` у каждого вида.
@@ -30,10 +104,15 @@ const COMMON_FLAGS: [&str; 6] = [
 ];
 
 macro_rules! with_common_flags {
-    ($($key:literal),* $(,)?) => {
+    ($(($key:literal, $type:ident)),* $(,)?) => {
         &[
-            "visible", "hidden", "userVisible", "enabled", "disabled", "readOnly",
-            $($key),*
+            ("visible", ElementKeyType::Bool),
+            ("hidden", ElementKeyType::Bool),
+            ("userVisible", ElementKeyType::Bool),
+            ("enabled", ElementKeyType::Bool),
+            ("disabled", ElementKeyType::Bool),
+            ("readOnly", ElementKeyType::Bool),
+            $(($key, ElementKeyType::$type)),*
         ]
     };
 }
@@ -55,171 +134,195 @@ pub const FORM_ELEMENT_KINDS: &[FormElementKind] = &[
     FormElementKind {
         kind: "InputField",
         aliases: &["InputField", "Input", "Field"],
+        description_key: "input",
         keys: with_common_flags![
-            "path",
-            "title",
-            "tooltip",
-            "tooltipRepresentation",
-            "titleLocation",
-            "multiLine",
-            "passwordMode",
-            "choiceButton",
-            "clearButton",
-            "spinButton",
-            "dropListButton",
-            "markIncomplete",
-            "skipOnInput",
-            "showInHeader",
-            "headerHorizontalAlign",
-            "autoMaxWidth",
-            "autoMaxHeight",
-            "footerDataPath",
-            "width",
-            "height",
-            "multipleValueDataPath",
-            "multipleValuePictureDataPath",
-            "multipleValuePresentDataPath",
-            "horizontalStretch",
-            "verticalStretch",
-            "horizontalAlign",
-            "inputHint",
+            ("path", Str),
+            ("title", Str),
+            ("tooltip", Text),
+            ("tooltipRepresentation", Str),
+            ("titleLocation", Str),
+            ("multiLine", Bool),
+            ("passwordMode", Bool),
+            ("choiceButton", Bool),
+            ("clearButton", Bool),
+            ("spinButton", Bool),
+            ("dropListButton", Bool),
+            ("markIncomplete", Bool),
+            ("skipOnInput", Bool),
+            ("showInHeader", Bool),
+            ("headerHorizontalAlign", Str),
+            ("autoMaxWidth", Bool),
+            ("autoMaxHeight", Bool),
+            ("footerDataPath", Str),
+            ("width", Any),
+            ("height", Any),
+            ("multipleValueDataPath", Str),
+            ("multipleValuePictureDataPath", Str),
+            ("multipleValuePresentDataPath", Str),
+            ("horizontalStretch", Bool),
+            ("verticalStretch", Bool),
+            ("horizontalAlign", Str),
+            ("inputHint", Str),
         ],
     },
     FormElementKind {
         kind: "CheckBox",
         aliases: &["CheckBox", "CheckBoxField"],
+        description_key: "check",
         keys: with_common_flags![
-            "path",
-            "title",
-            "tooltip",
-            "tooltipRepresentation",
-            "titleLocation",
-            "checkBoxType",
-            "footerDataPath",
+            ("path", Str),
+            ("title", Str),
+            ("tooltip", Text),
+            ("tooltipRepresentation", Str),
+            ("titleLocation", Str),
+            ("checkBoxType", Str),
+            ("footerDataPath", Str),
         ],
     },
     FormElementKind {
         kind: "LabelField",
         aliases: &["LabelField"],
-        keys: with_common_flags!["path", "tooltip", "tooltipRepresentation", "footerDataPath"],
+        description_key: "labelField",
+        keys: with_common_flags![
+            ("path", Str),
+            ("tooltip", Text),
+            ("tooltipRepresentation", Str),
+            ("footerDataPath", Str),
+        ],
     },
     FormElementKind {
         kind: "HTMLDocumentField",
         aliases: &["HTMLDocumentField"],
+        description_key: "html",
         keys: with_common_flags![
-            "path",
-            "title",
-            "tooltip",
-            "tooltipRepresentation",
-            "skipOnInput",
-            "titleLocation",
-            "width",
-            "height",
-            "autoMaxWidth",
-            "autoMaxHeight",
+            ("path", Str),
+            ("title", Str),
+            ("tooltip", Text),
+            ("tooltipRepresentation", Str),
+            ("skipOnInput", Bool),
+            ("titleLocation", Str),
+            ("width", Any),
+            ("height", Any),
+            ("autoMaxWidth", Bool),
+            ("autoMaxHeight", Bool),
         ],
     },
     FormElementKind {
         kind: "TextDocumentField",
         aliases: &["TextDocumentField"],
+        description_key: "textDoc",
         keys: with_common_flags![
-            "path",
-            "title",
-            "tooltip",
-            "tooltipRepresentation",
-            "titleLocation",
-            "width",
-            "height",
-            "autoMaxWidth",
-            "autoMaxHeight",
+            ("path", Str),
+            ("title", Str),
+            ("tooltip", Text),
+            ("tooltipRepresentation", Str),
+            ("titleLocation", Str),
+            ("width", Any),
+            ("height", Any),
+            ("autoMaxWidth", Bool),
+            ("autoMaxHeight", Bool),
         ],
     },
     FormElementKind {
         kind: "Label",
         aliases: &["Label", "LabelDecoration"],
+        description_key: "label",
         keys: with_common_flags![
-            "title",
-            "formatted",
-            "hyperlink",
-            "width",
-            "height",
-            "autoMaxWidth",
-            "autoMaxHeight",
-            "tooltipRepresentation",
+            ("title", Text),
+            ("formatted", Bool),
+            ("hyperlink", Bool),
+            ("width", Any),
+            ("height", Any),
+            ("autoMaxWidth", Bool),
+            ("autoMaxHeight", Bool),
+            ("tooltipRepresentation", Str),
         ],
     },
     FormElementKind {
         kind: "Button",
         aliases: &["Button"],
+        description_key: "button",
         keys: with_common_flags![
-            "representation",
-            "command",
-            "commandName",
-            "stdCommand",
-            "title",
-            "tooltip",
-            "tooltipRepresentation",
-            "defaultButton",
-            "picture",
-            "locationInCommandBar",
-            "backColor",
-            "font",
+            ("representation", Str),
+            ("command", Str),
+            ("commandName", Str),
+            ("stdCommand", Str),
+            ("title", Str),
+            ("tooltip", Text),
+            ("tooltipRepresentation", Str),
+            ("defaultButton", Bool),
+            ("picture", Str),
+            ("locationInCommandBar", Str),
+            ("backColor", Str),
+            ("font", StrOrObject),
         ],
     },
     FormElementKind {
         kind: "Group",
         aliases: &["Group", "UsualGroup"],
+        description_key: "group",
         keys: with_common_flags![
-            "title",
-            "orientation",
-            "behavior",
-            "collapsed",
-            "representation",
-            "titleDataPath",
-            "currentRowUse",
-            "showTitle",
-            "showLeftMargin",
+            ("title", Str),
+            ("behavior", Str),
+            ("collapsed", Bool),
+            ("representation", Str),
+            ("titleDataPath", Str),
+            ("currentRowUse", Str),
+            ("showTitle", Bool),
+            ("showLeftMargin", Bool),
         ],
     },
     FormElementKind {
         kind: "Pages",
         aliases: &["Pages"],
-        keys: with_common_flags!["title", "pagesRepresentation", "currentRowUse"],
+        description_key: "pages",
+        keys: with_common_flags![
+            ("title", Str),
+            ("pagesRepresentation", Str),
+            ("currentRowUse", Str),
+        ],
     },
     FormElementKind {
         kind: "Page",
         aliases: &["Page"],
-        keys: with_common_flags!["title", "orientation", "showTitle", "titleDataPath"],
+        description_key: "page",
+        keys: with_common_flags![("title", Str), ("showTitle", Bool), ("titleDataPath", Str)],
     },
     FormElementKind {
         kind: "Table",
         aliases: &["Table"],
+        description_key: "table",
         keys: with_common_flags![
-            "representation",
-            "autoInsertNewRow",
-            "path",
-            "commandBarLocation",
-            "initialTreeView",
-            "enableDrag",
-            "rowPictureDataPath",
-            "tableAutofill",
-            "_dynList",
-            "autoRefresh",
-            "autoRefreshPeriod",
-            "choiceFoldersAndItems",
-            "restoreCurrentRow",
-            "showRoot",
-            "allowRootChoice",
-            "updateOnDataChange",
-            "allowGettingCurrentRowURL",
+            ("representation", Str),
+            ("autoInsertNewRow", Bool),
+            ("path", Str),
+            ("commandBarLocation", Str),
+            ("initialTreeView", Str),
+            ("enableDrag", Bool),
+            ("rowPictureDataPath", Str),
+            ("tableAutofill", Bool),
+            ("_dynList", Bool),
+            ("autoRefresh", Bool),
+            ("autoRefreshPeriod", Integer),
+            ("choiceFoldersAndItems", Str),
+            ("restoreCurrentRow", Bool),
+            ("showRoot", Bool),
+            ("allowRootChoice", Bool),
+            ("updateOnDataChange", Str),
+            ("allowGettingCurrentRowURL", Bool),
         ],
     },
     FormElementKind {
         kind: "CommandBar",
         aliases: &["CommandBar"],
-        keys: with_common_flags!["commandSource", "autofill"],
+        description_key: "cmdBar",
+        keys: with_common_flags![("commandSource", Str), ("autofill", Bool)],
     },
 ];
+
+/// Виды, у которых `item.add` принимает `orientation`: описание формы пишет
+/// её значением различителя `group`, поэтому в ключи писателя она не входит.
+pub const FORM_ORIENTATION_KINDS: &[&str] = &["Group", "Page"];
 
 /// Ключи вложенного дерева, companion-содержимого и событий, которые
 /// `item.add` больше не принимает (Р2, #1447): элемент добавляется один,
@@ -297,9 +400,21 @@ pub fn form_element_enum(kind: &str, key: &str) -> Option<&'static [&'static str
     })
 }
 
-fn language_map() -> Value {
-    json!({"type":"object","minProperties":1,"additionalProperties":{"type":"string"},
-        "description":"Text by language code, e.g. {\"ru\": \"…\", \"en\": \"…\"}."})
+const NSTR_FORMAT: &str = "localized-nstr";
+const FORM_FORMAT_VALIDATORS: &[FormatValidator] = &[FormatValidator {
+    name: NSTR_FORMAT,
+    validate: |value| {
+        let text = value
+            .as_str()
+            .ok_or_else(|| unica_metadata::LOCALIZED_VALUE_FORM.to_owned())?;
+        unica_metadata::parse_nstr(text).map(|_| ())
+    },
+}];
+
+fn nstr() -> Value {
+    let mut schema = unica_metadata::localized_value_schema();
+    schema["format"] = json!(NSTR_FORMAT);
+    schema
 }
 
 fn element_key_schema(kind: &str, key: &str) -> Value {
@@ -308,19 +423,11 @@ fn element_key_schema(kind: &str, key: &str) -> Value {
     }
     match key {
         "title" if kind == "Label" => json!({"anyOf":[
-            {"type":"string"},
-            language_map(),
-            object(&[("text", json!({"anyOf":[{"type":"string"}, language_map()]})),
-                ("formatted", json!({"type":"boolean"}))], &["text"]),
+            nstr(),
+            object(&[("text", nstr()), ("formatted", json!({"type":"boolean"}))], &["text"]),
         ],
-        "description":"Decoration text: a string in the configuration language, a language map, or {text, formatted}. Without a title the decoration shows its name."}),
-        "title" => json!({"type":"string",
-            "description":"Title in the configuration language."}),
-        "inputHint" => {
-            json!({"type":"string","description":"Input hint in the configuration language."})
-        }
-        "tooltip" => json!({"anyOf":[{"type":"string"}, language_map()],
-            "description":"Tooltip: a string in the configuration language or a language map."}),
+        "description":"Decoration text in NStr form, optionally with its formatting flag. Without a title the decoration shows its name."}),
+        "title" | "inputHint" | "tooltip" => nstr(),
         "width" | "height" => json!({"type":"integer","minimum":0,
             "description":"Integer in 0..=4294967295."}),
         "autoRefreshPeriod" => json!({"type":"integer","minimum":0}),
@@ -400,11 +507,14 @@ fn element_item_schema(kinds: &[&str]) -> Value {
                         "description":"Sibling in the same container the element follows."}),
                 ),
             ];
-            fields.extend(
-                kind.keys
-                    .iter()
-                    .map(|key| (*key, element_key_schema(kind.kind, key))),
-            );
+            for key in kind.key_names() {
+                fields.push((key, element_key_schema(kind.kind, key)));
+                // Ориентация группы и страницы стоит за заголовком, как
+                // в справке вида; описание формы пишет её различителем.
+                if key == "title" && FORM_ORIENTATION_KINDS.contains(&kind.kind) {
+                    fields.push(("orientation", element_key_schema(kind.kind, "orientation")));
+                }
+            }
             // Без `type` элемент — поле ввода: другие виды требуют его явно,
             // и стандартный валидатор схемы выбирает тот же вариант.
             let required: &[&str] = match kind.kind {
@@ -418,6 +528,17 @@ fn element_item_schema(kinds: &[&str]) -> Value {
     json!({"type":"object","x-unica-discriminator":"type","anyOf":variants})
 }
 
+fn column_item_schema() -> Value {
+    object(
+        &[
+            ("name", text(true)),
+            ("title", nstr()),
+            ("type", text(true)),
+        ],
+        &["name", "type"],
+    )
+}
+
 fn attribute_item_schema() -> Value {
     object(
         &[
@@ -426,10 +547,7 @@ fn attribute_item_schema() -> Value {
                 json!({"type":"string","pattern":r"\S",
                     "description":"New attribute name, unused in the form."}),
             ),
-            (
-                "title",
-                json!({"type":"string","description":"Title in the configuration language."}),
-            ),
+            ("title", nstr()),
             (
                 "type",
                 json!({"type":"string","pattern":r"\S",
@@ -444,11 +562,7 @@ fn attribute_item_schema() -> Value {
             ),
             (
                 "columns",
-                json!({"type":"array","minItems":1,"items":object(&[
-                    ("name",text(true)),
-                    ("title",json!({"type":"string"})),
-                    ("type",text(true)),
-                ], &["name","type"]),
+                json!({"type":"array","minItems":1,"items":column_item_schema(),
                 "description":"Columns of a ValueTable or ValueTree attribute."}),
             ),
         ],
@@ -458,7 +572,7 @@ fn attribute_item_schema() -> Value {
 
 /// Every form slot `form.set` writes: the contract key and its Platform XML
 /// element.
-pub const FORM_SLOTS: [(&str, &str); 21] = [
+pub const FORM_SLOTS: [(&str, &str); 40] = [
     ("defaultObjectForm", "DefaultObjectForm"),
     ("defaultFolderForm", "DefaultFolderForm"),
     ("defaultListForm", "DefaultListForm"),
@@ -480,6 +594,58 @@ pub const FORM_SLOTS: [(&str, &str); 21] = [
     ("auxiliarySettingsForm", "AuxiliarySettingsForm"),
     ("auxiliarySaveForm", "AuxiliarySaveForm"),
     ("auxiliaryLoadForm", "AuxiliaryLoadForm"),
+    // From 8.5.1 (format 2.21): the slot of a report kind a later line adds.
+    ("auxiliaryVariantForm", "AuxiliaryVariantForm"),
+    // The configuration root: its default forms, and from 8.5.1 its
+    // auxiliary ones, name common forms of the set.
+    ("defaultReportForm", "DefaultReportForm"),
+    ("defaultReportVariantForm", "DefaultReportVariantForm"),
+    ("defaultReportSettingsForm", "DefaultReportSettingsForm"),
+    (
+        "defaultDynamicListSettingsForm",
+        "DefaultDynamicListSettingsForm",
+    ),
+    ("defaultSearchForm", "DefaultSearchForm"),
+    (
+        "defaultDataHistoryChangeHistoryForm",
+        "DefaultDataHistoryChangeHistoryForm",
+    ),
+    (
+        "defaultDataHistoryVersionDataForm",
+        "DefaultDataHistoryVersionDataForm",
+    ),
+    (
+        "defaultDataHistoryVersionDifferencesForm",
+        "DefaultDataHistoryVersionDifferencesForm",
+    ),
+    (
+        "defaultCollaborationSystemUsersChoiceForm",
+        "DefaultCollaborationSystemUsersChoiceForm",
+    ),
+    ("defaultConstantsForm", "DefaultConstantsForm"),
+    ("auxiliaryReportForm", "AuxiliaryReportForm"),
+    ("auxiliaryReportVariantForm", "AuxiliaryReportVariantForm"),
+    ("auxiliaryReportSettingsForm", "AuxiliaryReportSettingsForm"),
+    (
+        "auxiliaryDynamicListSettingsForm",
+        "AuxiliaryDynamicListSettingsForm",
+    ),
+    (
+        "auxiliaryDataHistoryChangeHistoryForm",
+        "AuxiliaryDataHistoryChangeHistoryForm",
+    ),
+    (
+        "auxiliaryDataHistoryVersionDataForm",
+        "AuxiliaryDataHistoryVersionDataForm",
+    ),
+    (
+        "auxiliaryDataHistoryVersionDifferencesForm",
+        "AuxiliaryDataHistoryVersionDifferencesForm",
+    ),
+    (
+        "auxiliaryCollaborationSystemUsersChoiceForm",
+        "AuxiliaryCollaborationSystemUsersChoiceForm",
+    ),
 ];
 
 /// The form slots an owner kind has in the 8.3.27 export, by contract key;
@@ -545,33 +711,103 @@ pub fn form_slots_of(kind: &str) -> Option<&'static [&'static str]> {
             "auxiliarySaveForm",
             "auxiliaryLoadForm",
         ],
+        "Configuration" => &[
+            "defaultReportForm",
+            "defaultReportVariantForm",
+            "defaultReportSettingsForm",
+            "defaultDynamicListSettingsForm",
+            "defaultSearchForm",
+            "defaultDataHistoryChangeHistoryForm",
+            "defaultDataHistoryVersionDataForm",
+            "defaultDataHistoryVersionDifferencesForm",
+            "defaultCollaborationSystemUsersChoiceForm",
+            "defaultConstantsForm",
+        ],
         _ => return None,
     })
 }
 
+/// The form slots an owner kind has in a set of platform `line`: those of
+/// 8.3.27 and those a later line adds up to `line`
+/// (INV.SOURCE.PROFILE-CAPABILITIES).
+pub fn form_slots_in(kind: &str, line: Option<PlatformLine>) -> Option<Vec<&'static str>> {
+    let mut slots = form_slots_of(kind)?.to_vec();
+    slots.extend(
+        FORM_SLOTS
+            .iter()
+            .filter(|(_, property)| {
+                member_property_since(kind, property).is_some()
+                    && member_property_exists(line, kind, property)
+            })
+            .map(|(key, _)| *key),
+    );
+    Some(slots)
+}
+
+/// The form slots of `kind` a later line than `line` adds, with the line
+/// each exists from.
+pub fn later_form_slots(
+    kind: &str,
+    line: Option<PlatformLine>,
+) -> Vec<(&'static str, &'static str, PlatformLine)> {
+    FORM_SLOTS
+        .iter()
+        .filter_map(|(key, property)| {
+            let since = member_property_since(kind, property)?;
+            (!member_property_exists(line, kind, property)).then_some((*key, *property, since))
+        })
+        .collect()
+}
+
 /// The `form.set` contract for the owner kind, or for any owner.
 pub fn form_set(kind: Option<&str>) -> OperationContract {
+    form_set_in(kind, None)
+}
+
+/// The `form.set` contract for the owner kind in a set of platform `line`:
+/// it offers the slots of that line and names those a later line adds.
+pub fn form_set_in(kind: Option<&str>, line: Option<PlatformLine>) -> OperationContract {
     let at = || ("at", text(true));
     let slot = json!({"type":"string",
         "description":"A form name of this owner; an empty string clears the slot, as an export with no such form writes it."});
     let keys = kind
-        .and_then(form_slots_of)
-        .map(<[&str]>::to_vec)
+        .and_then(|kind| form_slots_in(kind, line))
         .unwrap_or_else(|| FORM_SLOTS.iter().map(|(key, _)| *key).collect());
     let mut values = object(
         &keys
             .iter()
-            .map(|key| (*key, slot.clone()))
+            .map(|key| {
+                let mut field=slot.clone();
+                if kind == Some("Configuration") {
+                    field["description"]=json!("The name or logical address of a common form of this source set (`<set>:CommonForm.Name`, `CommonForm.Name` or `Name`); an empty string clears the slot.");
+                } else if kind.is_some_and(|kind| crate::default_forms::common_form_slot(kind, FORM_SLOTS.iter().find(|(name,_)|name == key).map_or("",|(_,property)|*property))) {
+                    field["description"]=json!("A form name or logical address of this owner, or the logical address of a compatible Managed CommonForm in the same source set. An empty string clears the slot. Report CommonForm requires a generic ReportObject main attribute and matching Main/Settings/Variant purpose (an absent ReportFormType means Main); Constant requires ConstantsSet.");
+                }
+                (*key,field)
+            })
             .collect::<Vec<_>>(),
         &[],
     );
     values["minProperties"] = json!(1);
+    if let Some(kind) = kind {
+        let later = later_form_slots(kind, line);
+        if !later.is_empty() {
+            let format = unica_metadata::descriptor_operations::line_format;
+            values["x-unica-later-lines"] = json!({
+                "line": line.map(|line| line.to_string()),
+                "format": line.map(format),
+                "items": later.iter().map(|(_, property, since)| json!({
+                    "property": property, "since": since.to_string(), "format": format(*since),
+                })).collect::<Vec<_>>(),
+            });
+        }
+    }
     let mut example = serde_json::Map::new();
     example.insert(keys[0].to_string(), json!("Sample"));
     OperationContract {
         schema: object(&[at(), ("values", values)], &["values"]),
-        target: "The form owner: <source-set>:<Kind>.<Name>.",
-        effect: "Point the owner's default and auxiliary form slots at the named forms, or clear a slot with an empty string. Unlisted slots stay. Only the slots of the owner's kind are accepted.",
+        target: "The form owner: <source-set>:<Kind>.<Name>, or the configuration root <source-set>:Configuration.",
+        effect: "Point the owner's default and auxiliary form slots at the named forms, or clear a slot with an empty string. Unlisted slots stay. Only the slots of the owner's kind are accepted. Report defaultForm/defaultSettingsForm/defaultVariantForm and Constant defaultForm also accept the logical address of a compatible Managed CommonForm in the same source set. The slots of the configuration root name common forms of the set.",
         notes: "Properties of a form itself (title, size, behaviour) are written by props.set at the form address.",
         example_args: json!({"values": example}),
         help: FORM_HELP,
@@ -605,7 +841,7 @@ pub fn form(operation: FormOperation) -> OperationContract {
             object(&[at(), ("items", json!({"type":"array","minItems":1,"items":element_item_schema(&[])}))], &["items"]),
             "The form <source-set>:<Kind>.<Name>.Form.<Form> or its container item ….Item.<Group>[.Item.<Nested>…] (group, pages, page, table, command bar).",
             "Add each listed element, without nested content, at the end of the addressed container or after its sibling `after`. Identifiers and companion items (ContextMenu, ExtendedTooltip, table additions) are written by the operation.",
-            "Each item is one element; its keys depend on its type. A nested element is added by a separate item.add at the address of its container; a handler is bound with event.bind at ….Item.<Element>.Event.<Event>. children, columns, elements, commandBar, autoCmdBar, autoCommandBar, contextMenu, extendedTooltip, html, on and handlers are refused. A command bar takes only buttons. Cross-field rules are checked by the planner: dynamic-list keys of a table need _dynList: true; a button takes one of command, commandName, stdCommand.",
+            "Each item is one element; its keys depend on its type. A nested element is added by a separate item.add at the address of its container; a handler is bound with event.bind at ….Item.<Element>.Event.<Event>. children, columns, elements, commandBar, autoCmdBar, autoCommandBar, contextMenu, extendedTooltip, html, on and handlers are refused. A command bar takes only buttons. An existing ColumnGroup takes only InputField, LabelField, CheckBox, HTMLDocumentField or TextDocumentField. Cross-field rules are checked by the planner: dynamic-list keys of a table need _dynList: true; a button takes one of command, commandName, stdCommand.",
             json!({"items":[{"name":"Sample","type":"InputField"}]}),
         ),
         FormOperation::ItemRemove => (
@@ -613,6 +849,13 @@ pub fn form(operation: FormOperation) -> OperationContract {
             "The existing item: <source-set>:<Kind>.<Name>.Form.<Form>.Item.<Element>[.Item.<Nested>…].",
             "Remove the item with its nested items and companions.",
             "The item is named by its address; the operation takes no other arguments.",
+            json!({}),
+        ),
+        FormOperation::AttributeRemove => (
+            object(&[at()], &[]),
+            "The existing form attribute: <source-set>:<Kind>.<Name>.Form.<Form>.Attribute.<Attribute>.",
+            "Remove the named unused top-level form attribute after checking supported XML references and validating the form.",
+            "No arguments. Main and inherited attributes are protected. Remove BSL uses beforehand; the operation checks XML bindings, report attribute slots and typed conditional-appearance field references, not all BSL uses. An opaque binding prevents proving safe removal and is refused.",
             json!({}),
         ),
         FormOperation::EventBind => (
@@ -629,6 +872,7 @@ pub fn form(operation: FormOperation) -> OperationContract {
         FormOperation::PropsSet => return form_props_set(),
         FormOperation::ItemMove => return form_move(),
         FormOperation::AttributeAdd => return form_attribute_add(),
+        FormOperation::ColumnAdd => return form_column_add(),
         FormOperation::CommandAdd => return form_command_add(),
     };
     OperationContract {
@@ -638,22 +882,27 @@ pub fn form(operation: FormOperation) -> OperationContract {
         notes,
         example_args,
         help: FORM_HELP,
-        format_validators: &[],
+        format_validators: FORM_FORMAT_VALIDATORS,
     }
 }
 
 /// `props.set` at a form: the root properties of its `Form.xml` (#1984).
+pub fn form_column_type_set() -> OperationContract {
+    OperationContract {
+        schema: object(&[("at", text(true)), ("values", object(&[("type", text(true))], &["type"]))], &["values"]),
+        target: "An existing data column of a ValueTable form attribute: <set>:<Kind>.<Name>.Form.<Form>.Attribute.<Attribute>.Column.<Column>.",
+        effect: "Replace only the column type. Preserve its name, ID, other settings, other columns and form bindings.",
+        notes: "type is the complete type composition in the form DSL shown by view. To add a type, retain the existing alternatives and join the new one with |. DefinedType stays a TypeSet reference; its definition is not changed. Unsupported or damaged source types are refused. Preview writes nothing; execute the saved token.",
+        example_args: json!({"values":{"type":"DefinedType.Existing | CatalogRef.Additional"}}),
+        help: FORM_HELP,
+        format_validators: &[],
+    }
+}
+
 pub fn form_props_set() -> OperationContract {
     use crate::root_properties::{writable_root_properties, RootValue};
     let mut values = Map::new();
-    values.insert(
-        "Title".to_string(),
-        json!({"anyOf":[
-            {"type":"string","description":"Text in the default language of the source set; other translations stay. An empty string removes the title."},
-            {"type":"object","additionalProperties":{"type":"string"},"minProperties":1,
-                "description":"Every translation by language code: {\"ru\": \"…\", \"en\": \"…\"}."}
-        ]}),
-    );
+    values.insert("Title".to_string(), nstr());
     for property in writable_root_properties() {
         let schema = match property.value {
             RootValue::Flag => json!({"type":"boolean"}),
@@ -670,9 +919,21 @@ pub fn form_props_set() -> OperationContract {
         target: "The form itself: <source-set>:<Kind>.<Name>.Form.<Form>.",
         effect: "Set the supplied root properties of the form, in the order 1C writes them. A value equal to the platform default is not written, as 1C does not export it. Other properties and the form content stay.",
         notes: "Names are the ones view shows for the form. AutoTitle is not changed with Title: set AutoTitle false to show only the title. AutoTime, UsePostingMode and RepostOnWrite belong to a document form, UseForFoldersAndItems to a catalog form, report properties to a report form; on another form they are refused. ReportResult, DetailsData, VariantAppearance, CustomSettingsFolder, SettingsStorage and GroupList are not written by this operation.",
-        example_args: json!({"values":{"Title":"Products","AutoTitle":false,"Width":60}}),
+        example_args: json!({"values":{"Title":"en = 'Products'","AutoTitle":false,"Width":60}}),
         help: FORM_HELP,
-        format_validators: &[],
+        format_validators: FORM_FORMAT_VALIDATORS,
+    }
+}
+
+pub fn form_column_add() -> OperationContract {
+    OperationContract {
+        schema: object(&[("at", text(true)), ("items", json!({"type":"array","minItems":1,"items":column_item_schema()}))], &["items"]),
+        target: "The existing ValueTable attribute: <set>:<Kind>.<Name>.Form.<Form>.Attribute.<Attribute>. Read its Column branch before choosing new names.",
+        effect: "Append the listed data columns, preserving existing columns, attribute identity and form bindings. The operation assigns new column IDs.",
+        notes: "Each name must be unused in the addressed attribute. type uses the form type DSL; title is optional NStr. The attribute must be a ValueTable. Visual elements are added separately with item.add. Preview writes nothing; execute the saved token and read the new columns.",
+        example_args: json!({"items":[{"name":"Additional","type":"String"}]}),
+        help: FORM_HELP,
+        format_validators: FORM_FORMAT_VALIDATORS,
     }
 }
 
@@ -691,7 +952,7 @@ pub fn form_attribute_add() -> OperationContract {
         notes,
         example_args,
         help: FORM_HELP,
-        format_validators: &[],
+        format_validators: FORM_FORMAT_VALIDATORS,
     }
 }
 
@@ -705,10 +966,8 @@ pub fn form_command_add() -> OperationContract {
                     json!({"type":"array","minItems":1,"items":object(&[
                         ("name",json!({"type":"string","pattern":r"\S",
                             "description":"New command name, unused in the form."})),
-                        ("title",json!({"type":"string","pattern":r"\S",
-                            "description":"Title in the configuration language."})),
-                        ("tooltip",json!({"type":"string","pattern":r"\S",
-                            "description":"Tooltip in the configuration language."})),
+                        ("title", nstr()),
+                        ("tooltip", nstr()),
                         ("action",json!({"type":"string","pattern":r"\S",
                             "description":"Handler procedure in the form module; defaults to the command name."})),
                         ("shortcut",json!({"type":"string","pattern":r"\S",
@@ -725,7 +984,7 @@ pub fn form_command_add() -> OperationContract {
         "The form itself: <source-set>:<Kind>.<Name>.Form.<Form>. Read its Command branch before choosing names.",
         "Add form commands with the listed properties, written in the platform's FormCommand order. Place a button bound to the command with item.add.",
         "A property outside this schema is refused before any write; use, functionalOptions, currentRowUse, modifiesSavedData and the associated table are not written by this operation.",
-        json!({"items":[{"name":"Refresh","title":"Refresh","tooltip":"Refresh the list","shortcut":"F5","picture":"StdPicture.Refresh","representation":"TextPicture"}]}),
+        json!({"items":[{"name":"Refresh","title":"en = 'Refresh'","tooltip":"en = 'Refresh the list'","shortcut":"F5","picture":"StdPicture.Refresh","representation":"TextPicture"}]}),
     );
     OperationContract {
         schema,
@@ -734,7 +993,7 @@ pub fn form_command_add() -> OperationContract {
         notes,
         example_args,
         help: FORM_HELP,
-        format_validators: &[],
+        format_validators: FORM_FORMAT_VALIDATORS,
     }
 }
 
@@ -763,6 +1022,67 @@ pub fn form_move() -> OperationContract {
 
 #[cfg(test)]
 mod tests {
+    /// rule: INV.SOURCE.PROFILE-CAPABILITIES
+    #[test]
+    fn a_report_is_offered_its_auxiliary_variant_form_in_the_lines_that_have_it() {
+        use unica_source_contract::format_identity::PlatformLine;
+        let values = |line| {
+            super::form_set_in(Some("Report"), Some(line)).schema["properties"]["values"].clone()
+        };
+        let old = values(PlatformLine::new(8, 3, 27));
+        assert!(old["properties"].get("auxiliaryVariantForm").is_none());
+        assert_eq!(
+            old["x-unica-later-lines"]["items"],
+            serde_json::json!([{"property":"AuxiliaryVariantForm","since":"8.5.1","format":"2.21"}])
+        );
+        for line in [PlatformLine::new(8, 5, 1), PlatformLine::new(8, 5, 4)] {
+            let new = values(line);
+            assert!(
+                new["properties"].get("auxiliaryVariantForm").is_some(),
+                "{line}"
+            );
+            assert!(new.get("x-unica-later-lines").is_none(), "{line}");
+        }
+        // Another kind has no such slot in any line.
+        let catalog = super::form_set_in(Some("Catalog"), Some(PlatformLine::new(8, 5, 4)));
+        assert!(catalog.schema["properties"]["values"]["properties"]
+            .get("auxiliaryVariantForm")
+            .is_none());
+    }
+
+    /// `can` of the configuration root offers its ten default forms, and the
+    /// eight auxiliary ones in the lines that have them.
+    /// rule: INV.SOURCE.PROFILE-CAPABILITIES
+    #[test]
+    fn a_configuration_root_is_offered_its_form_slots_by_line() {
+        use unica_source_contract::format_identity::PlatformLine;
+        let values = |line| {
+            super::form_set_in(Some("Configuration"), Some(line)).schema["properties"]["values"]
+                .clone()
+        };
+        let old = values(PlatformLine::new(8, 3, 27));
+        assert_eq!(old["properties"].as_object().unwrap().len(), 10);
+        assert_eq!(
+            old["x-unica-later-lines"]["items"]
+                .as_array()
+                .unwrap()
+                .len(),
+            8
+        );
+        assert!(old["properties"]["defaultSearchForm"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("common form"));
+        let new = values(PlatformLine::new(8, 5, 1));
+        assert_eq!(new["properties"].as_object().unwrap().len(), 18);
+        assert!(new.get("x-unica-later-lines").is_none());
+        // An object owner has none of the root slots.
+        let catalog = super::form_set_in(Some("Catalog"), Some(PlatformLine::new(8, 5, 4)));
+        assert!(catalog.schema["properties"]["values"]["properties"]
+            .get("defaultSearchForm")
+            .is_none());
+    }
+
     use super::*;
 
     #[test]
@@ -770,7 +1090,7 @@ mod tests {
         for kind in FORM_ELEMENT_KINDS {
             for flag in COMMON_FLAGS {
                 assert_eq!(
-                    kind.keys.iter().filter(|key| **key == flag).count(),
+                    kind.key_names().filter(|key| *key == flag).count(),
                     1,
                     "{} {flag}",
                     kind.kind
@@ -780,7 +1100,7 @@ mod tests {
     }
 
     /// Ключ, которого писатель вида не пишет, отказывает по точному пути,
-    /// а не по общему «ни одна альтернатива не подошла» (#1447).
+    /// а не по общему «ни одна альтернатива не подошла».
     #[test]
     fn item_add_refuses_a_key_of_another_kind_at_its_exact_path() {
         let contract = form(FormOperation::ItemAdd);
@@ -831,7 +1151,7 @@ mod tests {
         for item in [
             json!({"name":"A"}),
             json!({"name":"A","type":"Button","backColor":"web:Red","font":{"bold":true}}),
-            json!({"name":"A","type":"Label","title":{"text":"A","formatted":true}}),
+            json!({"name":"A","type":"Label","title":{"text":"en = 'A'","formatted":true}}),
             json!({"name":"A","type":"Table","_dynList":true,"autoRefresh":true}),
         ] {
             assert!(
@@ -861,7 +1181,7 @@ mod tests {
         }
     }
 
-    /// #2144: the contract at an owner offers exactly that kind's form slots
+    /// The contract at an owner offers exactly that kind's form slots
     /// and takes an empty string to clear one.
     #[test]
     fn form_set_contract_is_narrowed_to_the_owner_kind() {
@@ -922,6 +1242,7 @@ mod tests {
             FormOperation::ItemRemove,
             FormOperation::ItemMove,
             FormOperation::AttributeAdd,
+            FormOperation::AttributeRemove,
             FormOperation::CommandAdd,
             FormOperation::EventBind,
         ] {

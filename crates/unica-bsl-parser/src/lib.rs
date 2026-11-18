@@ -1,13 +1,23 @@
 //! Owned syntax facts for the existing BSL readers and planners.
 
+mod editor;
+mod notify;
 mod outline;
 pub mod symbols;
+mod variables;
+
+pub use variables::VariableSyntax;
 
 use bsl_syntax::ast::{Annotation, AstNode, FunctionDef, PreIfDir, PreRegionDir, ProcedureDef};
 use bsl_syntax::{SyntaxKind, SyntaxNode};
 use serde::Serialize;
 use std::ops::Range;
 
+pub use editor::{
+    CallSite, ClassifiedToken, CompletionSite, EditorParameter, EditorSymbol, EditorSymbolKind,
+    FoldBlock, FoldKind, TokenClass, VisibleNames,
+};
+pub use notify::NotifyDescriptionSite;
 pub use outline::{
     bsl_method_parameters, exact_bsl_method_facts, exported_bsl_procedure_matches,
     first_exported_bsl_procedure, misplaced_variable_declarations, outline_regions,
@@ -83,6 +93,8 @@ pub struct AnnotationFact {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MethodSyntax {
     pub name: Option<String>,
+    /// Byte range of the same AST token that supplies `name`.
+    pub name_range: Option<Range<usize>>,
     pub kind: CodeOutlineMethodKind,
     pub is_export: bool,
     pub range: Range<usize>,
@@ -149,25 +161,23 @@ impl ParsedModule<'_> {
             .syntax_node()
             .descendants()
             .filter_map(|node| {
-                let (name, kind, is_export) = if let Some(method) = ProcedureDef::cast(node.clone())
-                {
-                    (
-                        method
-                            .name_or_keyword()
-                            .map(|token| token.text().to_string()),
-                        CodeOutlineMethodKind::Procedure,
-                        method.export_keyword().is_some(),
-                    )
-                } else {
-                    let method = FunctionDef::cast(node.clone())?;
-                    (
-                        method
-                            .name_or_keyword()
-                            .map(|token| token.text().to_string()),
-                        CodeOutlineMethodKind::Function,
-                        method.export_keyword().is_some(),
-                    )
-                };
+                let (name_token, kind, is_export) =
+                    if let Some(method) = ProcedureDef::cast(node.clone()) {
+                        (
+                            method.name_or_keyword(),
+                            CodeOutlineMethodKind::Procedure,
+                            method.export_keyword().is_some(),
+                        )
+                    } else {
+                        let method = FunctionDef::cast(node.clone())?;
+                        (
+                            method.name_or_keyword(),
+                            CodeOutlineMethodKind::Function,
+                            method.export_keyword().is_some(),
+                        )
+                    };
+                let name = name_token.as_ref().map(|token| token.text().to_string());
+                let name_range = name_token.map(|token| byte_range(token.text_range()));
                 let header_keyword = first_range(&node, |kind| {
                     matches!(kind, SyntaxKind::KW_PROCEDURE | SyntaxKind::KW_FUNCTION)
                 });
@@ -238,6 +248,7 @@ impl ParsedModule<'_> {
                     .collect();
                 Some(MethodSyntax {
                     name,
+                    name_range,
                     kind,
                     is_export,
                     range: byte_range(node.text_range()),
@@ -380,6 +391,7 @@ mod tests {
         assert_eq!(methods.len(), 1);
         let method = &methods[0];
         assert_eq!(method.name.as_deref(), Some("Обработать"));
+        assert_eq!(&source[method.name_range.clone().unwrap()], "Обработать");
         assert_eq!(method.kind, CodeOutlineMethodKind::Procedure);
         assert!(method.is_export);
         assert_eq!(
@@ -401,6 +413,31 @@ mod tests {
         assert_eq!(method.annotations[0].target.as_deref(), Some("Original"));
         assert_eq!(method.annotations[1].text, "&AtServer");
         assert!(method.annotations[1].is_compiler_directive);
+    }
+
+    #[test]
+    fn recovered_method_keeps_only_ast_proven_name_ranges() {
+        for (source, expected_name, has_errors) in [
+            (
+                "Async Procedure Проверка()\nDoSomething(1, \nEndProcedure",
+                Some("Проверка"),
+                true,
+            ),
+            ("Procedure ()\nEndProcedure", None, false),
+        ] {
+            let parsed = parse(source);
+            if has_errors {
+                assert!(!parsed.errors().is_empty(), "{source:?}");
+            }
+            let methods = parsed.methods();
+            assert_eq!(methods.len(), 1);
+            let method = &methods[0];
+            assert_eq!(method.name.as_deref(), expected_name);
+            assert_eq!(method.name_range.is_some(), expected_name.is_some());
+            if let Some(range) = method.name_range.clone() {
+                assert_eq!(Some(&source[range]), method.name.as_deref());
+            }
+        }
     }
 
     #[test]

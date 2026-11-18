@@ -1,0 +1,40 @@
+{
+  "id": "S346",
+  "name": "diagnostics-jsonl-unknown-severity",
+  "issue": 1064,
+  "area": "Код BSL",
+  "task": "Неизвестная severity даёт безопасный отказ без секретных значений",
+  "workspace": "tests/fixtures/acceptance/workspace-diagnostics",
+  "profile": "fault-injection",
+  "driver": "analyzer-jsonl-fault",
+  "evaluation": "unknown-severity",
+  "wire": [
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:CommonModule.Пример"
+      },
+      "expect": [
+        "provider"
+      ],
+      "assertions": [
+        {
+          "pointer": "/ok",
+          "eq": false
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "provider_unavailable"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "eq": "BSL analysis did not complete, so the module is unproven: line 2: unknown diagnostic severity. Check compatibility between Unica and its bundled analyzer; if the problem persists, report this reason and line number."
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ]
+    }
+  ]
+}

@@ -30,11 +30,11 @@ const NO_PROXY_VARIABLES: &[&str] = &["no_proxy", "NO_PROXY"];
 pub(crate) struct ProxyChoice {
     /// Имя переменной, из которой взято значение.
     pub variable: &'static str,
-    /// Значение как есть: ключ агента и вход для `ureq::Proxy`.
+    /// Значение как есть: ключ агента и вход для HTTP-клиента.
     raw: String,
     /// Значение без пароля: только оно попадает в тексты и журналы.
     pub shown: String,
-    pub proxy: ureq::Proxy,
+    pub proxy: reqwest::Proxy,
 }
 
 impl ProxyChoice {
@@ -112,44 +112,54 @@ fn choose(lookup: EnvLookup<'_>, names: &[&'static str]) -> SchemeProxy {
     let Some((variable, raw)) = first_value(lookup, names) else {
         return Ok(None);
     };
-    let shown = without_password(&raw);
     let refuse = |why: &str| ProxySettingError {
-        message: format!("{variable}={shown}: {why}"),
+        message: format!("{variable}: {why}"),
     };
-    if let Some((scheme, _)) = raw.split_once("://") {
-        if !scheme.eq_ignore_ascii_case("http") {
+    let authority = match raw.split_once("://") {
+        Some((scheme, authority)) if scheme.eq_ignore_ascii_case("http") => authority,
+        Some((scheme, _)) => {
+            let scheme = if matches!(
+                scheme,
+                "https" | "socks" | "socks4" | "socks4a" | "socks5" | "socks5h"
+            ) {
+                scheme
+            } else {
+                "unknown"
+            };
             return Err(refuse(&format!(
                 "proxy scheme `{scheme}` is not supported; Unica connects only through an HTTP proxy (http://host:port)"
             )));
         }
+        None => raw.as_str(),
+    };
+    let invalid_address = || refuse("invalid HTTP proxy address");
+    let (credentials, host) = match authority.rsplit_once('@') {
+        Some((credentials, host)) => (
+            Some(credentials.split_once(':').ok_or_else(invalid_address)?),
+            host,
+        ),
+        None => (None, authority),
+    };
+    let location = format!("http://{}", host.trim_end_matches('/'));
+    let parsed = url::Url::parse(&location).map_err(|_| invalid_address())?;
+    if !parsed.has_host()
+        || parsed.path() != "/"
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err(invalid_address());
     }
-    let proxy = ureq::Proxy::new(&raw).map_err(|error| refuse(&error.to_string()))?;
+    let shown = super::diagnostic_url(&location);
+    let mut proxy = reqwest::Proxy::all(parsed).map_err(|_| invalid_address())?;
+    if let Some((user, password)) = credentials {
+        proxy = proxy.basic_auth(user, password);
+    }
     Ok(Some(ProxyChoice {
         variable,
         raw,
         shown,
         proxy,
     }))
-}
-
-/// `user:password@host` → `user:***@host`. Пароль в прокси — секрет, а текст
-/// отказа bootstrap пишет в журнал попыток на диске.
-pub(crate) fn without_password(raw: &str) -> String {
-    let (scheme, rest) = match raw.split_once("://") {
-        Some((scheme, rest)) => (Some(scheme), rest),
-        None => (None, raw),
-    };
-    let masked = match rest.rsplit_once('@') {
-        Some((credentials, host)) => match credentials.split_once(':') {
-            Some((user, _)) => format!("{user}:***@{host}"),
-            None => format!("{credentials}@{host}"),
-        },
-        None => rest.to_owned(),
-    };
-    match scheme {
-        Some(scheme) => format!("{scheme}://{masked}"),
-        None => masked,
-    }
 }
 
 /// Узлы из `NO_PROXY`.
@@ -233,6 +243,7 @@ mod tests {
             .map(|choice| choice.variable)
     }
 
+    /// rule: INV.PKG.NETWORK-PROXY-ROUTING
     #[test]
     fn https_proxy_wins_over_all_proxy_and_lowercase_over_uppercase() {
         let both = settings(&[
@@ -273,14 +284,10 @@ mod tests {
         let error = settings
             .route(&url::Url::parse("https://github.com/").expect("url"))
             .expect_err("socks is refused");
-        assert!(error.message.starts_with("ALL_PROXY="), "{}", error.message);
+        assert!(error.message.starts_with("ALL_PROXY:"), "{}", error.message);
         assert!(error.message.contains("socks5"), "{}", error.message);
         assert!(!error.message.contains("s3cret"), "{}", error.message);
-        assert!(
-            error.message.contains("alice:***@proxy.corp"),
-            "{}",
-            error.message
-        );
+        assert!(!error.message.contains("alice"), "{}", error.message);
     }
 
     #[test]
@@ -300,6 +307,7 @@ mod tests {
             .is_err());
     }
 
+    /// rule: INV.PKG.NETWORK-PROXY-ROUTING
     #[test]
     fn no_proxy_matches_hosts_and_subdomains_but_not_lookalikes() {
         let settings = settings(&[
@@ -339,11 +347,12 @@ mod tests {
 
     #[test]
     fn a_password_never_reaches_the_shown_value() {
-        assert_eq!(
-            without_password("http://bob:pa:ss@proxy:8080"),
-            "http://bob:***@proxy:8080"
-        );
-        assert_eq!(without_password("bob@proxy:8080"), "bob@proxy:8080");
-        assert_eq!(without_password("proxy:8080"), "proxy:8080");
+        let settings = settings(&[("http_proxy", "http://bob:pa:ss@proxy:8080")]);
+        let url = url::Url::parse("http://example.test").unwrap();
+        let choice = settings.route(&url).unwrap().unwrap();
+        assert_eq!(choice.shown, "http://proxy:8080");
+        let debug = format!("{choice:?}");
+        assert!(!debug.contains("bob"));
+        assert!(!debug.contains("pa:ss"));
     }
 }

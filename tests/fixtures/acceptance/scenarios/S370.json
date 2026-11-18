@@ -1,0 +1,469 @@
+{
+  "id": "S370",
+  "name": "dcs-dataset-links-set-remove",
+  "issue": 1310,
+  "area": "СКД",
+  "task": "Изменить связь по четырём явным селекторам; проверить условие/параметр, затем удалить выбранную связь сохранив соседнюю",
+  "workspace": "tests/fixtures/acceptance/workspace-dcs",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report",
+        "ops": [
+          {
+            "op": "template.add",
+            "args": {
+              "items": [
+                {
+                  "name": "PrimitiveLinks",
+                  "templateType": "DataCompositionSchema"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveLinks/Ext/Template.xml",
+          "kind": "exists",
+          "eq": false
+        }
+      ],
+      "captures": {
+        "createToken": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.createToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveLinks/Ext/Template.xml",
+          "kind": "exists",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveLinks"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "phase2Before": {
+          "file": "src/cf/Reports/F05Report/Templates/PrimitiveLinks/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveLinks",
+        "ops": [
+          {
+            "op": "dataSet.add",
+            "args": {
+              "items": [
+                {
+                  "name": "Left",
+                  "dataSource": "ИсточникДанных1",
+                  "query": "ВЫБРАТЬ 1 КАК Amount, \"A\" КАК Category"
+                },
+                {
+                  "name": "Right",
+                  "dataSource": "ИсточникДанных1",
+                  "query": "ВЫБРАТЬ 1 КАК Amount, \"A\" КАК Category"
+                }
+              ]
+            }
+          },
+          {
+            "op": "dataSetLink.add",
+            "args": {
+              "items": [
+                {
+                  "source": "Left",
+                  "destination": "Right",
+                  "sourceExpression": "Amount",
+                  "destinationExpression": "Amount",
+                  "parameterListAllowed": false,
+                  "required": true
+                },
+                {
+                  "source": "Left",
+                  "destination": "Right",
+                  "sourceExpression": "Category",
+                  "destinationExpression": "Category",
+                  "parameterListAllowed": true,
+                  "required": false
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveLinks/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.phase2Before"
+        }
+      ],
+      "captures": {
+        "phase2Token": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.phase2Token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveLinks/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}dataSetLink/{http://v8.1c.ru/8.1/data-composition-system/schema}sourceExpression",
+          "eq": [
+            "Amount",
+            "Category"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveLinks/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}dataSetLink/{http://v8.1c.ru/8.1/data-composition-system/schema}parameterListAllowed",
+          "eq": [
+            "true"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveLinks/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}dataSetLink/{http://v8.1c.ru/8.1/data-composition-system/schema}required",
+          "eq": [
+            "false"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveLinks"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "phase4Before": {
+          "file": "src/cf/Reports/F05Report/Templates/PrimitiveLinks/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveLinks",
+        "ops": [
+          {
+            "op": "dataSetLink.set",
+            "args": {
+              "values": {
+                "selector": {
+                  "source": "Left",
+                  "destination": "Right",
+                  "sourceExpression": "Amount",
+                  "destinationExpression": "Amount"
+                },
+                "condition": "Amount > 0",
+                "parameter": "Period",
+                "startExpression": "1",
+                "parameterListAllowed": true,
+                "required": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveLinks/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.phase4Before"
+        }
+      ],
+      "captures": {
+        "phase4Token": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.phase4Token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveLinks/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}dataSetLink[{http://v8.1c.ru/8.1/data-composition-system/schema}sourceExpression='Amount']/{http://v8.1c.ru/8.1/data-composition-system/schema}linkConditionExpression",
+          "eq": [
+            "Amount > 0"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveLinks/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}dataSetLink[{http://v8.1c.ru/8.1/data-composition-system/schema}sourceExpression='Amount']/{http://v8.1c.ru/8.1/data-composition-system/schema}parameter",
+          "eq": [
+            "Period"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveLinks/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}dataSetLink/{http://v8.1c.ru/8.1/data-composition-system/schema}sourceExpression",
+          "eq": [
+            "Amount",
+            "Category"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveLinks/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}dataSetLink/{http://v8.1c.ru/8.1/data-composition-system/schema}parameterListAllowed",
+          "eq": [
+            "true",
+            "true"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveLinks/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}dataSetLink/{http://v8.1c.ru/8.1/data-composition-system/schema}required",
+          "eq": [
+            "false",
+            "false"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveLinks.Item"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/kind",
+          "eq": "DataSetLink"
+        },
+        {
+          "pointer": "/data/items/0/source",
+          "eq": "Left"
+        },
+        {
+          "pointer": "/data/items/0/condition",
+          "eq": "Amount > 0"
+        },
+        {
+          "pointer": "/data/items/0/parameter",
+          "eq": "Period"
+        },
+        {
+          "pointer": "/data/items/0/startExpression",
+          "eq": "1"
+        },
+        {
+          "pointer": "/data/items/1/sourceExpression",
+          "eq": "Category"
+        },
+        {
+          "pointer": "/data/items/0/parameterListAllowed",
+          "eq": true
+        },
+        {
+          "pointer": "/data/items/0/required",
+          "eq": false
+        },
+        {
+          "pointer": "/data/items/1/parameterListAllowed",
+          "eq": true
+        },
+        {
+          "pointer": "/data/items/1/required",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveLinks"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "phase6Before": {
+          "file": "src/cf/Reports/F05Report/Templates/PrimitiveLinks/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveLinks",
+        "ops": [
+          {
+            "op": "dataSetLink.remove",
+            "args": {
+              "values": {
+                "selector": {
+                  "source": "Left",
+                  "destination": "Right",
+                  "sourceExpression": "Amount",
+                  "destinationExpression": "Amount"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveLinks/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.phase6Before"
+        }
+      ],
+      "captures": {
+        "phase6Token": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.phase6Token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveLinks/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}dataSetLink/{http://v8.1c.ru/8.1/data-composition-system/schema}sourceExpression",
+          "eq": [
+            "Category"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveLinks/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}dataSetLink/{http://v8.1c.ru/8.1/data-composition-system/schema}parameterListAllowed",
+          "eq": [
+            "true"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveLinks/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}dataSetLink/{http://v8.1c.ru/8.1/data-composition-system/schema}required",
+          "eq": [
+            "false"
+          ]
+        }
+      ]
+    }
+  ]
+}

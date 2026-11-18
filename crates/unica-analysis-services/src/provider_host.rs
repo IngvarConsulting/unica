@@ -74,6 +74,8 @@ impl ProviderHostOwner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// rule: INV.APP.EXACT-LONG-WORK-OWNERSHIP
+    /// rule: INV.APP.EXACT-SHARED-WORK
     #[test]
     fn typed_provider_key_rejects_weak_identity_and_remains_exact() {
         assert!(

@@ -22,6 +22,7 @@ use unica_workspace::read::{open_absolute_read_directory_nofollow, open_any_read
 pub(crate) struct SourceLayoutInspector;
 
 const SOURCE_DISCOVERY_CANCELLED: &str = "project health source discovery cancelled";
+// resource-limit-excluded: текст сообщения об истечении срока, не предел
 const SOURCE_DISCOVERY_DEADLINE: &str = "project health source discovery deadline expired";
 
 pub(crate) struct SourceLayoutInspection {

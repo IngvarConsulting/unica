@@ -1,7 +1,5 @@
 ---
 id: INV.CACHE.WORKTREE-ISOLATION
-check:
-  - crates/unica-coder/src/infrastructure/workspace.rs::git_worktree_boundary_prevents_parent_workspace_discovery
 ---
 
 # Поиск проекта не выходит за границу рабочей копии Git

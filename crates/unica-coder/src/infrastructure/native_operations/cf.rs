@@ -180,7 +180,7 @@ pub(crate) struct CfInfoExecution {
 }
 
 #[cfg(test)]
-mod metadata_kind_consumer_tests {
+mod medium_metadata_kind_consumer_tests {
     use super::*;
     use std::collections::HashSet;
 
@@ -195,7 +195,7 @@ mod metadata_kind_consumer_tests {
                 .as_nanos()
         ));
         fs::create_dir_all(&root).unwrap();
-        let plan = cf_edit_set_home_page(&json!({"template": "OneColumn"}), &root).unwrap();
+        let plan = cf_edit_set_home_page(&json!({"template": "OneColumn"}), &root, "2.20").unwrap();
         let xml = String::from_utf8(plan.bytes).unwrap();
         let document = Document::parse(xml.trim_start_matches('\u{feff}')).unwrap();
 
@@ -243,6 +243,7 @@ mod metadata_kind_consumer_tests {
                 "right": ["CommonForm.Right"]
             }),
             &root,
+            "2.20",
         )
         .unwrap();
         let xml = String::from_utf8(plan.bytes.clone()).unwrap();
@@ -511,7 +512,7 @@ fn cf_edit_transaction_error(error: String) -> String {
 }
 
 #[cfg(test)]
-pub(crate) mod cf_edit_transaction_tests {
+pub(crate) mod medium_cf_edit_transaction_tests {
     use super::*;
     use crate::application::UnicaApplication;
     use unica_workspace::compile_transaction::{with_commit_failpoint, CommitFailpoint};
@@ -656,7 +657,7 @@ pub(crate) mod cf_edit_transaction_tests {
         let config_before = fs::read(&fixture.config_path).unwrap();
         let concurrent_config = String::from_utf8(config_before)
             .unwrap()
-            .replacen(r#"version="2.20""#, r#"version="2.21""#, 1)
+            .replacen(r#"version="2.20""#, r#"version="2.23""#, 1)
             .into_bytes();
         let interface_path = fixture
             .config_path
@@ -701,12 +702,12 @@ pub(crate) mod cf_edit_transaction_tests {
         let config_dir = fixture.config_path.parent().unwrap();
         let home_page_path = config_dir.join("Ext/HomePageWorkArea.xml");
         let newer_home_page = String::from_utf8(
-            cf_edit_set_home_page(&json!({"template": "OneColumn"}), config_dir)
+            cf_edit_set_home_page(&json!({"template": "OneColumn"}), config_dir, "2.20")
                 .unwrap()
                 .bytes,
         )
         .unwrap()
-        .replacen(r#"version="2.20""#, r#"version="2.21""#, 1);
+        .replacen(r#"version="2.20""#, r#"version="2.23""#, 1);
         fs::write(&home_page_path, &newer_home_page).unwrap();
         let config_before = fs::read(&fixture.config_path).unwrap();
         let home_page_before = fs::read(&home_page_path).unwrap();
@@ -724,8 +725,8 @@ pub(crate) mod cf_edit_transaction_tests {
 
         assert!(!outcome.ok, "{outcome:?}");
         let diagnostics = outcome.errors.join("\n");
-        assert!(diagnostics.contains("2.21"), "{diagnostics}");
-        assert!(diagnostics.contains("1C 8.5"), "{diagnostics}");
+        assert!(diagnostics.contains("2.23"), "{diagnostics}");
+        assert!(diagnostics.contains("2.22"), "{diagnostics}");
         assert!(
             !diagnostics.contains("older than supported"),
             "{diagnostics}"
@@ -1043,7 +1044,7 @@ pub(crate) mod cf_edit_transaction_tests {
                 ("NoValidate".to_string(), json!(true)),
             ]);
 
-            let result = UnicaApplication::new()
+            let result = crate::composition::testing::application()
                 .call_tool("unica.cf.edit", &args)
                 .unwrap();
 
@@ -1312,7 +1313,7 @@ pub(crate) fn invoke_mutation(
 }
 
 #[cfg(test)]
-pub(super) mod cf_read_selector_bridge_tests {
+pub(super) mod medium_cf_read_selector_bridge_tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
 

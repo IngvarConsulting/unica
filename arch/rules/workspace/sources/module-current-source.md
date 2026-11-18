@@ -1,7 +1,5 @@
 ---
 id: INV.SOURCE.MODULE-CURRENT-SOURCE
-check:
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::one_read_parses_each_module_source_once_per_actor_revision
 gap: https://github.com/IngvarConsulting/unica/issues/973
 ---
 

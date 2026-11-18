@@ -23,3 +23,7 @@ zip.workspace = true
 
 [dev-dependencies]
 unica-network = { path = "../unica-network", features = ["test-support"] }
+
+[package.metadata.unica]
+component = "service"
+file-io = "owned"

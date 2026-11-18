@@ -1,0 +1,40 @@
+{
+  "id": "S340",
+  "name": "diagnostics-filter-authors-toml",
+  "issue": 1291,
+  "area": "Код BSL",
+  "task": "Действующий TOML фильтр авторов не объявляет скрытые находки чистым кодом",
+  "workspace": "tests/fixtures/acceptance/workspace-diagnostics",
+  "profile": "delivery",
+  "driver": "bsl-analyzer-diagnostics",
+  "evaluation": "authors-toml",
+  "wire": [
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:CommonModule.Пример"
+      },
+      "expect": [
+        "provider"
+      ],
+      "assertions": [
+        {
+          "pointer": "/ok",
+          "eq": false
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "provider_unavailable"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "CLI author filtering is configured; this analyzer does not report which findings it hid"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ]
+    }
+  ]
+}

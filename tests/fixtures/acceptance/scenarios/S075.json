@@ -1,0 +1,21 @@
+{
+  "area": "Реквизиты и состав",
+  "task": "Удалить табличную часть по её адресу",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.TabularSection.Представления",
+        "ops": [
+          {
+            "op": "tabularSection.remove"
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S075"
+}

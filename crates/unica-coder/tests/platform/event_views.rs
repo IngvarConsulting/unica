@@ -1,5 +1,6 @@
 use super::*;
 
+/// rule: INV.SOURCE.EVENT-IMPLEMENTATION-PAIR
 #[test]
 fn implementation_shape_uses_typed_owner_leaf_and_the_selected_catalog_record() {
     let form_xml = r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20">
@@ -8,6 +9,9 @@ fn implementation_shape_uses_typed_owner_leaf_and_the_selected_catalog_record() 
                 <InputField name="Field" id="1"/>
                 <Table name="Goods" id="2"><ChildItems>
                     <InputField name="Quantity" id="3"/>
+                </ChildItems></Table>
+                <Table name="Payments" id="4"><ChildItems>
+                    <InputField name="Amount" id="5"/>
                 </ChildItems></Table>
             </ChildItems>
             <Commands><Command name="Заполнить"/></Commands>
@@ -25,21 +29,28 @@ fn implementation_shape_uses_typed_owner_leaf_and_the_selected_catalog_record() 
                 EventImplementationOwner::Element,
                 "FieldПриИзменении",
                 "Процедура FieldПриИзменении(Элемент)",
-                "ОбработчикиСобытийЭлементовФормы",
+                "ОбработчикиСобытийЭлементовШапкиФормы",
             ),
             (
                 "main:Catalog.Products.Form.Main.Item.Goods.Event.BeforeAddRow",
                 EventImplementationOwner::Table,
                 "GoodsПередНачаломДобавления",
                 "Процедура GoodsПередНачаломДобавления(Элемент, Отказ, Копирование, Родитель, ЭтоГруппа, Параметр)",
-                "ОбработчикиСобытийЭлементовФормы",
+                "ОбработчикиСобытийЭлементовТаблицыФормыGoods",
             ),
             (
                 "main:Catalog.Products.Form.Main.Item.Goods.Item.Quantity.Event.OnChange",
                 EventImplementationOwner::Column,
                 "QuantityПриИзменении",
                 "Процедура QuantityПриИзменении(Элемент)",
-                "ОбработчикиСобытийЭлементовФормы",
+                "ОбработчикиСобытийЭлементовТаблицыФормыGoods",
+            ),
+            (
+                "main:Catalog.Products.Form.Main.Item.Payments.Item.Amount.Event.OnChange",
+                EventImplementationOwner::Column,
+                "AmountПриИзменении",
+                "Процедура AmountПриИзменении(Элемент)",
+                "ОбработчикиСобытийЭлементовТаблицыФормыPayments",
             ),
             (
                 "main:Catalog.Products.Form.Main.Command.Заполнить.Event.Execute",

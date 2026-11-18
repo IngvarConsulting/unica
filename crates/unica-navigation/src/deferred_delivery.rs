@@ -12,8 +12,28 @@ use crate::result_store::{unix_ms_now, ResultStore, SnapshotIdentity, StoredView
 
 /// Serialized `OperationResult.data` above this many bytes is delivered as a
 /// deferred manifest (~16 KiB ≈ 4 000 o200k_base tokens).
+// resource-limit: mcp.deferred-delivery-threshold-bytes
+// class: step
+// unit: bytes
+// scope: request
+// value: 16384
+// resource: Порог сериализованных данных результата, сверх которого они выдаются отложенным манифестом с продолжением.
+// status: unproven
+// origin: 27a108daf (#537)
+// problem: Порог около 16 КиБ ≈ 4 000 токенов o200k_base (комментарий в deferred_delivery.rs).
+// on-reach: Данные выдаются отложенным манифестом и читаются по ссылке.
 pub const DEFAULT_THRESHOLD_BYTES: usize = 16 * 1024;
 
+// resource-limit: mcp.deferred-continuation-page-entries
+// class: step
+// unit: count
+// scope: request
+// value: 50
+// resource: Число элементов одной страницы продолжения отложенного результата.
+// status: unproven
+// origin: #537
+// problem: неизвестно
+// on-reach: следующие элементы выдаются на следующей странице (page); totalInSection сообщает общий счёт
 const CONTINUATION_PAGE_SIZE: usize = 50;
 
 pub const CONTINUATION_ARGS: &[&str] = &["delivery", "filter", "page", "resultRef", "section"];

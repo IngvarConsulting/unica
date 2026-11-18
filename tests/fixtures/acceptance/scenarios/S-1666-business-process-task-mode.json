@@ -1,0 +1,284 @@
+{
+  "id": "S-1666-business-process-task-mode",
+  "issue": 1666,
+  "area": "Метаданные",
+  "task": "Переключить привилегированный режим создания задач через preview/token с сохранением маршрута и повтором без изменений.",
+  "workspace": "tests/fixtures/acceptance/workspace-business-process-task-mode",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:BusinessProcess.Approval.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/CreateTaskInPrivilegedMode/type",
+          "eq": "boolean"
+        }
+      ],
+      "captures": {
+        "initial": {
+          "kind": "sha256",
+          "file": "src/BusinessProcesses/Approval.xml"
+        },
+        "route": {
+          "kind": "sha256",
+          "file": "src/BusinessProcesses/Approval/Ext/Flowchart.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:BusinessProcess.Approval"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0": {
+          "kind": "sha256",
+          "file": "src/BusinessProcesses/Approval.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:BusinessProcess.Approval",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "CreateTaskInPrivilegedMode": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/BusinessProcesses/Approval.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/BusinessProcesses/Approval.xml",
+          "kind": "xml",
+          "select": "./{*}BusinessProcess/{*}Properties/{*}CreateTaskInPrivilegedMode",
+          "eq": [
+            "false"
+          ]
+        },
+        {
+          "path": "src/BusinessProcesses/Approval/Ext/Flowchart.xml",
+          "kind": "sha256",
+          "eq": "$capture.route"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:BusinessProcess.Approval"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/CreateTaskInPrivilegedMode",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:BusinessProcess.Approval"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1": {
+          "kind": "sha256",
+          "file": "src/BusinessProcesses/Approval.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:BusinessProcess.Approval",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "CreateTaskInPrivilegedMode": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/BusinessProcesses/Approval.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/BusinessProcesses/Approval.xml",
+          "kind": "xml",
+          "select": "./{*}BusinessProcess/{*}Properties/{*}CreateTaskInPrivilegedMode",
+          "eq": [
+            "false"
+          ]
+        },
+        {
+          "path": "src/BusinessProcesses/Approval/Ext/Flowchart.xml",
+          "kind": "sha256",
+          "eq": "$capture.route"
+        },
+        {
+          "path": "src/BusinessProcesses/Approval.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:BusinessProcess.Approval"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/CreateTaskInPrivilegedMode",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:BusinessProcess.Approval"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before2": {
+          "kind": "sha256",
+          "file": "src/BusinessProcesses/Approval.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:BusinessProcess.Approval",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "CreateTaskInPrivilegedMode": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/BusinessProcesses/Approval.xml",
+          "kind": "sha256",
+          "eq": "$capture.before2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/BusinessProcesses/Approval.xml",
+          "kind": "xml",
+          "select": "./{*}BusinessProcess/{*}Properties/{*}CreateTaskInPrivilegedMode",
+          "eq": [
+            "true"
+          ]
+        },
+        {
+          "path": "src/BusinessProcesses/Approval/Ext/Flowchart.xml",
+          "kind": "sha256",
+          "eq": "$capture.route"
+        },
+        {
+          "path": "src/BusinessProcesses/Approval.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:BusinessProcess.Approval"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/CreateTaskInPrivilegedMode",
+          "eq": true
+        }
+      ]
+    }
+  ]
+}

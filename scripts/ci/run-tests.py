@@ -17,11 +17,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import allure_results  # noqa: E402
+from cargo_target import cargo_target_dir  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RUN_UNITTEST = Path(__file__).with_name("run-unittest.py")
-PYTHON_SIZES = REPO_ROOT / ".config" / "python-sizes.toml"
-NEXTEST_JUNIT = REPO_ROOT / "target" / "nextest" / "default" / "junit.xml"
 
 from workflow_routing import (  # noqa: E402
     ADMITTED, LANED_SUITES, PROFILES, PYTHON_SUITES, SIZES,
@@ -40,8 +39,6 @@ NEXTEST_PROFILES = {
 
 
 def nextest_profile(profile: str, selection: tuple[str, ...] | None = None) -> str:
-    if selection == UREQ_RECYCLING_SELECTION:
-        return "ureq-recycling"
     try:
         return NEXTEST_PROFILES[profile]
     except KeyError:
@@ -49,9 +46,9 @@ def nextest_profile(profile: str, selection: tuple[str, ...] | None = None) -> s
 
 
 def nextest_junit(profile: str, selection: tuple[str, ...] | None = None) -> Path:
-    """Nextest хранит JUnit относительно корня выбранного workspace."""
-    workspace = REPO_ROOT / "vendor" / "ureq" if selection == UREQ_RECYCLING_SELECTION else REPO_ROOT
-    return workspace / "target" / "nextest" / nextest_profile(profile, selection) / "junit.xml"
+    """Nextest хранит JUnit в каталоге сборки выбранного workspace."""
+    target = cargo_target_dir(REPO_ROOT)
+    return target / "nextest" / nextest_profile(profile, selection) / "junit.xml"
 
 
 # Контракт ReceiptLedger (`tests/daemon_receipt_ledger.rs`) собирается только с
@@ -64,24 +61,13 @@ def nextest_junit(profile: str, selection: tuple[str, ...] | None = None) -> Pat
 #
 # Проверки обвязки сценариев идут в том же бинаре: их тела живут в библиотеке
 # под признаком, а `#[test]` им приставляет контракт. Поэтому вызову не нужен
-# `--lib` — тестовая сборка всего `unica-coder` ради них. Библиотека
+# `--lib` — тестовая сборка всего `unica-daemon` ради них. Библиотека
 # собирается один раз, обычной, для контракта и бинаря `unica`.
 LEDGER_FEATURE_SELECTION = (
-    "-p", "unica-coder", "--features", "receipt-ledger-test-support",
+    "-p", "unica-product", "--features", "receipt-ledger-test-support",
     "--test", "daemon_receipt_ledger",
     "-E", "binary(daemon_receipt_ledger)",
 )
-
-# A dependency's cfg(test) is not compiled by workspace tests. Its pinned
-# Content-Length fault regressions use the same plan/result path, with no retry.
-UREQ_RECYCLING_PREFIX = "completed_response_recycling::"
-UREQ_RECYCLING_SELECTION = (
-    "--manifest-path", "vendor/ureq/Cargo.toml", "--locked", "--lib",
-    "--features", "json,serde_json/preserve_order,serde_json/float_roundtrip",
-    "--config-file", "vendor/ureq/.config/nextest.toml", "--target-dir", "target",
-    "-E", f"test(/^{UREQ_RECYCLING_PREFIX}/)",
-)
-
 
 # Вызов с признаком пересобирает `target/debug/unica` с другим набором
 # признаков. Windows не даёт заменить файл, пока его исполняет живой процесс,
@@ -122,7 +108,6 @@ def rust_selections(profile: str) -> list[tuple[str, ...]]:
     selections = [("--workspace",)]
     if set(ADMITTED[profile]) & {"medium", "large"}:
         selections.append(LEDGER_FEATURE_SELECTION)
-        selections.append(UREQ_RECYCLING_SELECTION)
     return selections
 
 
@@ -182,20 +167,20 @@ def python_commands(
         lane_sizes = [size for size in admitted if size == only_size]
         if not lane_sizes:
             return []
-    # Размер набора — умолчание; манифест поднимает отдельные классы и тесты
-    # до `medium`. Ворота, допускающие не все размеры, получают `--admit`;
+    # Размер набора — умолчание; объявления модулей поднимают отдельные классы
+    # и тесты до `medium` (`scripts/ci/python_sizes.py`). Ворота, допускающие не все размеры, получают `--admit`;
     # `all` без записи результатов повторяет прежнюю команду один в один.
     def tail(size: str) -> list[str]:
         sizing: list[str] = []
         if set(lane_sizes) != set(SIZES):
-            sizing = ["--sizes", str(PYTHON_SIZES), "--admit", ",".join(lane_sizes)]
+            sizing = ["--admit", ",".join(lane_sizes)]
         if only_size:
             sizing += ["--lane", only_size]
         if docs_only and "medium" in ADMITTED[profile]:
             sizing += ["--scope-skip-medium"]
         if results is None:
             return (["--profile", profile] if docs_only else []) + ([] if size == "small" else ["--size", size]) + sizing
-        return ["--results", str(results), "--runner", runner, "--profile", profile, "--size", size, "--sizes", str(PYTHON_SIZES), *sizing]
+        return ["--results", str(results), "--runner", runner, "--profile", profile, "--size", size, *sizing]
 
     return [
         [interpreter, str(RUN_UNITTEST), "-s", name, *extra, *tail(size)]
@@ -233,9 +218,6 @@ def write_rust_plan(results: Path, profile: str) -> int:
     entries = []
     for selection, command in zip(rust_selections(profile), rust_list_commands(profile), strict=True):
         cases = allure_results.nextest_list(REPO_ROOT, command)
-        for case in cases:
-            if rust_case_medium(selection, case["binary"], case["name"]):
-                case["size"] = "medium"
         entries.extend(cases)
     allure_results.write_plan(results, entries)
     return len(entries)
@@ -252,10 +234,6 @@ def write_python_plan(profile: str, results: Path, runner: str, suite: str | Non
     return sum(1 for entry in entries if entry.get("ecosystem") == "python")
 
 
-def rust_case_medium(selection: tuple[str, ...] | None, binary: str, name: str) -> bool:
-    return selection == UREQ_RECYCLING_SELECTION and binary == "ureq" and name.startswith(UREQ_RECYCLING_PREFIX)
-
-
 def emit_rust(
     results: Path, profile: str, runner: str, junit: Path | None = None,
     *, selection: tuple[str, ...] | None = None,
@@ -265,11 +243,6 @@ def emit_rust(
     reasons = allure_results.ignore_reasons(REPO_ROOT)
     entries = allure_results.junit_records(junit, runner=runner, profile=profile, reasons=reasons)
     for entry in entries:
-        binary, _, name = entry["fullName"].partition("::")
-        if rust_case_medium(selection, binary, name):
-            for label in entry["labels"]:
-                if label["name"] == "size":
-                    label["value"] = "medium"
         allure_results.write(results, entry)
     return len(entries)
 
@@ -313,9 +286,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--runners", default="[]", help="JSON runner matrix for complete inventory verification")
     parser.add_argument("--shadow", type=Path, help="shadow decision; mandatory selection remains full")
     parser.add_argument("--baseline", type=Path, help="previous Rust inventory of the same configuration")
+    parser.add_argument("--lane", help="build one lane of the runner's plan (--phase build)")
     args = parser.parse_args(argv)
     args.docs_only = args.docs_only == "true"
     only_size = args.only_size or None
+    if args.lane is not None and args.phase != "build":
+        parser.error("--lane applies to --phase build only")
 
     if args.phase:
         import ci_rust_lanes
@@ -330,7 +306,8 @@ def main(argv: list[str] | None = None) -> int:
         # Every lane of this runner, in the job that runs it: archives stay in
         # `--prepared`, plans and results go to the report directory.
         if args.phase == "build":
-            return ci_rust_lanes.build_host(REPO_ROOT, args.prepared, args.results, args.profile, args.runner, args.line)
+            return ci_rust_lanes.build_host(REPO_ROOT, args.prepared, args.results, args.profile, args.runner, args.line,
+                                            args.lane)
         if args.phase == "medium":
             return ci_rust_lanes.run_medium(REPO_ROOT, args.prepared / "ordinary", args.results / "ci-rust-medium", args.runner, args.shadow)
         return ci_rust_lanes.run_host(REPO_ROOT, args.prepared, args.results, args.profile, args.runner, args.line, args.shadow)

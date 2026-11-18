@@ -58,9 +58,6 @@ impl MxlOperation {
 }
 
 impl unica_operations::FamilyOperation for MxlOperation {
-    fn retired_arguments(self) -> &'static [unica_operations::recovery::RetiredArgument] {
-        crate::recovery::RETIRED_ARGUMENTS
-    }
     type Observation = crate::TemplateFormat;
     fn family(self) -> unica_operations::OperationFamily {
         unica_operations::OperationFamily::Mxl
@@ -92,13 +89,6 @@ impl unica_operations::FamilyOperation for MxlOperation {
     }
     fn admits_observation(self, observation: Option<&Self::Observation>) -> bool {
         observation == Some(&crate::TemplateFormat::SpreadsheetDocument)
-    }
-
-    fn creator(self) -> Option<&'static str> {
-        match self {
-            Self::Set => Some("area.add"),
-            _ => None,
-        }
     }
 }
 

@@ -1,0 +1,17 @@
+{
+  "area": "Проверки качества",
+  "task": "Сравнить наборы измерений регистра (равенство коллекций)",
+  "wire": [
+    {
+      "tool": "unica.diff",
+      "args": {
+        "left": "main:InformationRegister.АдминистративнаяИерархия.Dimension",
+        "right": "main:InformationRegister.АдминистративнаяИерархия.Dimension"
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S265"
+}

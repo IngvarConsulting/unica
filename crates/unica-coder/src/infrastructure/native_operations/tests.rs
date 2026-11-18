@@ -3,8 +3,7 @@ use crate::infrastructure::native_operations::typed_result::NativeInvocationCont
 use crate::infrastructure::workspace::discover_workspace;
 use serde_json::{json, Map};
 use std::fs;
-use std::path::PathBuf;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 use unica_work_control::cancellation::CancellationToken;
 use unica_work_control::provider_deadline::ProviderDeadline;
 
@@ -130,12 +129,39 @@ fn read_only_native_dispatch_does_not_honor_legacy_outfile() {
     fs::remove_dir_all(root).unwrap();
 }
 
-fn temp_root(name: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("unica-native-ops-{name}-{nanos}"));
-    fs::create_dir_all(&root).unwrap();
-    root
+fn temp_root(name: &str) -> crate::infrastructure::temp_test_root::TempTestRoot {
+    crate::infrastructure::temp_test_root::TempTestRoot::new(
+        &format!("unica-native-ops-{name}"),
+        "",
+    )
+}
+
+/// The facade's own shape: reads this crate's sources, not a workspace.
+mod medium_facade {
+    use std::path::PathBuf;
+
+    #[test]
+    fn native_operations_rs_is_thin_facade_not_xml_dsl_monolith() {
+        let infrastructure_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("infrastructure");
+        let path = infrastructure_dir.join("native_operations.rs");
+        let text = std::fs::read_to_string(&path).unwrap();
+        let line_count = text.lines().count();
+
+        assert!(
+            line_count < 200,
+            "native_operations.rs must stay a thin facade; got {line_count} lines"
+        );
+        assert!(
+            !text.contains("match operation"),
+            "operation-specific XML/DSL dispatch belongs in backend modules"
+        );
+        assert!(
+            !infrastructure_dir
+                .join("native_operations_backend.rs")
+                .exists(),
+            "native_operations_backend.rs must not return; split operation logic by family under native_operations/"
+        );
+    }
 }

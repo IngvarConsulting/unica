@@ -1,0 +1,112 @@
+{
+  "id": "S-2056-relation-diagnostic-path",
+  "issue": 2056,
+  "area": "Диагностика ссылок",
+  "task": "Поздний отказ relation.remove в смешанном плане называет внешний абсолютный путь values.targets и не публикует предыдущую операцию",
+  "workspace": "tests/fixtures/acceptance/workspace",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "object.create",
+            "args": {
+              "values": {
+                "kind": "Catalog",
+                "name": "ReviewA"
+              }
+            }
+          },
+          {
+            "op": "object.create",
+            "args": {
+              "values": {
+                "kind": "Catalog",
+                "name": "ReviewB"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.ReviewA"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "beforeA": {
+          "file": "src/Catalogs/ReviewA.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.ReviewA",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "must not publish"
+              }
+            }
+          },
+          {
+            "op": "relation.remove",
+            "args": {
+              "values": {
+                "relation": "owners",
+                "targets": [
+                  {
+                    "metadataPath": "Catalog.ReviewB"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: metadata relation target was not found",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[1].args.values.targets[0]"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/ReviewA.xml",
+          "kind": "sha256",
+          "eq": "$capture.beforeA"
+        }
+      ]
+    }
+  ]
+}

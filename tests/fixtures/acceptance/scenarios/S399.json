@@ -1,0 +1,188 @@
+{
+  "id": "S399",
+  "name": "retired-scope-recovers-at-the-tabular-section",
+  "issue": 1352,
+  "area": "Реквизиты и состав",
+  "task": "Вызов attribute.add с неизвестным аргументом scope отказывает без записи, next ведёт к контракту attribute.add на документе, исправленный вызов на адресе части публикует реквизит внутри части, а не в шапке",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.АктОбУничтоженииПерсональныхДанных",
+        "ops": [
+          {
+            "op": "attribute.add",
+            "args": {
+              "scope": {
+                "tabularSection": "КатегорииДанных"
+              },
+              "items": [
+                {
+                  "name": "Основание",
+                  "type": {
+                    "variants": [
+                      {
+                        "kind": "string",
+                        "length": 100,
+                        "allowedLength": "variable"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: operation does not accept argument `scope`; `attribute.add` expects `items`",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.scope"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:Document.АктОбУничтоженииПерсональныхДанных.Can.attribute.add"
+        }
+      ],
+      "captures": {
+        "before": {
+          "kind": "sha256",
+          "file": "src/Documents/АктОбУничтоженииПерсональныхДанных.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.АктОбУничтоженииПерсональныхДанных.TabularSection.КатегорииДанных.Can.attribute.add"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/op",
+          "eq": "attribute.add"
+        },
+        {
+          "pointer": "/data/props/implemented",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/required",
+          "eq": [
+            "items"
+          ]
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/scope",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.АктОбУничтоженииПерсональныхДанных.TabularSection.КатегорииДанных",
+        "ops": [
+          {
+            "op": "attribute.add",
+            "args": {
+              "items": [
+                {
+                  "name": "Основание",
+                  "type": {
+                    "variants": [
+                      {
+                        "kind": "string",
+                        "length": 100,
+                        "allowedLength": "variable"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executable",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "xml",
+          "path": "src/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "select": ".//{*}TabularSection/{*}ChildObjects/{*}Attribute/{*}Properties/{*}Name",
+          "eq": [
+            "Субъект",
+            "ИмяОбъекта",
+            "Категория",
+            "Основание",
+            "Свойство",
+            "Значение",
+            "ТекстоваяСтрока",
+            "ИмяОбъекта",
+            "КоличествоОбъектов"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "select": "./{*}Document/{*}ChildObjects/{*}Attribute/{*}Properties/{*}Name",
+          "eq": [
+            "Организация",
+            "НаименованиеОрганизации",
+            "ЮридическийАдресОрганизации",
+            "ОтветственныйЗаОбработкуПерсональныхДанных",
+            "ФИООтветственногоЗаОбработкуПДн",
+            "НаименованиеИнформационнойСистемы",
+            "ДатаУничтожения",
+            "СпособУничтожения",
+            "ПричинаУничтожения",
+            "Ответственный",
+            "Комментарий",
+            "Субъект",
+            "ФИОСубъекта"
+          ]
+        }
+      ]
+    }
+  ]
+}

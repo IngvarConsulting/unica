@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import copy
-from contextlib import ExitStack, nullcontext
+from contextlib import ExitStack, contextmanager, nullcontext
 import gc
 import importlib.util
 import json
@@ -21,25 +21,39 @@ from unittest.mock import patch
 from tree_sitter import Language, Parser
 import tree_sitter_rust
 
+# Размер тестов модуля (scripts/ci/python_sizes.py).
+# Контракт продукта: тест зовёт `cargo metadata`.
+MEDIUM = ("ProductContractTests.test_rmcp_transport_is_confined_to_mcp_interface",)
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-RMCP_OWNER = "crates/unica-coder/src/interfaces/mcp.rs"
-# Зависший фейк rlm (стенд-ин индекса и MCP) спит столько секунд. Граница
-# «срок фазы сработал» выражена через неё, а не через скорость машины.
-RLM_FAKE_HANG_SECONDS = 30
-# Предохранитель ожидания старта фейка и выхода его дерева, не проверяемый
-# срок; он короче зависания, чтобы не спутать «убит» с «сам доспал».
-RLM_FAKE_EVENT_FUSE_SECONDS = RLM_FAKE_HANG_SECONDS / 2
-RMCP_INTERFACE_ROOT = "crates/unica-coder/src/interfaces/"
+RMCP_OWNER = "crates/unica-mcp/src/lib.rs"
+RMCP_PACKAGE = "unica-mcp"
+RELATIVE_TOOL_CONTRACT_TIMEOUT_SECONDS = 15
+RMCP_INTERFACE_ROOT = "crates/unica-mcp/src/"
 RMCP_CRATES_IO_SOURCE = "registry+https://github.com/rust-lang/crates.io-index"
-RMCP_ALLOWED_FEATURES = ["server", "transport-io"]
+TEST_ONLY_ATTRIBUTES = frozenset({"#[cfg(test)]"})
+# Граница экспорта пропускает и внутренности двери, открытые тестам демона.
+EXPORT_TEST_ONLY_ATTRIBUTES = TEST_ONLY_ATTRIBUTES | {'#[cfg(any(test,feature="test-support"))]'}
+# Единственный параметр `run_stdio`: подключение к демону передаёт `unica-product`.
+RUN_STDIO_PARAMETER = "fn()->Result<V5DaemonClient,String>"
 
 
-def cfg_test_item_ranges(source: bytes, tree) -> list[tuple[int, int]]:
+def cfg_test_item_ranges(
+    source: bytes, tree, attributes: frozenset[str] = TEST_ONLY_ATTRIBUTES
+) -> list[tuple[int, int]]:
     ranges = []
 
     def collect(parent) -> None:
         children = parent.named_children
+        if parent.type == "source_file" and any(
+            child.type == "inner_attribute_item"
+            and re.sub(r"\s+", "", source[child.start_byte : child.end_byte].decode()) == "#![cfg(test)]"
+            for child in children
+        ):
+            # Файл тестового модуля целиком вне производственной сборки.
+            ranges.append((0, len(source)))
+            return
         index = 0
         while index < len(children):
             child = children[index]
@@ -48,7 +62,7 @@ def cfg_test_item_ranges(source: bytes, tree) -> list[tuple[int, int]]:
                 "",
                 source[child.start_byte : child.end_byte].decode(),
             )
-            if child.type == "attribute_item" and compact == "#[cfg(test)]":
+            if child.type == "attribute_item" and compact in attributes:
                 end = index + 1
                 while end < len(children) and children[end].type == "attribute_item":
                     end += 1
@@ -203,7 +217,7 @@ def rmcp_owner_export_boundary_errors(source: bytes, owner: str) -> list[str]:
     tree = parser.parse(source)
     if tree.root_node.has_error:
         return [f"{owner}: Rust parser could not resolve the export boundary"]
-    test_ranges = cfg_test_item_ranges(source, tree)
+    test_ranges = cfg_test_item_ranges(source, tree, EXPORT_TEST_ONLY_ATTRIBUTES)
 
     def is_test_only(node) -> bool:
         return any(
@@ -247,19 +261,11 @@ def rmcp_owner_export_boundary_errors(source: bytes, owner: str) -> list[str]:
         if visibility is not None:
             name = node.child_by_field_name("name")
             public_name = node_text(name) if name is not None else b""
-            legacy_export = (
+            # Наружу дверь даёт только запуск по stdio.
+            root_run_stdio = (
                 node.parent is not None
                 and node.parent.type == "source_file"
                 and node_text(visibility) == b"pub"
-                and (node.type, public_name)
-                in {
-                    ("struct_item", b"UnicaServer"),
-                    ("function_item", b"tool_definitions"),
-                    ("function_item", b"run_stdio"),
-                }
-            )
-            root_run_stdio = (
-                legacy_export
                 and node.type == "function_item"
                 and public_name == b"run_stdio"
             )
@@ -276,18 +282,28 @@ def rmcp_owner_export_boundary_errors(source: bytes, owner: str) -> list[str]:
                     ),
                     None,
                 )
+                parameter_types = (
+                    [
+                        re.sub(rb"\s+", b"", node_text(parameter.child_by_field_name("type"))).decode()
+                        for parameter in parameters.named_children
+                        if parameter.type == "parameter"
+                    ]
+                    if parameters is not None
+                    else []
+                )
                 if (
                     parameters is None
-                    or parameters.named_child_count != 0
+                    or parameters.named_child_count != 1
+                    or parameter_types != [RUN_STDIO_PARAMETER]
                     or return_type is not None
                     or type_parameters is not None
                     or where_clause is not None
                 ):
                     errors.append(
-                        f"{owner}: run_stdio must be non-generic, take no parameters, "
-                        "and return unit"
+                        f"{owner}: run_stdio must be non-generic, take only the daemon "
+                        "connector fn() -> Result<V5DaemonClient, String>, and return unit"
                     )
-            elif not legacy_export:
+            else:
                 nested = (
                     "nested "
                     if node.type == "function_item"
@@ -301,7 +317,7 @@ def rmcp_owner_export_boundary_errors(source: bytes, owner: str) -> list[str]:
         stack.extend(reversed(node.named_children))
     if root_run_stdio_count != 1:
         errors.append(
-            f"{owner}: expected exactly one root pub fn run_stdio(), "
+            f"{owner}: expected exactly one root pub fn run_stdio, "
             f"found {root_run_stdio_count}"
         )
     return errors
@@ -325,43 +341,35 @@ def rmcp_dependency_contract_errors(metadata: dict) -> list[str]:
         key=lambda package: package["name"],
     )
     errors = []
-    coder_dependencies = []
+    owner_dependencies = []
     for package in packages:
         dependencies = [
             dependency
             for dependency in package["dependencies"]
             if dependency["name"] == "rmcp"
         ]
-        if package["name"] == "unica-coder":
-            coder_dependencies.extend(dependencies)
+        if package["name"] == RMCP_PACKAGE:
+            owner_dependencies.extend(dependencies)
             continue
         for dependency in dependencies:
             alias = dependency.get("rename") or "rmcp"
             errors.append(
-                f"{package['name']}: rmcp dependency is outside unica-coder "
+                f"{package['name']}: rmcp dependency is outside {RMCP_PACKAGE} "
                 f"(alias {alias})"
             )
 
-    if len(coder_dependencies) != 1:
+    if len(owner_dependencies) != 1:
         errors.append(
-            "unica-coder: expected exactly one direct rmcp dependency, "
-            f"found {len(coder_dependencies)}"
+            f"{RMCP_PACKAGE}: expected exactly one direct rmcp dependency, "
+            f"found {len(owner_dependencies)}"
         )
         return errors
 
-    dependency = coder_dependencies[0]
+    dependency = owner_dependencies[0]
     if dependency.get("rename") is not None:
-        errors.append("unica-coder: rmcp dependency must use its canonical name")
+        errors.append(f"{RMCP_PACKAGE}: rmcp dependency must use its canonical name")
     if dependency.get("source") != RMCP_CRATES_IO_SOURCE:
-        errors.append("unica-coder: rmcp dependency must come from crates.io")
-    if dependency.get("uses_default_features") is not False:
-        errors.append("unica-coder: rmcp default features must be disabled")
-    features = sorted(dependency.get("features", []))
-    if features != RMCP_ALLOWED_FEATURES:
-        errors.append(
-            f"unica-coder: rmcp features {features!r} differ from "
-            f"{RMCP_ALLOWED_FEATURES!r}"
-        )
+        errors.append(f"{RMCP_PACKAGE}: rmcp dependency must come from crates.io")
     return errors
 
 
@@ -370,12 +378,6 @@ def workspace_rmcp_dependency_errors(repo_root: Path) -> list[str]:
 
 
 RMCP_HANDLER_ASSERTION = "assert_unica_server_implements_official_rmcp_server_handler"
-RMCP_HANDLER_MODULE_CHAIN = (
-    ("crates/unica-coder/src/lib.rs", "interfaces"),
-    ("crates/unica-coder/src/interfaces/mod.rs", "mcp"),
-)
-
-
 def top_level_rust_items(source: bytes) -> tuple[list[tuple[str, str, list[str], bytes]], bool]:
     """Top-level items with their outer attributes, and whether a file-level cfg gates them."""
     code = productive_rust_code(source)
@@ -404,15 +406,8 @@ def top_level_rust_items(source: bytes) -> tuple[list[tuple[str, str, list[str],
 def production_rmcp_handler_assertion_errors(sources: dict[str, bytes]) -> list[str]:
     # Любая не-тестовая сборка библиотеки проверяет эту границу компилятором;
     # здесь — только что граница и путь модулей к ней не закрыты cfg.
+    # Владелец — корень крейта: путь модулей к нему не закрыть cfg.
     errors = []
-    for path, module in RMCP_HANDLER_MODULE_CHAIN:
-        items, gated = top_level_rust_items(sources[path])
-        # Файловое объявление без атрибутов: ни cfg, ни #[path], ни тела.
-        declarations = [
-            (attrs, text) for kind, name, attrs, text in items if (kind, name) == ("mod_item", module)
-        ]
-        if gated or len(declarations) != 1 or declarations[0][0] or not declarations[0][1].endswith(b";"):
-            errors.append(f"{path}: module {module} must be declared once as a plain file module")
     items, gated = top_level_rust_items(sources[RMCP_OWNER])
     bounds = [
         (attrs, text)
@@ -457,15 +452,15 @@ class ProductContractTests(unittest.TestCase):
     def test_rmcp_confinement_scans_other_tracked_workspace_crates(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            owner = root / "crates" / "unica-coder" / "src" / "interfaces" / "mcp.rs"
+            owner = root / "crates" / "unica-mcp" / "src" / "lib.rs"
             sibling = root / "crates" / "unica-bootstrap" / "src" / "lib.rs"
             owner.parent.mkdir(parents=True)
             sibling.parent.mkdir(parents=True)
             (root / "Cargo.toml").write_text(
-                '[workspace]\nmembers = ["crates/unica-bootstrap", "crates/unica-coder"]\n',
+                '[workspace]\nmembers = ["crates/unica-bootstrap", "crates/unica-mcp"]\n',
                 encoding="utf-8",
             )
-            for package_name in ("unica-bootstrap", "unica-coder"):
+            for package_name in ("unica-bootstrap", "unica-mcp"):
                 (root / "crates" / package_name / "Cargo.toml").write_text(
                     f'[package]\nname = "{package_name}"\nversion = "0.1.0"\n'
                     'edition = "2021"\n',
@@ -477,7 +472,6 @@ class ProductContractTests(unittest.TestCase):
                 "impl ServerHandler for UnicaServer {}\n",
                 encoding="utf-8",
             )
-            (owner.parents[1] / "lib.rs").write_text("", encoding="utf-8")
             sibling.write_text("use rmcp::model::ProtocolVersion;\n", encoding="utf-8")
             subprocess.run(["git", "init", "-q"], cwd=root, check=True)
             subprocess.run(["git", "add", "."], cwd=root, check=True)
@@ -576,7 +570,7 @@ class ProductContractTests(unittest.TestCase):
     def test_rmcp_dependency_contract_rejects_alias_in_sibling_package(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            coder = root / "unica-coder"
+            coder = root / "unica-mcp"
             sibling = root / "sibling"
             vendor = root / "vendor" / "rmcp"
             for package in (coder, sibling, vendor):
@@ -584,7 +578,7 @@ class ProductContractTests(unittest.TestCase):
                 (package / "src" / "lib.rs").write_text("", encoding="utf-8")
             (root / "Cargo.toml").write_text(
                 '[workspace]\nresolver = "2"\n'
-                'members = ["unica-coder", "sibling"]\n'
+                'members = ["unica-mcp", "sibling"]\n'
                 '[workspace.dependencies]\n'
                 'rmcp = { version = "3.1.2", default-features = false, '
                 'features = ["server", "transport-io"] }\n'
@@ -594,7 +588,7 @@ class ProductContractTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (coder / "Cargo.toml").write_text(
-                '[package]\nname = "unica-coder"\nversion = "0.1.0"\n'
+                '[package]\nname = "unica-mcp"\nversion = "0.1.0"\n'
                 'edition = "2021"\n[dependencies]\nrmcp.workspace = true\n',
                 encoding="utf-8",
             )
@@ -613,25 +607,25 @@ class ProductContractTests(unittest.TestCase):
 
             self.assertEqual(
                 workspace_rmcp_dependency_errors(root),
-                ["sibling: rmcp dependency is outside unica-coder (alias sdk_alias)"],
+                ["sibling: rmcp dependency is outside unica-mcp (alias sdk_alias)"],
             )
 
-    def test_rmcp_dependency_contract_rejects_renamed_local_macro_dependency(
+    def test_rmcp_dependency_contract_rejects_renamed_local_dependency(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            coder = root / "unica-coder"
+            coder = root / "unica-mcp"
             vendor = root / "vendor" / "rmcp"
             for package in (coder, vendor):
                 (package / "src").mkdir(parents=True)
                 (package / "src" / "lib.rs").write_text("", encoding="utf-8")
             (root / "Cargo.toml").write_text(
-                '[workspace]\nresolver = "2"\nmembers = ["unica-coder"]\n',
+                '[workspace]\nresolver = "2"\nmembers = ["unica-mcp"]\n',
                 encoding="utf-8",
             )
             (coder / "Cargo.toml").write_text(
-                '[package]\nname = "unica-coder"\nversion = "0.1.0"\n'
+                '[package]\nname = "unica-mcp"\nversion = "0.1.0"\n'
                 'edition = "2021"\n[dependencies]\n'
                 'sdk_alias = { package = "rmcp", path = "../vendor/rmcp", '
                 'features = ["server", "transport-io", "macros"] }\n',
@@ -648,19 +642,16 @@ class ProductContractTests(unittest.TestCase):
             self.assertEqual(
                 workspace_rmcp_dependency_errors(root),
                 [
-                    "unica-coder: rmcp dependency must use its canonical name",
-                    "unica-coder: rmcp dependency must come from crates.io",
-                    "unica-coder: rmcp default features must be disabled",
-                    "unica-coder: rmcp features ['macros', 'server', "
-                    "'transport-io'] differ from ['server', 'transport-io']",
+                    "unica-mcp: rmcp dependency must use its canonical name",
+                    "unica-mcp: rmcp dependency must come from crates.io",
                 ],
             )
 
     def test_rmcp_owner_rejects_public_reexport_and_type_alias(self) -> None:
-        owner = "crates/unica-coder/src/interfaces/mcp.rs"
+        owner = RMCP_OWNER
         errors = rmcp_owner_export_boundary_errors(
             b"""
-                pub fn run_stdio() {}
+                pub fn run_stdio(connect: fn() -> Result<V5DaemonClient, String>) {}
                 pub use rmcp::model::Tool as ExportedTool;
                 pub type SdkTool = rmcp::model::Tool;
             """,
@@ -676,7 +667,7 @@ class ProductContractTests(unittest.TestCase):
         )
 
     def test_rmcp_owner_rejects_other_public_items_members_and_macros(self) -> None:
-        owner = "crates/unica-coder/src/interfaces/mcp.rs"
+        owner = RMCP_OWNER
         errors = rmcp_owner_export_boundary_errors(
             b"""
                 pub(crate) const LIMIT: usize = 1;
@@ -684,7 +675,7 @@ class ProductContractTests(unittest.TestCase):
                 pub struct Exported;
                 #[macro_export]
                 macro_rules! exported { () => {}; }
-                mod nested { pub fn run_stdio() {} }
+                mod nested { pub fn run_stdio(connect: fn() -> Result<V5DaemonClient, String>) {} }
                 pub fn run_stdio(_: rmcp::model::Tool) -> rmcp::model::Tool {
                     unreachable!()
                 }
@@ -700,16 +691,16 @@ class ProductContractTests(unittest.TestCase):
                 f"{owner}: public struct_item is outside run_stdio",
                 f"{owner}: macro_export leaves the transport module",
                 f"{owner}: nested public function_item is outside run_stdio",
-                f"{owner}: run_stdio must be non-generic, take no parameters, "
-                "and return unit",
+                f"{owner}: run_stdio must be non-generic, take only the daemon "
+                "connector fn() -> Result<V5DaemonClient, String>, and return unit",
             ],
         )
 
     def test_rmcp_owner_ignores_exports_inside_exact_cfg_test_item(self) -> None:
-        owner = "crates/unica-coder/src/interfaces/mcp.rs"
+        owner = RMCP_OWNER
         errors = rmcp_owner_export_boundary_errors(
             b"""
-                pub fn run_stdio() {}
+                pub fn run_stdio(connect: fn() -> Result<V5DaemonClient, String>) {}
                 #[cfg(test)]
                 mod tests {
                     pub use rmcp::model::Tool;
@@ -721,8 +712,50 @@ class ProductContractTests(unittest.TestCase):
 
         self.assertEqual(errors, [])
 
+    def test_rmcp_owner_ignores_exports_inside_test_support_item(self) -> None:
+        """rule: INV.WIRE.SDK-MODULE-EXPORTS"""
+        owner = RMCP_OWNER
+        errors = rmcp_owner_export_boundary_errors(
+            b"""
+                pub fn run_stdio(connect: fn() -> Result<V5DaemonClient, String>) {}
+                #[cfg(any(test, feature = "test-support"))]
+                pub mod test_support {
+                    pub use rmcp;
+                }
+                #[cfg(any(test, feature = "test-support"))]
+                impl UnicaServer {
+                    pub fn with_canonical_v13_router(router: Router) -> Self { todo!() }
+                }
+                #[cfg(feature = "test-support")]
+                pub fn only_with_the_feature() {}
+            """,
+            owner,
+        )
+
+        self.assertEqual(
+            errors, [f"{owner}: public function_item is outside run_stdio"]
+        )
+
+    def test_rmcp_owner_requires_the_daemon_connector_parameter(self) -> None:
+        """rule: INV.WIRE.SDK-MODULE-EXPORTS"""
+        owner = RMCP_OWNER
+        expected = [
+            f"{owner}: run_stdio must be non-generic, take only the daemon "
+            "connector fn() -> Result<V5DaemonClient, String>, and return unit"
+        ]
+        for name, source in {
+            "no_parameter": b"pub fn run_stdio() {}",
+            "other_type": b"pub fn run_stdio(connect: fn() -> V5DaemonClient) {}",
+            "two_parameters": (
+                b"pub fn run_stdio(connect: fn() -> Result<V5DaemonClient, String>, "
+                b"extra: u8) {}"
+            ),
+        }.items():
+            with self.subTest(name=name):
+                self.assertEqual(rmcp_owner_export_boundary_errors(source, owner), expected)
+
     def test_rmcp_owner_export_guard_fails_closed_on_invalid_rust(self) -> None:
-        owner = "crates/unica-coder/src/interfaces/mcp.rs"
+        owner = RMCP_OWNER
 
         self.assertEqual(
             rmcp_owner_export_boundary_errors(b"pub fn run_stdio(", owner),
@@ -730,12 +763,12 @@ class ProductContractTests(unittest.TestCase):
         )
 
     def test_rmcp_owner_rejects_parameterized_macro_export(self) -> None:
-        owner = "crates/unica-coder/src/interfaces/mcp.rs"
+        owner = RMCP_OWNER
 
         self.assertEqual(
             rmcp_owner_export_boundary_errors(
                 b"""
-                    pub fn run_stdio() {}
+                    pub fn run_stdio(connect: fn() -> Result<V5DaemonClient, String>) {}
                     #[macro_export(local_inner_macros)]
                     macro_rules! exported { () => {}; }
                 """,
@@ -745,12 +778,12 @@ class ProductContractTests(unittest.TestCase):
         )
 
     def test_rmcp_owner_rejects_conditional_macro_export(self) -> None:
-        owner = "crates/unica-coder/src/interfaces/mcp.rs"
+        owner = RMCP_OWNER
 
         self.assertEqual(
             rmcp_owner_export_boundary_errors(
                 b"""
-                    pub fn run_stdio() {}
+                    pub fn run_stdio(connect: fn() -> Result<V5DaemonClient, String>) {}
                     #[cfg_attr(not(test), macro_export)]
                     macro_rules! exported { () => {}; }
                 """,
@@ -760,21 +793,21 @@ class ProductContractTests(unittest.TestCase):
         )
 
     def test_rmcp_owner_requires_exactly_one_root_run_stdio(self) -> None:
-        owner = "crates/unica-coder/src/interfaces/mcp.rs"
+        owner = RMCP_OWNER
         fixtures = {
             "missing": (
                 b"struct Internal;",
-                [f"{owner}: expected exactly one root pub fn run_stdio(), found 0"],
+                [f"{owner}: expected exactly one root pub fn run_stdio, found 0"],
             ),
             "duplicate": (
-                b"pub fn run_stdio() {} pub fn run_stdio() {}",
-                [f"{owner}: expected exactly one root pub fn run_stdio(), found 2"],
+                b"pub fn run_stdio(connect: fn() -> Result<V5DaemonClient, String>) {} pub fn run_stdio(connect: fn() -> Result<V5DaemonClient, String>) {}",
+                [f"{owner}: expected exactly one root pub fn run_stdio, found 2"],
             ),
             "nested-only": (
-                b"mod nested { pub fn run_stdio() {} }",
+                b"mod nested { pub fn run_stdio(connect: fn() -> Result<V5DaemonClient, String>) {} }",
                 [
                     f"{owner}: nested public function_item is outside run_stdio",
-                    f"{owner}: expected exactly one root pub fn run_stdio(), found 0",
+                    f"{owner}: expected exactly one root pub fn run_stdio, found 0",
                 ],
             ),
         }
@@ -786,36 +819,32 @@ class ProductContractTests(unittest.TestCase):
                 )
 
     def test_rmcp_owner_rejects_sdk_bound_on_generic_run_stdio(self) -> None:
-        owner = "crates/unica-coder/src/interfaces/mcp.rs"
+        owner = RMCP_OWNER
 
         self.assertEqual(
             rmcp_owner_export_boundary_errors(
-                b"pub fn run_stdio<T: rmcp::ServerHandler>() {}",
+                b"pub fn run_stdio<T: rmcp::ServerHandler>(connect: fn() -> Result<V5DaemonClient, String>) {}",
                 owner,
             ),
             [
-                f"{owner}: run_stdio must be non-generic, take no parameters, "
-                "and return unit"
+                f"{owner}: run_stdio must be non-generic, take only the daemon "
+                "connector fn() -> Result<V5DaemonClient, String>, and return unit"
             ],
         )
 
-    def test_rmcp_dependency_is_owned_by_unica_coder_without_macro_features(
-        self,
-    ) -> None:
+    def test_rmcp_dependency_is_owned_by_the_mcp_door(self) -> None:
+        """rule: INV.WIRE.SDK-TRANSPORT"""
         self.assertEqual(workspace_rmcp_dependency_errors(REPO_ROOT), [])
 
     def test_production_rmcp_handler_assertion_rejects_test_only_or_gated_bound(
         self,
     ) -> None:
+        """rule: INV.WIRE.SDK-TRANSPORT"""
         bound = (
             b"#[allow(dead_code)]\n"
             b"fn assert_unica_server_implements_official_rmcp_server_handler()\n"
             b"where\n    UnicaServer: ::rmcp::ServerHandler,\n{\n}\n"
         )
-        chain = {
-            "crates/unica-coder/src/lib.rs": b"pub mod interfaces;\n",
-            "crates/unica-coder/src/interfaces/mod.rs": b"pub mod mcp;\n",
-        }
         owner_error = [
             f"{RMCP_OWNER}: production code must assert UnicaServer: rmcp::ServerHandler "
             "once at module level without cfg"
@@ -837,33 +866,11 @@ class ProductContractTests(unittest.TestCase):
                 {RMCP_OWNER: bound.replace(b"::rmcp::ServerHandler", b"Clone")},
                 owner_error,
             ),
-            "gated_interfaces": (
-                {
-                    RMCP_OWNER: bound,
-                    "crates/unica-coder/src/lib.rs": cfg + b"pub mod interfaces;\n",
-                },
-                ["crates/unica-coder/src/lib.rs: module interfaces must be declared once as a plain file module"],
-            ),
-            "redirected_mcp_module": (
-                {
-                    RMCP_OWNER: bound,
-                    "crates/unica-coder/src/interfaces/mod.rs": b'#[path = "other.rs"]\npub mod mcp;\n',
-                },
-                ["crates/unica-coder/src/interfaces/mod.rs: module mcp must be declared once as a plain file module"],
-            ),
-            "inline_mcp_module": (
-                {RMCP_OWNER: bound, "crates/unica-coder/src/interfaces/mod.rs": b"pub mod mcp {}\n"},
-                ["crates/unica-coder/src/interfaces/mod.rs: module mcp must be declared once as a plain file module"],
-            ),
-            "missing_mcp_module": (
-                {RMCP_OWNER: bound, "crates/unica-coder/src/interfaces/mod.rs": b"pub mod other;\n"},
-                ["crates/unica-coder/src/interfaces/mod.rs: module mcp must be declared once as a plain file module"],
-            ),
         }
         for name, (sources, expected) in fixtures.items():
             with self.subTest(name=name):
                 self.assertEqual(
-                    production_rmcp_handler_assertion_errors({**chain, **sources}), expected
+                    production_rmcp_handler_assertion_errors(sources), expected
                 )
 
     def test_unica_coder_production_library_satisfies_rmcp_handler_bound(
@@ -873,11 +880,9 @@ class ProductContractTests(unittest.TestCase):
         # её не собирает: в каждом профиле, включая PR, это делает ordinary-архив
         # Rust (не-тестовый бинарь `unica`, фичи объединены с dev-зависимостями
         # тестов), а вне PR и push в main — шаг `product` точным
-        # production-набором фич (`cargo build -p unica-coder --bin unica`).
-        sources = {
-            path: (REPO_ROOT / path).read_bytes()
-            for path in (RMCP_OWNER, *(path for path, _ in RMCP_HANDLER_MODULE_CHAIN))
-        }
+        # production-набором фич (`cargo build -p unica-product --bin unica`).
+        """rule: INV.WIRE.SDK-TRANSPORT"""
+        sources = {RMCP_OWNER: (REPO_ROOT / RMCP_OWNER).read_bytes()}
         self.assertEqual(production_rmcp_handler_assertion_errors(sources), [])
 
         lanes = load_ci_rust_lanes_module()
@@ -892,21 +897,42 @@ class ProductContractTests(unittest.TestCase):
         )
         self.assertEqual(lanes.prepared_binary.ORDINARY_FEATURES, ["default"])
 
-    def test_rmcp_module_preserves_legacy_public_exports_only(self) -> None:
+    def test_mcp_door_exposes_only_the_stdio_launch(self) -> None:
+        """rule: INV.WIRE.SDK-MODULE-EXPORTS"""
         source = tracked_workspace_production_rust_sources(REPO_ROOT)[RMCP_OWNER]
-        for declaration in (
-            b"pub struct UnicaServer",
-            b"pub fn tool_definitions(",
-            b"pub fn run_stdio()",
-        ):
-            with self.subTest(declaration=declaration):
-                self.assertIn(declaration, source)
+        self.assertIn(
+            b"pub fn run_stdio(connect: fn() -> Result<V5DaemonClient, String>)", source
+        )
         self.assertEqual(workspace_rmcp_owner_export_boundary_errors(REPO_ROOT), [])
+
+    def test_rmcp_owner_rejects_the_server_and_the_sdk_catalog_in_production(
+        self,
+    ) -> None:
+        """rule: INV.WIRE.SDK-MODULE-EXPORTS"""
+        owner = RMCP_OWNER
+        errors = rmcp_owner_export_boundary_errors(
+            b"""
+                pub fn run_stdio(connect: fn() -> Result<V5DaemonClient, String>) {}
+                pub struct UnicaServer;
+                pub fn tool_definitions(specs: &[ToolSpec]) -> Vec<rmcp::model::Tool> {
+                    Vec::new()
+                }
+            """,
+            owner,
+        )
+
+        self.assertEqual(
+            errors,
+            [
+                f"{owner}: public struct_item is outside run_stdio",
+                f"{owner}: public function_item is outside run_stdio",
+            ],
+        )
 
     def test_rmcp_confinement_ignores_comments_literals_and_exact_cfg_test(
         self,
     ) -> None:
-        owner = "crates/unica-coder/src/interfaces/mcp.rs"
+        owner = RMCP_OWNER
         outside = "crates/other/src/lib.rs"
         errors = rmcp_reference_confinement_errors(
             {
@@ -924,20 +950,44 @@ class ProductContractTests(unittest.TestCase):
 
         self.assertEqual(errors, [])
 
+    def test_rmcp_confinement_ignores_a_test_only_file(self) -> None:
+        """rule: INV.WIRE.SDK-TRANSPORT"""
+        owner = RMCP_INTERFACE_ROOT
+        errors = rmcp_reference_confinement_errors(
+            {
+                "crates/unica-daemon/src/interfaces/medium_mcp_door_tests/mcp.rs": (
+                    b"#![cfg(test)]\nuse unica_mcp::test_support::rmcp::model::Tool;\n"
+                ),
+                "crates/unica-daemon/src/interfaces/daemon.rs": (
+                    b'#![cfg(feature = "test-support")]\nuse rmcp::model::Tool;\n'
+                ),
+            },
+            owner,
+        )
+
+        self.assertEqual(
+            errors,
+            [
+                "crates/unica-daemon/src/interfaces/daemon.rs: productive rmcp "
+                "reference outside transport owner"
+            ],
+        )
+
     def test_rmcp_transport_is_confined_to_mcp_interface(self) -> None:
+        """rule: INV.WIRE.SDK-TRANSPORT"""
         self.assertEqual(
             workspace_rmcp_reference_confinement_errors(REPO_ROOT),
             [],
-            "productive rmcp references must stay in interfaces/",
+            "productive rmcp references must stay in unica-mcp",
         )
 
     def test_native_validators_do_not_expose_internal_local_owner_only_switch(
         self,
     ) -> None:
         repo_root = Path(__file__).resolve().parents[2]
-        rust_root = repo_root / "crates" / "unica-coder" / "src"
         offenders = []
-        for path in sorted(rust_root.rglob("*.rs")):
+        roots = [repo_root / "crates" / crate / "src" for crate in ("unica-coder", "unica-daemon")]
+        for path in sorted(path for root in roots for path in root.rglob("*.rs")):
             text = path.read_text(encoding="utf-8")
             for marker in ("InternalLocalOwnerOnly", "internalLocalOwnerOnly"):
                 if marker in text:
@@ -975,230 +1025,6 @@ class ProductContractTests(unittest.TestCase):
                 )
             ),
         )
-
-    def test_v8_runner_full_pull_windows_verbatim_paths_keep_the_exact_target(self) -> None:
-        module = load_contract_module()
-        normalize = module._ordinary_v8_runner_publication_path
-        for ordinary, reported in [
-            (r"C:\guard\1cv8.exe", r"\\?\C:\guard\1cv8.exe"),
-            (r"\\server\share\sources", r"\\?\UNC\server\share\sources"),
-            (r"C:\guard\stage", "//?/C:/guard/stage"),
-        ]:
-            with self.subTest(reported=reported):
-                self.assertEqual(normalize(reported), ordinary)
-        self.assertEqual(normalize(r"C:\guard\1cv8.exe"), r"C:\guard\1cv8.exe")
-        self.assertNotEqual(normalize(r"\\?\C:\other\1cv8.exe"), r"C:\guard\1cv8.exe")
-
-    def test_v8_runner_full_pull_frames_require_nonce_executor_and_prepared_target(self) -> None:
-        module = load_contract_module()
-        nonce = "11111111-1111-4111-8111-111111111111"
-        with tempfile.TemporaryDirectory() as raw:
-            root = Path(raw).resolve()
-            source, stage, platform = [root / name for name in ("sources", "stage", "1cv8")]
-            selected = {"phase": "selected", "version": 1, "nonce": nonce,
-                        "provider": {"selected": "designer", "origin": {"kind": "override", "file": "v8project.yaml"}},
-                        "executor": {"kind": "local", "executable": str(platform), "endpoint": None}}
-            ready = {"phase": "ready", "version": 1, "nonce": nonce, "command": "pull",
-                     "requested_mode": "FULL", "mode": "FULL", "mode_reason": None,
-                     "extension": None, "provider_dispatched": True, "source_set": "main",
-                     "target_path": str(source), "stage_path": str(stage),
-                     "snapshot": "prepared", "snapshot_warning": None}
-            terminal = {"phase": "terminal", "version": 1, "nonce": nonce,
-                        "publication": "published", "memory": "saved", "result": {
-                            "ok": True, "command": "pull", "duration_ms": 0,
-                            "data": {}, "warnings": [], "steps": []}}
-            for value in [selected, ready, terminal]:
-                self.assertEqual(module.validate_v8_runner_publication_frame(
-                    value, value["phase"], nonce, source, stage, platform), [])
-            defects = [
-                (selected, {"nonce": "not-a-uuid"}),
-                (selected, {"executor": {**selected["executor"], "kind": "attached"}}),
-                (selected, {"executor": {**selected["executor"], "executable": str(root / "other")}}),
-                (selected, {"executor": {**selected["executor"], "endpoint": "foreign:1545"}}),
-                (selected, {"provider": {"selected": "agent"}}),
-                (ready, {"nonce": "22222222-2222-4222-8222-222222222222"}),
-                (ready, {"version": True}),
-                (ready, {"version": 2}),
-                (ready, {"phase": "terminal"}),
-                (ready, {"target_path": str(root / "other")}),
-                (ready, {"stage_path": "relative-stage"}),
-                (ready, {"snapshot": "unavailable"}),
-                (ready, {"provider_dispatched": False}),
-                (ready, {"source_set": "other"}),
-                (ready, {"unexpected": True}),
-                (terminal, {"nonce": "22222222-2222-4222-8222-222222222222"}),
-            ]
-            for value, defect in defects:
-                with self.subTest(phase=value["phase"], fields=sorted(defect)):
-                    self.assertTrue(module.validate_v8_runner_publication_frame(
-                        {**value, **defect}, value["phase"], nonce, source, stage, platform))
-
-    def test_v8_runner_full_pull_selected_requires_closed_configured_provider_receipt(self) -> None:
-        module = load_contract_module()
-        nonce = "11111111-1111-4111-8111-111111111111"
-        with tempfile.TemporaryDirectory() as raw:
-            root = Path(raw).resolve()
-            source, stage, platform = [root / name for name in ("sources", "stage", "1cv8")]
-            origin = {"kind": "override", "file": "v8project.yaml"}
-            provider = {"selected": "designer", "origin": origin}
-            selected = {"phase": "selected", "version": 1, "nonce": nonce,
-                        "provider": provider,
-                        "executor": {"kind": "local", "executable": str(platform), "endpoint": None}}
-            for receipt in [provider, {**provider, "skipped": [], "endpoint": None}]:
-                self.assertEqual(module.validate_v8_runner_publication_frame(
-                    {**selected, "provider": receipt}, "selected", nonce, source, stage, platform), [])
-            invalid_receipts = [
-                {"selected": "designer"},
-                {**provider, "origin": None},
-                {**provider, "origin": {"kind": "override"}},
-                {**provider, "origin": {"kind": "default"}},
-                {**provider, "origin": {**origin, "file": "v8project.local.yaml"}},
-                {**provider, "origin": {**origin, "file": None}},
-                {**provider, "origin": {**origin, "unexpected": True}},
-                {**provider, "unexpected": True},
-                {**provider, "skipped": None},
-                {**provider, "skipped": [{"provider": "agent", "reason": "not this explicit override"}]},
-                {**provider, "endpoint": {"mode": "attached", "address": "other:1545"}},
-            ]
-            for receipt in invalid_receipts:
-                with self.subTest(receipt=receipt):
-                    self.assertTrue(module.validate_v8_runner_publication_frame(
-                        {**selected, "provider": receipt}, "selected", nonce, source, stage, platform))
-            for executor in [
-                {"kind": "local", "executable": str(platform)},
-                {**selected["executor"], "unexpected": True},
-            ]:
-                with self.subTest(executor=executor):
-                    self.assertTrue(module.validate_v8_runner_publication_frame(
-                        {**selected, "executor": executor}, "selected", nonce, source, stage, platform))
-
-    def test_v8_runner_full_pull_terminal_requires_closed_common_envelope(self) -> None:
-        module = load_contract_module()
-        nonce = "11111111-1111-4111-8111-111111111111"
-        with tempfile.TemporaryDirectory() as raw:
-            root = Path(raw).resolve()
-            source, stage, platform = [root / name for name in ("sources", "stage", "1cv8")]
-            result = {"ok": True, "command": "pull", "duration_ms": 0,
-                      "data": {}, "warnings": [], "steps": []}
-            terminal = {"phase": "terminal", "version": 1, "nonce": nonce,
-                        "publication": "published", "memory": "saved", "result": result}
-            failure = {**result, "ok": False, "error": {
-                "code": "runtime_failure", "kind": "runtime", "message": "control input closed"}}
-            for envelope in [result, {**result, "error": None}, {**result, "warnings": ["diagnostic"]}, failure]:
-                self.assertEqual(module.validate_v8_runner_publication_frame(
-                    {**terminal, "result": envelope}, "terminal", nonce, source, stage, platform), [])
-            invalid_results = [
-                {key: value for key, value in result.items() if key != removed}
-                for removed in result
-            ] + [
-                {**result, "unexpected": True},
-                {**result, "ok": 1},
-                {**result, "command": None},
-                {**result, "duration_ms": True},
-                {**result, "duration_ms": -1},
-                {**result, "duration_ms": "0"},
-                {**result, "warnings": {}},
-                {**result, "warnings": [1]},
-                {**result, "steps": {}},
-                {**result, "steps": [{}]},
-                {**result, "error": []},
-                {**result, "ok": False},
-                {**failure, "error": {"code": "runtime_failure", "kind": "runtime"}},
-                {**failure, "error": {**failure["error"], "unexpected": True}},
-                {**failure, "error": {**failure["error"], "code": True}},
-                {**failure, "error": {**failure["error"], "kind": "platform"}},
-                {**failure, "error": {**failure["error"], "message": ""}},
-            ]
-            for envelope in invalid_results:
-                with self.subTest(envelope=envelope):
-                    self.assertTrue(module.validate_v8_runner_publication_frame(
-                        {**terminal, "result": envelope}, "terminal", nonce, source, stage, platform))
-
-    def test_v8_runner_full_pull_preview_cannot_hide_missing_memory_or_a_late_edit(self) -> None:
-        module = load_contract_module()
-        def envelope(mode):
-            return {"ok": True, "command": "push", "data": {
-                "ok": True, "provider_dispatched": False,
-                "steps": [{"source_set": "main", "mode": mode, "ok": True, "applied": False}]}}
-        unchanged = envelope("skipped")
-        changed = envelope({"partial": {"file_count": 1}})
-        full = envelope("full")
-        self.assertEqual(module.validate_v8_runner_post_pull_preview(unchanged, 0, changed=False), [])
-        self.assertEqual(module.validate_v8_runner_post_pull_preview(changed, 0, changed=True), [])
-        self.assertEqual(module.validate_v8_runner_post_pull_preview(full, 0, changed=True), [])
-        cases = [
-            (unchanged, 0, True), (changed, 0, False),
-            (full, 0, False),
-            ({**unchanged, "ok": False, "error": {"code": "no_memory"}}, 2, False),
-            ({**unchanged, "data": {**unchanged["data"], "steps": []}}, 0, False),
-            ({**unchanged, "data": {**unchanged["data"], "provider_dispatched": True}}, 0, False),
-            (envelope(None), 0, True),
-            (envelope({"partial": {"file_count": 0}}), 0, True),
-            (envelope({"partial": {"file_count": True}}), 0, True),
-        ]
-        for index, (value, status, expect_changed) in enumerate(cases):
-            with self.subTest(case=index):
-                self.assertTrue(module.validate_v8_runner_post_pull_preview(value, status, changed=expect_changed))
-
-    def test_v8_runner_full_pull_preserves_every_prepared_file(self) -> None:
-        module = load_contract_module()
-        prepared = {"Configuration.xml": b"configuration", "Module.bsl": b"prepared",
-                    "ConfigDumpInfo.xml": b"dump info"}
-        late_edit = {**prepared, "Module.bsl": b"late edit"}
-        self.assertEqual(module.validate_v8_runner_publication_tree(dict(prepared), prepared), [])
-        self.assertEqual(module.validate_v8_runner_publication_tree(dict(late_edit), late_edit), [])
-        defects = [
-            {name: payload for name, payload in prepared.items() if name != "Configuration.xml"},
-            {**prepared, "Configuration.xml": b"corrupted configuration"},
-            {name: payload for name, payload in prepared.items() if name != "ConfigDumpInfo.xml"},
-            {**prepared, "ConfigDumpInfo.xml": b"corrupted dump info"},
-            {**prepared, "unexpected.bsl": b"extra"},
-            {**prepared, "Module.bsl": b"unexpected edit"},
-        ]
-        for index, tree in enumerate(defects):
-            with self.subTest(case=index):
-                self.assertTrue(module.validate_v8_runner_publication_tree(tree, prepared))
-
-    def test_v8_runner_full_pull_invalid_frame_still_closes_each_owned_process(self) -> None:
-        from io import StringIO
-        from queue import Queue
-        from types import SimpleNamespace
-        module = load_contract_module()
-        sessions = []
-        def start(command, environment, timeout_seconds, *, cwd, deadline):
-            del timeout_seconds, deadline
-            calls = Path(environment["UNICA_FULL_PULL_CALLS"])
-            if not calls.exists():
-                calls.write_bytes(b"probe\n")
-            output = {"ok": True} if "pull" in command else {"ok": True, "command": "push", "data": {
-                "ok": True, "provider_dispatched": False,
-                "steps": [{"source_set": "main", "mode": "skipped", "ok": True, "applied": False}]}}
-            if "--publication-stdio" in command:
-                output = {"phase": "selected"}  # Invalid before any reply or publication.
-            lines = Queue()
-            lines.put(json.dumps(output) + "\n")
-            lines.put("")
-            reader = SimpleNamespace(join=lambda timeout: None, is_alive=lambda: False)
-            session = SimpleNamespace(
-                process=SimpleNamespace(stdin=StringIO(), wait=lambda timeout: 0),
-                lines=lines, reader=reader, error_reader=reader, diagnostics=[])
-            sessions.append(session)
-            return session
-        def close(session, root):
-            del root
-            session.process.stdin.close()
-        with tempfile.TemporaryDirectory() as raw:
-            runner = Path(raw) / "v8-runner"
-            runner.write_bytes(b"test-only supplied binary stand-in")
-            with patch.object(module, "compile_rust_platform_stub", return_value=[]), patch.object(
-                module, "load_shared_mcp_smoke_module", return_value=SimpleNamespace(McpSession=start)
-            ), patch.object(module, "terminate_shared_mcp_session", side_effect=close) as cleanup:
-                errors = module.check_v8_runner_full_pull_publication_contract(runner, "linux-x64")
-        self.assertEqual(len(sessions), 3)
-        self.assertEqual(cleanup.call_count, 3)
-        self.assertTrue(all(session.process.stdin.closed for session in sessions))
-        self.assertEqual(len(errors), 1)
-        self.assertIn("selected frame", errors[0])
 
     def test_v8_runner_platform_stub_compilation_timeout_is_bounded(self) -> None:
         module = load_contract_module()
@@ -1305,6 +1131,15 @@ class ProductContractTests(unittest.TestCase):
         unknown_field["data"]["steps"][0]["mode"]["partial"]["unknown"] = True
         self.assertTrue(
             any("closed" in error for error in validator(unknown_field, 4, "main"))
+        )
+        # Раннер 0.17 (push-data v6) может добавить к данным `detection`.
+        with_detection = copy.deepcopy(envelope)
+        with_detection["data"]["detection"] = {"main": {"method": "scan"}}
+        self.assertEqual(validator(with_detection, 4, "main"), [])
+        unknown_data_field = copy.deepcopy(envelope)
+        unknown_data_field["data"]["unknown"] = True
+        self.assertTrue(
+            any("closed" in error for error in validator(unknown_data_field, 4, "main"))
         )
         undispatched = copy.deepcopy(envelope)
         undispatched["data"]["provider_dispatched"] = False
@@ -1711,7 +1546,7 @@ class ProductContractTests(unittest.TestCase):
     def test_v8_runner_external_build_calls_accept_a_build_over_the_configuration(
         self,
     ) -> None:
-        """Раннер 0.14 собирает обработку во временной базе поверх конфигурации."""
+        """Раннер собирает обработку в своей базе под workPath поверх конфигурации."""
         module = load_contract_module()
         validator = module.validate_v8_runner_external_build_calls
 
@@ -1719,15 +1554,24 @@ class ProductContractTests(unittest.TestCase):
             root = Path(tmp)
             configuration = root / "src" / "main"
             work = root / "work"
-            (work / "temp" / "throwaway-infobases").mkdir(parents=True)
             calls = [
-                "create",
+                f"create\t{work / 'temp' / 'build-infobase' / 'ib'}",
                 f"load-config\t{configuration}\textension=false",
                 "load-external",
                 "dump-external",
             ]
 
             self.assertEqual(validator(calls, configuration, work), [])
+            # Повторная сборка берёт базу из кэша раннера (0.17).
+            self.assertEqual(
+                validator(calls[2:], configuration, work, cached=True), []
+            )
+            self.assertTrue(
+                any(
+                    "platform steps" in error
+                    for error in validator(calls, configuration, work, cached=True)
+                )
+            )
 
     def test_v8_runner_external_build_calls_reject_a_wrong_or_leaky_build(
         self,
@@ -1739,17 +1583,16 @@ class ProductContractTests(unittest.TestCase):
             root = Path(tmp)
             configuration = root / "src" / "main"
             work = root / "work"
-            retained = work / "temp" / "throwaway-infobases" / "base-1"
-            retained.mkdir(parents=True)
+            leaky = f"create\t{root / 'src' / 'main' / 'ib'}"
 
             cases = {
                 "no configuration load": (
-                    ["create", "load-external", "dump-external"],
+                    [leaky, "load-external", "dump-external"],
                     "platform steps",
                 ),
                 "load after the external package": (
                     [
-                        "create",
+                        leaky,
                         "load-external",
                         f"load-config\t{configuration}\textension=false",
                         "dump-external",
@@ -1758,7 +1601,7 @@ class ProductContractTests(unittest.TestCase):
                 ),
                 "another source-set": (
                     [
-                        "create",
+                        leaky,
                         f"load-config\t{root / 'src' / 'other'}\textension=false",
                         "load-external",
                         "dump-external",
@@ -1767,7 +1610,7 @@ class ProductContractTests(unittest.TestCase):
                 ),
                 "loaded as an extension": (
                     [
-                        "create",
+                        leaky,
                         f"load-config\t{configuration}\textension=true",
                         "load-external",
                         "dump-external",
@@ -1782,7 +1625,7 @@ class ProductContractTests(unittest.TestCase):
                         any(expected in error for error in errors), errors
                     )
                     self.assertTrue(
-                        any("throwaway infobase was retained" in error for error in errors),
+                        any("under workPath" in error for error in errors),
                         errors,
                     )
 
@@ -1794,25 +1637,25 @@ class ProductContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             configuration = root / "src" / "main"
-            good = [
-                "create",
+            work_path = root / "work"
+            create = f"create\t{work_path / 'temp' / 'build-infobase' / 'ib'}"
+            tail = [
                 f"load-config\t{configuration}\textension=false",
                 "load-external",
                 "dump-external",
             ]
-            clean = root / "clean"
-            (clean / "temp" / "throwaway-infobases").mkdir(parents=True)
-            leaky = root / "leaky"
-            (leaky / "temp" / "throwaway-infobases" / "base-1").mkdir(parents=True)
-            rootless = root / "rootless"
-            rootless.mkdir()
 
             cases = {
-                "retained base": (good, leaky, "throwaway infobase was retained"),
-                "no throwaway root": (good, rootless, "root was not found"),
+                "base outside workPath": (
+                    [f"create\t{root / 'ib'}", *tail],
+                    work_path,
+                    "under workPath",
+                ),
+                "creation without a path": (["create", *tail], work_path, "malformed"),
+                "cold build without creation": (tail[1:], work_path, "platform steps"),
                 "malformed load": (
-                    ["create", f"load-config\t{configuration}", "load-external", "dump-external"],
-                    clean,
+                    [create, f"load-config\t{configuration}", "load-external", "dump-external"],
+                    work_path,
                     "malformed",
                 ),
             }
@@ -1828,7 +1671,6 @@ class ProductContractTests(unittest.TestCase):
             "check_v8_runner_partial_load_contract",
             "check_v8_runner_bounded_external_epf_contract",
             "check_v8_runner_windows_external_publication_contract",
-            "check_v8_runner_full_pull_publication_contract",
         ]
         with tempfile.TemporaryDirectory() as tmp:
             tools_dir = Path(tmp)
@@ -1898,11 +1740,6 @@ class ProductContractTests(unittest.TestCase):
                     "check_v8_runner_windows_external_publication_contract",
                     return_value=["windows publication failure"],
                 ) as publication_check,
-                patch.object(
-                    module,
-                    "check_v8_runner_full_pull_publication_contract",
-                    return_value=[],
-                ),
             ):
                 errors = module.check_tool_contracts(tools_dir, "win-x64")
 
@@ -1918,22 +1755,16 @@ class ProductContractTests(unittest.TestCase):
         "esac\n"
     )
 
-    def test_downloader_and_local_corpus_contract_are_retired(self) -> None:
-        """Справка платформы приходит из установки, а не из скачанного корпуса.
-
-        Загрузчик закреплял ровно ту болезнь, ради которой заведена #254:
-        полная загрузка в каждом рабочем дереве ради точечного вопроса.
-        """
-        downloader = REPO_ROOT / "scripts" / "dev" / "download-1ci-guides.py"
-        downloader_test = REPO_ROOT / "tests" / "dev" / "test_download_1ci_guides.py"
-
-        self.assertFalse(downloader.exists(), "загрузчик удалён вместе с контрактом корпуса")
-        self.assertFalse(downloader_test.exists(), "тест загрузчика удалён вместе с ним")
-
-    def test_local_corpus_directory_stays_ignored(self) -> None:
-        """Каталог остаётся игнорируемым: снят контракт корпуса, а не каталог."""
-        ignore = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
-        self.assertIn("docs-local/", ignore.splitlines())
+    def test_local_research_material_is_ignored_by_git(self) -> None:
+        """`docs-local/` — местные материалы: git не берёт в индекс ничего оттуда."""
+        for probe in ("docs-local/note.md", "docs-local/nested/page.html"):
+            with self.subTest(probe=probe):
+                ignored = subprocess.run(
+                    ["git", "check-ignore", "--quiet", "--no-index", probe],
+                    cwd=REPO_ROOT,
+                    check=False,
+                )
+                self.assertEqual(ignored.returncode, 0, f"{probe} is not ignored")
 
     def test_marketplace_card_uses_unica_product_legal_links(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
@@ -1965,22 +1796,23 @@ class ProductContractTests(unittest.TestCase):
         must exist before them, and staging must never touch the catalog.
         """
         repo_root = Path(__file__).resolve().parents[2]
-        publish = (repo_root / ".github/workflows/publish-unica-marketplace.yml").read_text(
+        publish = (repo_root / ".github/workflows/release.yml").read_text(
             encoding="utf-8"
         )
 
         self.assertIn("needs: [gate, stage, anchor, verify-fresh-install, verify-upgrade]", publish)
         self.assertIn("needs: [gate, stage, anchor]", publish)
         # A published tag never moves; a rerun proves sameness instead.
-        self.assertNotIn("git tag -f", publish)
-        self.assertNotIn("--force", publish)
+        marketplace = publish[publish.index("  gate:" + chr(10)):]
+        self.assertNotIn("git tag -f", marketplace)
+        self.assertNotIn("--force", marketplace)
         # No scheduled babysitter exists anymore; the pipeline is one pass.
         self.assertFalse((repo_root / ".github/workflows/release-warden.yml").exists())
         self.assertFalse((repo_root / "scripts/ci/release-warden.py").exists())
 
     def test_release_tag_is_not_hardcoded_in_the_build_workflow(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
-        release = (repo_root / ".github/workflows/unica-plugin-release.yml").read_text(
+        release = (repo_root / ".github/workflows/release.yml").read_text(
             encoding="utf-8"
         )
         # A hardcoded release version is a location no contract check covers, and
@@ -2112,7 +1944,7 @@ class ProductContractTests(unittest.TestCase):
 
     def test_the_candidate_anchor_names_the_staging_commit(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
-        publish = (repo_root / ".github/workflows/publish-unica-marketplace.yml").read_text(
+        publish = (repo_root / ".github/workflows/release.yml").read_text(
             encoding="utf-8"
         )
 
@@ -2152,10 +1984,10 @@ class ProductContractTests(unittest.TestCase):
 
     def test_publish_workflow_promotes_both_host_catalogs(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
-        publish = (repo_root / ".github/workflows/publish-unica-marketplace.yml").read_text(
+        publish = (repo_root / ".github/workflows/release.yml").read_text(
             encoding="utf-8"
         )
-        release = (repo_root / ".github/workflows/unica-plugin-release.yml").read_text(
+        release = (repo_root / ".github/workflows/release.yml").read_text(
             encoding="utf-8"
         )
 
@@ -2215,9 +2047,10 @@ class ProductContractTests(unittest.TestCase):
         )
 
     def test_application_layer_does_not_spawn_git_directly(self) -> None:
+        """rule: INV.APP.DEPENDENCY-DIRECTION"""
         repo_root = Path(__file__).resolve().parents[2]
         application_root = (
-            repo_root / "crates" / "unica-coder" / "src" / "application"
+            repo_root / "crates" / "unica-application" / "src" / "application"
         )
         offenders = []
         for path in application_root.rglob("*.rs"):
@@ -2227,6 +2060,7 @@ class ProductContractTests(unittest.TestCase):
         self.assertEqual(offenders, [])
 
     def test_direct_git_command_guard_matches_calls_before_masking_literals(self) -> None:
+        """rule: INV.APP.DEPENDENCY-DIRECTION"""
         source = br'''
 fn productive() { std::process::Command::new("git"); }
 fn harmless() {
@@ -2242,13 +2076,7 @@ fn test_only() { std::process::Command::new("git"); }
     def write_executable(self, tools_dir: Path, name: str, body: str) -> None:
         commands = {
             "bsl-analyzer": [("analyze", "--help"), ("mcp", "serve", "--help")],
-            "rlm-bsl-index": [
-                ("index", "build", "--help"),
-                ("index", "update", "--help"),
-                ("index", "info", "--help"),
-            ],
-            "rlm-bsl-mcp": [("--help",)],
-            "v8-runner": [("--version",), ("push", "--help")],
+            "v8-runner": [("--version",), ("push", "--help"), ("pull", "--help")],
         }[name]
         routed_outputs = {
             tuple(route.split()): output
@@ -2273,55 +2101,6 @@ fn test_only() { std::process::Command::new("git"); }
             encoding="utf-8",
         )
         path.chmod(path.stat().st_mode | 0o755)
-
-    def write_rlm_contract_standins(
-        self,
-        root: Path,
-        *,
-        mode: str = "ok",
-        index_mode: str = "ok",
-    ) -> tuple[Path, Path, Path, Path, Path]:
-        request_log = root / "requests.jsonl"
-        index_log = root / "index.json"
-        pid_log = root / "pids.txt"
-        index_tool = root / "rlm-bsl-index.py"
-        index_tool.write_text(
-            "import json, os, subprocess, sys, time\n"
-            "from pathlib import Path\n"
-            f"INDEX_MODE = {index_mode!r}\n"
-            "workspace = Path(sys.argv[3]).resolve()\n"
-            "if INDEX_MODE == 'reject_outer_scan' and "
-            "(workspace.parents[1] / 'poison-outer-sibling').exists():\n"
-            "    raise SystemExit(19)\n"
-            "if INDEX_MODE == 'hang':\n"
-            "    child = subprocess.Popen([sys.executable, '-c', "
-            f"'import time; time.sleep({RLM_FAKE_HANG_SECONDS})'])\n"
-            f"    Path({str(pid_log)!r}).write_text("
-            "f'{os.getpid()}\\n{child.pid}\\n', encoding='utf-8')\n"
-            f"    time.sleep({RLM_FAKE_HANG_SECONDS})\n"
-            f"Path({str(index_log)!r}).write_text("
-            "json.dumps({'argv': sys.argv[1:], "
-            "'index_dir': os.environ.get('RLM_INDEX_DIR')}), encoding='utf-8')\n"
-            "Path(os.environ['RLM_INDEX_DIR']).mkdir(parents=True, exist_ok=True)\n",
-            encoding="utf-8",
-        )
-        index_tool.chmod(index_tool.stat().st_mode | 0o755)
-
-        mcp_tool = root / "rlm-bsl-mcp.py"
-        shared_standin = (
-            REPO_ROOT
-            / "tests/fixtures/unica_mcp_script_parity/reader-standins/bsl_mcp.py"
-        )
-        mcp_tool.write_text(
-            "import os, runpy\n"
-            f"os.environ['UNICA_RLM_CONTRACT_STANDIN_MODE'] = {mode!r}\n"
-            f"os.environ['UNICA_RLM_CONTRACT_RPC_LOG'] = {str(request_log)!r}\n"
-            f"os.environ['UNICA_RLM_CONTRACT_PID_LOG'] = {str(pid_log)!r}\n"
-            f"runpy.run_path({str(shared_standin)!r}, run_name='__main__')\n",
-            encoding="utf-8",
-        )
-        mcp_tool.chmod(mcp_tool.stat().st_mode | 0o755)
-        return mcp_tool, index_tool, request_log, index_log, pid_log
 
     def process_is_alive(self, pid: int) -> bool:
         if os.name == "nt":
@@ -2376,12 +2155,6 @@ fn test_only() { std::process::Command::new("git"); }
         if parent_pid or child_pid:
             self.kill_process_tree_best_effort(parent_pid, child_pid)
 
-    def test_rlm_hang_fixture_cleanup_uses_either_known_pid(self) -> None:
-        with patch.object(self, "kill_process_tree_best_effort") as kill_tree:
-            self.cleanup_process_tree_best_effort(0, 27182)
-
-        kill_tree.assert_called_once_with(0, 27182)
-
     def test_windows_best_effort_cleanup_targets_surviving_child_independently(
         self,
     ) -> None:
@@ -2411,61 +2184,39 @@ fn test_only() { std::process::Command::new("git"); }
             )
             self.write_executable(
                 tools_dir,
-                "rlm-bsl-index",
-                "#!/usr/bin/env sh\nprintf '%s\\n' 'index build update info'\n",
-            )
-            self.write_executable(
-                tools_dir,
-                "rlm-bsl-mcp",
-                "#!/usr/bin/env sh\nprintf '%s\\n' '--transport stdio streamable-http service'\n",
-            )
-            self.write_executable(
-                tools_dir,
                 "v8-runner",
-                "#!/usr/bin/env sh\nprintf '%s\\n' 'v8-runner 0.5.1 version Usage: v8-runner push'\n",
+                "#!/usr/bin/env sh\nprintf '%s\\n' 'v8-runner 0.5.1 version Usage: v8-runner push pull --force'\n",
             )
 
             errors = module.check_tool_contracts(tools_dir)
 
         self.assertEqual(errors, [])
 
-    def test_rlm_help_forces_utf8_when_stdout_is_captured(self) -> None:
+    def test_tool_help_contracts_refuse_a_runner_without_full_dump_force(self) -> None:
+        """Полная выгрузка продукта — `dump --force`: раннер без `--force` у `pull` её не выполнит."""
         module = load_contract_module()
 
         with tempfile.TemporaryDirectory() as tmp:
             tools_dir = Path(tmp)
-            tool = tools_dir / "rlm-bsl-index.py"
-            tool.write_text(
-                'print("build: Строить неполный индекс")\n',
-                encoding="utf-8",
+            self.write_executable(tools_dir, "bsl-analyzer", self.BSL_ANALYZER_HELP)
+            self.write_executable(
+                tools_dir,
+                "v8-runner",
+                "#!/usr/bin/env sh\nprintf '%s\\n' 'v8-runner 0.5.1 version Usage: v8-runner push pull --mode'\n",
             )
-            with (
-                patch.object(
-                    module,
-                    "TOOL_HELP_CHECKS",
-                    [("rlm-bsl-index build", "rlm-bsl-index", [], ["build"])],
-                ),
-                patch.dict(
-                    os.environ,
-                    {
-                        "LC_ALL": "C",
-                        "LANG": "C",
-                        "PYTHONCOERCECLOCALE": "0",
-                        "PYTHONUTF8": "0",
-                        "PYTHONIOENCODING": "ascii",
-                    },
-                ),
-            ):
-                errors = module.check_tool_contracts(tools_dir)
 
-        self.assertEqual(errors, [])
+            errors = module.check_tool_contracts(tools_dir)
+
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("v8-runner full dump", errors[0])
+        self.assertIn("--force", errors[0])
 
     def test_tool_help_failure_includes_bounded_sanitized_diagnostics(self) -> None:
         module = load_contract_module()
 
         with tempfile.TemporaryDirectory() as tmp:
             tools_dir = Path(tmp)
-            tool = tools_dir / "rlm-bsl-index.py"
+            tool = tools_dir / "helper-tool.py"
             tool.write_text(
                 "from pathlib import Path\n"
                 "import sys\n"
@@ -2477,46 +2228,25 @@ fn test_only() { std::process::Command::new("git"); }
             with patch.object(
                 module,
                 "TOOL_HELP_CHECKS",
-                [("rlm-bsl-index build", "rlm-bsl-index", ["index", "build"], ["build"])],
+                [("helper-tool build", "helper-tool", ["index", "build"], ["build"])],
             ):
                 errors = module.check_tool_contracts(tools_dir)
 
         self.assertEqual(len(errors), 1)
         error = errors[0]
         self.assertIn("command exited with 7", error)
-        self.assertIn("rlm-bsl-index.py index build", error)
+        self.assertIn("helper-tool.py index build", error)
         self.assertIn("OUT-ДИАГНОСТИКА", error)
         self.assertIn("ERR-ДИАГНОСТИКА", error)
         self.assertNotIn(str(tools_dir), error)
         self.assertLess(len(error), 5_000)
 
-    def test_tool_help_contracts_do_not_fall_back_to_legacy_rlm_server_name(self) -> None:
-        module = load_contract_module()
-
+    @contextmanager
+    def relative_tool_contract_fixture(self):
         with tempfile.TemporaryDirectory() as tmp:
-            tools_dir = Path(tmp)
-            legacy = tools_dir / "rlm-tools-bsl.py"
-            legacy.write_text(
-                "print('--transport stdio streamable-http')\n",
-                encoding="utf-8",
-            )
-            legacy.chmod(legacy.stat().st_mode | 0o755)
-
-            errors = module.check_tool_contracts(tools_dir)
-
-        self.assertTrue(
-            any(
-                error.startswith("rlm-bsl-mcp server: binary not found:")
-                for error in errors
-            ),
-            errors,
-        )
-
-    def test_tool_help_contracts_accept_relative_tools_dir(self) -> None:
-        module = load_contract_module()
-
-        with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmp:
-            tools_dir = Path(tmp)
+            cwd = Path(tmp)
+            tools_dir = cwd / "tools"
+            tools_dir.mkdir()
             self.write_executable(
                 tools_dir,
                 "bsl-analyzer",
@@ -2524,23 +2254,75 @@ fn test_only() { std::process::Command::new("git"); }
             )
             self.write_executable(
                 tools_dir,
-                "rlm-bsl-index",
-                "#!/usr/bin/env sh\nprintf '%s\\n' 'index build update info'\n",
-            )
-            self.write_executable(
-                tools_dir,
-                "rlm-bsl-mcp",
-                "#!/usr/bin/env sh\nprintf '%s\\n' '--transport stdio streamable-http service'\n",
-            )
-            self.write_executable(
-                tools_dir,
                 "v8-runner",
-                "#!/usr/bin/env sh\nprintf '%s\\n' 'v8-runner 0.5.1 version Usage: v8-runner push'\n",
+                "#!/usr/bin/env sh\nprintf '%s\\n' 'v8-runner 0.5.1 version Usage: v8-runner push pull --force'\n",
             )
 
-            errors = module.check_tool_contracts(tools_dir.relative_to(Path.cwd()))
+            yield cwd, tools_dir.relative_to(cwd)
+
+    def check_relative_tool_contracts(self, cwd: Path, tools_dir: Path):
+        self.assertFalse(tools_dir.is_absolute())
+        module_path = REPO_ROOT / "scripts" / "ci" / "check-tool-contracts.py"
+        try:
+            checked = subprocess.run(
+                [sys.executable, "-c", "\n".join([
+                    "import importlib.util, json, sys",
+                    "from pathlib import Path",
+                    "spec = importlib.util.spec_from_file_location('contracts', sys.argv[1])",
+                    "module = importlib.util.module_from_spec(spec)",
+                    "spec.loader.exec_module(module)",
+                    "print(json.dumps(module.check_tool_contracts(Path(sys.argv[2]))))",
+                ]), str(module_path), str(tools_dir)],
+                cwd=cwd,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=RELATIVE_TOOL_CONTRACT_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired as error:
+            self.fail(
+                f"relative tools child timed out after {error.timeout}s\n"
+                f"stdout: {error.stdout!r}\nstderr: {error.stderr!r}"
+            )
+        self.assertEqual(
+            checked.returncode, 0,
+            f"relative tools child failed\nstdout:\n{checked.stdout}\nstderr:\n{checked.stderr}",
+        )
+        return json.loads(checked.stdout)
+
+    def test_tool_help_contracts_accept_relative_tools_dir(self) -> None:
+        with self.relative_tool_contract_fixture() as (cwd, tools_dir):
+            errors = self.check_relative_tool_contracts(cwd, tools_dir)
 
         self.assertEqual(errors, [])
+
+    def test_relative_tool_contract_child_failure_preserves_captured_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            checker = root / "scripts" / "ci" / "check-tool-contracts.py"
+            checker.parent.mkdir(parents=True)
+            checker.write_text(
+                "print('unexpected-child-stdout', flush=True)\n"
+                "raise RuntimeError('unexpected-child-stderr')\n",
+                encoding="utf-8",
+            )
+            with patch.dict(globals(), {"REPO_ROOT": root}):
+                with self.assertRaises(Exception) as failure:
+                    self.check_relative_tool_contracts(root, Path("tools"))
+            self.assertIsInstance(failure.exception, AssertionError)
+            self.assertIn("unexpected-child-stdout", str(failure.exception))
+            self.assertIn("unexpected-child-stderr", str(failure.exception))
+
+    def test_relative_tool_contract_child_timeout_preserves_captured_output(self):
+        timeout = subprocess.TimeoutExpired(
+            ["child"], 15, output=b"timeout-child-stdout", stderr=b"timeout-child-stderr",
+        )
+        with patch.object(subprocess, "run", side_effect=timeout):
+            with self.assertRaises(Exception) as failure:
+                self.check_relative_tool_contracts(Path.cwd(), Path("tools"))
+        self.assertIsInstance(failure.exception, AssertionError)
+        self.assertIn("timeout-child-stdout", str(failure.exception))
+        self.assertIn("timeout-child-stderr", str(failure.exception))
 
     def test_tool_help_contracts_report_missing_expected_flag(self) -> None:
         module = load_contract_module()
@@ -2548,12 +2330,6 @@ fn test_only() { std::process::Command::new("git"); }
         with tempfile.TemporaryDirectory() as tmp:
             tools_dir = Path(tmp)
             self.write_executable(tools_dir, "bsl-analyzer", "#!/usr/bin/env sh\nprintf '%s\\n' 'analyze'\n")
-            self.write_executable(tools_dir, "rlm-bsl-index", "#!/usr/bin/env sh\nprintf '%s\\n' 'index build update info'\n")
-            self.write_executable(
-                tools_dir,
-                "rlm-bsl-mcp",
-                "#!/usr/bin/env sh\nprintf '%s\\n' '--transport stdio streamable-http service'\n",
-            )
             self.write_executable(tools_dir, "v8-runner", "#!/usr/bin/env sh\nprintf '%s\\n' 'v8-runner version Usage: v8-runner push'\n")
 
             errors = module.check_tool_contracts(tools_dir)
@@ -2577,16 +2353,6 @@ fn test_only() { std::process::Command::new("git"); }
             )
             self.write_executable(
                 tools_dir,
-                "rlm-bsl-index",
-                "#!/usr/bin/env sh\nprintf '%s\\n' 'index build update info'\n",
-            )
-            self.write_executable(
-                tools_dir,
-                "rlm-bsl-mcp",
-                "#!/usr/bin/env sh\nprintf '%s\\n' '--transport stdio streamable-http service'\n",
-            )
-            self.write_executable(
-                tools_dir,
                 "v8-runner",
                 "#!/usr/bin/env sh\nprintf '%s\\n' 'v8-runner version Usage: v8-runner push'\n",
             )
@@ -2599,462 +2365,6 @@ fn test_only() { std::process::Command::new("git"); }
         )
 
 
-    def test_tool_help_contracts_report_missing_rlm_server_transport_surface(self) -> None:
-        module = load_contract_module()
-
-        with tempfile.TemporaryDirectory() as tmp:
-            tools_dir = Path(tmp)
-            self.write_executable(
-                tools_dir,
-                "bsl-analyzer",
-                self.BSL_ANALYZER_HELP,
-            )
-            self.write_executable(tools_dir, "rlm-bsl-index", "#!/usr/bin/env sh\nprintf '%s\\n' 'index build update info'\n")
-            self.write_executable(tools_dir, "rlm-bsl-mcp", "#!/usr/bin/env sh\nprintf '%s\\n' 'service'\n")
-            self.write_executable(tools_dir, "v8-runner", "#!/usr/bin/env sh\nprintf '%s\\n' 'v8-runner version Usage: v8-runner push'\n")
-
-            errors = module.check_tool_contracts(tools_dir)
-
-        self.assertTrue(any("rlm-bsl-mcp server" in error and "--transport" in error for error in errors), errors)
-
-    def test_tool_contract_checker_does_not_depend_on_rlm_sqlite_schema(self) -> None:
-        repo_root = Path(__file__).resolve().parents[2]
-        checker = (repo_root / "scripts" / "ci" / "check-tool-contracts.py").read_text(
-            encoding="utf-8"
-        )
-        for removed in ("sqlite3", "RLM_SCHEMA_COLUMNS", "check_rlm_schema", "--rlm-db"):
-            self.assertNotIn(removed, checker)
-
-        lock = tomllib.loads((repo_root / "Cargo.lock").read_text(encoding="utf-8"))
-        dependency_names = {package["name"] for package in lock["package"]}
-        self.assertEqual(
-            sorted(name for name in dependency_names if "sqlite" in name.lower()),
-            [],
-        )
-
-        rust_roots = [
-            repo_root / "crates" / "unica-coder" / "src",
-            repo_root / "crates" / "unica-bootstrap" / "src",
-        ]
-        production = "\n".join(
-            path.read_text(encoding="utf-8")
-            for rust_root in rust_roots
-            for path in sorted(rust_root.rglob("*.rs"))
-        )
-        for removed in (
-            "rusqlite",
-            "libsqlite3",
-            "sqlite3",
-            "Connection::open",
-            "methods_fts",
-        ):
-            self.assertNotIn(removed, production)
-
-    def test_rlm_mcp_contract_exercises_runtime_helpers_over_json_rpc(self) -> None:
-        module = load_contract_module()
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            mcp_tool, index_tool, request_log, index_log, _pid_log = (
-                self.write_rlm_contract_standins(root)
-            )
-
-            errors = module.check_rlm_mcp_contract(mcp_tool, index_tool)
-            requests = [
-                json.loads(line)
-                for line in request_log.read_text(encoding="utf-8").splitlines()
-            ]
-            index_call = json.loads(index_log.read_text(encoding="utf-8"))
-
-        self.assertEqual(errors, [])
-        self.assertEqual(
-            requests[0],
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": "2025-03-26",
-                    "capabilities": {},
-                    "clientInfo": {"name": "unica-contract", "version": "1"},
-                },
-            },
-        )
-        self.assertEqual(
-            requests[1],
-            {"jsonrpc": "2.0", "method": "notifications/initialized"},
-        )
-        tool_calls = [
-            request["params"]
-            for request in requests
-            if request.get("method") == "tools/call"
-        ]
-        self.assertEqual(
-            [call["name"] for call in tool_calls],
-            ["rlm_start", "rlm_execute", "rlm_execute", "rlm_execute", "rlm_end"],
-        )
-        start = tool_calls[0]["arguments"]
-        self.assertEqual(
-            {key: value for key, value in start.items() if key != "path"},
-            {
-                "query": "ContractTest1",
-                "effort": "low",
-                "max_output_chars": 100_000,
-                "max_execute_calls": 10_000,
-                "execution_timeout_seconds": 30,
-                "include_metadata": False,
-                "domains": [],
-            },
-        )
-        self.assertEqual(
-            [call["arguments"]["code"] for call in tool_calls[1:4]],
-            [
-                'import json\n_result = search("ContractTest", scope="all", limit=20)\nprint(json.dumps(_result, ensure_ascii=False))',
-                'import json\n_result = find_definition("ContractTest1", module_hint=None, limit=20)\nprint(json.dumps(_result, ensure_ascii=False))',
-                'import json\n_result = get_object_profile("CommonModule.ContractOne", sections=None, include_flow=False, include_code_usages=False, limit=20)\nprint(json.dumps(_result, ensure_ascii=False))',
-            ],
-        )
-        self.assertNotIn("parse_form", "\n".join(call["arguments"]["code"] for call in tool_calls[1:4]))
-        self.assertEqual(index_call["argv"][:2], ["index", "build"])
-        self.assertEqual(index_call["argv"][2], start["path"])
-        self.assertEqual(
-            index_call["index_dir"],
-            str(Path(start["path"]).parents[1] / "index"),
-        )
-
-    def test_rlm_mcp_contract_confines_upstream_two_ancestor_extension_scan(self) -> None:
-        module = load_contract_module()
-
-        with tempfile.TemporaryDirectory() as tmp:
-            outer = Path(tmp)
-            contract_root = outer / "contract"
-            contract_root.mkdir()
-            outer.joinpath("poison-outer-sibling").touch()
-            mcp_tool, index_tool, *_ = self.write_rlm_contract_standins(
-                outer,
-                index_mode="reject_outer_scan",
-            )
-
-            with patch.object(
-                module.tempfile,
-                "TemporaryDirectory",
-                return_value=nullcontext(str(contract_root)),
-            ):
-                errors = module.check_rlm_mcp_contract(mcp_tool, index_tool)
-
-        self.assertEqual(errors, [])
-
-    def test_rlm_mcp_contract_reports_session_constructor_system_exit(self) -> None:
-        module = load_contract_module()
-
-        class Shared:
-            class McpSession:
-                def __init__(self, *_args, **_kwargs):
-                    raise SystemExit("transport constructor failed")
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            mcp_tool, index_tool, *_ = self.write_rlm_contract_standins(root)
-            with (
-                patch.object(module, "run_rlm_contract_process", return_value=(0, "")),
-                patch.object(module, "load_shared_mcp_smoke_module", return_value=Shared),
-            ):
-                errors = module.check_rlm_mcp_contract(mcp_tool, index_tool)
-
-        self.assertTrue(any("failed to start MCP transport" in error for error in errors), errors)
-
-    def test_rlm_mcp_contract_does_not_label_post_start_failure_as_startup(self) -> None:
-        module = load_contract_module()
-
-        class Reader:
-            def join(self, timeout):
-                pass
-
-            def is_alive(self):
-                return False
-
-        class Stream:
-            def close(self):
-                pass
-
-        class Session:
-            def __init__(self, *_args, **_kwargs):
-                self.process = type(
-                    "Process",
-                    (),
-                    {"stdin": Stream(), "stdout": Stream(), "stderr": Stream()},
-                )()
-                self.reader = Reader()
-                self.error_reader = Reader()
-                self.calls = 0
-
-            def request(self, _payload):
-                self.calls += 1
-                if self.calls == 1:
-                    return {"jsonrpc": "2.0", "id": 1, "result": {}}
-                raise RuntimeError("post-start transport failure")
-
-            def notify(self, _payload):
-                pass
-
-            def terminate_tree(self, _root):
-                pass
-
-        shared = type("Shared", (), {"McpSession": Session})
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            mcp_tool, index_tool, *_ = self.write_rlm_contract_standins(root)
-            with (
-                patch.object(module, "run_rlm_contract_process", return_value=(0, "")),
-                patch.object(module, "load_shared_mcp_smoke_module", return_value=shared),
-            ):
-                errors = module.check_rlm_mcp_contract(mcp_tool, index_tool)
-
-        self.assertTrue(any("MCP transport failed" in error for error in errors), errors)
-        self.assertFalse(any("failed to start" in error for error in errors), errors)
-
-    def test_rlm_mcp_contract_rejects_malformed_helper_payloads(self) -> None:
-        module = load_contract_module()
-        cases = [
-            ("definition_list", "find_definition must return an object"),
-            ("string_params", "definitions[].params must be a list"),
-            ("string_boolean", "_meta.truncated must be boolean"),
-            ("search_object", "search must return a list"),
-            ("profile_list", "get_object_profile must return an object"),
-            ("profile_error", "get_object_profile returned an error"),
-            ("scalar_metadata", "_meta must be an object"),
-        ]
-
-        for mode, expected in cases:
-            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as tmp:
-                root = Path(tmp)
-                mcp_tool, index_tool, *_ = self.write_rlm_contract_standins(
-                    root,
-                    mode=mode,
-                )
-                errors = module.check_rlm_mcp_contract(mcp_tool, index_tool)
-
-                self.assertTrue(any(expected in error for error in errors), errors)
-                self.assertFalse(any(str(root) in error for error in errors), errors)
-
-    def rlm_session_ready_after_fake_start(self, module, tool: Path, pid_log: Path):
-        """Start the narrowed phase only after the hanging fake recorded its tree.
-
-        The timeout under test bounds the hang, not interpreter start-up:
-        a session for `tool` returns from its constructor once the fake wrote
-        `pid_log`, so a slow start cannot expire the narrowed budget first.
-        """
-        shared = module.load_shared_mcp_smoke_module()
-
-        class ReadySession(shared.McpSession):
-            def __init__(self, command, *args, **kwargs):
-                super().__init__(command, *args, **kwargs)
-                if str(tool) in command:
-                    deadline = time.monotonic() + RLM_FAKE_EVENT_FUSE_SECONDS
-                    while not pid_log.exists() and time.monotonic() < deadline:
-                        time.sleep(0.01)
-
-        return type("Shared", (), {"McpSession": ReadySession})
-
-    def assert_rlm_hang_is_bounded(self, *, mode: str, index_mode: str, phase: str) -> None:
-        module = load_contract_module()
-        parent_pid = child_pid = 0
-        timeout_name = {
-            "mcp": "RLM_MCP_CONTRACT_TIMEOUT_SECONDS",
-            "index": "RLM_INDEX_PROCESS_TIMEOUT_SECONDS",
-        }[phase]
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            mcp_tool, index_tool, _request_log, _index_log, pid_log = (
-                self.write_rlm_contract_standins(root, mode=mode, index_mode=index_mode)
-            )
-            hanging_tool = mcp_tool if phase == "mcp" else index_tool
-            shared = self.rlm_session_ready_after_fake_start(module, hanging_tool, pid_log)
-            try:
-                # Сужается только проверяемая фаза; другая сохраняет обычный
-                # срок и не зависит от скорости старта своего фейка.
-                with patch.object(module, timeout_name, 0.2), patch.object(
-                    module, "load_shared_mcp_smoke_module", return_value=shared
-                ):
-                    started_at = time.monotonic()
-                    errors = module.check_rlm_mcp_contract(mcp_tool, index_tool)
-                    elapsed = time.monotonic() - started_at
-                self.assertTrue(
-                    pid_log.is_file(),
-                    "the hanging rlm fake did not record its process tree",
-                )
-                parent_pid, child_pid = [
-                    int(line)
-                    for line in pid_log.read_text(encoding="utf-8").splitlines()
-                ]
-                deadline = time.monotonic() + RLM_FAKE_EVENT_FUSE_SECONDS
-                while time.monotonic() < deadline and (
-                    self.process_is_alive(parent_pid) or self.process_is_alive(child_pid)
-                ):
-                    time.sleep(0.025)
-
-                # Без срока фазы проверка ждала бы, пока фейк доспит.
-                self.assertLess(elapsed, RLM_FAKE_HANG_SECONDS)
-                self.assertTrue(any("timed out" in error for error in errors), errors)
-                self.assertFalse(self.process_is_alive(parent_pid))
-                self.assertFalse(self.process_is_alive(child_pid))
-            finally:
-                self.cleanup_process_tree_best_effort(parent_pid, child_pid)
-
-    def test_rlm_mcp_contract_bounds_reads_and_terminates_the_process_tree(self) -> None:
-        self.assert_rlm_hang_is_bounded(mode="hang", index_mode="ok", phase="mcp")
-
-    def test_rlm_mcp_contract_bounds_index_build_and_terminates_its_process_tree(self) -> None:
-        self.assert_rlm_hang_is_bounded(mode="ok", index_mode="hang", phase="index")
-
-    def test_rlm_mcp_contract_closes_transport_pipes(self) -> None:
-        module = load_contract_module()
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            mcp_tool, index_tool, *_ = self.write_rlm_contract_standins(root)
-            with warnings.catch_warnings(record=True) as caught:
-                warnings.simplefilter("always", ResourceWarning)
-                errors = module.check_rlm_mcp_contract(mcp_tool, index_tool)
-                gc.collect()
-
-        self.assertEqual(errors, [])
-        self.assertEqual(
-            [warning for warning in caught if warning.category is ResourceWarning],
-            [],
-        )
-
-    def test_rlm_mtime_recovery_contract_checks_scripted_orchestration(self) -> None:
-        module = load_contract_module()
-        outputs = iter(
-            [
-                (0, "Index built\n"),
-                (0, "Status: fresh\n"),
-                (0, "Status: stale (content)\n"),
-                (0, "Changed: 0\nFast path: True\n"),
-                (0, "Status: stale (content)\n"),
-                (0, "Index built\n"),
-                (0, "Status: fresh\n"),
-            ]
-        )
-        actions = []
-
-        def run_rlm(command, cwd, env):
-            action = command[2]
-            self.assertEqual(
-                command,
-                ["rlm-bsl-index", "index", action, str(cwd)],
-            )
-            actions.append(command[2])
-            self.assertEqual(cwd, Path(command[3]))
-            self.assertEqual(env["RLM_INDEX_DIR"], str(cwd.parents[1] / "index"))
-            self.assertEqual(env["RLM_INDEX_SAMPLE_SIZE"], "1000")
-            self.assertEqual(env["RLM_INDEX_SAMPLE_THRESHOLD"], "0")
-            self.assertEqual(env["RLM_INDEX_SKIP_SAMPLE_HOURS"], "0")
-            self.assertEqual(env["PYTHONUTF8"], "1")
-            self.assertEqual(env["PYTHONIOENCODING"], "utf-8:surrogateescape")
-            return next(outputs)
-
-        with patch.object(
-            module,
-            "run_rlm_contract_process",
-            side_effect=run_rlm,
-        ):
-            errors = module.check_rlm_mtime_recovery_contract(
-                Path("rlm-bsl-index"),
-            )
-
-        self.assertEqual(errors, [])
-        self.assertEqual(
-            actions,
-            ["build", "info", "info", "update", "info", "build", "info"],
-        )
-
-    def test_rlm_mtime_recovery_fixture_disables_git_signing(self) -> None:
-        module = load_contract_module()
-        outputs = iter(
-            [
-                (0, "Index built\n"),
-                (0, "Status: fresh\n"),
-                (0, "Status: stale (content)\n"),
-                (0, "Changed: 0\nFast path: True\n"),
-                (0, "Status: stale (content)\n"),
-                (0, "Index built\n"),
-                (0, "Status: fresh\n"),
-            ]
-        )
-        git_commands = []
-
-        def run_git(command, cwd):
-            git_commands.append(command)
-            if command == ["git", "rev-parse", "HEAD"]:
-                return 0, "fixture-head\n"
-            return 0, ""
-
-        with patch.object(module, "run_command", side_effect=run_git):
-            errors = module.check_rlm_mtime_recovery_contract(
-                Path("rlm-bsl-index"),
-                run_rlm=lambda command, cwd, env: next(outputs),
-            )
-
-        self.assertEqual(errors, [])
-        signing_disabled = [
-            "git",
-            "-c",
-            "commit.gpgsign=false",
-            "-c",
-            "tag.gpgSign=false",
-        ]
-        self.assertEqual(
-            git_commands,
-            [
-                [*signing_disabled, "init", "-q"],
-                [
-                    *signing_disabled,
-                    "config",
-                    "user.email",
-                    "unica-ci@example.invalid",
-                ],
-                [*signing_disabled, "config", "user.name", "Unica CI"],
-                [*signing_disabled, "add", "."],
-                [*signing_disabled, "commit", "-q", "-m", "fixture"],
-                ["git", "status", "--porcelain", "--untracked-files=no"],
-                ["git", "rev-parse", "HEAD"],
-                ["git", "rev-parse", "HEAD"],
-            ],
-        )
-
-    def test_rlm_mtime_recovery_contract_rejects_changed_git_head(self) -> None:
-        module = load_contract_module()
-        outputs = iter(
-            [
-                (0, "Index built\n"),
-                (0, "Status: fresh\n"),
-                (0, "Status: stale (content)\n"),
-                (0, "Changed: 0\nFast path: True\n"),
-                (0, "Status: stale (content)\n"),
-                (0, "Index built\n"),
-                (0, "Status: fresh\n"),
-            ]
-        )
-        heads = iter(["initial-head\n", "changed-head\n"])
-
-        def run_git(command, cwd):
-            if command == ["git", "rev-parse", "HEAD"]:
-                return 0, next(heads)
-            return 0, ""
-
-        with patch.object(module, "run_command", side_effect=run_git):
-            errors = module.check_rlm_mtime_recovery_contract(
-                Path("rlm-bsl-index"),
-                run_rlm=lambda command, cwd, env: next(outputs),
-            )
-
-        self.assertTrue(
-            any("Git HEAD changed during update" in error for error in errors),
-            errors,
-        )
     def test_the_release_checks_every_address_it_publishes(self) -> None:
         """Ядро выпуск сверяет побайтно, поставки — только по адресу.
 
@@ -3063,7 +2373,7 @@ fn test_only() { std::process::Command::new("git"); }
         пользователя. Шаг легко выпасть незамеченным, поэтому он закреплён.
         """
         repo_root = Path(__file__).resolve().parents[2]
-        release = (repo_root / ".github/workflows/unica-plugin-release.yml").read_text(
+        release = (repo_root / ".github/workflows/release.yml").read_text(
             encoding="utf-8"
         )
 
@@ -3087,6 +2397,8 @@ fn test_only() { std::process::Command::new("git"); }
         Разойдись эти списки — выпуск соберётся, а установка откажет уже у
         пользователя: «origin is outside the approved release origin». Ловить
         это надо здесь, а не в поле.
+
+        rule: INV.PKG.ENGINE-RELEASE-SOURCES
         """
         repo_root = Path(__file__).resolve().parents[2]
         packager = (repo_root / "scripts/ci/package-unica-plugin.py").read_text(

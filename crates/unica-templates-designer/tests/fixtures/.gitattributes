@@ -1,0 +1,2 @@
+# Platform bytes that tests compare exactly: a checkout must not convert them.
+mxl_edit/** -text -whitespace

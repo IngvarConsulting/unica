@@ -1,0 +1,21 @@
+{
+  "area": "XDTO и обмены",
+  "task": "Удалить свойство типа",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.EnterpriseData.Property.Версия",
+        "ops": [
+          {
+            "op": "property.remove"
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S218"
+}

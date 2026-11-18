@@ -1,4 +1,4 @@
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use crate::infrastructure::event_sources::PropertyEventSource;
 use crate::infrastructure::event_sources::{
     resolve_event_source, resolve_event_source_for_form_evidence, LogicalEventSource,
@@ -11,7 +11,7 @@ use unica_bindings::events::{
     project_platform_event_implementation, property_call_type, require_plannable_state,
     require_postcondition, EventProjectionError, EventProjectionErrorKind,
 };
-use unica_bsl::event_text::emit_event_module;
+use unica_bsl::event_text::emit_event_module_with_variant;
 use unica_bsl::profile::PlatformProfile;
 use unica_bsl::projection::EventState;
 use unica_forms_designer::codec::parse_form_event_evidence_xml;
@@ -92,6 +92,7 @@ fn plan_one_event(
         let shape = project_platform_event_implementation(
             &source.event_at,
             &source.module_at,
+            profile,
             capability,
             module_text.as_deref(),
         )
@@ -99,19 +100,25 @@ fn plan_one_event(
         require_plannable_state(&shape)?;
         let module_after = {
             let method = &shape;
-            emit_event_module(
+            emit_event_module_with_variant(
                 module_before.as_deref(),
                 &method.handler,
                 &method.signature,
                 method.method_kind,
                 method.directive,
-                method.region,
+                &method.region,
+                unica_source_designer::language::staged_script_variant(
+                    staged,
+                    source_set_kind,
+                    "at",
+                )?,
             )
         }?;
         let post_text = utf8_module(&module_after)?;
         let post = project_platform_event_implementation(
             &source.event_at,
             &source.module_at,
+            profile,
             capability,
             Some(post_text),
         )
@@ -147,7 +154,8 @@ fn plan_one_event(
     let shape = project_property_event_implementation(&source, form_text, module_text.as_deref())
         .map_err(projection_error)?;
     require_plannable_state(&shape)?;
-    let evidence = parse_form_event_evidence_xml(form_text).map_err(invalid_source)?;
+    let evidence =
+        parse_form_event_evidence_xml(form_text, Some(profile.line())).map_err(invalid_source)?;
     let effective_call_type = property_call_type(
         &shape,
         &evidence.context.definition,
@@ -171,13 +179,14 @@ fn plan_one_event(
     };
     let module_after = {
         let method = &shape;
-        emit_event_module(
+        emit_event_module_with_variant(
             module_before.as_deref(),
             &method.handler,
             &method.signature,
             method.method_kind,
             method.directive,
-            method.region,
+            &method.region,
+            unica_source_designer::language::staged_script_variant(staged, source_set_kind, "at")?,
         )
     }?;
     let form_after_text = utf8_source(&form_after, "patched Form.xml")?;
@@ -258,7 +267,7 @@ fn projection_error(error: EventProjectionError) -> ApplyPlanError {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn plan_event_implement_batch_owned_for_test(
     mut staged: unica_workspace::apply::ApplyStagedState,
     source_set: &str,
@@ -284,4 +293,4 @@ pub(crate) fn plan_event_implement_batch_owned_for_test(
 
 #[cfg(test)]
 #[path = "../../../tests/platform/event_implementation.rs"]
-pub(super) mod tests;
+pub(super) mod medium_tests;

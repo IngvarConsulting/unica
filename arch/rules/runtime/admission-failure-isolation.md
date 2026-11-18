@@ -1,14 +1,5 @@
 ---
 id: INV.APP.ADMISSION-FAILURE-ISOLATION
-check:
-  - crates/unica-coder/tests/platform/receipt_runtime.rs::root_view_keeps_the_same_task_and_daemon_past_the_former_deadlines
-  - crates/unica-coder/tests/platform/receipt_runtime.rs::root_check_completes_the_whole_inspection_in_its_task
-  - crates/unica-coder/tests/platform/receipt_runtime.rs::cancel_during_actor_admission_after_handoff_never_begins_and_keeps_the_daemon
-  - crates/unica-coder/tests/platform/receipt_runtime.rs::cancel_during_inline_admission_before_handoff_publishes_cancelled
-  - crates/unica-coder/tests/platform/receipt_runtime.rs::noncooperative_cancel_keeps_only_its_task_while_the_daemon_serves_others
-  - crates/unica-coder/tests/platform/receipt_runtime.rs::promoted_reads_run_past_former_deadlines_and_complete_through_their_tasks
-  - crates/unica-coder/tests/daemon_receipt_ledger.rs::unbound_validation_and_admission_continue_past_the_former_fail_stop_grace
-  - crates/unica-coder/tests/daemon_receipt_ledger.rs::noncooperative_prepare_cancel_keeps_the_daemon_listening
 ---
 
 # Затянувшееся задание держит только себя, а не весь демон
@@ -28,8 +19,12 @@ check:
 Завершение дерева процессов по отмене сохраняется по
 [правилу жизненного цикла](../platform/process-tree-lifecycle.md).
 
-После отмены или отказа задержанный исполнитель не публикует результат
-вместо отмены. Начатое изменение информационной базы ведёт себя по
-[правилу отмены изменения](runner-mutation-cancellation.md).
+После отмены исходом вызова становится то, что подтвердила сама работа:
+ответ процесса, которому эта отмена доставлена прерыванием, начатое защищённое
+изменение информационной базы по
+[правилу отмены изменения](runner-mutation-cancellation.md) или уже применённая
+правка. Без такого подтверждения вызов завершается отменой: исполнитель,
+который не получил отмену или не ответил на неё, не подменяет её своим
+результатом. После отказа задержанный исполнитель результата не публикует.
 [Неопределённая запись в хранилище](receipt-store-fail-stop.md)
 по-прежнему требует защитной остановки.

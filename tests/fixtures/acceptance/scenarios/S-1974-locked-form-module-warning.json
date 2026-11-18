@@ -1,0 +1,129 @@
+{
+  "id": "S-1974-locked-form-module-warning",
+  "name": "locked-form-module-warns-under-editable-owner",
+  "issue": 1974,
+  "area": "Поддержка поставщика",
+  "task": "Изменить модуль закрытой формы открытого каталога под warn: план и результат предупреждают с адресом формы, остальные исходники сохраняются.",
+  "workspace": "tests/fixtures/acceptance/workspace-form-support-warn",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.Form.Main.Module.Form.Body",
+        "ops": [
+          {
+            "op": "code.replace",
+            "args": {
+              "text": "&AtClient\nProcedure Run()\n    Message(1);\nEndProcedure\n"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/warnings/0/code",
+          "eq": "support_locked"
+        },
+        {
+          "pointer": "/warnings/0/severity",
+          "eq": "warning"
+        },
+        {
+          "pointer": "/warnings/0/at",
+          "eq": "main:Catalog.Items.Form.Main"
+        }
+      ],
+      "captures": {
+        "token": {
+          "pointer": "/data/executionToken"
+        },
+        "unchanged1": {
+          "file": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "sha256"
+        },
+        "unchanged2": {
+          "file": "src/Catalogs/Items/Forms/Main.xml",
+          "kind": "sha256"
+        },
+        "unchanged3": {
+          "file": "src/Catalogs/Items.xml",
+          "kind": "sha256"
+        },
+        "unchanged4": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "unchanged5": {
+          "file": "src/Ext/ParentConfigurations.bin",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/warnings/0/code",
+          "eq": "support_locked"
+        },
+        {
+          "pointer": "/warnings/0/severity",
+          "eq": "warning"
+        },
+        {
+          "pointer": "/warnings/0/at",
+          "eq": "main:Catalog.Items.Form.Main"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
+          "eq": "49ca7b336a142371aa2ea8165a7529f644d7829c80c542714c513e1e53db0793"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "eq": "$capture.unchanged1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items/Forms/Main.xml",
+          "eq": "$capture.unchanged2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items.xml",
+          "eq": "$capture.unchanged3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.unchanged4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Ext/ParentConfigurations.bin",
+          "eq": "$capture.unchanged5"
+        }
+      ]
+    }
+  ]
+}

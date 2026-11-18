@@ -31,6 +31,7 @@ fn section_views(fixture: &RealReaderFixture) -> [Value; 2] {
     [item, detail]
 }
 
+/// rule: INV.SOURCE.METADATA-NODE-PROPERTIES
 #[test]
 fn catalog_tabular_profile_reaches_public_collection_and_detail_without_writes() {
     let fixture = fixture_with_catalog(CATALOG);
@@ -45,7 +46,7 @@ fn catalog_tabular_profile_reaches_public_collection_and_detail_without_writes()
             "the section must preserve the expected fixture facts"
         );
         assert_eq!(section["props"]["required"], true);
-        assert_eq!(section["props"]["synonym"], "Order lines");
+        assert_eq!(section["props"]["synonym"], "en = 'Order lines'");
         assert_eq!(section["title"], "Order lines");
         assert_eq!(
             section["branches"],
@@ -126,6 +127,7 @@ fn catalog_tabular_profile_reads_each_use_value_without_inventing_hierarchy_rule
     }
 }
 
+/// rule: INV.SOURCE.INCOMPLETE-METADATA-READ
 #[test]
 fn catalog_tabular_profile_missing_facts_are_not_filled_from_sibling_or_template() {
     let xml = CATALOG
@@ -161,6 +163,7 @@ fn catalog_tabular_profile_missing_facts_are_not_filled_from_sibling_or_template
     assert_eq!(tree_snapshot(&fixture.source), before);
 }
 
+/// rule: INV.SOURCE.INCOMPLETE-METADATA-READ
 #[test]
 fn catalog_tabular_profile_damage_is_local_to_the_observed_fact() {
     for (field, original, replacements) in [
@@ -199,7 +202,7 @@ fn catalog_tabular_profile_damage_is_local_to_the_observed_fact() {
                 };
                 assert_eq!(section["props"][independent], expected, "fixture {replacement}, field {field}");
                 assert_eq!(section["props"]["required"], true);
-                assert_eq!(section["props"]["synonym"], "Order lines");
+                assert_eq!(section["props"]["synonym"], "en = 'Order lines'");
                 assert!(section["limits"].as_array().into_iter().flatten()
                     .filter_map(Value::as_str).any(|limit| limit.contains(field)),
                     "the damaged fact must remain diagnostic: fixture {replacement}, field {field}");
@@ -285,7 +288,7 @@ fn catalog_tabular_profile_does_not_publish_unknown_or_wrong_context_facts() {
 fn catalog_tabular_profile_requires_the_exact_declared_xml_version() {
     for declaration in [
         " version=\"2.19\"",
-        " version=\"2.21\"",
+        " version=\"2.23\"",
         "",
         " version=\"2&#x2e;20\"",
     ] {
@@ -302,7 +305,7 @@ fn catalog_tabular_profile_requires_the_exact_declared_xml_version() {
                 "the pilot requires the exact declared version: {declaration}"
             );
             assert_eq!(section["props"]["required"], true);
-            assert_eq!(section["props"]["synonym"], "Order lines");
+            assert_eq!(section["props"]["synonym"], "en = 'Order lines'");
             assert_eq!(
                 section["branches"],
                 json!([{

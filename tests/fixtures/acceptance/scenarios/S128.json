@@ -1,0 +1,21 @@
+{
+  "area": "Формы",
+  "task": "Удалить устаревшую форму",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаСписка",
+        "ops": [
+          {
+            "op": "form.remove"
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S128"
+}

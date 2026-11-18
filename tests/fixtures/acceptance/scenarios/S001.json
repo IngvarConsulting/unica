@@ -1,0 +1,26 @@
+{
+  "area": "Навигация и чтение",
+  "task": "Найти справочник валют по имени и открыть его свойства",
+  "wire": [
+    {
+      "tool": "unica.search",
+      "args": {
+        "corpus": "names",
+        "query": "Валюты"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты"
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S001"
+}

@@ -1,0 +1,312 @@
+{
+  "id": "S409",
+  "name": "borrowed-objects-without-own-content",
+  "issue": 1381,
+  "area": "Расширения конфигурации",
+  "task": "Прочитать и проверить заимствованные роль, общую форму, форму и макет обработки и пакет XDTO, которые платформа выгрузила без Rights.xml, Form.xml, Template.xml и Package.bin: узел читается по описанию с адресом родителя и унаследованным содержимым, адрес внутри содержимого отказывает с указанием на родителя, запись в унаследованное содержимое и в модуль такой формы отказывает с продолжением к объекту расширения, проверка не требует отсутствующих файлов",
+  "workspace": "tests/fixtures/acceptance/workspace-borrowed",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "ext:Role.SalesReader"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/content",
+          "eq": "inherited"
+        },
+        {
+          "pointer": "/data/props/belonging",
+          "eq": "borrowed"
+        },
+        {
+          "pointer": "/data/props/extends",
+          "eq": "main:Role.SalesReader"
+        },
+        {
+          "pointer": "/data/branches",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "ext:Role.SalesReader.Right"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: `ext:Role.SalesReader.Right` lies inside content this borrowed object does not carry: the extension has no `Rights.xml`, so its content is inherited from the pa"
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "ext:Role.SalesReader"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "readable",
+      "validators": []
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "ext:Role.SalesReader",
+        "ops": [
+          {
+            "op": "right.add",
+            "args": {
+              "items": [
+                {
+                  "object": "DataProcessor.Обработка",
+                  "rights": {
+                    "Use": true
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: apply operation `right.add` writes content of `ext:Role.SalesReader` that is inherited from the parent: the extension does not hold its `Rights.xml`; read the p",
+      "assertions": [
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "ext:Role.SalesReader"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "ext:CommonForm.ОбщаяФорма"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/content",
+          "eq": "inherited"
+        },
+        {
+          "pointer": "/data/props/belonging",
+          "eq": "borrowed"
+        },
+        {
+          "pointer": "/data/props/extends",
+          "eq": "main:CommonForm.ОбщаяФорма"
+        },
+        {
+          "pointer": "/data/branches",
+          "eq": [
+            {
+              "at": "ext:CommonForm.ОбщаяФорма.Metadata",
+              "count": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "ext:CommonForm.ОбщаяФорма"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "readable",
+      "validators": []
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "ext:CommonForm.ОбщаяФорма.Module"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: `ext:CommonForm.ОбщаяФорма.Module` lies inside content this borrowed object does not carry: the extension has no `Form.xml`, so its content is inherited from th"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "ext:CommonForm.ОбщаяФорма.Module.Form",
+        "ops": [
+          {
+            "op": "code.insert",
+            "args": {
+              "text": "\nПроцедура ПР_А()\nКонецПроцедуры\n"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: apply operation `code.insert` writes content of `ext:CommonForm.ОбщаяФорма` that is inherited from the parent: the extension does not hold its `Form.xml`; read ",
+      "assertions": [
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "ext:CommonForm.ОбщаяФорма"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "exists",
+          "path": "src/ext/CommonForms/ОбщаяФорма/Ext/Form/Module.bsl",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "ext:DataProcessor.Обработка.Form.Форма"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/content",
+          "eq": "inherited"
+        },
+        {
+          "pointer": "/data/props/belonging",
+          "eq": "borrowed"
+        },
+        {
+          "pointer": "/data/branches",
+          "eq": [
+            {
+              "at": "ext:DataProcessor.Обработка.Form.Форма.Metadata",
+              "count": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "ext:DataProcessor.Обработка.Template.СхемаКомпоновки"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/format",
+          "eq": null
+        },
+        {
+          "pointer": "/data/props/content",
+          "eq": "inherited"
+        },
+        {
+          "pointer": "/data/props/belonging",
+          "eq": "borrowed"
+        },
+        {
+          "pointer": "/data/branches",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/parentReason",
+          "contains": "props.extends of `ext:DataProcessor.Обработка`"
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "ext:DataProcessor.Обработка.Template.СхемаКомпоновки"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "readable",
+      "validators": []
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "ext:CommonTemplate.ОбщийМакет"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/belonging",
+          "eq": "borrowed"
+        },
+        {
+          "pointer": "/data/props/extends",
+          "eq": "main:CommonTemplate.ОбщийМакет"
+        },
+        {
+          "pointer": "/data/props/content",
+          "eq": "inherited"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "ext:XDTOPackage.ПакетОбмена"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/content",
+          "eq": "inherited"
+        },
+        {
+          "pointer": "/data/props/belonging",
+          "eq": "borrowed"
+        },
+        {
+          "pointer": "/data/props/extends",
+          "eq": "main:XDTOPackage.ПакетОбмена"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "ext:XDTOPackage.ПакетОбмена.Type"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: `ext:XDTOPackage.ПакетОбмена.Type` lies inside content this borrowed object does not carry: the extension has no `Package.bin`, so its content is inherited from"
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "ext:DataProcessor.Обработка"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "validators": [
+        "meta"
+      ]
+    }
+  ]
+}

@@ -1,7 +1,5 @@
 ---
 id: INV.APP.WORKSPACE-REGISTRY-FAILURE
-check:
-  - crates/unica-coder/tests/daemon_receipt_ledger.rs::reserve_precedes_validation_admission_prepare
 ---
 
 # Сбой реестра рабочих пространств останавливает приём работы

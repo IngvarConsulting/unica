@@ -209,7 +209,7 @@ pub fn ordinary_shared_transport_call_does_not_arm_bsl_capture() {
     assert!(error.starts_with("persistent MCP emitted malformed JSON:"));
     assert!(
         session.failure_snapshot.is_none(),
-        "RLM/shared ordinary call must not produce a BSL capture"
+        "Shared ordinary call must not produce a BSL capture"
     );
     assert!(crate::test_support::wait_for_process_exit(
         pid,

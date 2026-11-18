@@ -1,0 +1,231 @@
+name: PR metadata
+
+# Обязательная проверка: пропущенный условием `Unica CI` ruleset считает пройденным,
+# поэтому вливание без отметки владельца блокирует она. Правило допуска то же, что
+# у ворот `admission` в `ci.yml`. Предел рабочей вехи касается только слияния.
+# `pull_request_target` берёт этот файл из main: PR не может поправить его и получить
+# зелёную проверку. Поэтому здесь нет checkout, права только на чтение, а данные PR идут
+# через `env`. Запись очереди читает файл из своего дерева, это видно по CODEOWNERS.
+on:
+  pull_request_target: # zizmor: ignore[dangerous-triggers] кода PR нет: ни checkout, ни запуска его файлов, права только на чтение
+    types: [opened, reopened, ready_for_review, edited, milestoned, demilestoned, assigned, unassigned, synchronize]
+  # Одобрение владельца перезапускает проверку сразу. Такой прогон берёт этот файл
+  # из ветки PR, а не из main: PR, который правит `.github/**`, мог бы ослабить
+  # проверку в своей ветке. Прогон по `pull_request_target` остаётся из main.
+  pull_request_review: # zizmor: ignore[dangerous-triggers] кода PR нет: ни checkout, ни запуска его файлов, права только на чтение
+    types: [submitted, dismissed]
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+
+jobs:
+  metadata:
+    # Стабильное имя обязательной проверки. Условия нет: пропущенную проверку ruleset
+    # засчитал бы как пройденную. Очередь проверяет заново: веху могли снять.
+    name: PR metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Веха и ответственный
+        id: admission
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          MILESTONE_OWNER: zeegin
+          STRICT: "true"
+          WORKING_MILESTONE: v0.16
+        run: |
+          set -euo pipefail
+          # Запись очереди называется gh-readonly-queue/<база>/pr-<номер>-<sha>.
+          number="${PR_NUMBER:-$(sed -nE 's#^refs/heads/gh-readonly-queue/[^/]+/pr-([0-9]+)-[0-9a-f]+$#\1#p' <<<"$GITHUB_REF")}"
+          if [ -z "$number" ]; then
+            echo "::error::Номер PR не определён по $GITHUB_REF"
+            exit 1
+          fi
+          json="$(gh api graphql -F owner="${GITHUB_REPOSITORY%/*}" -F name="${GITHUB_REPOSITORY#*/}" -F number="$number" -f query='
+            query($owner: String!, $name: String!, $number: Int!) {
+              repository(owner: $owner, name: $name) {
+                id
+                pullRequest(number: $number) {
+                  isDraft
+                  milestone { id title }
+                  assignees { totalCount }
+                  timelineItems(itemTypes: [MILESTONED_EVENT], last: 1) { nodes { ... on MilestonedEvent { actor { login } } } }
+                  closingIssuesReferences(first: 100) {
+                    pageInfo { hasNextPage }
+                    nodes {
+                      number
+                      repository { id }
+                      milestone { id title }
+                      timelineItems(itemTypes: [MILESTONED_EVENT], last: 1) { nodes { ... on MilestonedEvent { actor { login } } } }
+                    }
+                  }
+                }
+              }
+            }')"
+          problems="$(jq -r --arg owner "$MILESTONE_OWNER" --arg working "${WORKING_MILESTONE:-}" --arg strict "$STRICT" '
+            def milestone_actor: .timelineItems.nodes[-1].actor.login // "неизвестно";
+            def version:
+              if test("^v[0-9]+[.][0-9]+$") then ltrimstr("v") | split(".") | map(tonumber)
+              else null end;
+            def check_limit($label; $title; $limit):
+              ($title | version) as $number
+              | if $number == null then "У вехи \($label) \($title) нужен формат vN.N"
+                elif $number > $limit then "Веха \($label) \($title) выше рабочей \($working)"
+                else empty end;
+            .data.repository as $repo | $repo.pullRequest as $pr
+            | $pr.closingIssuesReferences.nodes as $issues
+            | [$issues[] | select(.repository.id == $repo.id)] as $local
+            | ($pr | milestone_actor) as $actor
+            | (if $pr.closingIssuesReferences.pageInfo.hasNextPage then
+                 "Не удалось проверить все закрываемые issue"
+               else empty end),
+              (if $pr.milestone == null then
+                 (if ($local | length) > 0 then "Поставьте веху: скопируйте её с issue" else "Поставьте веху: на PR без issue её ставит \($owner)" end)
+               elif ($local | length) == 0 and $actor != $owner then "Веху на PR поставил \($actor), нужна от \($owner)"
+               elif ($local | length) > 0 and (any($local[]; .milestone.id == $pr.milestone.id) | not) then
+                 "Веха PR должна совпадать с вехой одной из закрываемых задач этого репозитория"
+               else empty end),
+              ($issues[] | select(.milestone == null) | "Issue #\(.number) без вехи, PR не рассматривается"),
+              ($local[] | select(.milestone != null and milestone_actor != $owner) | "Веху issue #\(.number) должен подтвердить \($owner)"),
+              (if $strict == "true" then
+                 ($working | version) as $limit
+                 | if $limit == null then "Рабочая веха должна быть задана в формате vN.N"
+                   else ($pr.milestone | select(. != null) | check_limit("PR"; .title; $limit)),
+                        ($local[] | select(.milestone != null) | check_limit("issue #\(.number)"; .milestone.title; $limit))
+                   end
+               else empty end)' <<<"$json")"
+          assignees="$(jq -r '.data.repository.pullRequest.assignees.totalCount' <<<"$json")"
+          # Черновик не занимает раннер. Признак берётся у GitHub, а не из события
+          # прогона: при push и снятии с черновика вплотную выжить может прогон
+          # события черновика, и его перезапуск проиграл бы то же событие.
+          draft="$(jq -r '.data.repository.pullRequest.isDraft' <<<"$json")"
+          if [ -n "$problems" ] || [ "$draft" = true ]; then echo "admitted=false"; else echo "admitted=true"; fi >> "$GITHUB_OUTPUT"
+          if [ "$draft" = true ]; then echo "::notice::PR #$number — черновик, тесты не запускаются"; fi
+          level="$( [ "$STRICT" = true ] && echo error || echo notice )"
+          if [ -n "$problems" ]; then
+            while read -r problem; do echo "::$level::$problem"; done <<<"$problems"
+          fi
+          # Ответственный на запуск тестов не влияет: его требует только `PR metadata`.
+          if [ "$STRICT" = true ]; then
+            if [ "$assignees" = 0 ]; then echo "::error::Укажите ответственного"; fi
+            if [ -n "$problems" ] || [ "$assignees" = 0 ]; then exit 1; fi
+          fi
+          echo "PR #$number: проверка окончена"
+
+      # Путь из CODEOWNERS в PR не от владельца требует его одобрения на текущем
+      # head. Встроенное `require_code_owner_review` не включено: свой PR автор
+      # одобрить не может, и PR агентов под учёткой владельца встали бы. Шаг идёт и
+      # после отказа вехи: оба отказа видны сразу.
+      - name: Одобрение владельца
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          CODE_OWNER: zeegin
+        run: |
+          set -euo pipefail
+          number="${PR_NUMBER:-$(sed -nE 's#^refs/heads/gh-readonly-queue/[^/]+/pr-([0-9]+)-[0-9a-f]+$#\1#p' <<<"$GITHUB_REF")}"
+          if [ -z "$number" ]; then
+            echo "::error::Номер PR не определён по $GITHUB_REF"
+            exit 1
+          fi
+          read -r author head < <(gh api "repos/$GITHUB_REPOSITORY/pulls/$number" --jq '"\(.user.login) \(.head.sha)"')
+          head="${head%$'\r'}"
+          if [ "$author" = "$CODE_OWNER" ]; then
+            echo "PR #$number от $CODE_OWNER: одобрение не требуется"
+            exit 0
+          fi
+          work="$(mktemp -d)"
+          # Владельцы путей — из main: PR не назначает их себе сам.
+          gh api "repos/$GITHUB_REPOSITORY/contents/.github/CODEOWNERS?ref=main" -H "Accept: application/vnd.github.raw" > "$work/codeowners"
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$number/files?per_page=100" --paginate \
+            --jq '.[] | .filename, (.previous_filename // empty)' > "$work/files"
+          owned="$(python3 - "$work/codeowners" "$work/files" <<'PY'
+          import sys
+          patterns = []
+          for line in open(sys.argv[1], encoding="utf-8"):
+              parts = line.split("#", 1)[0].split()
+              if len(parts) >= 2:
+                  patterns.append(parts[0])
+          def owned(path, pattern):
+              anchored = pattern.startswith("/")
+              pattern = pattern.lstrip("/")
+              if pattern.endswith("/**") or pattern.endswith("/"):
+                  prefix = pattern.rstrip("*").rstrip("/") + "/"
+                  return path.startswith(prefix) if anchored else f"/{prefix}" in f"/{path}"
+              return path == pattern if anchored else path == pattern or path.endswith(f"/{pattern}")
+          for path in sorted({line.strip() for line in open(sys.argv[2], encoding="utf-8") if line.strip()}):
+              if any(owned(path, pattern) for pattern in patterns):
+                  print(path)
+          PY
+          )"
+          if [ -z "$owned" ]; then
+            echo "PR #$number не меняет путей из CODEOWNERS"
+            exit 0
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$number/reviews?per_page=100" --paginate \
+            --jq '.[] | [.user.login, .state, .commit_id] | @tsv' > "$work/reviews"
+          # Последнее решение владельца по текущему head; комментарий решения не меняет.
+          state="$(awk -F '\t' -v owner="$CODE_OWNER" -v head="$head" \
+            '{ sub(/\r$/, "") } $1 == owner && $3 == head && $2 != "COMMENTED" { state = $2 } END { print state }' "$work/reviews")"
+          if [ "$state" != APPROVED ]; then
+            echo "::error::PR #$number от $author меняет пути из CODEOWNERS; нужен одобряющий отзыв $CODE_OWNER на ${head:0:7}:"
+            while read -r path; do echo "::error::  $path"; done <<<"$owned"
+            exit 1
+          fi
+          echo "PR #$number: $CODE_OWNER одобрил ${head:0:7}"
+
+      # Права на вклад по CLA.md: реестр CONTRIBUTORS.md версии PR и почты его коммитов.
+      # Кода PR здесь нет. Реестр версии PR, его версия в общей базе с main, описание
+      # и коммиты читаются через API как данные. Разбор и правила — скрипт
+      # scripts/ci/contribution_rights.py: шаг скачивает его через API из main
+      # и запускает `python3 -I`, поэтому правка скрипта в PR действует только после
+      # вливания. Любая найденная проблема роняет проверку. Пока скрипта нет в main,
+      # шаг пишет notice и пропускает PR: иначе не влился бы и PR, который его вносит.
+      - name: Права на вклад
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RIGHTS_HOLDER: zeegin
+          STRICT: "true"
+        run: |
+          set -euo pipefail
+          number="${PR_NUMBER:-$(sed -nE 's#^refs/heads/gh-readonly-queue/[^/]+/pr-([0-9]+)-[0-9a-f]+$#\1#p' <<<"$GITHUB_REF")}"
+          if [ -z "$number" ]; then
+            echo "::error::Номер PR не определён по $GITHUB_REF"
+            exit 1
+          fi
+          level="$( [ "$STRICT" = true ] && echo error || echo notice )"
+          work="$(mktemp -d)"
+          raw=(-H "Accept: application/vnd.github.raw")
+          if ! gh api "repos/$GITHUB_REPOSITORY/contents/scripts/ci/contribution_rights.py?ref=main" "${raw[@]}" > "$work/check.py"; then
+            echo "::notice::Скрипта scripts/ci/contribution_rights.py нет в main: права на вклад не проверены"
+            exit 0
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$number" > "$work/pr.json"
+          read -r base head < <(gh api "repos/$GITHUB_REPOSITORY/pulls/$number" --jq '"\(.base.sha) \(.head.sha)"')
+          head="${head%$'\r'}"
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$number/commits?per_page=100" --paginate --jq '.[]' > "$work/commits.jsonl"
+          # Строки реестра сравниваются с общей базой: PR не отвечает за строки, влитые в main после его ветвления.
+          merge_base="$(gh api "repos/$GITHUB_REPOSITORY/compare/$base...$head" --jq '.merge_base_commit.sha')"
+          merge_base="${merge_base%$'\r'}"
+          # Нет файла — нет и записи: скрипт сам скажет, если реестра нет в версии PR.
+          gh api "repos/$GITHUB_REPOSITORY/contents/CONTRIBUTORS.md?ref=$merge_base" "${raw[@]}" > "$work/base.md" 2>/dev/null || rm -f "$work/base.md"
+          gh api "repos/$GITHUB_REPOSITORY/contents/CONTRIBUTORS.md?ref=$head" "${raw[@]}" > "$work/head.md" 2>/dev/null || rm -f "$work/head.md"
+          status=0
+          python3 -I "$work/check.py" --pr "$work/pr.json" --commits "$work/commits.jsonl" \
+            --base "$work/base.md" --head "$work/head.md" --holder "$RIGHTS_HOLDER" > "$work/problems" || status=$?
+          if [ "$status" = 0 ]; then
+            echo "PR #$number: права на вклад в порядке"
+            exit 0
+          fi
+          while read -r problem; do echo "::$level::$problem"; done < "$work/problems"
+          if [ "$status" != 1 ]; then echo "::$level::Проверка прав на вклад не выполнена (код $status)"; fi
+          if [ "$STRICT" = true ]; then exit 1; fi
+          echo "PR #$number: права на вклад не подтверждены, STRICT=false"

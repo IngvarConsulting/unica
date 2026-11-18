@@ -77,24 +77,88 @@ pub enum ReceiptResponse {
     },
 }
 
+// resource-limit: receipt.authority-acquire-timeout
+// class: deadline
+// unit: ms
+// scope: daemon
+// value: 2000
+// resource: Ожидание блокировки права на хранилище квитанций при старте и проверке права.
+// status: unproven
+// origin: коммит 4ed8661c6 (feat(v13): wire hidden receipt ledger shell)
+// problem: неизвестно
+// on-reach: ошибка получения права; рантайм не открывается
 const AUTHORITY_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(2);
 
+// resource-limit: receipt.startup-reconciliation-timeout
+// class: deadline
+// unit: ms
+// scope: daemon
+// value: 30000
+// resource: Срок открытия и сверки проекции заданий при старте рантайма v5.
+// status: unproven
+// origin: коммит 33e880a19 (feat(d0): enforce independent receipt and task capacities)
+// problem: неизвестно
+// on-reach: старт рантайма завершается ошибкой срока
 const STARTUP_RECONCILIATION_TIMEOUT: Duration = Duration::from_secs(30);
 
+// resource-limit: receipt.task-terminal-publication-timeout
+// class: deadline
+// unit: ms
+// scope: operation
+// value: 30000
+// resource: Срок публикации конечного состояния задания после того, как бюджет submit уже израсходован.
+// status: unproven
+// origin: коммит 75daeb2c6 (fix(daemon): complete v5 task execution lifecycle)
+// problem: неизвестно
+// on-reach: публикация завершается ошибкой срока хранилища
 const TASK_TERMINAL_PUBLICATION_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The session handler owning an inline invocation re-reads its cutoff at
 /// least this often while the worker runs; the worker wakes it earlier.
+// resource-limit: receipt.inline-cutoff-poll
+// class: step
+// unit: ms
+// scope: session
+// value: 5
+// resource: Наибольший интервал, с которым обработчик сессии перечитывает cutoff inline-исполнения, пока работает исполнитель.
+// status: unproven
+// origin: #782
+// problem: неизвестно
+// on-reach: обработчик просыпается и сверяет cutoff; исполнитель может разбудить его раньше
 const INLINE_CUTOFF_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
 /// The durable handoff committed at the cutoff runs under its own bound: the
 /// operation budget of the submit is spent by definition at that moment.
+// resource-limit: receipt.cutoff-handoff-commit-budget
+// class: deadline
+// unit: ms
+// scope: operation
+// value: 2000
+// derived: true
+// resource: Срок долговечной передачи вызова в задание в момент cutoff.
+// status: unproven
+// origin: #782
+// problem: Бюджет операции submit к моменту cutoff израсходован по определению, поэтому передаче нужен свой срок.
+// on-reach: ошибка срока хранилища при передаче
 const CUTOFF_HANDOFF_COMMIT_BUDGET: Duration = TASK_RECONCILIATION_BUDGET;
 
 /// The least time a request gives the receipt store for its own steps. A
 /// caller budget shorter than one durable commit narrows only the wait for
 /// the answer: a write the store already began is never declared uncertain,
 /// and the daemon never fail-stops, because the caller was in a hurry (#1387).
+// resource-limit: receipt.durable-step-budget
+// class: deadline
+// unit: ms
+// scope: operation
+// value: 2000
+// derived: true
+// resource: Наименьшее время, которое запрос даёт хранилищу квитанций на собственный шаг.
+// status: unproven
+// origin: #1384, #1387 (#1391)
+// problem: Короткий бюджет вызывающего не должен объявлять начатую запись неопределённой и переводить демон в fail-stop.
+// on-reach: шаг хранилища продолжается до этого срока; короткий бюджет ограничивает только ожидание ответа
+// decision: закреплено правилом
+// decision-source: arch/rules/runtime/receipt-store-fail-stop.md
 pub const DURABLE_STEP_BUDGET: Duration = TASK_RECONCILIATION_BUDGET;
 
 /// The bound of a durable step that carries out a decision already
@@ -107,6 +171,16 @@ fn committed_decision_step_deadline(deadline: Instant) -> Instant {
         .map_or(deadline, |floor| deadline.max(floor))
 }
 
+// resource-limit: receipt.task-poll-interval-ms
+// class: step
+// unit: ms
+// scope: record
+// value: 100
+// resource: Интервал опроса, объявляемый заданию, в которое перешла квитанция.
+// status: unproven
+// origin: коммит 9ca99ba80 (feat(d0): expose begun known-long handoff)
+// problem: неизвестно
+// on-reach: клиенту сообщается pollInterval 100 мс; сам предел ничего не обрывает
 const V5_TASK_POLL_INTERVAL_MS: u64 = 100;
 
 static NEXT_RETIREMENT_PROCESS_GENERATION: AtomicU64 = AtomicU64::new(1);
@@ -114,8 +188,30 @@ static NEXT_RETIREMENT_PROCESS_GENERATION: AtomicU64 = AtomicU64::new(1);
 /// Pause before an expired Task whose retirement failed is tried again. Each
 /// further failure of the same record doubles it up to the maximum, so a
 /// record that cannot be retired costs one attempt per pause, not one per poll.
+// resource-limit: task.retirement-retry-initial-delay-ms
+// class: retry
+// unit: ms
+// scope: record
+// value: 60000
+// resource: Начальная пауза перед повторной отставкой истёкшего задания, которое не удалось удалить.
+// status: unproven
+// origin: #1262
+// problem: Неочищаемая запись должна стоить одну попытку за паузу, а не одну за каждый опрос (комментарий в receipt_runtime.rs).
+// on-reach: каждая следующая неудача удваивает паузу до наибольшей; попытки продолжаются
 const RETIREMENT_RETRY_INITIAL_DELAY_MS: u64 = 60_000;
 
+// resource-limit: task.retirement-retry-max-delay-ms
+// class: retry
+// unit: ms
+// scope: record
+// value: 3600000
+// resource: Наибольшая пауза между попытками очистить истёкшее задание, которое не удалось удалить.
+// status: unproven
+// origin: #1262
+// problem: Неочищаемая запись должна стоить одну попытку за паузу, а не одну за каждый опрос.
+// on-reach: пауза перестаёт удваиваться; попытки продолжаются без ограничения числа
+// decision: закреплено правилом
+// decision-source: arch/rules/runtime/task-retirement.md
 const RETIREMENT_RETRY_MAX_DELAY_MS: u64 = 3_600_000;
 
 pub struct V5ReceiptRuntime<H: InvocationHost> {
@@ -232,14 +328,17 @@ impl V5ActiveTaskCancellations {
         ))
     }
 
+    /// The cancel waits on the token's dispatch gate, which a process launch
+    /// holds while it joins its group: the registry is not locked meanwhile,
+    /// so reads of other Tasks and of this one go on.
     fn cancel(&self, task_id: unica_execution_contract::invocation::TaskId) {
-        if let Some(token) = self
+        let token = self
             .tokens
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&task_id)
-            .cloned()
-        {
+            .cloned();
+        if let Some(token) = token {
             token.cancel();
         }
     }
@@ -265,15 +364,32 @@ impl V5ActiveTaskCancellations {
             .is_empty()
     }
 
+    /// Fail-stop waits for nothing: interrupted work ends at once instead of
+    /// waiting for its own answer.
     fn cancel_all(&self) {
-        for token in self
+        let tokens: Vec<CancellationToken> = self
             .tokens
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .values()
-        {
-            token.cancel();
+            .cloned()
+            .collect();
+        for token in tokens {
+            token.cancel_now();
         }
+    }
+
+    /// Whether a process of the task was interrupted by its cancel and still
+    /// waits for its own answer.
+    fn awaits_interrupted_work(
+        &self,
+        task_id: unica_execution_contract::invocation::TaskId,
+    ) -> bool {
+        self.tokens
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&task_id)
+            .is_some_and(CancellationToken::awaits_interrupted_work)
     }
 }
 
@@ -427,11 +543,39 @@ fn task_outcome_after_cancel(
     cancel_requested: bool,
     authority: FactualOutcomeAuthority,
 ) -> ReceiptTerminalOutcome {
-    if cancel_requested && authority == FactualOutcomeAuthority::Cancellable {
+    let result = match &candidate {
+        ReceiptTerminalOutcome::Completed { result } => Some(result.as_ref()),
+        _ => None,
+    };
+    if cancel_requested && cancel_stands(result, authority) {
         ReceiptTerminalOutcome::Cancelled
     } else {
         candidate
     }
+}
+
+/// Whether a requested cancel is the outcome of the call: the work confirmed
+/// nothing else, or it confirmed only that an interrupted process answered
+/// and the call itself still refused as cancelled (a later command of the
+/// call did not answer the cancel).
+fn cancel_stands(
+    result: Option<&unica_execution_contract::invocation::DomainResult>,
+    authority: FactualOutcomeAuthority,
+) -> bool {
+    match authority {
+        FactualOutcomeAuthority::Cancellable => true,
+        FactualOutcomeAuthority::AnsweredInterrupt => result.is_some_and(is_cancel_refusal),
+        _ => false,
+    }
+}
+
+fn is_cancel_refusal(result: &unica_execution_contract::invocation::DomainResult) -> bool {
+    !result.ok
+        && result
+            .diagnostics
+            .first()
+            .and_then(|diagnostic| diagnostic["code"].as_str())
+            == Some("cancelled")
 }
 
 /// What the inline worker hands back to the session handler.
@@ -4914,7 +5058,7 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
         }
         let result = prepared.execute(cancellation.clone());
         let authority = cancellation.factual_outcome_authority();
-        if cancellation.is_cancelled() && authority == FactualOutcomeAuthority::Cancellable {
+        if cancellation.is_cancelled() && cancel_stands(result.as_ref().ok(), authority) {
             // A stop the process asked for on fail-stop is no cancel the
             // client requested.
             if self.restart_required() {
@@ -6308,6 +6452,29 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
             }
             other => other,
         }
+        .map(|snapshot| self.with_live_cancel_wait(snapshot))
+    }
+
+    /// A working Task whose cancel was requested shows whether a process of
+    /// it was interrupted by that cancel and still works on until its own
+    /// answer. Live state of this daemon, never stored.
+    fn with_live_cancel_wait(
+        &self,
+        mut snapshot: response::V5DaemonTaskSnapshot,
+    ) -> response::V5DaemonTaskSnapshot {
+        if let response::V5DaemonTaskSnapshot::Working {
+            task_id,
+            cancel_requested: true,
+            awaits_interrupted_work,
+            ..
+        } = &mut snapshot
+        {
+            // A joined holder's reply carries the flag of the shared Task.
+            *awaits_interrupted_work |= self
+                .active_task_cancellations
+                .awaits_interrupted_work(*task_id);
+        }
+        snapshot
     }
 
     /// The Task id a lost-submit refusal names while its call is no Task:
@@ -6390,7 +6557,24 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
         {
             return Ok(task_store_snapshot(&record));
         }
-        let state = self.receipt_ledger.resolve_task(task_id, deadline)?;
+        self.hooks
+            .pause(V5PausePoint::BeforeTaskLedgerRead, deadline)?;
+        let state = match self.receipt_ledger.resolve_task(task_id, deadline) {
+            // The receipt row leaves the ledger only once its Task link stands
+            // (`complete_bound_task_handoff`): a Task missed by both reads moved
+            // in between and is read once more, not answered as unknown (#2992).
+            Err(ReceiptLedgerError::ReceiptNotFound) => {
+                return match self
+                    .task_projection
+                    .read_bound_task(task_id, deadline)
+                    .map_err(|failure| self.project_task_failure(failure))?
+                {
+                    Some(record) => Ok(task_store_snapshot(&record)),
+                    None => Err(ReceiptLedgerError::ReceiptNotFound),
+                };
+            }
+            other => other?,
+        };
         let receipt = match state {
             ReceiptState::TaskPromisedUnbound(receipt) => {
                 return Ok(queued_receipt_task_snapshot(
@@ -6522,7 +6706,9 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
             deadline,
         )?;
         match reply {
-            ReceiptReply::Json(ReceiptResponse::Task { snapshot }) => Ok(snapshot),
+            ReceiptReply::Json(ReceiptResponse::Task { snapshot }) => {
+                Ok(self.with_live_cancel_wait(snapshot))
+            }
             _ => unreachable!("Task normalization preserves the reply envelope"),
         }
     }
@@ -7186,6 +7372,7 @@ fn task_store_snapshot(record: &V5StoredInvocationRecord) -> response::V5DaemonT
             poll_interval_ms: common.6,
             version: common.7,
             cancel_requested: common.8,
+            awaits_interrupted_work: false,
         },
         V5StoredTask::Completed {
             terminal_epoch_ms,

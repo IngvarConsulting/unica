@@ -1,7 +1,5 @@
 ---
 id: INV.PKG.PREFETCH-DEVELOPMENT-REFUSAL
-check:
-  - crates/unica-bootstrap/tests/host/cli_contract.rs::a_development_checkout_has_nothing_to_prefetch_and_says_so
 ---
 
 # Прогрев отказывает манифесту разработки

@@ -1,0 +1,5847 @@
+{
+  "id": "S-1695-root-comments",
+  "issue": 1695,
+  "area": "Изменение метаданных",
+  "task": "Обнаружить 19 владельцев и контракт Comment, изменить, заменить и очистить комментарий через предпросмотр и исполнение токена; прочитать результат и подтвердить отсутствие записи при предпросмотре",
+  "workspace": "tests/fixtures/acceptance/workspace-root-comments",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "companion_0": {
+          "kind": "sha256",
+          "file": "v8project.yaml"
+        },
+        "companion_1": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Support.xml"
+        },
+        "companion_2": {
+          "kind": "sha256",
+          "file": "src/CommonPictures/Probe/Ext/Picture/Picture.png"
+        },
+        "companion_3": {
+          "kind": "sha256",
+          "file": "src/CommonPictures/Probe/Ext/Picture.xml"
+        },
+        "companion_4": {
+          "kind": "sha256",
+          "file": "src/CommonTemplates/Probe/Ext/Template.bin"
+        },
+        "companion_5": {
+          "kind": "sha256",
+          "file": "src/ConfigDumpInfo.xml"
+        },
+        "companion_6": {
+          "kind": "sha256",
+          "file": "src/Configuration.xml"
+        },
+        "companion_7": {
+          "kind": "sha256",
+          "file": "src/Constants/Support.xml"
+        },
+        "companion_8": {
+          "kind": "sha256",
+          "file": "src/Documents/Support.xml"
+        },
+        "companion_9": {
+          "kind": "sha256",
+          "file": "src/Ext/ClientApplicationInterface.xml"
+        },
+        "companion_10": {
+          "kind": "sha256",
+          "file": "src/WSReferences/Probe/Ext/WSDefinition.xml"
+        },
+        "companion_11": {
+          "kind": "sha256",
+          "file": "src/XDTOPackages/Probe/Ext/Package.bin"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonAttribute"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "owner_0_0": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner_0_0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "descriptor_0_1": {
+          "pointer": "/data/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonAttribute.Probe.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/Comment/type",
+          "eq": "string"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_0_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_0_3": {
+          "kind": "sha256",
+          "file": "src/CommonAttributes/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_0_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Назначение & < > \"\nстрока\r\nконец\t."
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonAttributes/Probe.xml",
+          "eq": "$capture.before_0_3"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonAttributes/Probe.xml",
+          "notEq": "$capture.before_0_3"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonAttribute.Probe.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "Назначение & < > \"\nстрока\r\nконец\t."
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_0_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_0_7": {
+          "kind": "sha256",
+          "file": "src/CommonAttributes/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_0_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Замена"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonAttributes/Probe.xml",
+          "eq": "$capture.before_0_7"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonAttributes/Probe.xml",
+          "notEq": "$capture.before_0_7"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonAttribute.Probe.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "Замена"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_0_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_0_11": {
+          "kind": "sha256",
+          "file": "src/CommonAttributes/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_0_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": ""
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonAttributes/Probe.xml",
+          "eq": "$capture.before_0_11"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonAttributes/Probe.xml",
+          "notEq": "$capture.before_0_11"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonAttribute.Probe.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:FunctionalOption"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "owner_1_0": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner_1_0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "descriptor_1_1": {
+          "pointer": "/data/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:FunctionalOption.Probe.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/Comment/type",
+          "eq": "string"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_1_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_1_3": {
+          "kind": "sha256",
+          "file": "src/FunctionalOptions/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_1_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Назначение & < > \"\nстрока\r\nконец\t."
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/FunctionalOptions/Probe.xml",
+          "eq": "$capture.before_1_3"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/FunctionalOptions/Probe.xml",
+          "notEq": "$capture.before_1_3"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:FunctionalOption.Probe.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "Назначение & < > \"\nстрока\r\nконец\t."
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_1_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_1_7": {
+          "kind": "sha256",
+          "file": "src/FunctionalOptions/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_1_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Замена"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/FunctionalOptions/Probe.xml",
+          "eq": "$capture.before_1_7"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/FunctionalOptions/Probe.xml",
+          "notEq": "$capture.before_1_7"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:FunctionalOption.Probe.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "Замена"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_1_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_1_11": {
+          "kind": "sha256",
+          "file": "src/FunctionalOptions/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_1_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": ""
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/FunctionalOptions/Probe.xml",
+          "eq": "$capture.before_1_11"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/FunctionalOptions/Probe.xml",
+          "notEq": "$capture.before_1_11"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:FunctionalOption.Probe.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:FunctionalOptionsParameter"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "owner_2_0": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner_2_0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "descriptor_2_1": {
+          "pointer": "/data/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:FunctionalOptionsParameter.Probe.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/Comment/type",
+          "eq": "string"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_2_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_2_3": {
+          "kind": "sha256",
+          "file": "src/FunctionalOptionsParameters/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_2_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Назначение & < > \"\nстрока\r\nконец\t."
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/FunctionalOptionsParameters/Probe.xml",
+          "eq": "$capture.before_2_3"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/FunctionalOptionsParameters/Probe.xml",
+          "notEq": "$capture.before_2_3"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:FunctionalOptionsParameter.Probe.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "Назначение & < > \"\nстрока\r\nконец\t."
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_2_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_2_7": {
+          "kind": "sha256",
+          "file": "src/FunctionalOptionsParameters/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_2_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Замена"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/FunctionalOptionsParameters/Probe.xml",
+          "eq": "$capture.before_2_7"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/FunctionalOptionsParameters/Probe.xml",
+          "notEq": "$capture.before_2_7"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:FunctionalOptionsParameter.Probe.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "Замена"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_2_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_2_11": {
+          "kind": "sha256",
+          "file": "src/FunctionalOptionsParameters/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_2_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": ""
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/FunctionalOptionsParameters/Probe.xml",
+          "eq": "$capture.before_2_11"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/FunctionalOptionsParameters/Probe.xml",
+          "notEq": "$capture.before_2_11"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:FunctionalOptionsParameter.Probe.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:SessionParameter"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "owner_3_0": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner_3_0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "descriptor_3_1": {
+          "pointer": "/data/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:SessionParameter.SessionProbe.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/Comment/type",
+          "eq": "string"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_3_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_3_3": {
+          "kind": "sha256",
+          "file": "src/SessionParameters/SessionProbe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_3_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Назначение & < > \"\nстрока\r\nконец\t."
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/SessionParameters/SessionProbe.xml",
+          "eq": "$capture.before_3_3"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/SessionParameters/SessionProbe.xml",
+          "notEq": "$capture.before_3_3"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:SessionParameter.SessionProbe.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "Назначение & < > \"\nстрока\r\nконец\t."
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_3_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_3_7": {
+          "kind": "sha256",
+          "file": "src/SessionParameters/SessionProbe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_3_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Замена"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/SessionParameters/SessionProbe.xml",
+          "eq": "$capture.before_3_7"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/SessionParameters/SessionProbe.xml",
+          "notEq": "$capture.before_3_7"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:SessionParameter.SessionProbe.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "Замена"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_3_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_3_11": {
+          "kind": "sha256",
+          "file": "src/SessionParameters/SessionProbe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_3_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": ""
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/SessionParameters/SessionProbe.xml",
+          "eq": "$capture.before_3_11"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/SessionParameters/SessionProbe.xml",
+          "notEq": "$capture.before_3_11"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:SessionParameter.SessionProbe.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:FilterCriterion"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "owner_4_0": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner_4_0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "descriptor_4_1": {
+          "pointer": "/data/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:FilterCriterion.Probe.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/Comment/type",
+          "eq": "string"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_4_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_4_3": {
+          "kind": "sha256",
+          "file": "src/FilterCriteria/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_4_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Назначение & < > \"\nстрока\r\nконец\t."
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/FilterCriteria/Probe.xml",
+          "eq": "$capture.before_4_3"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/FilterCriteria/Probe.xml",
+          "notEq": "$capture.before_4_3"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:FilterCriterion.Probe.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "Назначение & < > \"\nстрока\r\nконец\t."
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_4_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_4_7": {
+          "kind": "sha256",
+          "file": "src/FilterCriteria/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_4_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Замена"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/FilterCriteria/Probe.xml",
+          "eq": "$capture.before_4_7"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/FilterCriteria/Probe.xml",
+          "notEq": "$capture.before_4_7"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:FilterCriterion.Probe.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "Замена"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_4_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_4_11": {
+          "kind": "sha256",
+          "file": "src/FilterCriteria/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_4_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": ""
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/FilterCriteria/Probe.xml",
+          "eq": "$capture.before_4_11"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/FilterCriteria/Probe.xml",
+          "notEq": "$capture.before_4_11"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:FilterCriterion.Probe.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:SettingsStorage"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "owner_5_0": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner_5_0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "descriptor_5_1": {
+          "pointer": "/data/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:SettingsStorage.Probe.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/Comment/type",
+          "eq": "string"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_5_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_5_3": {
+          "kind": "sha256",
+          "file": "src/SettingsStorages/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_5_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Назначение & < > \"\nстрока\r\nконец\t."
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/SettingsStorages/Probe.xml",
+          "eq": "$capture.before_5_3"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/SettingsStorages/Probe.xml",
+          "notEq": "$capture.before_5_3"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:SettingsStorage.Probe.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "Назначение & < > \"\nстрока\r\nконец\t."
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_5_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_5_7": {
+          "kind": "sha256",
+          "file": "src/SettingsStorages/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_5_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Замена"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/SettingsStorages/Probe.xml",
+          "eq": "$capture.before_5_7"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/SettingsStorages/Probe.xml",
+          "notEq": "$capture.before_5_7"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:SettingsStorage.Probe.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "Замена"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_5_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_5_11": {
+          "kind": "sha256",
+          "file": "src/SettingsStorages/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_5_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": ""
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/SettingsStorages/Probe.xml",
+          "eq": "$capture.before_5_11"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/SettingsStorages/Probe.xml",
+          "notEq": "$capture.before_5_11"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:SettingsStorage.Probe.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonCommand"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "owner_6_0": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner_6_0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "descriptor_6_1": {
+          "pointer": "/data/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonCommand.Probe.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/Comment/type",
+          "eq": "string"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_6_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_6_3": {
+          "kind": "sha256",
+          "file": "src/CommonCommands/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_6_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Назначение & < > \"\nстрока\r\nконец\t."
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonCommands/Probe.xml",
+          "eq": "$capture.before_6_3"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonCommands/Probe.xml",
+          "notEq": "$capture.before_6_3"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonCommand.Probe.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "Назначение & < > \"\nстрока\r\nконец\t."
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_6_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_6_7": {
+          "kind": "sha256",
+          "file": "src/CommonCommands/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_6_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Замена"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonCommands/Probe.xml",
+          "eq": "$capture.before_6_7"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonCommands/Probe.xml",
+          "notEq": "$capture.before_6_7"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonCommand.Probe.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "Замена"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_6_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_6_11": {
+          "kind": "sha256",
+          "file": "src/CommonCommands/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_6_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": ""
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonCommands/Probe.xml",
+          "eq": "$capture.before_6_11"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonCommands/Probe.xml",
+          "notEq": "$capture.before_6_11"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonCommand.Probe.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommandGroup"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "owner_7_0": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner_7_0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "descriptor_7_1": {
+          "pointer": "/data/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommandGroup.Probe.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/Comment/type",
+          "eq": "string"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_7_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_7_3": {
+          "kind": "sha256",
+          "file": "src/CommandGroups/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_7_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Назначение & < > \"\nстрока\r\nконец\t."
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommandGroups/Probe.xml",
+          "eq": "$capture.before_7_3"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommandGroups/Probe.xml",
+          "notEq": "$capture.before_7_3"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommandGroup.Probe.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "Назначение & < > \"\nстрока\r\nконец\t."
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_7_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_7_7": {
+          "kind": "sha256",
+          "file": "src/CommandGroups/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_7_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Замена"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommandGroups/Probe.xml",
+          "eq": "$capture.before_7_7"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommandGroups/Probe.xml",
+          "notEq": "$capture.before_7_7"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommandGroup.Probe.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "Замена"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_7_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_7_11": {
+          "kind": "sha256",
+          "file": "src/CommandGroups/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_7_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": ""
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommandGroups/Probe.xml",
+          "eq": "$capture.before_7_11"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommandGroups/Probe.xml",
+          "notEq": "$capture.before_7_11"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommandGroup.Probe.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonForm"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "owner_8_0": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonForm.Probe.Metadata"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "descriptor_8_1": {
+          "pointer": "/data/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonForm.Probe.Metadata.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/Comment/type",
+          "eq": "string"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_8_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_8_3": {
+          "kind": "sha256",
+          "file": "src/CommonForms/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_8_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Назначение & < > \"\nстрока\r\nконец\t."
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonForms/Probe.xml",
+          "eq": "$capture.before_8_3"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonForms/Probe.xml",
+          "notEq": "$capture.before_8_3"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonForm.Probe.Metadata"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "Назначение & < > \"\nстрока\r\nконец\t."
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_8_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_8_7": {
+          "kind": "sha256",
+          "file": "src/CommonForms/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_8_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Замена"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonForms/Probe.xml",
+          "eq": "$capture.before_8_7"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonForms/Probe.xml",
+          "notEq": "$capture.before_8_7"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonForm.Probe.Metadata"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "Замена"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_8_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_8_11": {
+          "kind": "sha256",
+          "file": "src/CommonForms/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_8_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": ""
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonForms/Probe.xml",
+          "eq": "$capture.before_8_11"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonForms/Probe.xml",
+          "notEq": "$capture.before_8_11"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonForm.Probe.Metadata"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonTemplate"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "owner_9_0": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner_9_0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "descriptor_9_1": {
+          "pointer": "/data/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonTemplate.Probe.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/Comment/type",
+          "eq": "string"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_9_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_9_3": {
+          "kind": "sha256",
+          "file": "src/CommonTemplates/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_9_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Назначение & < > \"\nстрока\r\nконец\t."
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonTemplates/Probe.xml",
+          "eq": "$capture.before_9_3"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonTemplates/Probe.xml",
+          "notEq": "$capture.before_9_3"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonTemplate.Probe.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "Назначение & < > \"\nстрока\r\nконец\t."
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_9_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_9_7": {
+          "kind": "sha256",
+          "file": "src/CommonTemplates/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_9_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Замена"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonTemplates/Probe.xml",
+          "eq": "$capture.before_9_7"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonTemplates/Probe.xml",
+          "notEq": "$capture.before_9_7"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonTemplate.Probe.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "Замена"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_9_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_9_11": {
+          "kind": "sha256",
+          "file": "src/CommonTemplates/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_9_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": ""
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonTemplates/Probe.xml",
+          "eq": "$capture.before_9_11"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonTemplates/Probe.xml",
+          "notEq": "$capture.before_9_11"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonTemplate.Probe.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonPicture"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "owner_10_0": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner_10_0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "descriptor_10_1": {
+          "pointer": "/data/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonPicture.Probe.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/Comment/type",
+          "eq": "string"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_10_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_10_3": {
+          "kind": "sha256",
+          "file": "src/CommonPictures/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_10_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Назначение & < > \"\nстрока\r\nконец\t."
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonPictures/Probe.xml",
+          "eq": "$capture.before_10_3"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonPictures/Probe.xml",
+          "notEq": "$capture.before_10_3"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonPicture.Probe.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "Назначение & < > \"\nстрока\r\nконец\t."
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_10_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_10_7": {
+          "kind": "sha256",
+          "file": "src/CommonPictures/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_10_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Замена"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonPictures/Probe.xml",
+          "eq": "$capture.before_10_7"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonPictures/Probe.xml",
+          "notEq": "$capture.before_10_7"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonPicture.Probe.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "Замена"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_10_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_10_11": {
+          "kind": "sha256",
+          "file": "src/CommonPictures/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_10_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": ""
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonPictures/Probe.xml",
+          "eq": "$capture.before_10_11"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonPictures/Probe.xml",
+          "notEq": "$capture.before_10_11"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonPicture.Probe.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Language"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "owner_11_0": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner_11_0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "descriptor_11_1": {
+          "pointer": "/data/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Language.Русский.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/Comment/type",
+          "eq": "string"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_11_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_11_3": {
+          "kind": "sha256",
+          "file": "src/Languages/Русский.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_11_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Назначение & < > \"\nстрока\r\nконец\t."
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "eq": "$capture.before_11_3"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "notEq": "$capture.before_11_3"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Language.Русский.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "Назначение & < > \"\nстрока\r\nконец\t."
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_11_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_11_7": {
+          "kind": "sha256",
+          "file": "src/Languages/Русский.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_11_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Замена"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "eq": "$capture.before_11_7"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "notEq": "$capture.before_11_7"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Language.Русский.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "Замена"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_11_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_11_11": {
+          "kind": "sha256",
+          "file": "src/Languages/Русский.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_11_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": ""
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "eq": "$capture.before_11_11"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "notEq": "$capture.before_11_11"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Language.Русский.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:IntegrationService"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "owner_12_0": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner_12_0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "descriptor_12_1": {
+          "pointer": "/data/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:IntegrationService.Probe.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/Comment/type",
+          "eq": "string"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_12_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_12_3": {
+          "kind": "sha256",
+          "file": "src/IntegrationServices/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_12_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Назначение & < > \"\nстрока\r\nконец\t."
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/IntegrationServices/Probe.xml",
+          "eq": "$capture.before_12_3"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/IntegrationServices/Probe.xml",
+          "notEq": "$capture.before_12_3"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:IntegrationService.Probe.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "Назначение & < > \"\nстрока\r\nконец\t."
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_12_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_12_7": {
+          "kind": "sha256",
+          "file": "src/IntegrationServices/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_12_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Замена"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/IntegrationServices/Probe.xml",
+          "eq": "$capture.before_12_7"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/IntegrationServices/Probe.xml",
+          "notEq": "$capture.before_12_7"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:IntegrationService.Probe.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "Замена"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_12_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_12_11": {
+          "kind": "sha256",
+          "file": "src/IntegrationServices/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_12_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": ""
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/IntegrationServices/Probe.xml",
+          "eq": "$capture.before_12_11"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/IntegrationServices/Probe.xml",
+          "notEq": "$capture.before_12_11"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:IntegrationService.Probe.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:DocumentNumerator"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "owner_13_0": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner_13_0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "descriptor_13_1": {
+          "pointer": "/data/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:DocumentNumerator.Probe.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/Comment/type",
+          "eq": "string"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_13_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_13_3": {
+          "kind": "sha256",
+          "file": "src/DocumentNumerators/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_13_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Назначение & < > \"\nстрока\r\nконец\t."
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/DocumentNumerators/Probe.xml",
+          "eq": "$capture.before_13_3"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/DocumentNumerators/Probe.xml",
+          "notEq": "$capture.before_13_3"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:DocumentNumerator.Probe.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "Назначение & < > \"\nстрока\r\nконец\t."
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_13_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_13_7": {
+          "kind": "sha256",
+          "file": "src/DocumentNumerators/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_13_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Замена"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/DocumentNumerators/Probe.xml",
+          "eq": "$capture.before_13_7"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/DocumentNumerators/Probe.xml",
+          "notEq": "$capture.before_13_7"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:DocumentNumerator.Probe.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "Замена"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_13_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_13_11": {
+          "kind": "sha256",
+          "file": "src/DocumentNumerators/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_13_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": ""
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/DocumentNumerators/Probe.xml",
+          "eq": "$capture.before_13_11"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/DocumentNumerators/Probe.xml",
+          "notEq": "$capture.before_13_11"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:DocumentNumerator.Probe.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:WSReference"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "owner_14_0": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner_14_0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "descriptor_14_1": {
+          "pointer": "/data/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:WSReference.Probe.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/Comment/type",
+          "eq": "string"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_14_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_14_3": {
+          "kind": "sha256",
+          "file": "src/WSReferences/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_14_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Назначение & < > \"\nстрока\r\nконец\t."
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/WSReferences/Probe.xml",
+          "eq": "$capture.before_14_3"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/WSReferences/Probe.xml",
+          "notEq": "$capture.before_14_3"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:WSReference.Probe.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "Назначение & < > \"\nстрока\r\nконец\t."
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_14_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_14_7": {
+          "kind": "sha256",
+          "file": "src/WSReferences/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_14_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Замена"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/WSReferences/Probe.xml",
+          "eq": "$capture.before_14_7"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/WSReferences/Probe.xml",
+          "notEq": "$capture.before_14_7"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:WSReference.Probe.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "Замена"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_14_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_14_11": {
+          "kind": "sha256",
+          "file": "src/WSReferences/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_14_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": ""
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/WSReferences/Probe.xml",
+          "eq": "$capture.before_14_11"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/WSReferences/Probe.xml",
+          "notEq": "$capture.before_14_11"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:WSReference.Probe.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "owner_15_0": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner_15_0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "descriptor_15_1": {
+          "pointer": "/data/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.Probe.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/Comment/type",
+          "eq": "string"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_15_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_15_3": {
+          "kind": "sha256",
+          "file": "src/XDTOPackages/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_15_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Назначение & < > \"\nстрока\r\nконец\t."
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/XDTOPackages/Probe.xml",
+          "eq": "$capture.before_15_3"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/XDTOPackages/Probe.xml",
+          "notEq": "$capture.before_15_3"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.Probe.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "Назначение & < > \"\nстрока\r\nконец\t."
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_15_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_15_7": {
+          "kind": "sha256",
+          "file": "src/XDTOPackages/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_15_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Замена"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/XDTOPackages/Probe.xml",
+          "eq": "$capture.before_15_7"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/XDTOPackages/Probe.xml",
+          "notEq": "$capture.before_15_7"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.Probe.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "Замена"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_15_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_15_11": {
+          "kind": "sha256",
+          "file": "src/XDTOPackages/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_15_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": ""
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/XDTOPackages/Probe.xml",
+          "eq": "$capture.before_15_11"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/XDTOPackages/Probe.xml",
+          "notEq": "$capture.before_15_11"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.Probe.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:StyleItem"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "owner_16_0": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner_16_0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "descriptor_16_1": {
+          "pointer": "/data/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:StyleItem.Probe.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/Comment/type",
+          "eq": "string"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_16_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_16_3": {
+          "kind": "sha256",
+          "file": "src/StyleItems/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_16_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Назначение & < > \"\nстрока\r\nконец\t."
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/StyleItems/Probe.xml",
+          "eq": "$capture.before_16_3"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/StyleItems/Probe.xml",
+          "notEq": "$capture.before_16_3"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:StyleItem.Probe.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "Назначение & < > \"\nстрока\r\nконец\t."
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_16_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_16_7": {
+          "kind": "sha256",
+          "file": "src/StyleItems/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_16_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Замена"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/StyleItems/Probe.xml",
+          "eq": "$capture.before_16_7"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/StyleItems/Probe.xml",
+          "notEq": "$capture.before_16_7"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:StyleItem.Probe.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "Замена"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_16_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_16_11": {
+          "kind": "sha256",
+          "file": "src/StyleItems/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_16_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": ""
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/StyleItems/Probe.xml",
+          "eq": "$capture.before_16_11"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/StyleItems/Probe.xml",
+          "notEq": "$capture.before_16_11"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:StyleItem.Probe.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Sequence"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "owner_17_0": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner_17_0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "descriptor_17_1": {
+          "pointer": "/data/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Sequence.Probe.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/Comment/type",
+          "eq": "string"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_17_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_17_3": {
+          "kind": "sha256",
+          "file": "src/Sequences/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_17_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Назначение & < > \"\nстрока\r\nконец\t."
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Sequences/Probe.xml",
+          "eq": "$capture.before_17_3"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Sequences/Probe.xml",
+          "notEq": "$capture.before_17_3"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Sequence.Probe.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "Назначение & < > \"\nстрока\r\nконец\t."
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_17_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_17_7": {
+          "kind": "sha256",
+          "file": "src/Sequences/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_17_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Замена"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Sequences/Probe.xml",
+          "eq": "$capture.before_17_7"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Sequences/Probe.xml",
+          "notEq": "$capture.before_17_7"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Sequence.Probe.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "Замена"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_17_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_17_11": {
+          "kind": "sha256",
+          "file": "src/Sequences/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_17_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": ""
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Sequences/Probe.xml",
+          "eq": "$capture.before_17_11"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Sequences/Probe.xml",
+          "notEq": "$capture.before_17_11"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Sequence.Probe.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Style"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "owner_18_0": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner_18_0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "descriptor_18_1": {
+          "pointer": "/data/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Style.Probe.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/Comment/type",
+          "eq": "string"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_18_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_18_3": {
+          "kind": "sha256",
+          "file": "src/Styles/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_18_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Назначение & < > \"\nстрока\r\nконец\t."
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Styles/Probe.xml",
+          "eq": "$capture.before_18_3"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Styles/Probe.xml",
+          "notEq": "$capture.before_18_3"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Style.Probe.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "Назначение & < > \"\nстрока\r\nконец\t."
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_18_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_18_7": {
+          "kind": "sha256",
+          "file": "src/Styles/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_18_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Замена"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Styles/Probe.xml",
+          "eq": "$capture.before_18_7"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Styles/Probe.xml",
+          "notEq": "$capture.before_18_7"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Style.Probe.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "Замена"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.descriptor_18_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before_18_11": {
+          "kind": "sha256",
+          "file": "src/Styles/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.descriptor_18_1",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": ""
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Styles/Probe.xml",
+          "eq": "$capture.before_18_11"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Styles/Probe.xml",
+          "notEq": "$capture.before_18_11"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Style.Probe.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "$capture.companion_0"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Support.xml",
+          "eq": "$capture.companion_1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonPictures/Probe/Ext/Picture/Picture.png",
+          "eq": "$capture.companion_2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonPictures/Probe/Ext/Picture.xml",
+          "eq": "$capture.companion_3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonTemplates/Probe/Ext/Template.bin",
+          "eq": "$capture.companion_4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ConfigDumpInfo.xml",
+          "eq": "$capture.companion_5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.companion_6"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Constants/Support.xml",
+          "eq": "$capture.companion_7"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Documents/Support.xml",
+          "eq": "$capture.companion_8"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "eq": "$capture.companion_9"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/WSReferences/Probe/Ext/WSDefinition.xml",
+          "eq": "$capture.companion_10"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/XDTOPackages/Probe/Ext/Package.bin",
+          "eq": "$capture.companion_11"
+        }
+      ]
+    }
+  ]
+}

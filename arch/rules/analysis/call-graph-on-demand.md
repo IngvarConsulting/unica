@@ -1,12 +1,5 @@
 ---
 id: INV.ANALYSIS.CALL-GRAPH-ON-DEMAND
-check:
-  - crates/unica-coder/src/infrastructure/daemon/server.rs::method_view_names_call_graph_branches_without_asking_the_analyzer
-  - crates/unica-coder/src/infrastructure/daemon/server.rs::canonical_selected_engine_routes_request_delivery_before_provider_start
-  - crates/unica-coder/src/infrastructure/daemon/server.rs::call_graph_branch_answers_working_while_the_analyzer_is_being_delivered
-  - crates/unica-coder/src/infrastructure/daemon/server.rs::a_retired_read_filter_routes_next_to_the_address_that_replaced_it
-  - crates/unica-coder/src/infrastructure/daemon/v13_call_graph.rs::the_method_node_names_both_branches_without_a_count
-  - crates/unica-coder/src/infrastructure/daemon/server.rs::every_route_refuses_a_missing_engine_with_one_typed_refusal
 ---
 
 # Граф вызовов читается только адресом ветви

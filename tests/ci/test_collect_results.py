@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 import tarfile
+import shutil
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -13,6 +14,7 @@ from pathlib import Path
 
 import yaml
 
+from collector_rules import without_repository_rule_index
 
 SCRIPTS = Path(__file__).resolve().parents[2] / "scripts" / "ci"
 WORKFLOWS = Path(__file__).resolve().parents[2] / ".github" / "workflows"
@@ -33,7 +35,9 @@ class CollectResultsTests(unittest.TestCase):
     def setUp(self) -> None:
         self.allure = load("allure_results")
         self.collect = load("collect-results")
+        without_repository_rule_index(self, self.collect)
         self.root = Path(tempfile.mkdtemp(prefix="collect-"))
+        self.addCleanup(shutil.rmtree, self.root)
         self.artifacts = self.root / "artifacts"
         self.run = {
             "sha": "abcdef0123456789", "ref": "release-v0.12", "run_id": "42", "run_attempt": "2",
@@ -261,7 +265,8 @@ class CollectResultsTests(unittest.TestCase):
                 bundle.add(item, arcname=item.name)
         fetched: list[str] = []
 
-        def fake_fetch(url: str, target: Path) -> bool:
+        def fake_fetch(site: str, path: str, target: Path) -> bool:
+            url = f"{site}/{path}"
             fetched.append(url)
             if url.endswith("/data/release-v0.12/results/all.tar.gz"):
                 target.parent.mkdir(parents=True, exist_ok=True)
@@ -328,7 +333,8 @@ class CollectResultsTests(unittest.TestCase):
         archive = self.archive_results(stored, "initial.tar.gz")
         fetched = []
 
-        def fetch(url: str, target: Path) -> bool:
+        def fetch(site: str, path: str, target: Path) -> bool:
+            url = f"{site}/{path}"
             fetched.append(url)
             if url != "https://site/data/main/results/queue.tar.gz":
                 return False
@@ -374,7 +380,7 @@ class CollectResultsTests(unittest.TestCase):
 
     def test_scope_skip_without_inventory_is_metadata_without_invented_cases(self) -> None:
         self.routing_artifacts()
-        self.collect.fetch = lambda _url, _target: False
+        self.collect.fetch = lambda _site, _path, _target: False
         jobs = self.jobs_file({"Unica CI": "skipped"})
         output = self.root / "fresh"
 
@@ -399,7 +405,7 @@ class CollectResultsTests(unittest.TestCase):
         for index, conclusions in enumerate(({}, {"Unica CI": "success"}, {"Unica CI": "failure"}, {"Unica CI": "cancelled"})):
             with self.subTest(conclusions=conclusions):
                 output = self.root / f"fresh-{index}"
-                self.collect.fetch = lambda _url, _target: False
+                self.collect.fetch = lambda _site, _path, _target: False
                 self.collect.collect(self.artifacts, output, self.jobs_file(conclusions), "", "")
                 skip = json.loads((output / "main/run.json").read_text())["routing_skips"][0]
                 self.assertEqual(skip["scope_skip"], self.scope_skip())
@@ -450,7 +456,7 @@ class CollectResultsTests(unittest.TestCase):
             self.collect.collect(self.artifacts, self.root / "fresh", self.jobs_file({"Unica CI": "skipped"}), "", "")
 
     def test_job_name_and_artifact_prefixes_match_the_workflows(self) -> None:
-        release = workflow("unica-plugin-release.yml")
+        release = workflow("release.yml")
         jobs = release["jobs"]
         self.assertEqual(jobs["unica-ci"]["name"], self.collect.GATE_JOB)
         self.assertEqual(self.collect.GATE_JOB, "Unica CI")
@@ -462,7 +468,7 @@ class CollectResultsTests(unittest.TestCase):
         lanes = load("ci_rust_lanes")
         self.assertEqual(lanes.GATE_JOB, self.collect.GATE_JOB)
         self.assertEqual(lanes.os_job("windows-latest"), self.collect.runner_job("windows-latest"))
-        self.assertEqual(set(self.collect.RUST_LANES), set(lanes.LANES))
+        self.assertEqual(set(self.collect.RUST_LANES), set(lanes.LANES) | {"vendor"})
         prefixes = (self.collect.RESULTS_PREFIX, self.collect.PLAN_PREFIX)
 
         def uploads(job: str) -> list[dict]:
@@ -478,12 +484,10 @@ class CollectResultsTests(unittest.TestCase):
                 self.assertIn(".build/ci-report/results-*", results["with"]["path"])
         reports = [step["with"]["name"] for job in ("unica-ci", "rust-os") for step in uploads(job)
                    if not step["with"]["name"].startswith("ci-rust-inventory")]
-        reports += [step["with"]["name"] for step in workflow("unica-nightly.yml")["jobs"]["lines"]["steps"] if "upload-artifact" in step.get("uses", "")]
         self.assertTrue(all(name.startswith(prefixes) for name in reports), reports)
         verification = [step["with"]["name"] for step in uploads("unica-ci") if step["with"]["name"].startswith("ci-rust-inventory")]
         self.assertEqual(verification, ["ci-rust-inventory-verification", "ci-rust-inventory-${{ env.GATE_PROFILE }}"])
-        pages = workflow("unica-pages.yml")
-        pattern = next(step["with"]["pattern"] for step in pages["jobs"]["build"]["steps"] if "download-artifact" in step.get("uses", ""))
+        pattern = next(step["with"]["pattern"] for step in jobs["pages-build"]["steps"] if "download-artifact" in step.get("uses", ""))
         self.assertEqual(pattern, "{" + ",".join(prefix.rstrip("-") for prefix in prefixes) + "}-*")
 
     def test_runner_artifacts_nest_lane_directories_and_attribute_gaps_to_the_runner_job(self) -> None:
@@ -603,7 +607,7 @@ class CollectResultsTests(unittest.TestCase):
         self.allure.write(stored, self.rust("stored::unknown_lane", "ubuntu-latest"))
         (stored / "run.json").write_text(json.dumps({"sha": "old-sha", "profile": "all"}))
         archive = self.archive_results(stored, "stored.tar.gz")
-        def fetch(_url, target):
+        def fetch(_site, _path, target):
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(archive.read_bytes())
             return True
@@ -631,7 +635,7 @@ class CollectResultsTests(unittest.TestCase):
         self.allure.write(stored, entry)
         (stored / "run.json").write_text(json.dumps({"sha": "prior-sha", "profile": "all"}))
         archive = self.archive_results(stored, "stored.tar.gz")
-        def fetch(_url, target):
+        def fetch(_site, _path, target):
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(archive.read_bytes())
             return True

@@ -102,6 +102,72 @@ pub struct LocalMethod {
 pub struct LocalCall {
     pub path: Vec<String>,
     pub range: Range<usize>,
+    /// Decoded first argument only when it is one complete string literal.
+    /// Expressions, omitted arguments and non-string literals remain unknown.
+    pub first_string_argument: Option<String>,
+}
+
+fn first_string_argument(call: &SyntaxNode) -> Option<String> {
+    let arguments = call
+        .children()
+        .find(|node| node.kind() == SyntaxKind::ARG_LIST)?;
+    let mut first = arguments
+        .children_with_tokens()
+        .find(|element| {
+            element.kind() != SyntaxKind::L_PAREN
+                && element.kind() != SyntaxKind::WHITESPACE
+                && element.kind() != SyntaxKind::COMMENT
+                && element.kind() != SyntaxKind::NEWLINE
+        })?
+        .into_node()?;
+    while first.kind() == SyntaxKind::EXPR {
+        let children = first.children().collect::<Vec<_>>();
+        let [child] = children.as_slice() else {
+            return None;
+        };
+        first = child.clone();
+    }
+    if first.kind() != SyntaxKind::LITERAL {
+        return None;
+    }
+    let tokens = first
+        .descendants_with_tokens()
+        .filter_map(|element| element.into_token())
+        .filter(|token| !matches!(token.kind(), SyntaxKind::WHITESPACE | SyntaxKind::NEWLINE))
+        .collect::<Vec<_>>();
+    if let [token] = tokens.as_slice() {
+        if token.kind() == SyntaxKind::STRING {
+            return Some(
+                token
+                    .text()
+                    .strip_prefix('"')?
+                    .strip_suffix('"')?
+                    .replace("\"\"", "\""),
+            );
+        }
+    }
+    let (start, rest) = tokens.split_first()?;
+    let (end, middle) = rest.split_last()?;
+    if start.kind() != SyntaxKind::STRING_START
+        || end.kind() != SyntaxKind::STRING_TAIL
+        || middle
+            .iter()
+            .any(|token| token.kind() != SyntaxKind::STRING_PART)
+    {
+        return None;
+    }
+    let mut lines = vec![start.text().strip_prefix('"')?.to_string()];
+    for token in middle {
+        lines.push(token.text().trim_start().strip_prefix('|')?.to_string());
+    }
+    lines.push(
+        end.text()
+            .trim_start()
+            .strip_prefix('|')?
+            .strip_suffix('"')?
+            .to_string(),
+    );
+    Some(lines.join("\n").replace("\"\"", "\""))
 }
 
 /// BSL names are case-insensitive.
@@ -488,7 +554,9 @@ impl ParsedModule<'_> {
             .filter_map(|node| {
                 let segments = flatten(&node.first_child()?)?;
                 let last = segments.last()?;
+                let first_string_argument = first_string_argument(&node);
                 Some(LocalCall {
+                    first_string_argument,
                     path: segments
                         .iter()
                         .map(|segment| segment.text().to_string())
@@ -517,6 +585,27 @@ mod tests {
 
     fn at(text: &str, needle: &str) -> usize {
         text.find(needle).unwrap_or_else(|| panic!("{needle}"))
+    }
+
+    #[test]
+    fn calls_observe_only_complete_first_string_arguments() {
+        let text = "Procedure Run()\n A = NStr(\"ru='a'; en='b'\");\n B = НСтр(\"ru='a'\n|; de='b'\");\n C = NStr(Value);\n D = NStr(\"ru='a'\" + Value);\n E = F(, \"second\");\n F(\"a\"\"b\");\n // NStr(\"en='comment'\");\nEndProcedure";
+        let parsed = parse(text);
+        assert!(parsed.errors().is_empty(), "{:?}", parsed.errors());
+        let calls = parsed.calls();
+        assert_eq!(calls.len(), 6);
+        assert_eq!(
+            calls[0].first_string_argument.as_deref(),
+            Some("ru='a'; en='b'")
+        );
+        assert_eq!(
+            calls[1].first_string_argument.as_deref(),
+            Some("ru='a'\n; de='b'")
+        );
+        assert!(calls[2].first_string_argument.is_none());
+        assert!(calls[3].first_string_argument.is_none());
+        assert!(calls[4].first_string_argument.is_none());
+        assert_eq!(calls[5].first_string_argument.as_deref(), Some("a\"b"));
     }
 
     #[test]

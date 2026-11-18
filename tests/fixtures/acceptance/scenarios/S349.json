@@ -1,0 +1,248 @@
+{
+  "id": "S349",
+  "name": "metadata-observed-reference-values",
+  "issue": 533,
+  "area": "Приёмочный корпус",
+  "task": "EmptyRef, EnumValue и Characteristic читаются без потери данных и изменения XML",
+  "workspace": "tests/fixtures/acceptance/workspace-metadata-values",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Values.Attribute.EmptyItem"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/type",
+          "eq": {
+            "variants": [
+              {
+                "kind": "reference",
+                "metadataPath": "Catalog.Items"
+              }
+            ],
+            "mutationCapability": "editable"
+          }
+        },
+        {
+          "pointer": "/data/props/incomplete",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/fillValue",
+          "eq": {
+            "kind": "reference",
+            "metadataPath": "Catalog.Items",
+            "item": "EmptyRef"
+          }
+        }
+      ],
+      "captures": {
+        "unchanged1": {
+          "file": "src/Catalogs/Items.xml",
+          "kind": "sha256"
+        },
+        "unchanged2": {
+          "file": "src/Catalogs/Values.xml",
+          "kind": "sha256"
+        },
+        "unchanged3": {
+          "file": "src/ChartsOfCharacteristicTypes/Properties.xml",
+          "kind": "sha256"
+        },
+        "unchanged4": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "unchanged5": {
+          "file": "src/Enums/Flags.xml",
+          "kind": "sha256"
+        },
+        "unchanged6": {
+          "file": "src/Languages/Русский.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Values.Attribute.Flag"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/type",
+          "eq": {
+            "variants": [
+              {
+                "kind": "reference",
+                "metadataPath": "Enum.Flags"
+              }
+            ],
+            "mutationCapability": "editable"
+          }
+        },
+        {
+          "pointer": "/data/props/incomplete",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/fillValue",
+          "eq": {
+            "kind": "reference",
+            "metadataPath": "Enum.Flags",
+            "item": "EnumValue.Yes"
+          }
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items.xml",
+          "eq": "$capture.unchanged1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Values.xml",
+          "eq": "$capture.unchanged2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ChartsOfCharacteristicTypes/Properties.xml",
+          "eq": "$capture.unchanged3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.unchanged4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Enums/Flags.xml",
+          "eq": "$capture.unchanged5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "eq": "$capture.unchanged6"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Values.Attribute.Value"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/type",
+          "eq": {
+            "variants": [
+              {
+                "kind": "characteristicTypes",
+                "metadataPath": "ChartOfCharacteristicTypes.Properties"
+              }
+            ],
+            "mutationCapability": "readOnly"
+          }
+        },
+        {
+          "pointer": "/data/props/incomplete",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items.xml",
+          "eq": "$capture.unchanged1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Values.xml",
+          "eq": "$capture.unchanged2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ChartsOfCharacteristicTypes/Properties.xml",
+          "eq": "$capture.unchanged3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.unchanged4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Enums/Flags.xml",
+          "eq": "$capture.unchanged5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "eq": "$capture.unchanged6"
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:Catalog.Values"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "validators": [
+        "meta"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/diagnostics",
+          "eq": []
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items.xml",
+          "eq": "$capture.unchanged1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Values.xml",
+          "eq": "$capture.unchanged2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ChartsOfCharacteristicTypes/Properties.xml",
+          "eq": "$capture.unchanged3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.unchanged4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Enums/Flags.xml",
+          "eq": "$capture.unchanged5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "eq": "$capture.unchanged6"
+        }
+      ]
+    }
+  ]
+}

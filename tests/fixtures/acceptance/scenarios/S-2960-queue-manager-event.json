@@ -1,0 +1,30 @@
+{
+  "id": "S-2960-queue-manager-event",
+  "issue": 2960,
+  "area": "Модули и события",
+  "task": "Посмотреть событие менеджера очереди в наборе формата 2.22: событие показано с обработчиком и подписью своей линии, и его можно реализовать.",
+  "workspace": "tests/fixtures/acceptance/workspace-all-kinds",
+  "formats": [
+    "2.22"
+  ],
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Queue.Probe.Module.Manager.Event"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Queue.Probe.Module.Manager.Event.MessageProcessing"
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ]
+}

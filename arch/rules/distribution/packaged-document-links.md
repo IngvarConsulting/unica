@@ -1,7 +1,5 @@
 ---
 id: INV.DOC.PACKAGED-RELATIVE-LINKS
-check:
-  - tests/ci/test_package_unica_plugin.py::PackageUnicaPluginTests.test_all_active_packaged_documentation_links_are_relative_and_resolve
 ---
 
 # Ссылки на документацию работают внутри установленного пакета

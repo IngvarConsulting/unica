@@ -1,10 +1,5 @@
 ---
 id: INV.APP.DOCUMENTATION-LEXICAL-MATCHING
-check:
-  - crates/unica-documentation-sources/src/documentation_retrieval.rs::word_order_and_morphology_do_not_matter
-  - crates/unica-documentation-sources/src/documentation_retrieval.rs::typo_falls_back_to_fuzzy_with_discount
-  - crates/unica-documentation-sources/src/documentation_retrieval.rs::title_match_outranks_body_match
-  - crates/unica-documentation-sources/src/documentation_retrieval.rs::shorter_page_outranks_long_enumeration_for_equal_field
 gap: https://github.com/IngvarConsulting/unica/issues/953
 ---
 

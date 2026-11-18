@@ -43,8 +43,8 @@ ADMITTED = {
 
 # Наборы Python: сначала проверки CI, потом инструментов разработчика.
 # `--durations` показывает, какие проверки занимают время.
-# Это размер набора по умолчанию; .config/python-sizes.toml выделяет medium
-# внутри обоих наборов.
+# Это размер набора по умолчанию; объявления модулей выделяют medium
+# внутри обоих наборов (`scripts/ci/python_sizes.py`).
 PYTHON_SUITES = (
     ("tests/ci", "small", ("--durations", "20")),
     ("tests/dev", "small", ("--durations", "20")),

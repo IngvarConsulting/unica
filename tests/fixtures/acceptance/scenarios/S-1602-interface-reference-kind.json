@@ -1,0 +1,567 @@
+{
+  "id": "S-1602-interface-reference-kind",
+  "name": "interface-reference-representation",
+  "issue": 1602,
+  "area": "Командный интерфейс",
+  "task": "Различить ID, неподдержанные именованные и повреждённые ссылки, сохранить настройки поддержанных команд и все порядки, не меняя XML",
+  "workspace": "tests/fixtures/acceptance/workspace-interface-reference-kind",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/sourceSets/0/name",
+          "eq": "main"
+        }
+      ],
+      "captures": {
+        "root": {
+          "pointer": "/next/0/args/at"
+        },
+        "project": {
+          "kind": "sha256",
+          "file": "v8project.yaml"
+        },
+        "config": {
+          "kind": "sha256",
+          "file": "src/Configuration.xml"
+        },
+        "crm": {
+          "kind": "sha256",
+          "file": "src/Subsystems/CRMИМаркетинг/Ext/CommandInterface.xml"
+        },
+        "processes": {
+          "kind": "sha256",
+          "file": "src/Subsystems/ОписаниеПроцессов/Ext/CommandInterface.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.root"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0/count",
+          "eq": 2
+        }
+      ],
+      "captures": {
+        "subsystems": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.subsystems"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/title",
+          "eq": "CRMИМаркетинг"
+        },
+        {
+          "pointer": "/data/items/1/title",
+          "eq": "ОписаниеПроцессов"
+        }
+      ],
+      "captures": {
+        "crmOwner": {
+          "pointer": "/data/items/0/at"
+        },
+        "processOwner": {
+          "pointer": "/data/items/1/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.crmOwner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "crmInterface": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.crmInterface"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/limits",
+          "eq": [
+            "Команды, заданные ссылкой по идентификатору, логического адреса не имеют (1): 0:bdebc888-2581-426c-9f5e-c09fbba5f6e2",
+            "Чтение именованных ссылок на команды не поддерживается профилем логических адресов (2): DocumentJournal.РеестрТорговыхДокументов.StandardCommand.OpenList, Report.КонтактнаяИнформация.StandardCommand.Open",
+            "Обнаружено повреждённое или нераспознанное представление ссылок на команды; проверьте исходное описание интерфейса (1): broken-command"
+          ]
+        },
+        {
+          "pointer": "/data/branches/0/count",
+          "eq": 3
+        },
+        {
+          "pointer": "/data/branches/1/count",
+          "eq": 5
+        },
+        {
+          "pointer": "/data/branches/2/count",
+          "eq": 12
+        }
+      ],
+      "captures": {
+        "commands": {
+          "pointer": "/data/branches/0/at"
+        },
+        "groups": {
+          "pointer": "/data/branches/1/at"
+        },
+        "order": {
+          "pointer": "/data/branches/2/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.commands",
+        "limit": 2
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/limits",
+          "eq": [
+            "Команды, заданные ссылкой по идентификатору, логического адреса не имеют (1): 0:bdebc888-2581-426c-9f5e-c09fbba5f6e2",
+            "Чтение именованных ссылок на команды не поддерживается профилем логических адресов (2): DocumentJournal.РеестрТорговыхДокументов.StandardCommand.OpenList, Report.КонтактнаяИнформация.StandardCommand.Open",
+            "Обнаружено повреждённое или нераспознанное представление ссылок на команды; проверьте исходное описание интерфейса (1): broken-command"
+          ]
+        },
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "at": "main:Catalog.Items.Command.Refresh",
+              "kind": "Command",
+              "title": "Catalog.Items.Command.Refresh",
+              "props": {
+                "visible": true,
+                "roleOverrides": 3
+              }
+            },
+            {
+              "at": "main:CommonCommand.Open",
+              "kind": "CommonCommand",
+              "title": "CommonCommand.Open",
+              "props": {
+                "visible": true,
+                "roleOverrides": 0,
+                "group": "NavigationPanelOrdinary",
+                "placement": "Auto"
+              }
+            }
+          ]
+        }
+      ],
+      "captures": {
+        "cursor": {
+          "pointer": "/cursor"
+        },
+        "commonCommand": {
+          "pointer": "/data/items/1/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.commands",
+        "limit": 2,
+        "cursor": "$capture.cursor"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/limits",
+          "eq": [
+            "Команды, заданные ссылкой по идентификатору, логического адреса не имеют (1): 0:bdebc888-2581-426c-9f5e-c09fbba5f6e2",
+            "Чтение именованных ссылок на команды не поддерживается профилем логических адресов (2): DocumentJournal.РеестрТорговыхДокументов.StandardCommand.OpenList, Report.КонтактнаяИнформация.StandardCommand.Open",
+            "Обнаружено повреждённое или нераспознанное представление ссылок на команды; проверьте исходное описание интерфейса (1): broken-command"
+          ]
+        },
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "at": "main:CommonCommand.Settings",
+              "kind": "CommonCommand",
+              "title": "CommonCommand.Settings",
+              "props": {
+                "visible": false,
+                "roleOverrides": 0
+              }
+            }
+          ]
+        },
+        {
+          "pointer": "/cursor",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.commonCommand"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:CommonCommand.Open"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "CommonCommand"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.groups"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "at": "main:Subsystem.CRMИМаркетинг.Interface.Group.NavigationPanelSeeAlso",
+              "kind": "Group",
+              "title": "NavigationPanelSeeAlso",
+              "order": 1,
+              "commands": 2
+            },
+            {
+              "at": "main:Subsystem.CRMИМаркетинг.Interface.Group.NavigationPanelOrdinary",
+              "kind": "Group",
+              "title": "NavigationPanelOrdinary",
+              "order": 2,
+              "commands": 2
+            },
+            {
+              "at": "main:Subsystem.CRMИМаркетинг.Interface.Group.NavigationPanelImportant",
+              "kind": "Group",
+              "title": "NavigationPanelImportant",
+              "order": 3,
+              "commands": 2
+            },
+            {
+              "at": "main:Subsystem.CRMИМаркетинг.Interface.Group.ActionsPanelTools",
+              "kind": "Group",
+              "title": "ActionsPanelTools",
+              "order": 4,
+              "commands": 2
+            },
+            {
+              "at": "main:Subsystem.CRMИМаркетинг.Interface.Group.ActionsPanelCreate",
+              "kind": "Group",
+              "title": "ActionsPanelCreate",
+              "order": 5,
+              "commands": 2
+            }
+          ]
+        }
+      ],
+      "captures": {
+        "group0": {
+          "pointer": "/data/items/0/at"
+        },
+        "group1": {
+          "pointer": "/data/items/1/at"
+        },
+        "group2": {
+          "pointer": "/data/items/2/at"
+        },
+        "group3": {
+          "pointer": "/data/items/3/at"
+        },
+        "group4": {
+          "pointer": "/data/items/4/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.group0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "order": 1,
+              "command": "DocumentJournal.РеестрТорговыхДокументов.StandardCommand.OpenList"
+            },
+            {
+              "order": 2,
+              "command": "Report.КонтактнаяИнформация.StandardCommand.Open"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.group1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "order": 1,
+              "command": "Catalog.Глоссарий.StandardCommand.OpenList"
+            },
+            {
+              "order": 2,
+              "command": "Constant.ИспользоватьДемонстрационныеСценарии.StandardCommand.Open"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.group2"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "order": 1,
+              "command": "0:bdebc888-2581-426c-9f5e-c09fbba5f6e2"
+            },
+            {
+              "order": 2,
+              "command": "CommonCommand.Open"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.group3"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "order": 1,
+              "command": "CommonCommand.Settings"
+            },
+            {
+              "order": 2,
+              "command": "Catalog.Items.Command.Refresh"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.group4"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "order": 1,
+              "command": "CommonCommand.Open"
+            },
+            {
+              "order": 2,
+              "command": "DocumentJournal.РеестрТорговыхДокументов.StandardCommand.OpenList"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.order"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "order": 1,
+              "at": "main:Subsystem.Order00"
+            },
+            {
+              "order": 2,
+              "at": "main:Subsystem.Order01"
+            },
+            {
+              "order": 3,
+              "at": "main:Subsystem.Order02"
+            },
+            {
+              "order": 4,
+              "at": "main:Subsystem.Order03"
+            },
+            {
+              "order": 5,
+              "at": "main:Subsystem.Order04"
+            },
+            {
+              "order": 6,
+              "at": "main:Subsystem.Order05"
+            },
+            {
+              "order": 7,
+              "at": "main:Subsystem.Order06"
+            },
+            {
+              "order": 8,
+              "at": "main:Subsystem.Order07"
+            },
+            {
+              "order": 9,
+              "at": "main:Subsystem.Order08"
+            },
+            {
+              "order": 10,
+              "at": "main:Subsystem.Order09"
+            },
+            {
+              "order": 11,
+              "at": "main:Subsystem.Order10"
+            },
+            {
+              "order": 12,
+              "at": "main:Subsystem.Order11"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.processOwner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "processInterface": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.processInterface"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/limits",
+          "eq": [
+            "Чтение именованных ссылок на команды не поддерживается профилем логических адресов (2): Catalog.Глоссарий.StandardCommand.OpenList, Constant.ИспользоватьДемонстрационныеСценарии.StandardCommand.Open"
+          ]
+        },
+        {
+          "pointer": "/data/branches",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "$capture.project"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.config"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Subsystems/CRMИМаркетинг/Ext/CommandInterface.xml",
+          "eq": "$capture.crm"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Subsystems/ОписаниеПроцессов/Ext/CommandInterface.xml",
+          "eq": "$capture.processes"
+        }
+      ]
+    }
+  ]
+}

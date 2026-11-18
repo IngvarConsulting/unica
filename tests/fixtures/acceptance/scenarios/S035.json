@@ -1,0 +1,20 @@
+{
+  "area": "Навигация и чтение",
+  "task": "Проверить читаемость узла справочника перед работой",
+  "wire": [
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:Catalog.Валюты"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "validators": [
+        "meta"
+      ]
+    }
+  ],
+  "id": "S035"
+}

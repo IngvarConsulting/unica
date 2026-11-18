@@ -2062,6 +2062,7 @@ mod tests {
         ));
     }
 
+    /// rule: INV.SOURCE.XDTO-PROPERTY-PATH
     #[test]
     fn xdto_writer_rejects_every_invalid_property_path_shape() {
         let before = package("\t<objectType name=\"Target\"></objectType>\n");
@@ -2116,6 +2117,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.XDTO-PROPERTY-PATH
     #[test]
     fn xdto_writer_addresses_a_dotted_property_identity_with_an_escape() {
         let before = package(
@@ -2148,6 +2150,7 @@ mod tests {
         assert!(super::super::validation::validate(&after_model).is_empty());
     }
 
+    /// rule: INV.SOURCE.XDTO-LOCAL-CHANGE
     #[test]
     fn xdto_writer_renames_only_the_name_value_of_the_selected_property() {
         let before = package(concat!(
@@ -2284,6 +2287,7 @@ mod tests {
         assert_eq!(missing.field(), super::WriterErrorField::PropertyName);
     }
 
+    /// rule: INV.SOURCE.XDTO-LOCAL-CHANGE
     #[test]
     fn xdto_writer_sets_only_the_base_of_a_named_type() {
         let before = package(concat!(
@@ -2424,6 +2428,7 @@ mod tests {
         assert_eq!(missing.field(), super::WriterErrorField::TypeTarget);
     }
 
+    /// rule: INV.SOURCE.XDTO-PROPERTY-PATH
     #[test]
     fn xdto_writer_separates_only_unescaped_property_path_dots() {
         let before = package(
@@ -2538,6 +2543,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.XDTO-LOCAL-CHANGE
     #[test]
     fn xdto_writer_returns_one_local_patch_and_preserves_outside_bytes() {
         let before = package(
@@ -2764,6 +2770,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.XDTO-LOCAL-CHANGE
     #[test]
     fn xdto_writer_preserves_crlf_and_uses_local_eol_in_a_mixed_document() {
         let crlf = package("\t<objectType name=\"Target\"/>\n").replace('\n', "\r\n");
@@ -2795,6 +2802,7 @@ mod tests {
         ));
     }
 
+    /// rule: INV.SOURCE.XDTO-LOCAL-CHANGE
     #[test]
     fn xdto_writer_fails_closed_when_mixed_eol_has_no_local_context() {
         let before = format!(
@@ -2813,6 +2821,7 @@ mod tests {
         assert!(error.contains("unsupported_node"), "{error}");
     }
 
+    /// rule: INV.SOURCE.XDTO-LOCAL-CHANGE
     #[test]
     fn xdto_writer_removal_matrix_preserves_exact_outer_slices() {
         let inline_node = "<valueType name=\"Remove\" base=\"xs:string\"/>";
@@ -2963,6 +2972,7 @@ mod tests {
         assert_eq!(property_findings[0].code, "invalid_qname");
     }
 
+    /// rule: INV.SOURCE.XDTO-WRITTEN-TYPE-NAME
     #[test]
     fn xdto_writer_preserves_declared_prefixed_qnames_exactly() {
         let root = ROOT.replace("xmlns:tns=\"urn:test\"", "xmlns:self=\"urn:test\"");
@@ -3010,6 +3020,7 @@ mod tests {
         assert!(super::super::validation::validate(&property_model).is_empty());
     }
 
+    /// rule: INV.SOURCE.XDTO-WRITTEN-TYPE-NAME
     #[test]
     fn xdto_writer_leaves_unbound_qnames_for_validation_to_reject() {
         let before = package(
@@ -3044,6 +3055,7 @@ mod tests {
         assert_eq!(property_findings[0].code, "undeclared_prefix");
     }
 
+    /// rule: INV.SOURCE.XDTO-WRITTEN-TYPE-NAME
     #[test]
     fn xdto_writer_repeats_one_package_wide_binding_on_each_new_qname_element() {
         let root = ROOT.replace(" xmlns:tns=\"urn:test\"", "");
@@ -3080,6 +3092,7 @@ mod tests {
         assert!(super::super::validation::validate(&property_model).is_empty());
     }
 
+    /// rule: INV.SOURCE.XDTO-WRITTEN-TYPE-NAME
     #[test]
     fn xdto_writer_rejects_ambiguous_package_wide_prefix_identity() {
         let root = ROOT.replace(" xmlns:tns=\"urn:test\"", "");

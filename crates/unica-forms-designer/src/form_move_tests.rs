@@ -121,6 +121,7 @@ fn matrix_xml(source_kind: &str, destination_kind: &str, context: &str) -> Strin
     }
 }
 
+/// rule: INV.SOURCE.FORM-ELEMENT-MOVE-PRESERVATION
 #[test]
 fn compact_subtree_moves_without_losing_adjacent_siblings_or_references() {
     let subtree = r#"<UsualGroup name="Move" id="2"><Title>Title &amp; text</Title><ChildItems><InputField name="Field" id="3"><DataPath>Object.Code</DataPath><Events><Event name="OnChange">Handle</Event></Events><ContextMenu name="FieldMenu" id="4"/><ExtendedTooltip name="Tip" id="5"/></InputField></ChildItems></UsualGroup>"#;
@@ -146,6 +147,7 @@ fn compact_subtree_moves_without_losing_adjacent_siblings_or_references() {
     );
 }
 
+/// rule: INV.SOURCE.FORM-ELEMENT-MOVE-PRESERVATION
 #[test]
 fn crlf_comments_and_meaningful_text_survive_platform_reindentation() {
     let subtree = "<UsualGroup name=\"Move\" id=\"1\">\r\n<Title>first\r\n  second &amp; third</Title><!--inside--></UsualGroup>";
@@ -177,6 +179,7 @@ fn crlf_comments_and_meaningful_text_survive_platform_reindentation() {
         .any(|n| n.is_comment() && n.text() == Some("inside")));
 }
 
+/// rule: INV.SOURCE.FORM-ELEMENT-MOVE-PRESERVATION
 #[test]
 fn inherited_qname_namespaces_survive_conflicting_destination_bindings() {
     let xml = form(
@@ -207,6 +210,7 @@ fn inherited_qname_namespaces_survive_conflicting_destination_bindings() {
     );
 }
 
+/// rule: INV.SOURCE.FORM-ELEMENT-MOVE-PRESERVATION
 #[test]
 fn prefixed_form_preserves_inherited_default_namespace_for_qname_values() {
     let xml = format!(
@@ -254,6 +258,7 @@ fn positioning_honors_into_and_after_and_defaults_to_root() {
     );
 }
 
+/// rule: INV.SOURCE.FORM-ELEMENT-MOVE-PRESERVATION
 #[test]
 fn exact_placement_is_a_byte_preserving_noop() {
     let xml = form(
@@ -281,6 +286,7 @@ fn cyclic_and_wrong_neighbor_moves_are_rejected() {
     rejected(&xml, "Other", None, Some("Child"), "after");
 }
 
+/// rule: INV.SOURCE.FORM-ELEMENT-MOVE-PRESERVATION
 #[test]
 fn moving_the_last_child_removes_empty_child_items_and_its_whitespace() {
     let xml = form(
@@ -301,6 +307,7 @@ fn moving_the_last_child_removes_empty_child_items_and_its_whitespace() {
     );
 }
 
+/// rule: INV.SOURCE.FORM-ELEMENT-MOVE-PRESERVATION
 #[test]
 fn parent_moved_after_its_last_child_gets_destination_indentation() {
     let xml = form(
@@ -314,6 +321,7 @@ fn parent_moved_after_its_last_child_gets_destination_indentation() {
     );
 }
 
+/// rule: INV.SOURCE.FORM-ELEMENT-MOVE-PRESERVATION
 #[test]
 fn base_form_and_companions_cannot_be_independently_moved() {
     let baseline = r#"<BaseForm><ChildItems><UsualGroup name="Baseline"/><UsualGroup name="Move" id="999"/></ChildItems></BaseForm>"#;
@@ -367,6 +375,7 @@ fn successive_parent_child_and_repeated_moves_use_current_tree() {
     assert_eq!(moved(&three, "Child", Some("Group"), None), three);
 }
 
+/// rule: INV.SOURCE.FORM-ELEMENT-MOVE-PRESERVATION
 #[test]
 fn moving_from_no_default_namespace_does_not_rebind_unqualified_extensions() {
     let xml = format!(
@@ -383,12 +392,11 @@ fn moving_from_no_default_namespace_does_not_rebind_unqualified_extensions() {
     assert_eq!(extension.attribute("value"), Some("Kind"));
 }
 
+/// rule: INV.SOURCE.FORM-ELEMENT-MOVE-PRESERVATION
 #[test]
 fn placement_matrix_matches_observed_platform_kinds_bindings_and_parents() {
-    let fixture: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../tests/fixtures/platform_8_3_27/form_move/cases.json"
-    ))
-    .unwrap();
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("../tests/fixtures/form_move/cases.json")).unwrap();
     assert_eq!(fixture["schemaVersion"], 1);
     let field_kinds = fixture["fieldKinds"].as_array().unwrap();
     let mut checked = 0;
@@ -522,6 +530,7 @@ fn compatibility_reads_complete_property_text_across_comments() {
     assert!(result.contains("<Type>CommandBar<!--comment-->Button</Type>"));
 }
 
+/// rule: INV.SOURCE.FORM-ELEMENT-MOVE-PRESERVATION
 #[test]
 fn platform_indentation_follows_destination_without_changing_leaf_text() {
     let xml = format!(

@@ -23,7 +23,18 @@ pub struct MetaRemoveTextRead {
 
 // #1119: the reference scan visits the whole source root, however many
 // entries the configuration holds; depth still guards against cycles.
+// resource-limit: metadata.remove-traversal-depth
+// class: format
+// unit: depth
+// scope: traversal
+// value: 256
+// resource: Глубина обхода корня исходников при поиске ссылок на удаляемый объект.
+// status: unproven
+// origin: коммит 17ad07915 (enforce 8.3.27 export profile)
+// problem: неизвестно
+// on-reach: отказ плана удаления «traversal exceeded the maximum depth of 256»
 const META_REMOVE_MAX_TRAVERSAL_DEPTH: usize = 256;
+// resource-limit-excluded: usize::MAX: предел числа записей снят в #1119, константа задаёт отсутствие предела обходу ссылок
 const META_REMOVE_MAX_TRAVERSAL_ENTRIES: usize = usize::MAX;
 
 #[derive(Clone, Copy)]
@@ -145,7 +156,7 @@ pub fn remove_composition_entries(
         let value = value.trim();
         value == qualified_object_name || value.starts_with(&child_prefix)
     };
-    let mut ranges = document
+    let ranges = document
         .descendants()
         .filter(|node| node.is_element())
         .filter(|node| {
@@ -170,6 +181,10 @@ pub fn remove_composition_entries(
         })
         .map(|node| node.range())
         .collect::<Vec<_>>();
+    Ok(remove_entry_ranges(xml_text, ranges))
+}
+
+fn remove_entry_ranges(xml_text: &str, mut ranges: Vec<std::ops::Range<usize>>) -> (String, usize) {
     ranges.sort_by_key(|range| range.start);
     // An entry inside another removed entry goes with it.
     let mut outer: Vec<std::ops::Range<usize>> = Vec::new();
@@ -196,7 +211,40 @@ pub fn remove_composition_entries(
         };
         updated.replace_range(removal, "");
     }
-    Ok((updated, removed))
+    (updated, removed)
+}
+
+/// Remove only the exact owned form from platform home-page columns. Foreign
+/// namespace elements and similarly named forms are not composition entries.
+pub fn remove_home_page_form_entries(
+    xml_text: &str,
+    qualified_form: &str,
+) -> Result<(String, usize), String> {
+    use crate::configuration::CF_HP_NS;
+    let document =
+        Document::parse(xml_text).map_err(|error| format!("XML parse error: {error}"))?;
+    let root = document.root_element();
+    if !root.has_tag_name((CF_HP_NS, "HomePageWorkArea")) {
+        return Err("HomePageWorkArea.xml has a wrong root element".to_string());
+    }
+    let ranges = root
+        .children()
+        .filter(|column| {
+            column.has_tag_name((CF_HP_NS, "Column"))
+                || column.has_tag_name((CF_HP_NS, "LeftColumn"))
+                || column.has_tag_name((CF_HP_NS, "RightColumn"))
+        })
+        .flat_map(|column| column.children())
+        .filter(|item| item.has_tag_name((CF_HP_NS, "Item")))
+        .filter(|item| {
+            item.children()
+                .find(|child| child.has_tag_name((CF_HP_NS, "Form")))
+                .and_then(|form| form.text())
+                .is_some_and(|text| text.trim() == qualified_form)
+        })
+        .map(|item| item.range())
+        .collect();
+    Ok(remove_entry_ranges(xml_text, ranges))
 }
 
 /// The image of a cleaned composition, keeping the BOM of the original.
@@ -1217,6 +1265,39 @@ mod tests {
                 &search
             )),
             vec![1]
+        );
+    }
+    #[test]
+    fn form_homepage_removal_preserves_foreign_namespaces_and_exact_neighbours() {
+        let page = r#"<HomePageWorkArea xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" xmlns:x="urn:vendor">
+<WorkingAreaTemplate>TwoColumnsEqualWidth</WorkingAreaTemplate>
+<Column>
+  <Item><Form>Document.Order.Form.Main</Form><Height>7</Height></Item>
+  <Item><x:Form>Document.Order.Form.Main</x:Form><Form>Document.Order.Form.MainExtra</Form><Height>15</Height></Item>
+  <x:Item><Form>Document.Order.Form.Main</Form></x:Item>
+  <Item><Form>Document.Other.Form.Main</Form></Item>
+  <Item><Form>Document.Order.Form.Main.Child</Form></Item>
+</Column>
+<Column><Item><Form>Document.Order.Form.Main</Form></Item></Column>
+<x:Column><Item><Form>Document.Order.Form.Main</Form></Item></x:Column>
+<Item><Form>Document.Order.Form.Main</Form></Item>
+</HomePageWorkArea>"#;
+        let expected = page
+            .replace(
+                "  <Item><Form>Document.Order.Form.Main</Form><Height>7</Height></Item>\n",
+                "",
+            )
+            .replace(
+                "<Column><Item><Form>Document.Order.Form.Main</Form></Item></Column>",
+                "<Column></Column>",
+            );
+        let (updated, removed) =
+            remove_home_page_form_entries(page, "Document.Order.Form.Main").unwrap();
+        assert_eq!(updated, expected);
+        assert_eq!(removed, 2);
+        assert_eq!(
+            meta_remove_composition_image(b"\xef\xbb\xbf", updated.clone()),
+            format!("\u{feff}{updated}").into_bytes()
         );
     }
 }

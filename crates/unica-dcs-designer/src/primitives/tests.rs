@@ -282,7 +282,7 @@ fn prefixed_root_and_shadowed_prefixes_keep_untouched_nodes_exact() {
     run(
         &mut xml,
         Primitive::FieldAdd,
-        json!({"items":[{"dataPath":"Added","title":{"ru":"Добавлено","en":"Added"}}]}),
+        json!({"items":[{"dataPath":"Added","title":"ru = 'Добавлено'; en = 'Added'"}]}),
         &target(&["Data"], ""),
     )
     .unwrap();
@@ -319,7 +319,7 @@ fn prefixed_root_and_shadowed_prefixes_keep_untouched_nodes_exact() {
 fn field_alias_normalization_and_query_derived_type_reach_the_writer() {
     let args = normalized(
         Primitive::FieldAdd,
-        json!({"items":[{"dataPath":"Added","name":"Wrong","title":"Added"}]}),
+        json!({"items":[{"dataPath":"Added","name":"Wrong","title":"ru = 'Added'"}]}),
     );
     let mut xml = query_schema("SELECT 1 AS Amount");
     run(&mut xml, Primitive::FieldAdd, args, &target(&["Data"], "")).unwrap();
@@ -476,7 +476,7 @@ fn field_patch_keeps_extended_children_and_inserts_in_full_xsd_sequence() {
     run(
         &mut xml,
         Primitive::FieldSet,
-        json!({"values":{"field":"Amount","title":"Updated","type":"string"}}),
+        json!({"values":{"field":"Amount","title":"ru = 'Updated'","type":"string"}}),
         &target(&["Data"], ""),
     )
     .unwrap();
@@ -525,7 +525,7 @@ fn query_field_title_patch_removes_old_value_type_without_touching_other_childre
     run(
         &mut xml,
         Primitive::FieldSet,
-        json!({"values":{"field":"Amount","title":"Updated"}}),
+        json!({"values":{"field":"Amount","title":"ru = 'Updated'"}}),
         &target(&["Data"], ""),
     )
     .unwrap();
@@ -579,7 +579,7 @@ fn parameter_patch_preserves_existing_values_and_advanced_properties_in_order() 
     run(
         &mut xml,
         Primitive::ParameterSet,
-        json!({"values":{"name":"P","title":"Choice","useRestriction":true}}),
+        json!({"values":{"name":"P","title":"ru = 'Choice'","useRestriction":true}}),
         &target(&[], ""),
     )
     .unwrap();
@@ -709,7 +709,7 @@ fn parameter_value_patch_uses_existing_declared_type() {
 #[test]
 fn calculated_field_add_places_expression_before_title_and_type() {
     let mut xml = query_schema("SELECT 1 AS Amount");
-    run(&mut xml, Primitive::CalculatedFieldAdd, json!({"items":[{"name":"Double","expression":"Amount * 2","title":"Double","type":"decimal(15,2)"}]}), &target(&["Data"], "")).unwrap();
+    run(&mut xml, Primitive::CalculatedFieldAdd, json!({"items":[{"name":"Double","expression":"Amount * 2","title":"ru = 'Double'","type":"decimal(15,2)"}]}), &target(&["Data"], "")).unwrap();
     let doc = Document::parse(&xml).unwrap();
     let field = direct(doc.root_element(), S, "calculatedField");
     assert_eq!(
@@ -894,6 +894,40 @@ fn settings_parameter_patch_preserves_explicit_user_settings_and_core_namespace(
     );
     assert_eq!(direct_text(item, C, "parameter"), "Period");
     assert_eq!(direct_text(direct(item, C, "value"), V, "variant"), "Today");
+
+    let read = |xml: &str| {
+        use unica_metadata::support_state::{ObjectSupportData, ObjectSupportState};
+
+        let support = ObjectSupportData {
+            state: ObjectSupportState::NotSupported,
+            direct_edit_safe: None,
+        };
+        let facts = crate::schema::parse_dcs_info_xml(xml, support).unwrap();
+        facts.variants[0].setting_items[0]["userSettingPresentation"].clone()
+    };
+    let caption = read(&xml);
+    assert_eq!(caption, json!({"valueType":"xs:string","value":"Saved"}));
+    let snapshot = xml.clone();
+    run(
+        &mut xml,
+        Primitive::DataParameterSet,
+        json!({"values":{"name":"Period","userSettingPresentation":caption}}),
+        &target(&[], "Main"),
+    )
+    .unwrap();
+    assert_eq!(xml, snapshot);
+    run(
+        &mut xml,
+        Primitive::DataParameterSet,
+        json!({"values":{"name":"Period","userSettingPresentation":{"valueType":"xs:string","value":"Changed"}}}),
+        &target(&[], "Main"),
+    )
+    .unwrap();
+    assert_eq!(
+        read(&xml),
+        json!({"valueType":"xs:string","value":"Changed"})
+    );
+    assert_eq!(xml, snapshot.replace(">Saved<", ">Changed<"));
 }
 
 #[test]
@@ -971,7 +1005,7 @@ fn nested_union_operations_do_not_select_outer_or_descendant_fields_implicitly()
     run(
         &mut xml,
         Primitive::FieldSet,
-        json!({"values":{"field":"Value","title":"Inner updated"}}),
+        json!({"values":{"field":"Value","title":"ru = 'Inner updated'"}}),
         &target(&["Union", "Inner"], ""),
     )
     .unwrap();
@@ -997,7 +1031,7 @@ fn nested_union_operations_do_not_select_outer_or_descendant_fields_implicitly()
     assert_refuses(
         &xml,
         Primitive::FieldSet,
-        json!({"values":{"field":"Value","title":"must not guess"}}),
+        json!({"values":{"field":"Value","title":"ru = 'must not guess'"}}),
         &target(&[], ""),
     );
 }
@@ -1036,7 +1070,7 @@ fn structure_patch_targets_parent_direct_group_items_and_preserves_child() {
         &target(&[], "Main"),
     );
     // Одноимённые элементы на одном уровне адреса не имеют: правка
-    // отказывает, а не выбирает первый (#1357).
+    // отказывает, а не выбирает первый.
     let ambiguous = xml.replace(
         "</t:settings>",
         "<t:item xsi:type=\"t:StructureItemGroup\"><t:name>Parent</t:name></t:item></t:settings>",
@@ -1272,7 +1306,7 @@ fn field_names_with_old_marker_characters_stay_literal_and_do_not_add_selection(
     let name = "Amount [шт] @dimension #noField";
     let args = normalized(
         Primitive::FieldAdd,
-        json!({"items":[{"dataPath":name,"title":"Literal"}]}),
+        json!({"items":[{"dataPath":name,"title":"ru = 'Literal'"}]}),
     );
     let mut xml = query_schema("SELECT 1 AS Amount");
     run(&mut xml, Primitive::FieldAdd, args, &target(&["Data"], "")).unwrap();
@@ -1299,7 +1333,7 @@ fn mapped_field_add_emits_restrictions_and_presentation_in_full_sequence() {
     let mut xml = schema("<dataSet xsi:type=\"s:DataSetObject\"><name>Data</name><objectName>Catalog.Items</objectName></dataSet>");
     let args = normalized(
         Primitive::FieldAdd,
-        json!({"items":[{"dataPath":"Amount","field":"Source.Amount","title":"Amount title","useRestriction":{"order":true,"field":false,"group":true,"condition":false},"attributeUseRestriction":{"condition":true},"presentationExpression":"String(Source.Amount)","type":"decimal(15,2)"}]}),
+        json!({"items":[{"dataPath":"Amount","field":"Source.Amount","title":"ru = 'Amount title'","useRestriction":{"order":true,"field":false,"group":true,"condition":false},"attributeUseRestriction":{"condition":true},"presentationExpression":"String(Source.Amount)","type":"decimal(15,2)"}]}),
     );
     run(&mut xml, Primitive::FieldAdd, args, &target(&["Data"], "")).unwrap();
     let doc = Document::parse(&xml).unwrap();
@@ -1337,11 +1371,17 @@ fn field_mapping_patch_preserves_type_title_roles_and_unprovided_restrictions_ex
     let preserved = "<title xsi:type=\"v8:LocalStringType\"><v8:item><v8:lang>ru</v8:lang><v8:content>Amount</v8:content></v8:item></title><useRestriction><field>true</field></useRestriction><attributeUseRestriction><condition>false</condition></attributeUseRestriction><role><com:dimension>true</com:dimension></role>";
     let typed_tail = "<valueType><v8:Type>xs:decimal</v8:Type></valueType><appearance/><u:future xmlns:u='urn:future'> exact </u:future>";
     let mut xml = schema(&format!("<dataSet xsi:type=\"s:DataSetObject\"><name>Data</name><field><dataPath>Amount</dataPath><field>Old.Amount</field>{preserved}<presentationExpression>Old.Amount</presentationExpression>{typed_tail}</field><objectName>Catalog.Items</objectName></dataSet>"));
-    let args = normalized(
-        Primitive::FieldSet,
-        json!({"values":{"field":"Amount","sourceField":"New.Amount","presentationExpression":"String(New.Amount)"}}),
-    );
-    run(&mut xml, Primitive::FieldSet, args, &target(&["Data"], "")).unwrap();
+    // The canonical target names the dataPath; field is the mapping to write.
+    // Do not pass this payload through the legacy selector fixture adapter.
+    let mut selected = target(&["Data"], "");
+    selected.terminal = Some("Amount".into());
+    let intent = Primitive::FieldSet
+        .decode(
+            &json!({"values":{"field":"New.Amount","presentationExpression":"String(New.Amount)"}}),
+            "args",
+        )
+        .unwrap();
+    apply(&mut xml, &intent, &selected, Some("ru")).unwrap();
     assert!(xml.contains(preserved));
     assert!(xml.contains(typed_tail));
     let doc = Document::parse(&xml).unwrap();
@@ -1374,7 +1414,7 @@ fn parameter_multiple_defaults_and_available_values_follow_full_sequence() {
     let mut xml = schema("");
     let args = normalized(
         Primitive::ParameterAdd,
-        json!({"items":[{"name":"Choice","title":"Choice","type":"string(20)","values":["A","B"],"useRestriction":true,"expression":"&Source.Choice","availableValues":[{"value":"A","presentation":"Alpha"},{"value":"B","presentation":{"ru":"Бета","en":"Beta"}}],"valueListAllowed":true,"availableAsField":false,"denyIncompleteValues":true,"use":"Always"}]}),
+        json!({"items":[{"name":"Choice","title":"ru = 'Choice'","type":"string(20)","values":["A","B"],"useRestriction":true,"expression":"&Source.Choice","availableValues":[{"value":"A","presentation":"ru = 'Alpha'"},{"value":"B","presentation":"ru = 'Бета'; en = 'Beta'"}],"valueListAllowed":true,"availableAsField":false,"denyIncompleteValues":true,"use":"Always"}]}),
     );
     run(&mut xml, Primitive::ParameterAdd, args, &target(&[], "")).unwrap();
     let doc = Document::parse(&xml).unwrap();
@@ -1425,7 +1465,7 @@ fn parameter_multiple_defaults_and_available_values_follow_full_sequence() {
     assert!(Primitive::ParameterAdd
         .contract()
         .normalize_dcs(
-            &json!({"items":[{"name":"Bad","availableValues":[{"presentation":"Missing value"}]}]}),
+            &json!({"items":[{"name":"Bad","availableValues":[{"presentation":"ru = 'Missing value'"}]}]}),
             "args"
         )
         .is_err());
@@ -1611,7 +1651,7 @@ fn structure_patch_updates_settings_and_empty_group_by_removes_only_own_group_it
     let mut xml = schema(&format!("<settingsVariant><t:name>Main</t:name><t:settings><t:item xsi:type='t:StructureItemGroup'><t:name>Group</t:name><t:groupItems><t:item xsi:type='t:GroupItemField'><t:field>Amount</t:field></t:item></t:groupItems>{nested}{unknown}</t:item></t:settings></settingsVariant>"));
     let args = normalized(
         Primitive::StructurePatch,
-        json!({"values":{"name":"Group","groupBy":[],"use":false,"viewMode":"QuickAccess","userSettingID":"11111111-1111-4111-8111-111111111111","itemsViewMode":"Inaccessible","userSettingPresentation":{"ru":"По сумме","en":"By amount"}}}),
+        json!({"values":{"name":"Group","groupBy":[],"use":false,"viewMode":"QuickAccess","userSettingID":"11111111-1111-4111-8111-111111111111","itemsViewMode":"Inaccessible","userSettingPresentation":"ru = 'По сумме'; en = 'By amount'"}}),
     );
     run(
         &mut xml,
@@ -1762,6 +1802,92 @@ fn null_parameter_value_is_nil_instead_of_an_empty_string_or_literal_null() {
 }
 
 #[test]
+fn typed_nil_parameter_defaults_can_be_read_and_set_back_with_the_same_type() {
+    use unica_metadata::support_state::{ObjectSupportData, ObjectSupportState};
+
+    for (kind, ns, local, body) in [
+        (
+            "xs:string",
+            "http://www.w3.org/2001/XMLSchema",
+            "string",
+            "null",
+        ),
+        (
+            "v8:LocalStringType",
+            V,
+            "LocalStringType",
+            "<v8:item><v8:lang>en</v8:lang><v8:content>Value</v8:content></v8:item>",
+        ),
+    ] {
+        let support = ObjectSupportData {
+            state: ObjectSupportState::NotSupported,
+            direct_edit_safe: None,
+        };
+        let source = schema(&format!(
+            "<parameter><name>Default</name><value xsi:type='{kind}' xsi:nil='true'/></parameter>"
+        ));
+        let facts = crate::schema::parse_dcs_info_xml(&source, support).unwrap();
+        let parameter = &facts.parameters[0];
+        assert_eq!(parameter.value_type, Some(kind));
+        assert_eq!(parameter.value, Some(Value::Null));
+        let values = json!({
+            "name": parameter.name,
+            "valueType": parameter.value_type,
+            "value": parameter.value,
+        });
+        let mut edited = schema(&format!(
+            "<parameter><name>Default</name><value xsi:type='{kind}'>{body}</value></parameter>"
+        ));
+        run(
+            &mut edited,
+            Primitive::ParameterSet,
+            json!({"values": values}),
+            &target(&[], ""),
+        )
+        .unwrap();
+        let document = Document::parse(&edited).unwrap();
+        let parameter = direct(document.root_element(), S, "parameter");
+        let value = direct(parameter, S, "value");
+        assert_value_qname(value, ns, local);
+        assert_eq!(value.attribute((X, "nil")), Some("true"));
+        assert_eq!(value.text(), None);
+    }
+}
+
+#[test]
+fn setting_nstr_replaces_a_nil_localized_default_with_a_present_value() {
+    use unica_metadata::support_state::{ObjectSupportData, ObjectSupportState};
+
+    for (input, observed) in [("en = 'Ready'", Some(json!("en = 'Ready'"))), ("", None)] {
+        let mut xml = schema(
+            "<parameter><name>Default</name><value xsi:type='v8:LocalStringType' xsi:nil='true'/></parameter>",
+        );
+        run(
+            &mut xml,
+            Primitive::ParameterSet,
+            json!({"values":{"name":"Default","valueType":"v8:LocalStringType","value":input}}),
+            &target(&[], ""),
+        )
+        .unwrap();
+
+        let document = Document::parse(&xml).unwrap();
+        let value = direct(direct(document.root_element(), S, "parameter"), S, "value");
+        assert_value_qname(value, V, "LocalStringType");
+        assert_eq!(value.attribute((X, "nil")), None);
+
+        let facts = crate::schema::parse_dcs_info_xml(
+            &xml,
+            ObjectSupportData {
+                state: ObjectSupportState::NotSupported,
+                direct_edit_safe: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(facts.parameters[0].value, observed);
+    }
+}
+
+#[test]
 fn catalog_reference_default_is_design_time_value_with_declared_reference_type() {
     let mut xml = schema("");
     let args = normalized(
@@ -1792,7 +1918,7 @@ fn conditional_appearance_emits_use_filter_color_and_multilingual_format_values(
     let mut xml = query_schema("SELECT 1 AS Amount");
     let args = normalized(
         Primitive::ConditionalAppearanceAdd,
-        json!({"items":[{"fields":["Amount"],"use":false,"filter":[{"field":"Amount","comparison":"Less","value":0}],"appearance":{"ЦветТекста":{"valueType":"v8ui:Color","value":"web:Red"},"Формат":{"valueType":"v8:LocalStringType","value":{"ru":"ЧДЦ=2","en":"ND=2"}}}}]}),
+        json!({"items":[{"fields":["Amount"],"use":false,"filter":[{"field":"Amount","comparison":"Less","value":0}],"appearance":{"ЦветТекста":{"valueType":"v8ui:Color","value":"web:Red"},"Формат":{"valueType":"v8:LocalStringType","value":"ru = 'ЧДЦ=2'; en = 'ND=2'"}}}]}),
     );
     run(
         &mut xml,
@@ -1839,7 +1965,7 @@ fn output_title_uses_core_parameter_item_and_localized_string_instead_of_json_te
     let mut xml = query_schema("SELECT 1 AS Amount");
     let args = normalized(
         Primitive::OutputParameterSet,
-        json!({"values":{"name":"Заголовок","use":false,"valueType":"v8:LocalStringType","value":{"ru":"Отчёт по остаткам","en":"Balances report"}}}),
+        json!({"values":{"name":"Заголовок","use":false,"valueType":"v8:LocalStringType","value":"ru = 'Отчёт по остаткам'; en = 'Balances report'"}}),
     );
     run(
         &mut xml,
@@ -2207,36 +2333,36 @@ fn dataset_link_read_preserves_complete_literal_selectors_for_set_and_noop() {
     );
 }
 
-/// #1257: plain-string titles of new DCS nodes take the default language of
+/// Plain-string titles of new DCS nodes take the default language of
 /// the source set, here `en`; `ru` appears nowhere.
 #[test]
-fn plain_string_titles_of_new_nodes_use_the_given_default_language() {
+fn new_nodes_use_the_language_list_in_nstr() {
     let mut xml = query_schema("SELECT 1 AS Amount");
     let selected = target(&["Data"], "Main");
     for (operation, args) in [
         (
             Primitive::FieldAdd,
-            json!({"items":[{"dataPath":"Added","title":"Added"}]}),
+            json!({"items":[{"dataPath":"Added","title":"en = 'Added'"}]}),
         ),
         (
             Primitive::ParameterAdd,
-            json!({"items":[{"name":"Period","title":"Period"}]}),
+            json!({"items":[{"name":"Period","title":"en = 'Period'"}]}),
         ),
         (
             Primitive::CalculatedFieldAdd,
-            json!({"items":[{"name":"Share","expression":"1","title":"Share"}]}),
+            json!({"items":[{"name":"Share","expression":"1","title":"en = 'Share'"}]}),
         ),
         (
             Primitive::VariantAdd,
-            json!({"items":[{"name":"Brief","title":"Brief"}]}),
+            json!({"items":[{"name":"Brief","title":"en = 'Brief'"}]}),
         ),
         (
             Primitive::SelectionAdd,
-            json!({"items":[{"kind":"Folder","title":"Folder"}]}),
+            json!({"items":[{"kind":"Folder","title":"en = 'Folder'"}]}),
         ),
         (
             Primitive::OutputParameterSet,
-            json!({"values":{"name":"Заголовок","value":"Balances"}}),
+            json!({"values":{"name":"Заголовок","value":"en = 'Balances'"}}),
         ),
     ] {
         let args = normalized(operation, args);
@@ -2289,11 +2415,12 @@ fn plain_string_titles_of_new_nodes_use_the_given_default_language() {
     );
 }
 
-/// #1257: a plain-string set changes only the default-language item and
+/// A plain-string set changes only the default-language item and
 /// keeps the other translations byte for byte; an explicit object replaces
 /// the value as given.
+// rule: INV.SOURCE.LOCALIZED-STRING-NSTR
 #[test]
-fn plain_string_title_sets_keep_other_translations() {
+fn nstr_title_sets_preserve_unchanged_xml_and_remove_omitted_languages() {
     let bilingual = |ru: &str, en: &str| {
         format!("<v8:item><v8:lang>ru</v8:lang><v8:content>{ru}</v8:content></v8:item><v8:item><v8:lang>en</v8:lang><v8:content>{en}</v8:content></v8:item>")
     };
@@ -2319,27 +2446,27 @@ fn plain_string_title_sets_keep_other_translations() {
     for (operation, args) in [
         (
             Primitive::FieldSet,
-            json!({"values":{"field":"Amount","title":"Amount total"}}),
+            json!({"values":{"field":"Amount","title":"ru = 'Сумма'; en = 'Amount total'"}}),
         ),
         (
             Primitive::ParameterSet,
-            json!({"values":{"name":"Period","title":"Report period"}}),
+            json!({"values":{"name":"Period","title":"ru = 'Период'; en = 'Report period'"}}),
         ),
         (
             Primitive::CalculatedFieldSet,
-            json!({"values":{"name":"Share","title":"Share of total"}}),
+            json!({"values":{"name":"Share","title":"ru = 'Доля'; en = 'Share of total'"}}),
         ),
         (
             Primitive::VariantSet,
-            json!({"values":{"name":"Main","title":"Main variant"}}),
+            json!({"values":{"name":"Main","title":"ru = 'Основной'; en = 'Main variant'"}}),
         ),
         (
             Primitive::OutputParameterSet,
-            json!({"values":{"name":"Заголовок","value":"Balances report"}}),
+            json!({"values":{"name":"Заголовок","value":"ru = 'Остатки'; en = 'Balances report'"}}),
         ),
         (
             Primitive::StructurePatch,
-            json!({"values":{"name":"Group","userSettingPresentation":"Grouping"}}),
+            json!({"values":{"name":"Group","userSettingPresentation":"ru = 'Группа'; en = 'Grouping'"}}),
         ),
     ] {
         let args = normalized(operation, args);
@@ -2401,10 +2528,10 @@ fn plain_string_title_sets_keep_other_translations() {
         &[("ru", "Группа"), ("en", "Grouping")],
     );
 
-    // An explicit language-to-text object is written as given.
+    // Only languages listed in the new value remain.
     let args = normalized(
         Primitive::FieldSet,
-        json!({"values":{"field":"Amount","title":{"en":"Only English"}}}),
+        json!({"values":{"field":"Amount","title":"en = 'Only English'"}}),
     );
     run_in(&mut xml, Primitive::FieldSet, args, &selected, "en").unwrap();
     let doc = Document::parse(&xml).unwrap();
@@ -2424,9 +2551,8 @@ fn plain_string_title_sets_keep_other_translations() {
     );
 }
 
-/// An empty plain string drops only the default-language translation.
 #[test]
-fn plain_string_local_string_parameter_value_keeps_other_translations() {
+fn localized_parameter_value_keeps_unchanged_translations() {
     let mut xml = query_schema("SELECT 1 AS Amount").replace(
         "<settingsVariant>",
         "<parameter><name>Caption</name><valueType><v8:Type>v8:LocalStringType</v8:Type></valueType><value xsi:type=\"v8:LocalStringType\"><v8:item><v8:lang>ru</v8:lang><v8:content>Отчёт</v8:content></v8:item><v8:item><v8:lang>en</v8:lang><v8:content>Report</v8:content></v8:item></value></parameter><settingsVariant>",
@@ -2434,7 +2560,7 @@ fn plain_string_local_string_parameter_value_keeps_other_translations() {
     let selected = target(&["Data"], "Main");
     let args = normalized(
         Primitive::ParameterSet,
-        json!({"values":{"name":"Caption","value":"Sales report"}}),
+        json!({"values":{"name":"Caption","value":"ru = 'Отчёт'; en = 'Sales report'"}}),
     );
     run_in(&mut xml, Primitive::ParameterSet, args, &selected, "en")
         .unwrap_or_else(|error| panic!("parameter.set: {error}"));
@@ -2450,8 +2576,9 @@ fn plain_string_local_string_parameter_value_keeps_other_translations() {
     assert_eq!(xml.matches("<v8:lang>en</v8:lang>").count(), 1, "{xml}");
 }
 
+// rule: INV.SOURCE.LOCALIZED-STRING-NSTR
 #[test]
-fn empty_plain_string_title_removes_only_the_default_language_item() {
+fn empty_nstr_removes_all_translations() {
     let mut xml = query_schema("SELECT 1 AS Amount").replace(
         "<field>Amount</field></field>",
         "<field>Amount</field><title xsi:type=\"v8:LocalStringType\"><v8:item><v8:lang>ru</v8:lang><v8:content>Сумма</v8:content></v8:item><v8:item><v8:lang>en</v8:lang><v8:content>Amount</v8:content></v8:item></title></field>",
@@ -2481,32 +2608,201 @@ fn empty_plain_string_title_removes_only_the_default_language_item() {
             S,
             "title",
         ),
-        &[("ru", "Сумма")],
+        &[],
+    );
+}
+// rule: INV.SOURCE.LOCALIZED-STRING-NSTR
+#[test]
+fn plain_text_and_duplicate_language_codes_are_refused_in_nstr_properties() {
+    for title in [
+        json!("Added"),
+        json!("en = 'Added'; en = 'Again'"),
+        json!({"en":"Added"}),
+    ] {
+        let args = json!({"at":"cf:Report.Demo.Template.Schema.DataSet.Data","items":[{"dataPath":"Added","title":title}]});
+        assert!(Primitive::FieldAdd.decode(&args, "args").is_err(), "{args}");
+    }
+    let mut xml = query_schema("SELECT 1 AS Amount");
+    let args = normalized(
+        Primitive::FieldAdd,
+        json!({"items":[{"dataPath":"Added","title":"en = 'Added'"}]}),
+    );
+    let intent = Primitive::FieldAdd.decode(&args, "args").unwrap();
+    apply(&mut xml, &intent, &target(&["Data"], "Main"), None).unwrap();
+    assert!(xml.contains("<v8:lang>en</v8:lang>"), "{xml}");
+}
+
+#[test]
+fn single_language_titles_retain_explicit_empty_translation() {
+    let mut xml = query_schema("SELECT 1 AS Amount")
+        .replace("<field>Amount</field></field>", "<field>Amount</field><title xsi:type='v8:LocalStringType'><v8:item><v8:lang>ru</v8:lang><v8:content>Amount before</v8:content></v8:item></title></field>")
+        .replace("<settingsVariant>", "<parameter><name>Text</name><title xsi:type='v8:LocalStringType'><v8:item><v8:lang>ru</v8:lang><v8:content>Before</v8:content></v8:item></title></parameter><settingsVariant>");
+    for primitive in [Primitive::ParameterSet, Primitive::FieldSet] {
+        let values = match primitive {
+            Primitive::ParameterSet => json!({"name":"Text","title":"ru = ''"}),
+            _ => json!({"field":"Amount","title":"ru = ''"}),
+        };
+        let args = normalized(primitive, json!({"values":values}));
+        run(&mut xml, primitive, args, &target(&["Data"], "")).unwrap();
+    }
+    let doc = Document::parse(&xml).unwrap();
+    let parameter = named(doc.root_element(), S, "parameter", "name", "Text");
+    let field = named(
+        direct(doc.root_element(), S, "dataSet"),
+        S,
+        "field",
+        "dataPath",
+        "Amount",
+    );
+    for owner in [parameter, field] {
+        let title = direct(owner, S, "title");
+        assert_value_qname(title, V, "LocalStringType");
+        assert_eq!(
+            title
+                .children()
+                .filter(|node| node.has_tag_name((V, "item")))
+                .count(),
+            1,
+            "{xml}"
+        );
+        assert_translations(title, &[("ru", "")]);
+    }
+}
+
+#[test]
+fn local_string_single_language_clear_preserves_local_type_binding_and_header() {
+    let original = format!("<q:title xmlns:q='{S}' xmlns:d='{V}' xmlns:i='{X}' i:type='d:LocalStringType'><d:item><d:lang>ru</d:lang><d:content>Текст</d:content></d:item></q:title>");
+    let doc = Document::parse(&original).unwrap();
+    let result = super::mltext_update(
+        &original,
+        Some(doc.root_element()),
+        "title",
+        &json!("ru = ''"),
+        S,
+        Some("ru"),
+    )
+    .unwrap();
+    let doc = Document::parse(&result).unwrap();
+    let title = doc.root_element();
+    assert!(title.has_tag_name((S, "title")));
+    assert_eq!(title.attribute((X, "type")), Some("d:LocalStringType"));
+    assert_eq!(title.lookup_namespace_uri(Some("d")), Some(V));
+    assert!(result.starts_with(&format!(
+        "<q:title xmlns:q='{S}' xmlns:d='{V}' xmlns:i='{X}' i:type='d:LocalStringType'"
+    )));
+    assert_translations(title, &[("ru", "")]);
+    let again = super::mltext_update(
+        &result,
+        Some(title),
+        "title",
+        &json!("ru = ''"),
+        S,
+        Some("ru"),
+    )
+    .unwrap();
+    assert_eq!(
+        again, result,
+        "clearing an already empty local string is an exact no-op"
     );
 }
 
-/// Without a language a plain-string text is refused as such and leaves the
-/// schema unchanged; an operation that writes no plain-string text proceeds.
 #[test]
-fn plain_string_text_without_a_language_is_a_typed_refusal() {
-    let original = query_schema("SELECT 1 AS Amount");
-    let selected = target(&["Data"], "Main");
-    let mut xml = original.clone();
-    let args = normalized(
-        Primitive::FieldAdd,
-        json!({"items":[{"dataPath":"Added","title":"Added"}]}),
-    );
-    let intent = Primitive::FieldAdd.decode(&args, "args").unwrap();
-    let error = apply(&mut xml, &intent, &selected, None)
-        .expect_err("a plain-string title needs a language");
-    assert_eq!(error, ApplyError::TextLanguageRequired);
-    assert_eq!(xml, original);
+fn untyped_empty_local_string_still_acquires_its_required_type() {
+    for value in [json!("ru = ''"), json!("ru = 'Текст'")] {
+        let original = format!("<title xmlns='{S}'/>");
+        let doc = Document::parse(&original).unwrap();
+        let result = super::mltext_update(
+            &original,
+            Some(doc.root_element()),
+            "title",
+            &value,
+            S,
+            Some("ru"),
+        )
+        .unwrap();
+        let doc = Document::parse(&result).unwrap();
+        assert_value_qname(doc.root_element(), V, "LocalStringType");
+    }
+}
 
-    let args = normalized(
-        Primitive::FieldAdd,
-        json!({"items":[{"dataPath":"Added","title":{"en":"Added"}}]}),
+#[test]
+fn clearing_local_string_preserves_xml_whitespace_in_type_qname() {
+    let original = format!("<q:title xmlns:q='{S}' xmlns:d='{V}' xmlns:i='{X}' i:type=' d:LocalStringType '><d:item><d:lang>ru</d:lang><d:content>Текст</d:content></d:item></q:title>");
+    let doc = Document::parse(&original).unwrap();
+    let result = super::mltext_update(
+        &original,
+        Some(doc.root_element()),
+        "title",
+        &json!("ru = ''"),
+        S,
+        Some("ru"),
+    )
+    .unwrap();
+    assert_eq!(result, original.replace("Текст", ""));
+}
+
+#[test]
+fn explicit_empty_local_string_retains_missing_or_empty_content_and_line_endings() {
+    for body in [
+        "",
+        "\r\n",
+        "<d:item><d:lang>ru</d:lang></d:item>",
+        "<d:item><d:lang>ru</d:lang><d:content/></d:item>",
+    ] {
+        let original = format!("<q:title xmlns:q='{S}' xmlns:d='{V}' xmlns:i='{X}' i:type='d:LocalStringType'>{body}</q:title>");
+        let doc = Document::parse(&original).unwrap();
+        let result = super::mltext_update(
+            &original,
+            Some(doc.root_element()),
+            "title",
+            &json!("ru = ''"),
+            S,
+            Some("ru"),
+        )
+        .unwrap();
+        let doc = Document::parse(&result).unwrap();
+        assert_translations(doc.root_element(), &[("ru", "")]);
+        assert_eq!(
+            doc.root_element().attribute((X, "type")),
+            Some("d:LocalStringType")
+        );
+        let again = super::mltext_update(
+            &result,
+            Some(doc.root_element()),
+            "title",
+            &json!("ru = ''"),
+            S,
+            Some("ru"),
+        )
+        .unwrap();
+        assert_eq!(again, result);
+        if body.contains("<d:content/>") {
+            assert_eq!(result, original);
+        }
+        if body.contains("\r\n") {
+            assert!(!result.replace("\r\n", "").contains('\n'));
+        }
+    }
+}
+
+#[test]
+fn scalar_caption_keeps_its_aliased_xml_type_even_when_text_looks_like_nstr() {
+    let original = format!("<q:title xmlns:q='{S}' xmlns:t='http://www.w3.org/2001/XMLSchema' xmlns:i='{X}' i:type=' t:string '>Old</q:title>");
+    let document = Document::parse(&original).unwrap();
+    let value = json!({"valueType":"xs:string","value":"  en = 'a & b'\r "});
+    let result = super::mltext_update(
+        &original,
+        Some(document.root_element()),
+        "title",
+        &value,
+        S,
+        None,
+    )
+    .unwrap();
+    assert_eq!(result, original.replace("Old", "  en = 'a &amp; b'&#13; "));
+    let node = Document::parse(&result).unwrap();
+    assert_eq!(
+        unica_xml_format::read::direct_text(node.root_element()),
+        "  en = 'a & b'\r "
     );
-    let intent = Primitive::FieldAdd.decode(&args, "args").unwrap();
-    apply(&mut xml, &intent, &selected, None).unwrap();
-    assert!(xml.contains("<v8:lang>en</v8:lang>"), "{xml}");
 }

@@ -14,9 +14,22 @@ fn address(source_set: &str, kind: SourceSetKind, relative: &str) -> Option<Stri
 /// Search hits name the module that `view` reads at the same path: every
 /// module role maps to one logical address, and that address routes back
 /// to the module reader.
+/// rule: INV.WIRE.SEARCH-CORPUS
 #[test]
 fn module_paths_map_to_the_logical_module_view_reads() {
     let cases = [
+        (
+            "main",
+            SourceSetKind::Configuration,
+            "SettingsStorages/Варианты/Forms/Выбор/Ext/Form/Module.bsl",
+            "main:SettingsStorage.Варианты.Form.Выбор.Module.Form",
+        ),
+        (
+            "ext",
+            SourceSetKind::Extension,
+            "SettingsStorages/Варианты/Forms/Выбор/Ext/Form/Module.bsl",
+            "ext:SettingsStorage.Варианты.Form.Выбор.Module.Form",
+        ),
         (
             "main",
             SourceSetKind::Configuration,
@@ -162,6 +175,7 @@ fn module_paths_map_to_the_logical_module_view_reads() {
 
 /// A `.bsl` file outside the module layout gets no address: neither a
 /// guess from its directory nor the address of a neighbouring module.
+/// rule: INV.WIRE.SEARCH-CORPUS
 #[test]
 fn files_outside_the_module_layout_have_no_logical_address() {
     for (kind, relative) in [
@@ -193,11 +207,9 @@ fn files_outside_the_module_layout_have_no_logical_address() {
             SourceSetKind::Configuration,
             "WebSocketClients/Клиент/Ext/Module.bsl",
         ),
-        // The 8.3.27 profile has no SettingsStorage form module, so view
-        // refuses that address too; the hit stays unaddressed.
         (
             SourceSetKind::Configuration,
-            "SettingsStorages/Варианты/Forms/Выбор/Ext/Form/Module.bsl",
+            "SettingsStorages/Варианты/Commands/Открыть/Ext/CommandModule.bsl",
         ),
         (SourceSetKind::Configuration, "Импорт/Ext/ObjectModule.bsl"),
         (SourceSetKind::Extension, "Ext/Module.bsl"),

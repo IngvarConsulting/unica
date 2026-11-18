@@ -1,9 +1,5 @@
 ---
 id: INV.RUNTIME.SERVICE-STARTUP-OWNERSHIP
-check:
-  - crates/unica-coder/tests/platform/workspace_services_integration.rs::manager_waits_for_peer_spawn_lock_release_before_reusing_record
-  - crates/unica-coder/tests/platform/workspace_services_integration.rs::manager_spawn_lock_wait_observes_cancellation_and_shared_deadline
-  - crates/unica-coder/tests/platform/workspace_services_integration.rs::spawn_wait_ignores_live_record_not_owned_by_spawned_child
 ---
 
 # Сервис не используется до завершения принадлежащего ему запуска

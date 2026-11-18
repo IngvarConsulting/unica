@@ -17,3 +17,8 @@ unica-bsl-parser = { path = "../unica-bsl-parser" }
 unica-forms = { path = "../unica-forms" }
 unica-metadata = { path = "../unica-metadata" }
 unica-refusal = { path = "../unica-refusal" }
+
+[package.metadata.unica]
+version-literal-baseline = 16
+component = "coordinator"
+file-io = "domain"

@@ -1,0 +1,33 @@
+{
+  "area": "Навигация и чтение",
+  "task": "Прочитать свойства справочника: ответ узла несёт свойства, ветви и словарь операций",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Catalog.Валюты"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Catalog"
+        },
+        {
+          "pointer": "/data/can",
+          "contains": {
+            "op": "props.set",
+            "args": "values"
+          }
+        }
+      ]
+    }
+  ],
+  "id": "S018"
+}

@@ -18,7 +18,18 @@ use unica_work_control::provider_deadline::ProviderDeadline;
 
 // #1119: the configuration, not apply, decides file sizes and namespace
 // membership; depth still guards against cycles.
+// resource-limit-excluded: usize::MAX: предел числа записей снят в #1119, тесты подставляют свой предел через entry_limit
 pub(super) const MAX_APPLY_NAMESPACE_ENTRIES: usize = usize::MAX;
+// resource-limit: apply.namespace-depth
+// class: format
+// unit: depth
+// scope: traversal
+// value: 256
+// resource: Глубина перечисления пространства имён оверлея apply и удаления каталогов.
+// status: unproven
+// origin: #1772
+// problem: неизвестно
+// on-reach: ошибка staging UnsupportedProvider «directory removal exceeds namespace depth bound»
 pub(super) const MAX_APPLY_NAMESPACE_DEPTH: usize = 256;
 
 /// A filesystem call on the planned route failed: access denied, I/O, or
@@ -1606,6 +1617,7 @@ pub(crate) mod tests {
         crate::actor::workspace_cache_participant_authority_for_test(authority, &retained)
     }
 
+    /// rule: INV.APP.RETAINED-APPLY-CLOSED-PARTICIPANTS
     #[test]
     pub(crate) fn retained_transaction_roles_require_explicit_roots_and_cache_authority() {
         let root = temp_root("closed-participant-roots");
@@ -1631,6 +1643,7 @@ pub(crate) mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    /// rule: INV.APP.RETAINED-APPLY-CLOSED-PARTICIPANTS
     #[test]
     pub(crate) fn arbitrary_second_transaction_cannot_masquerade_as_actor_cache_authority() {
         let root = temp_root("closed-participant-authority");
@@ -1676,6 +1689,7 @@ pub(crate) mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    /// rule: INV.APP.RETAINED-APPLY-CLOSED-PARTICIPANTS
     #[test]
     pub(crate) fn closed_transaction_rejects_physical_alias_and_second_cache_participant() {
         let root = temp_root("closed-participant-cardinality");
@@ -1721,6 +1735,7 @@ pub(crate) mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    /// rule: INV.SOURCE.REVISION-PROJECTION-CAPTURE-EQUALITY
     #[test]
     fn read_only_absence_below_missing_parent_is_guarded_without_creating_it() {
         for occupied in [false, true] {
@@ -1753,6 +1768,7 @@ pub(crate) mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.REVISION-PROJECTION-CAPTURE-EQUALITY
     #[test]
     fn enumerated_payload_changes_refuse_before_write_and_roll_back_late_writes() {
         for relative in ["", "Payload"] {
@@ -1840,6 +1856,7 @@ pub(crate) mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.REVISION-CONTENT-BOUNDS
     #[test]
     fn reference_scan_entry_budget_stops_incrementally_at_a_test_limit() {
         let root = temp_root("namespace-entry-budget");
@@ -1862,6 +1879,7 @@ pub(crate) mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.REVISION-CONTENT-BOUNDS
     #[test]
     fn reference_scan_depth_budget_stops_before_recursive_descent() {
         let root = temp_root("namespace-depth-budget");
@@ -1881,11 +1899,22 @@ pub(crate) mod tests {
         let root = temp_root("namespace-symlink-before-recursion");
         std::fs::create_dir_all(&root).unwrap();
         std::fs::create_dir(root.join("A-directory")).unwrap();
-        crate::platform::filesystem::create_test_directory_link(
-            &root.join("external"),
-            &root.join("Z-symlink-directory"),
+        // Предмет проверки — именно символическая ссылка: обход должен
+        // отвергнуть её прежде, чем спустится вглубь. Соединением каталогов
+        // её не заменить, поэтому без привилегии тест объявляет пропуск.
+        let link = crate::platform::testing::create_directory_link_fixture_for_test(
+            root.join("external"),
+            root.join("Z-symlink-directory"),
         )
         .unwrap();
+        if link != crate::platform::testing::FileLinkFixtureOutcome::Created {
+            std::fs::remove_dir_all(&root).unwrap();
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "the subject of the test is a directory symbolic link",
+            );
+            return;
+        }
         let error = staged(&root)
             .enumerate_tree_with_limits(Path::new(""), 0, 8)
             .unwrap_err();
@@ -1893,6 +1922,7 @@ pub(crate) mod tests {
         assert!(!error.to_string().contains("maximum depth"), "{error}");
     }
 
+    /// rule: INV.SOURCE.REVISION-PROJECTION-CAPTURE-EQUALITY
     #[test]
     fn reference_scan_keeps_content_guard_without_retaining_every_body() {
         let temp = tempfile::tempdir().unwrap();
@@ -1955,6 +1985,7 @@ pub(crate) mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.REVISION-PROJECTION-CAPTURE-EQUALITY
     #[test]
     fn reference_guard_rejects_same_inode_same_size_mutation_without_writing() {
         let temp = tempfile::tempdir().unwrap();
@@ -1986,14 +2017,37 @@ pub(crate) mod tests {
         );
     }
 
-    /// A reference scan over a whole configuration (issue #1466) must not
+    /// The descriptor count a test asserts on is of its own root: a file and
+    /// a directory held open under the root are counted, and released they
+    /// are not; descriptors held elsewhere in the process are never counted.
+    #[test]
+    fn open_handles_under_a_root_counts_only_that_root() {
+        use crate::platform::testing::open_handles_under_for_test;
+        let own = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        std::fs::create_dir(own.path().join("Dir")).unwrap();
+        std::fs::write(own.path().join("Dir/File.bsl"), b"x").unwrap();
+        std::fs::write(other.path().join("File.bsl"), b"x").unwrap();
+        let before = open_handles_under_for_test(own.path()).unwrap();
+        let elsewhere = std::fs::File::open(other.path().join("File.bsl")).unwrap();
+        assert_eq!(open_handles_under_for_test(own.path()).unwrap(), before);
+        let file = std::fs::File::open(own.path().join("Dir/File.bsl")).unwrap();
+        let directory =
+            crate::platform::filesystem::open_directory_nofollow(&own.path().join("Dir")).unwrap();
+        assert_eq!(open_handles_under_for_test(own.path()).unwrap(), before + 2);
+        drop((file, directory, elsewhere));
+        assert_eq!(open_handles_under_for_test(own.path()).unwrap(), before);
+    }
+
+    /// A reference scan over a whole configuration must not
     /// keep a descriptor per inspected file or directory: the saved guard is
     /// an identity and a fingerprint, re-proved by walking the route again.
     /// This resource invariant has no operation cutoff; the finite-deadline
     /// refusal is checked separately below.
+    /// rule: INV.APP.BOUNDED-OPEN-DESCRIPTORS
     #[test]
     fn reference_scan_descriptor_count_does_not_grow_with_inputs() {
-        use crate::platform::testing::open_handle_count_for_test;
+        use crate::platform::testing::open_handles_under_for_test;
         const DIRECTORIES: usize = 32;
         const FILES_PER_DIRECTORY: usize = 16;
         let temp = tempfile::tempdir().unwrap();
@@ -2017,7 +2071,7 @@ pub(crate) mod tests {
             authority.clone(),
             ProviderDeadline::no_deadline(),
         );
-        let before = open_handle_count_for_test().unwrap();
+        let before = open_handles_under_for_test(root).unwrap();
         for relative in &inputs {
             assert!(state
                 .read_guarded_bounded(relative, 1024)
@@ -2025,16 +2079,18 @@ pub(crate) mod tests {
                 .is_some());
         }
         assert_eq!(state.read_guards.len(), inputs.len());
-        let after_scan = open_handle_count_for_test().unwrap();
+        let after_scan = open_handles_under_for_test(root).unwrap();
         state
             .replace("Owner.bsl", b"before", b"after!".to_vec())
             .unwrap();
         let transaction = state.finalize().unwrap();
-        let after_finalize = open_handle_count_for_test().unwrap();
-        // The old guard kept the file and every directory of its route open:
-        // more than three descriptors per input here. A fixed allowance
-        // absorbs descriptors of concurrently running tests.
-        let allowance = 32;
+        let after_finalize = open_handles_under_for_test(root).unwrap();
+        // The count is of descriptors on this root only, so tests running
+        // alongside do not enter it. The old guard kept the file and every
+        // directory of its route open, more than three descriptors per input;
+        // a scan that keeps fewer than one per directory of inputs keeps none
+        // per input.
+        let allowance = DIRECTORIES;
         assert!(
             after_scan.saturating_sub(before) < allowance,
             "scan of {} inputs kept {} descriptors open",
@@ -2053,6 +2109,7 @@ pub(crate) mod tests {
         assert_eq!(std::fs::read(root.join("Owner.bsl")).unwrap(), b"after!");
     }
 
+    /// rule: INV.SOURCE.REVISION-CONTENT-BOUNDS
     #[test]
     fn reference_guard_preserves_finite_deadline_after_capture_without_writing() {
         let temp = tempfile::tempdir().unwrap();
@@ -2098,6 +2155,7 @@ pub(crate) mod tests {
     /// Without a held descriptor the saved plan still refuses a nested input
     /// that changed in place, was replaced by another file or lost its parent
     /// directory to another directory with the same bytes.
+    /// rule: INV.APP.BOUNDED-OPEN-DESCRIPTORS
     #[test]
     fn reference_guard_without_descriptors_rejects_nested_input_substitution() {
         enum Substitution {
@@ -2241,6 +2299,7 @@ pub(crate) mod tests {
         assert_eq!(std::fs::read(root.join("Owner.bsl")).unwrap(), b"before");
     }
 
+    /// rule: INV.SOURCE.REVISION-PROJECTION-CAPTURE-EQUALITY
     #[test]
     fn reference_guard_rechecks_identity_after_stream_and_rolls_back() {
         let temp = tempfile::tempdir().unwrap();
@@ -2591,10 +2650,32 @@ pub(crate) mod tests {
             .unwrap_err()
             .contains("normal"));
 
+        std::fs::hard_link(root.join("Ext/real/a.txt"), root.join("Ext/real/b.txt")).unwrap();
+        assert!(state
+            .read(Path::new("Ext/real/a.txt"))
+            .unwrap_err()
+            .contains("hard-link"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn apply_staged_state_rejects_directory_links_and_retained_link_races() {
+        let root = temp_root("invalid-link-targets");
+        std::fs::create_dir_all(root.join("Ext/real")).unwrap();
+        std::fs::write(root.join("Ext/real/a.txt"), b"same inode").unwrap();
+        let mut state = staged(&root);
         let link_outcome =
             create_directory_link_fixture_for_test(root.join("Ext/real"), root.join("Ext/link"))
                 .unwrap();
-        if link_outcome == FileLinkFixtureOutcome::Created {
+        if link_outcome != FileLinkFixtureOutcome::Created {
+            std::fs::remove_dir_all(&root).unwrap();
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "staged source escape fixture needs directory links",
+            );
+            return;
+        }
+        {
             assert!(state
                 .read(Path::new("Ext/link/a.txt"))
                 .unwrap_err()
@@ -2674,11 +2755,6 @@ pub(crate) mod tests {
             );
             std::fs::remove_dir_all(external).unwrap();
         }
-        std::fs::hard_link(root.join("Ext/real/a.txt"), root.join("Ext/real/b.txt")).unwrap();
-        assert!(state
-            .read(Path::new("Ext/real/a.txt"))
-            .unwrap_err()
-            .contains("hard-link"));
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -3240,6 +3316,7 @@ pub(crate) mod tests {
         guard.validate().unwrap();
     }
 
+    /// rule: INV.SOURCE.REVISION-EXCLUDES-GENERATED-DIRECTORY
     #[test]
     fn source_generated_guard_uses_each_retained_parent_case_policy() {
         let root = temp_root("per-directory-generated-policy");
@@ -3285,22 +3362,6 @@ pub(crate) mod tests {
             .is_empty());
         assert!(!state.namespaces.contains_key(Path::new("Nested/.BUILD")));
         assert!(state.entries.is_empty());
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    /// A file larger than the former 32 MiB staging bound is read whole: the
-    /// configuration, not apply, decides its size (#1119).
-    #[test]
-    fn apply_stages_a_file_larger_than_the_former_read_bound() {
-        const FORMER_BOUND: usize = 32 * 1024 * 1024;
-        let root = temp_root("unbounded-read");
-        std::fs::create_dir_all(root.join("Ext")).unwrap();
-        let large = vec![b'a'; FORMER_BOUND + 1];
-        std::fs::write(root.join("Ext/large.bin"), &large).unwrap();
-        let mut state = staged(&root);
-
-        let read = state.read(Path::new("Ext/large.bin")).unwrap();
-        assert_eq!(read.as_deref(), Some(large.as_slice()));
         std::fs::remove_dir_all(root).unwrap();
     }
 

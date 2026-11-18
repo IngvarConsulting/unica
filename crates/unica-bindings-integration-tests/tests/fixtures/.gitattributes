@@ -1,0 +1,2 @@
+# Source-scanned modules must not inherit Git-for-Windows CRLF conversion.
+modules/*.bsl text eol=lf

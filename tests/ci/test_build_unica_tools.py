@@ -77,30 +77,30 @@ def write_raw_archive(
                     )
 
 
-RUNTIME_RELEASE = "rlm-tools-bsl-v1.42.0-build.1"
+RUNTIME_RELEASE = "archive-tools-v1.42.0-build.1"
 RUNTIME_SOURCE_COMMIT = "9a84f24f0c156630e1d4e757b30070a13a56d0e0"
 RUNTIME_TARGET = {
     "key": "linux-x64",
     "triple": "x86_64-unknown-linux-gnu",
 }
 RUNTIME_ENTRYPOINTS = {
-    "rlm-bsl-index": "rlm-bsl-index",
-    "rlm-bsl-mcp": "rlm-bsl-mcp",
+    "tool-index": "tool-index",
+    "tool-server": "tool-server",
 }
 RUNTIME_TARGETS = ("darwin-arm64", "linux-x64", "win-x64")
 RUNTIME_ARCHIVES = {
     "darwin-arm64": {
-        "assetName": "rlm-tools-bsl-darwin-arm64.tar.gz",
+        "assetName": "archive-tools-darwin-arm64.tar.gz",
         "sha256": "412cbe92aa51f6823e9d2dea43d8ace5717f0f3ad5ee1c53d47ef2ce940f5cff",
         "size": 75_135_269,
     },
     "linux-x64": {
-        "assetName": "rlm-tools-bsl-linux-x64.tar.gz",
+        "assetName": "archive-tools-linux-x64.tar.gz",
         "sha256": "43ff374feea19f7d2cd7a8071810ffab1be67500b69857663f2645bca2f4fea9",
         "size": 109_405_738,
     },
     "win-x64": {
-        "assetName": "rlm-tools-bsl-win-x64.tar.gz",
+        "assetName": "archive-tools-win-x64.tar.gz",
         "sha256": "1c7e19dc53b2d924eeef3b47ac53ea90c76bd106a8fe4594f7c9c58869088471",
         "size": 77_494_107,
     },
@@ -116,13 +116,13 @@ def runtime_manifest(binary: bytes = b"multidist") -> dict:
             "executable": False,
         },
         {
-            "path": "rlm-bsl-index",
+            "path": "tool-index",
             "sha256": hashlib.sha256(binary).hexdigest(),
             "size": len(binary),
             "executable": True,
         },
         {
-            "path": "rlm-bsl-mcp",
+            "path": "tool-server",
             "sha256": hashlib.sha256(binary).hexdigest(),
             "size": len(binary),
             "executable": True,
@@ -320,8 +320,6 @@ class BuildUnicaToolsTests(unittest.TestCase):
         expected_names = {
             "bsl-analyzer",
             "v8-runner",
-            "rlm-bsl-mcp",
-            "rlm-bsl-index",
         }
         self.assertEqual({tool["name"] for tool in external_tools}, expected_names)
 
@@ -379,7 +377,7 @@ class BuildUnicaToolsTests(unittest.TestCase):
                 self.assertRegex(asset["sha256"], r"^[0-9a-f]{64}$")
                 if tool["name"] in RUNTIME_ENTRYPOINTS:
                     self.assertEqual(tool["assetStrategy"], "archive-release-asset")
-                    self.assertEqual(asset["assetName"], f"rlm-tools-bsl-{target}.tar.gz")
+                    self.assertEqual(asset["assetName"], f"archive-tools-{target}.tar.gz")
                     self.assertEqual(asset["archiveBinary"], tool["binaryName"] + exe)
                 elif tool["name"] == "v8-runner":
                     # Архив издателя хранит бинарь в своём каталоге.
@@ -493,40 +491,6 @@ class BuildUnicaToolsTests(unittest.TestCase):
             self.assertGreater(asset["size"], 0, target)
             self.assertRegex(asset["archiveBinary"], r"\A[^/\\]+/v8-runner(\.exe)?\Z", target)
 
-    def test_checked_in_rlm_tools_select_one_build_3_archive_per_target(self) -> None:
-        repo_root = Path(__file__).resolve().parents[2]
-        lock = json.loads(
-            (repo_root / "plugins" / "unica" / "third-party" / "tools.lock.json").read_text(
-                encoding="utf-8"
-            )
-        )
-        tools = {
-            tool["name"]: tool
-            for tool in lock["tools"]
-            if tool["name"] in RUNTIME_ENTRYPOINTS
-        }
-
-        self.assertEqual(set(tools), set(RUNTIME_ENTRYPOINTS))
-        for name, tool in tools.items():
-            self.assertEqual(tool["assetStrategy"], "archive-release-asset")
-            self.assertEqual(tool["assetTag"], RUNTIME_RELEASE)
-            for target, asset in tool["assets"].items():
-                expected = RUNTIME_ARCHIVES[target]
-                self.assertEqual(asset["assetName"], expected["assetName"])
-                self.assertEqual(asset["archiveBinary"], name + (".exe" if target == "win-x64" else ""))
-                self.assertEqual(asset["sha256"], expected["sha256"])
-                self.assertEqual(asset["size"], expected["size"])
-        for target in RUNTIME_TARGETS:
-            archive_identities = {
-                (
-                    tool["assets"][target]["assetName"],
-                    tool["assets"][target]["sha256"],
-                    tool["assets"][target]["size"],
-                )
-                for tool in tools.values()
-            }
-            self.assertEqual(len(archive_identities), 1)
-
     def test_release_asset_checksum_mismatch_fails_before_use(self) -> None:
         module = load_build_module()
 
@@ -545,6 +509,10 @@ class BuildUnicaToolsTests(unittest.TestCase):
     def test_bundle_builder_downloads_shared_archive_once_and_declares_runtime_closure(
         self,
     ) -> None:
+        """
+        rule: INV.PKG.BUILD-TOOL-CLOSURE
+        rule: INV.PKG.SHARED-BUILD-ARCHIVE-DOWNLOAD
+        """
         module = load_build_module()
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         archive_path = root / "source.tar.gz"
@@ -558,12 +526,12 @@ class BuildUnicaToolsTests(unittest.TestCase):
                 "",
             ),
             ("payload/libpython3.12.so.1.0", b"shared", 0o644, tarfile.REGTYPE, ""),
-            ("payload/rlm-bsl-index", b"multidist", 0o755, tarfile.REGTYPE, ""),
-            ("payload/rlm-bsl-mcp", b"multidist", 0o755, tarfile.REGTYPE, ""),
+            ("payload/tool-index", b"multidist", 0o755, tarfile.REGTYPE, ""),
+            ("payload/tool-server", b"multidist", 0o755, tarfile.REGTYPE, ""),
         ]
         write_raw_archive(archive_path, members)
         asset = {
-            "assetName": "rlm-tools-bsl-linux-x64.tar.gz",
+            "assetName": "archive-tools-linux-x64.tar.gz",
             "sha256": hashlib.sha256(archive_path.read_bytes()).hexdigest(),
             "size": archive_path.stat().st_size,
         }
@@ -572,13 +540,13 @@ class BuildUnicaToolsTests(unittest.TestCase):
             return {
                 "name": name,
                 "version": "1.42.0",
-                "repository": "https://github.com/Dach-Coin/rlm-tools-bsl",
+                "repository": "https://github.com/example/archive-tools",
                 "sourceTag": "v1.42.0",
                 "sourceCommit": RUNTIME_SOURCE_COMMIT,
                 "license": "MIT",
                 "binaryName": name,
                 # Два инструмента делят один архив — артефакт у них общий.
-                "releaseName": "rlm-tools-bsl",
+                "releaseName": "archive-tools",
                 "assetStrategy": "archive-release-asset",
                 "assetRepository": "https://github.com/IngvarConsulting/unica-toolchain",
                 "assetTag": RUNTIME_RELEASE,
@@ -600,7 +568,7 @@ class BuildUnicaToolsTests(unittest.TestCase):
                     "exe": "",
                 }
             },
-            "tools": [tool("rlm-bsl-index"), tool("rlm-bsl-mcp")],
+            "tools": [tool("tool-index"), tool("tool-server")],
         }
         lock_path = root / "tools.lock.json"
         lock_path.write_text(json.dumps(lock), encoding="utf-8")
@@ -646,8 +614,8 @@ class BuildUnicaToolsTests(unittest.TestCase):
             [item.get("path") for item in tools["runtimeFiles"]],
             [
                 "bin/linux-x64/libpython3.12.so.1.0",
-                "bin/linux-x64/rlm-bsl-index",
-                "bin/linux-x64/rlm-bsl-mcp",
+                "bin/linux-x64/tool-index",
+                "bin/linux-x64/tool-server",
                 None,
             ],
         )
@@ -657,8 +625,8 @@ class BuildUnicaToolsTests(unittest.TestCase):
             [item["deliveredPath"] for item in tools["runtimeFiles"]],
             [
                 "payload/libpython3.12.so.1.0",
-                "payload/rlm-bsl-index",
-                "payload/rlm-bsl-mcp",
+                "payload/tool-index",
+                "payload/tool-server",
                 "manifest.json",
             ],
         )
@@ -671,24 +639,24 @@ class BuildUnicaToolsTests(unittest.TestCase):
                 self.assertEqual(declaration["sha256"], hashlib.sha256(payload).hexdigest())
                 self.assertEqual(declaration["size"], len(payload))
                 self.assertEqual(declaration["executable"], mode == 0o755)
-                self.assertEqual(declaration["artifact"], "rlm-tools-bsl")
+                self.assertEqual(declaration["artifact"], "archive-tools")
                 if "path" in declaration:
                     self.assertEqual((out_dir / declaration["path"]).read_bytes(), payload)
         self.assertEqual(
             {item["name"]: item["binaryPath"] for item in tools["tools"]},
             {
-                "rlm-bsl-index": "bin/linux-x64/rlm-bsl-index",
-                "rlm-bsl-mcp": "bin/linux-x64/rlm-bsl-mcp",
+                "tool-index": "bin/linux-x64/tool-index",
+                "tool-server": "bin/linux-x64/tool-server",
             },
         )
         # Адрес поставки берётся у тулчейна: выпуск плагина её не перепубликует.
         self.assertEqual(
             tools["artifactAssets"],
             {
-                "rlm-tools-bsl": {
+                "archive-tools": {
                     "repository": "https://github.com/IngvarConsulting/unica-toolchain",
                     "tag": RUNTIME_RELEASE,
-                    "name": "rlm-tools-bsl-linux-x64.tar.gz",
+                    "name": "archive-tools-linux-x64.tar.gz",
                     "mediaType": "application/gzip",
                     "sha256": asset["sha256"],
                 }
@@ -697,8 +665,8 @@ class BuildUnicaToolsTests(unittest.TestCase):
         self.assertEqual(
             {item["name"]: item["deliveredPath"] for item in tools["tools"]},
             {
-                "rlm-bsl-index": "payload/rlm-bsl-index",
-                "rlm-bsl-mcp": "payload/rlm-bsl-mcp",
+                "tool-index": "payload/tool-index",
+                "tool-server": "payload/tool-server",
             },
         )
 
@@ -774,6 +742,8 @@ class BuildUnicaToolsTests(unittest.TestCase):
 
         Bootstrap сверяет распакованный набор целиком: README и лицензия рядом с
         бинарём не должны стать «лишними» файлами, а бинарь ищется по пути в архиве.
+
+        rule: INV.PKG.BUILD-TOOL-CLOSURE
         """
         files = {
             "v8-runner-x/v8-runner": (b"runner", 0o755),
@@ -826,6 +796,7 @@ class BuildUnicaToolsTests(unittest.TestCase):
                 self.assertEqual(runner["binaryPath"], "bin/linux-x64/v8-runner-x/v8-runner")
 
     def test_upstream_archive_rejects_unsafe_members_before_materialization(self) -> None:
+        """rule: INV.PKG.BUILD-ARCHIVE-SAFETY"""
         module = load_build_module()
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         cases = {
@@ -872,7 +843,7 @@ class BuildUnicaToolsTests(unittest.TestCase):
         out_dir = root / "bundle"
 
         def fail_after_partial_write(staging: Path) -> None:
-            partial = staging / "bin" / "linux-x64" / "rlm-bsl-index"
+            partial = staging / "bin" / "linux-x64" / "tool-index"
             partial.parent.mkdir(parents=True)
             partial.write_bytes(b"partial")
             raise OSError("injected materialization failure")
@@ -884,12 +855,13 @@ class BuildUnicaToolsTests(unittest.TestCase):
         self.assertEqual(list(root.glob(".bundle.staging-*")), [])
 
     def test_verified_archive_rejects_unsafe_and_drifted_members(self) -> None:
+        """rule: INV.PKG.BUILD-ARCHIVE-SAFETY"""
         module = load_runtime_archive_module()
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         base_payload = [
             ("payload/libpython3.12.so.1.0", b"shared", 0o644, tarfile.REGTYPE, ""),
-            ("payload/rlm-bsl-index", b"multidist", 0o755, tarfile.REGTYPE, ""),
-            ("payload/rlm-bsl-mcp", b"multidist", 0o755, tarfile.REGTYPE, ""),
+            ("payload/tool-index", b"multidist", 0o755, tarfile.REGTYPE, ""),
+            ("payload/tool-server", b"multidist", 0o755, tarfile.REGTYPE, ""),
         ]
 
         def archive(
@@ -927,8 +899,8 @@ class BuildUnicaToolsTests(unittest.TestCase):
         self.assertEqual(verified.envelope.path.as_posix(), "manifest.json")
         self.assertFalse(verified.envelope.executable)
         self.assertEqual(set(by_path), {item[0].removeprefix("payload/") for item in base_payload})
-        self.assertEqual(by_path["rlm-bsl-index"].payload, b"multidist")
-        self.assertTrue(by_path["rlm-bsl-mcp"].executable)
+        self.assertEqual(by_path["tool-index"].payload, b"multidist")
+        self.assertTrue(by_path["tool-server"].executable)
         self.assertFalse(by_path["libpython3.12.so.1.0"].executable)
 
         unsafe_members = {
@@ -936,8 +908,8 @@ class BuildUnicaToolsTests(unittest.TestCase):
             "parent": base_payload + [("payload/../escape", b"x", 0o644, tarfile.REGTYPE, "")],
             "backslash": base_payload + [("payload\\escape", b"x", 0o644, tarfile.REGTYPE, "")],
             "duplicate": base_payload + [base_payload[1]],
-            "symlink": base_payload + [("payload/link", b"", 0o777, tarfile.SYMTYPE, "rlm-bsl-index")],
-            "hardlink": base_payload + [("payload/link", b"", 0o777, tarfile.LNKTYPE, "rlm-bsl-index")],
+            "symlink": base_payload + [("payload/link", b"", 0o777, tarfile.SYMTYPE, "tool-index")],
+            "hardlink": base_payload + [("payload/link", b"", 0o777, tarfile.LNKTYPE, "tool-index")],
             "fifo": base_payload + [("payload/fifo", b"", 0o644, tarfile.FIFOTYPE, "")],
         }
         for label, members in unsafe_members.items():
@@ -966,7 +938,7 @@ class BuildUnicaToolsTests(unittest.TestCase):
         case_collision = runtime_manifest()
         case_collision["files"].append(
             {
-                "path": "RLM-BSL-INDEX",
+                "path": "TOOL-INDEX",
                 "sha256": hashlib.sha256(b"multidist").hexdigest(),
                 "size": len(b"multidist"),
                 "executable": True,
@@ -981,7 +953,7 @@ class BuildUnicaToolsTests(unittest.TestCase):
                     payload=base_payload
                     + [
                         (
-                            "payload/RLM-BSL-INDEX",
+                            "payload/TOOL-INDEX",
                             b"multidist",
                             0o755,
                             tarfile.REGTYPE,
@@ -1009,7 +981,7 @@ class BuildUnicaToolsTests(unittest.TestCase):
         wrong_target["target"] = dict(RUNTIME_TARGET, key="win-x64")
         mutations.append(("target", wrong_target, base_payload, "target"))
         missing_entrypoint = runtime_manifest()
-        missing_entrypoint["entrypoints"] = {"rlm-bsl-index": "rlm-bsl-index"}
+        missing_entrypoint["entrypoints"] = {"tool-index": "tool-index"}
         mutations.append(("entrypoint", missing_entrypoint, base_payload, "entrypoints"))
         wrong_digest = runtime_manifest()
         wrong_digest["files"][1]["sha256"] = "0" * 64
@@ -1057,7 +1029,7 @@ class BuildUnicaToolsTests(unittest.TestCase):
         )
         unequal = runtime_manifest(binary=b"index")
         unequal["files"][2] = {
-            "path": "rlm-bsl-mcp",
+            "path": "tool-server",
             "sha256": hashlib.sha256(b"mcp").hexdigest(),
             "size": 3,
             "executable": True,
@@ -1068,8 +1040,8 @@ class BuildUnicaToolsTests(unittest.TestCase):
                 unequal,
                 [
                     base_payload[0],
-                    ("payload/rlm-bsl-index", b"index", 0o755, tarfile.REGTYPE, ""),
-                    ("payload/rlm-bsl-mcp", b"mcp", 0o755, tarfile.REGTYPE, ""),
+                    ("payload/tool-index", b"index", 0o755, tarfile.REGTYPE, ""),
+                    ("payload/tool-server", b"mcp", 0o755, tarfile.REGTYPE, ""),
                 ],
                 "byte-identical",
             )
@@ -1102,14 +1074,14 @@ class BuildUnicaToolsTests(unittest.TestCase):
                     "",
                 ),
                 (
-                    "payload/rlm-bsl-index",
+                    "payload/tool-index",
                     b"multidist",
                     0o755,
                     tarfile.REGTYPE,
                     "",
                 ),
                 (
-                    "payload/rlm-bsl-mcp",
+                    "payload/tool-server",
                     b"multidist",
                     0o755,
                     tarfile.REGTYPE,
@@ -1118,7 +1090,7 @@ class BuildUnicaToolsTests(unittest.TestCase):
             ],
         )
         common_asset = {
-            "assetName": "rlm-tools-bsl-linux-x64.tar.gz",
+            "assetName": "archive-tools-linux-x64.tar.gz",
             "sha256": hashlib.sha256(archive_path.read_bytes()).hexdigest(),
             "size": archive_path.stat().st_size,
         }
@@ -1129,7 +1101,7 @@ class BuildUnicaToolsTests(unittest.TestCase):
                 asset["archiveBinary"] = selector
             return {
                 "name": name,
-                "repository": "https://github.com/Dach-Coin/rlm-tools-bsl",
+                "repository": "https://github.com/example/archive-tools",
                 "sourceTag": "v1.42.0",
                 "sourceCommit": RUNTIME_SOURCE_COMMIT,
                 "assetRepository": "https://github.com/IngvarConsulting/unica-toolchain",
@@ -1137,7 +1109,7 @@ class BuildUnicaToolsTests(unittest.TestCase):
                 "assets": {"linux-x64": asset},
             }
 
-        missing = [tool("rlm-bsl-index", None), tool("rlm-bsl-mcp", "rlm-bsl-mcp")]
+        missing = [tool("tool-index", None), tool("tool-server", "tool-server")]
         with patch.object(module, "download") as download_call:
             with self.assertRaisesRegex(SystemExit, "missing archiveBinary"):
                 module.materialize_archive_group(
@@ -1151,8 +1123,8 @@ class BuildUnicaToolsTests(unittest.TestCase):
         download_call.assert_not_called()
 
         conflicting = [
-            tool("rlm-bsl-index", "rlm-bsl-index"),
-            tool("rlm-bsl-mcp", "rlm-bsl-mcp"),
+            tool("tool-index", "tool-index"),
+            tool("tool-server", "tool-server"),
         ]
         conflicting[1]["assets"]["linux-x64"]["sha256"] = "0" * 64
         with patch.object(module, "download") as download_call:
@@ -1172,8 +1144,8 @@ class BuildUnicaToolsTests(unittest.TestCase):
             shutil.copy2(archive_path, destination)
 
         valid = [
-            tool("rlm-bsl-index", "rlm-bsl-index"),
-            tool("rlm-bsl-mcp", "rlm-bsl-mcp"),
+            tool("tool-index", "tool-index"),
+            tool("tool-server", "tool-server"),
         ]
         with patch.object(module, "download", side_effect=fake_download) as download_call:
             with self.assertRaisesRegex(SystemExit, "runtime destination collision"):
@@ -1219,7 +1191,7 @@ class BuildUnicaToolsTests(unittest.TestCase):
                         {
                             "name": "unica",
                             "binaryName": "unica",
-                            "cargoPackage": "unica-coder",
+                            "cargoPackage": "unica-product",
                             "cargoBin": "unica",
                         }
                     ],
@@ -1230,7 +1202,7 @@ class BuildUnicaToolsTests(unittest.TestCase):
                     target="win-x64",
                     exe=".exe",
                     workspace_binary_owners={
-                        "unica": {"unica-coder"},
+                        "unica": {"unica-product"},
                         "unica-bootstrap": {"unica-bootstrap"},
                     },
                 )
@@ -1253,7 +1225,7 @@ class BuildUnicaToolsTests(unittest.TestCase):
                     "--release",
                     "--locked",
                     "--package",
-                    "unica-coder",
+                    "unica-product",
                     "--package",
                     "unica-bootstrap",
                     "--bin",
@@ -1273,14 +1245,14 @@ class BuildUnicaToolsTests(unittest.TestCase):
             with patch.object(module, "run") as cargo_run:
                 with self.assertRaisesRegex(
                     SystemExit,
-                    "unica-coder does not own binary target unica-bootstrap",
+                    "unica-product does not own binary target unica-bootstrap",
                 ):
                     module.build_cargo_workspace_binaries(
                         [
                             {
                                 "name": "unica",
                                 "binaryName": "unica",
-                                "cargoPackage": "unica-coder",
+                                "cargoPackage": "unica-product",
                                 "cargoBin": "unica-bootstrap",
                             }
                         ],
@@ -1291,7 +1263,7 @@ class BuildUnicaToolsTests(unittest.TestCase):
                         target="linux-x64",
                         exe="",
                         workspace_binary_owners={
-                            "unica": {"unica-coder"},
+                            "unica": {"unica-product"},
                             "unica-bootstrap": {"unica-bootstrap"},
                         },
                     )
@@ -1303,7 +1275,7 @@ class BuildUnicaToolsTests(unittest.TestCase):
         metadata = {
             "packages": [
                 {
-                    "name": "unica-coder",
+                    "name": "unica-product",
                     "targets": [
                         {"name": "unica", "kind": ["bin"]},
                         {"name": "unica_coder", "kind": ["lib"]},
@@ -1323,7 +1295,7 @@ class BuildUnicaToolsTests(unittest.TestCase):
         self.assertEqual(
             owners,
             {
-                "unica": {"unica-coder"},
+                "unica": {"unica-product"},
                 "unica-bootstrap": {"unica-bootstrap"},
             },
         )

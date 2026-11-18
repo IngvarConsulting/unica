@@ -16,6 +16,11 @@ from tests.ci.acceptance_controls import tool_result
 from tests.ci.acceptance_profiles import completed_delivery_call, isolated_environment
 from tests.ci.test_acceptance_scenarios import AcceptanceServer, REPO_ROOT
 from tests.ci.test_unica_mcp_smoke import snapshot_workspace_files
+from scripts.ci.temp_tree import remove_tree
+
+# Размер тестов модуля (scripts/ci/python_sizes.py).
+# Собирает продукт и гоняет сценарии через MCP.
+MEDIUM = ("WholeTemplatePlanDiffWireTests",)
 
 
 FIXTURE = REPO_ROOT / "tests/fixtures/acceptance/workspace-whole-template-removal"
@@ -70,9 +75,8 @@ class WholeTemplatePlanDiffWireTests(unittest.TestCase):
         ensure_binary(REPO_ROOT)
 
     def _start(self):
-        temporary = tempfile.TemporaryDirectory(prefix="unica-whole-template-plan-")
-        self.addCleanup(temporary.cleanup)
-        root = Path(temporary.name).resolve()
+        root = Path(tempfile.mkdtemp(prefix="unica-whole-template-plan-")).resolve()
+        self.addCleanup(remove_tree, root, 30)
         self.workspace = root / "workspace"
         shutil.copytree(FIXTURE, self.workspace)
         (self.workspace / "unrelated/empty").mkdir(parents=True)
@@ -273,6 +277,7 @@ class WholeTemplatePlanDiffWireTests(unittest.TestCase):
         return post
 
     def test_complete_removal_pages_define_the_same_token_publication(self):
+        """rule: INV.SOURCE.WHOLE-TEMPLATE-REMOVAL"""
         for selected in ["OwnDiagram", "KeepDiagram"]:
             with self.subTest(template=selected):
                 self._start()
@@ -329,6 +334,7 @@ class WholeTemplatePlanDiffWireTests(unittest.TestCase):
         self.assertTrue(replay == stale_apply, "stale execution also replays exactly")
 
     def test_owner_mutation_makes_diff_and_apply_stale_without_overwriting_it(self):
+        """rule: INV.SOURCE.WHOLE-TEMPLATE-REMOVAL"""
         def mutate(source):
             path = source / OWNER
             original = path.read_bytes()
@@ -338,6 +344,7 @@ class WholeTemplatePlanDiffWireTests(unittest.TestCase):
         self._stale(mutate)
 
     def test_file_membership_mutation_makes_diff_and_apply_stale_without_overwriting_it(self):
+        """rule: INV.SOURCE.WHOLE-TEMPLATE-REMOVAL"""
         def mutate(source):
             path = source / TEMPLATES / "OwnDiagram/Ext/Template/Items/Concurrent.bin"
             self.assertFalse(path.exists())
@@ -345,6 +352,7 @@ class WholeTemplatePlanDiffWireTests(unittest.TestCase):
         self._stale(mutate)
 
     def test_picture_bytes_mutation_makes_diff_and_apply_stale_without_overwriting_it(self):
+        """rule: INV.SOURCE.WHOLE-TEMPLATE-REMOVAL"""
         def mutate(source):
             path = source / RED
             data = bytearray(path.read_bytes())

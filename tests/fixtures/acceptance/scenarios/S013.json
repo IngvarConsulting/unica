@@ -1,0 +1,16 @@
+{
+  "area": "Навигация и чтение",
+  "task": "Перечислить ресурсы регистра сведений",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.АдминистративнаяИерархия.Resource"
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S013"
+}

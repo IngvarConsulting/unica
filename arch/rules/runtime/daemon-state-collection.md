@@ -1,8 +1,5 @@
 ---
 id: INV.RUNTIME.DAEMON-STATE-COLLECTION
-check:
-  - crates/unica-daemon/src/state_collection.rs::a_link_named_like_a_state_is_neither_followed_nor_removed
-  - crates/unica-daemon/src/state_collection.rs::inspecting_a_vanished_state_does_not_recreate_it
 gap: https://github.com/IngvarConsulting/unica/issues/1747
 ---
 

@@ -1,9 +1,5 @@
 ---
 id: INV.SOURCE.TAIL-INSERT
-check:
-  - crates/unica-coder/tests/platform/code_patch_composition.rs::code_patch_writes_the_first_body_of_an_empty_or_bom_only_module
-  - crates/unica-coder/tests/platform/code_patch_composition.rs::staged_code_first_body_materializes_a_missing_module_chain
-  - crates/unica-coder/tests/platform/code_patch_composition.rs::staged_code_missing_module_chain_keeps_a_foreign_appearance
 ---
 
 # Первый текст модуля не требует отдельного создания файла

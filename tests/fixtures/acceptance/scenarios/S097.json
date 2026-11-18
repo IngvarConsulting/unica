@@ -1,0 +1,67 @@
+{
+  "area": "Реквизиты и состав",
+  "task": "Превью повторяем: два одинаковых превью дают один план",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.АктОбУничтоженииПерсональныхДанных",
+        "ops": [
+          {
+            "op": "attribute.add",
+            "args": {
+              "items": [
+                {
+                  "name": "ПлановаяПроверка",
+                  "type": {
+                    "variants": [
+                      {
+                        "kind": "string",
+                        "length": 15,
+                        "allowedLength": "variable"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.АктОбУничтоженииПерсональныхДанных",
+        "ops": [
+          {
+            "op": "attribute.add",
+            "args": {
+              "items": [
+                {
+                  "name": "ПлановаяПроверка",
+                  "type": {
+                    "variants": [
+                      {
+                        "kind": "string",
+                        "length": 15,
+                        "allowedLength": "variable"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S097"
+}

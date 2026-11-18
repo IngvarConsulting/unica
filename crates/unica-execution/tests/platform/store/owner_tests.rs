@@ -306,6 +306,7 @@ fn held_read_prevents_explicit_close_instead_of_silently_releasing_lease() {
     );
 }
 
+/// rule: INV.APP.EXECUTION-AUTHORITY
 #[test]
 fn same_epoch_foreign_commit_is_rejected_before_io_without_poisoning_owner() {
     let (fixture, mut owner) = Fixture::create();

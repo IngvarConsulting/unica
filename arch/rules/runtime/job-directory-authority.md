@@ -1,10 +1,5 @@
 ---
 id: INV.APP.RUNTIME-JOB-DIRECTORY-AUTHORITY
-check:
-  - crates/unica-coder/src/infrastructure/runtime_jobs_integration.rs::ordinary_poll_and_finish_never_follow_a_replaced_job_directory
-  - crates/unica-coder/src/infrastructure/runtime_jobs_integration.rs::attached_process_poll_and_finish_never_follow_a_replaced_job_directory
-  - crates/unica-coder/src/infrastructure/runtime_jobs_integration.rs::full_rebuild_fallback_never_follows_a_replaced_job_directory
-  - crates/unica-coder/src/infrastructure/runtime_jobs_integration.rs::record_publication_and_lock_release_never_follow_a_replaced_job_directory
 ---
 
 # Запущенное задание остаётся связано со своим исходным каталогом
@@ -21,14 +16,12 @@ check:
 Правило охватывает только службу, которая владеет процессом задания. Вне его
 области остаются:
 
-- операции до запуска процесса: отмена и отказ задания в очереди
-  (`cancel_enqueued_before_start_guarded`, `cancel_queued_job_guarded`,
-  `fail_queued_job_guarded`);
-- чтение из других процессов (`status_at`, `logs_at`, `list_at`, `wait_at`);
-- запрос отмены `request_cancel_at`, который пишет маркер в каталог по имени;
-- восстановление после устаревшего пульса `recover_stale_active_locked`:
-  оно пишет `Lost` в каталог по имени и сохраняет `active.lock`, если
-  процесс мог запуститься.
+- операции до запуска процесса: отмена и отказ задания в очереди;
+- чтение состояния, журналов и списка заданий и ожидание задания из других
+  процессов;
+- запрос отмены, который пишет маркер в каталог по имени;
+- восстановление после устаревшего пульса: оно пишет `Lost` в каталог по имени
+  и сохраняет `active.lock`, если процесс мог запуститься.
 
 Если каталог `jobs/<id>` подменён и не возвращён, наблюдение не может
 подтвердить принадлежность и держит `active.lock` бесконечно. Восстановление

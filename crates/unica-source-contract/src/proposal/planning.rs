@@ -107,6 +107,7 @@ mod tests {
     use super::*;
     use crate::events::DomainEventKind;
 
+    /// rule: INV.APP.APPLY-ANSWER-SIZE
     #[test]
     fn reconciled_effects_name_only_the_operations_that_warned() {
         let event = || DomainEvent::new(DomainEventKind::MetadataChanged, "main:Catalog.Items");

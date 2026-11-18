@@ -1,12 +1,5 @@
 ---
 id: INV.APP.EXACT-LONG-WORK-OWNERSHIP
-check:
-  - crates/unica-coder/tests/shared_work_identity.rs::exact_key_vocabulary_covers_delivery_index_provider_and_runtime
-  - crates/unica-analysis-services/src/provider_host.rs::typed_provider_key_rejects_weak_identity_and_remains_exact
-  - crates/unica-execution/src/runtime_jobs.rs::typed_runtime_keys_remain_exact
-  - crates/unica-coder/src/infrastructure/daemon/server.rs::daemon_long_work_capabilities_handoff_before_wait_and_preserve_exact_ownership
-  - crates/unica-coder/src/infrastructure/daemon/server.rs::daemon_index_work_separates_worktrees_and_build_generations
-  - crates/unica-coder/src/infrastructure/daemon/server.rs::daemon_long_work_rejects_replaced_actor_root_before_reuse_or_publication
 gap: https://github.com/IngvarConsulting/unica/issues/988
 ---
 
@@ -18,7 +11,7 @@ gap: https://github.com/IngvarConsulting/unica/issues/988
 актуальность исходников; она сообщается отдельно. Подмена удержанного корня
 отклоняет результат.
 
-Запуск `ProviderHost` можно разделить между рабочими пространствами
+Запуск хоста провайдера анализа можно разделить между рабочими пространствами
 при совпадении движка, целевой платформы и набора возможностей.
 Чтение исходников и результат каждого потребителя остаются связаны
 с его собственным актором.

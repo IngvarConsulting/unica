@@ -1,0 +1,179 @@
+{
+  "id": "S325",
+  "name": "acceptance-profile-content-and-gap-controls",
+  "issue": 1245,
+  "area": "Формы",
+  "task": "Проверка формы принимает прежнюю трёхпараметровую сигнатуру обработчика выбора и предупреждает об обработчике с сигнатурой другого события (#791)",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ПолеНаименование.Event.ChoiceProcessing",
+        "ops": [
+          {
+            "op": "event.bind",
+            "args": {
+              "values": {
+                "handler": "ПолеНаименованиеОбработкаВыбора"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Module.Form",
+        "ops": [
+          {
+            "op": "code.insert",
+            "args": {
+              "text": "&НаКлиенте\nПроцедура ПолеНаименованиеОбработкаВыбора(Элемент, ВыбранноеЗначение, СтандартнаяОбработка)\n    СтандартнаяОбработка = Ложь;\nКонецПроцедуры\n"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "validators": [
+        "form"
+      ],
+      "assertions": [
+        {
+          "pointer": "/ok",
+          "eq": true
+        },
+        {
+          "pointer": "/data/diagnosticCount",
+          "eq": 0
+        },
+        {
+          "pointer": "/data/diagnostics",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ПолеНаименованиеПолное.Event.AutoComplete",
+        "ops": [
+          {
+            "op": "event.bind",
+            "args": {
+              "values": {
+                "handler": "ПолеНаименованиеПолноеНачалоВыбора"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Module.Form",
+        "ops": [
+          {
+            "op": "code.insert",
+            "args": {
+              "text": "&НаКлиенте\nПроцедура ПолеНаименованиеПолноеНачалоВыбора(Элемент, ДанныеВыбора, ВыборДобавлением, СтандартнаяОбработка)\n    СтандартнаяОбработка = Ложь;\nКонецПроцедуры\n"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "validators": [
+        "form"
+      ],
+      "diagnostic": "native_validation_warning",
+      "assertions": [
+        {
+          "pointer": "/ok",
+          "eq": true
+        },
+        {
+          "pointer": "/data/diagnosticCount",
+          "eq": 1
+        },
+        {
+          "pointer": "/data/diagnostics",
+          "eq": [
+            {
+              "severity": "warning",
+              "code": "native_validation_warning",
+              "message": "Event 'АвтоПодбор' of InputField element 'ПолеНаименованиеПолное': handler 'ПолеНаименованиеПолноеНачалоВыбора' (Элемент, ДанныеВыбора, ВыборДобавлением, СтандартнаяОбработка) matches the signature of event 'НачалоВыбора' (Элемент, ДанныеВыбора, ВыборДобавлением, СтандартнаяОбработка), not the bound event (Элемент, Текст, ДанныеВыбора, ПараметрыПолученияДанных, Ожидание, СтандартнаяОбработка)",
+              "validator": "form"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

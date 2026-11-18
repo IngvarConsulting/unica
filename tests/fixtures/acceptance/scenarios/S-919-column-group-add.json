@@ -1,0 +1,168 @@
+{
+  "id": "S-919-column-group-add",
+  "issue": 919,
+  "area": "Формы",
+  "task": "Добавить поле в существующую группу колонок и отказать недопустимым элементам без публикации пакета",
+  "workspace": "tests/fixtures/acceptance/workspace-column-group-add",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Строки.Form.ФормаСписка.Item.Список.Item.Columns"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before": {
+          "file": "src/Catalogs/Строки/Forms/ФормаСписка/Ext/Form.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Строки.Form.ФормаСписка.Item.Список.Item.Columns",
+        "ops": [
+          {
+            "op": "item.add",
+            "args": {
+              "items": [
+                {
+                  "name": "Bad",
+                  "type": "Button",
+                  "command": "Run"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: [ERROR] a column group holds only fields; add this element to the form or another compatible container",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Строки/Forms/ФормаСписка/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Строки.Form.ФормаСписка.Item.Список.Item.Columns",
+        "ops": [
+          {
+            "op": "item.add",
+            "args": {
+              "items": [
+                {
+                  "name": "ValidFirst",
+                  "type": "InputField"
+                },
+                {
+                  "name": "Bad",
+                  "type": "Group"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: [ERROR] a column group holds only fields; add this element to the form or another compatible container",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Строки/Forms/ФормаСписка/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Строки.Form.ФормаСписка.Item.Список.Item.Columns",
+        "ops": [
+          {
+            "op": "item.add",
+            "args": {
+              "items": [
+                {
+                  "name": "Bad",
+                  "type": "Label",
+                  "after": "Existing"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: [ERROR] a column group holds only fields; add this element to the form or another compatible container",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Строки/Forms/ФормаСписка/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Строки.Form.ФормаСписка.Item.Список.Item.Columns",
+        "ops": [
+          {
+            "op": "item.add",
+            "args": {
+              "items": [
+                {
+                  "name": "Added",
+                  "type": "InputField",
+                  "after": "Existing"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Строки/Forms/ФормаСписка/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Строки.Form.ФормаСписка.Item.Список.Item.Columns.Item.Added"
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ]
+}

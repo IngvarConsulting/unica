@@ -1,11 +1,5 @@
 ---
 id: INV.RUNTIME.INFOBASE-IMPORT-MODE
-check:
-  - crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs::restore_arguments_require_a_stated_mode_and_a_dt_input
-  - crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs::restore_preview_names_the_source_and_the_mode_without_touching_the_infobase
-  - crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs::restore_apply_attributes_the_infobase_state_to_the_provider
-  - crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs::restore_apply_refuses_when_the_provider_reports_another_mode
-  - crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs::restore_refuses_a_preview_that_claims_it_already_restored
 ---
 
 # Загрузка DT требует явного режима и называет источник сведений о базе
@@ -14,6 +8,15 @@ check:
 Аргументы `output` и `connection` не принимаются. Preview не выполняет
 загрузку и передаёт тот же вход и режим в следующий вызов; ответ раннера
 с другим режимом или уже выполненной загрузкой отвергается.
+
+Если исполняемый `mode: create` называет базу, которая уже есть, Unica
+спрашивает человека по [правилу вопроса](../mcp/human-choice.md): «База «<имя>»
+уже существует.»
+Вариант «Заменить данные базы данными из «<файл>»» — тот же вызов с
+`mode: replace`, данные и конфигурация базы пропадут. Код вопроса —
+`infobase.restore_exists`. `mode: replace` исполняется только с согласия
+человека по [правилу разрушающих вызовов](destructive-confirmation.md). В тексте
+вопроса «<файл>» — имя DT без пути.
 
 После применения результат называет режим и состояние базы,
 засвидетельствованное провайдером. Он отмечает изменение базы, а не создание

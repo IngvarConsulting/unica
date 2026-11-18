@@ -1,24 +1,5 @@
 ---
 id: CTR.WIRE.COMPATIBILITY-TASK-TOOLS
-check:
-  - crates/unica-coder/src/application/v13/task_tools.rs::compatibility_contracts_are_exact_and_teach_bounded_wait
-  - crates/unica-coder/src/application/v13/task_tools.rs::compatibility_parser_accepts_only_canonical_ids_and_wait_zero_through_7000
-  - crates/unica-coder/src/application/v13/task_tools.rs::compatibility_receipt_is_closed_and_terminal_result_reuses_domain_json
-  - crates/unica-coder/src/application/v13/task_tools.rs::late_cancel_request_is_visible_in_task_state_without_changing_subject_result
-  - crates/unica-coder/src/interfaces/mcp.rs::compatibility_task_get_and_result_preserve_each_closed_failure_reason
-  - crates/unica-coder/src/interfaces/mcp.rs::v13_compatibility_task_tools_are_profile_gated_durable_and_replay_free
-  - crates/unica-coder/tests/daemon_receipt_ledger/frontend_restart.rs::compatibility_completed_task_survives_daemon_process_restart
-  - crates/unica-coder/src/interfaces/mcp.rs::compatibility_get_and_cancel_do_not_replace_open_frontend_cutoff_with_125ms
-  - crates/unica-coder/src/interfaces/mcp.rs::compatibility_get_and_cancel_share_one_absolute_cutoff_across_connect_and_exchange
-  - crates/unica-daemon/src/client_v5.rs::task_exchange_post_parse_expiry_wins_for_valid_and_malformed_frames
-  - crates/unica-coder/src/interfaces/mcp.rs::compatibility_result_keeps_original_cutoff_after_frontend_admission_delay
-  - crates/unica-coder/src/interfaces/mcp.rs::compatibility_ready_result_at_wait_zero_survives_a_slow_connect
-  - crates/unica-coder/src/interfaces/mcp.rs::compatibility_final_projection_obeys_cutoff_and_same_result_remains_recoverable
-  - crates/unica-coder/src/interfaces/mcp.rs::compatibility_final_projection_preserves_exchange_failure_stage_and_generation
-  - crates/unica-coder/src/interfaces/mcp.rs::compatibility_long_producer_survives_7000_and_100_ms_observations_once
-  - crates/unica-coder/src/interfaces/mcp.rs::compatibility_recovers_same_task_after_partial_malformed_and_late_frames
-  - crates/unica-daemon/src/task_observation.rs::observation_exposes_only_bounded_timing_and_generation_digest
-  - crates/unica-coder/src/interfaces/mcp.rs::native_task_transport_failure_logs_the_observation_and_answers_only_the_refusal
 ---
 
 # Compatibility Task возвращает сохранённое состояние без нового исполнения

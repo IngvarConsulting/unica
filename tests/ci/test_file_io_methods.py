@@ -32,6 +32,7 @@ def message(file: str, line: int, method: str, code: str = methods.LINT) -> str:
 
 class FileIoMethodsTests(unittest.TestCase):
     def test_probe_marks_every_disallowed_method_once(self):
+        """rule: INV.APP.DOMAIN-INPUTS"""
         configured = methods.disallowed(REPO_ROOT)
         marked = list(methods.probe_markers(REPO_ROOT).values())
         self.assertEqual(sorted(marked), sorted(configured))
@@ -56,6 +57,7 @@ class FileIoMethodsTests(unittest.TestCase):
         return problems
 
     def test_probe_must_have_every_marked_call_refused(self):
+        """rule: INV.APP.DOMAIN-INPUTS"""
         markers = methods.probe_markers(REPO_ROOT)
         refused = "\n".join(message(file, line, method) for (file, line), method in markers.items())
         self.assertEqual(self.run_probe(refused), [])
@@ -67,6 +69,7 @@ class FileIoMethodsTests(unittest.TestCase):
         self.assertIn("probe Clippy failed with exit code 101", self.run_probe(refused, 101))
 
     def test_packages_report_only_their_own_src_once(self):
+        """rule: INV.APP.DOMAIN-INPUTS"""
         packages = {"unica-address": "crates/unica-address", "unica-forms-designer": "crates/unica-forms-designer"}
         stdout = "\n".join([
             message("crates/unica-address/src/lib.rs", 9, "std::path::Path::exists"),
@@ -83,15 +86,27 @@ class FileIoMethodsTests(unittest.TestCase):
             self.assertEqual(methods.check_packages(REPO_ROOT, packages, Path("/t")), ["clippy failed with exit code 101"])
         self.assertEqual(methods.check_packages(REPO_ROOT, {}, Path("/t")), ["no file-IO-free packages to check"])
 
+    def test_windows_spans_are_matched_like_posix_ones(self):
+        """rule: INV.APP.DOMAIN-INPUTS"""
+        # On Windows Clippy writes `src\lib.rs`: the probe must still see its refusals,
+        # and a package finding must not slip past the `crates/<package>/src/` filter.
+        markers = methods.probe_markers(REPO_ROOT)
+        refused = "\n".join(message(file.replace("/", "\\"), line, method) for (file, line), method in markers.items())
+        self.assertEqual(self.run_probe(refused), [])
+        stdout = message("crates\\unica-address\\src\\lib.rs", 9, "std::path::Path::exists")
+        with patch.object(methods, "run", return_value=subprocess.CompletedProcess([], 0, stdout=stdout)):
+            problems = methods.check_packages(REPO_ROOT, {"unica-address": "crates/unica-address"}, Path("/t"))
+        self.assertEqual(problems, ["crates/unica-address/src/lib.rs:9: use of a disallowed method `std::path::Path::exists`"])
+
     def test_packages_come_from_the_platform_boundary(self):
         packages = methods.boundary_packages(REPO_ROOT)
         self.assertEqual(packages["unica-address"], "crates/unica-address")
         self.assertNotIn("unica-workspace", packages)
 
     def test_gate_clippy_runs_the_pass(self):
-        # Gate and pull request lint both run `clippy.sh all`.
-        workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/unica-plugin-release.yml").read_text())
-        runs = [step.get("run", "") for job in ("unica-ci", "pr-checks") for step in workflow["jobs"][job]["steps"]]
+        # The gate runs `clippy.sh all` in the background.
+        workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/release.yml").read_text())
+        runs = [step.get("run", "") for job in ("unica-ci",) for step in workflow["jobs"][job]["steps"]]
         self.assertTrue(any("scripts/ci/clippy.sh all" in run for run in runs))
         script = (REPO_ROOT / "scripts/ci/clippy.sh").read_text(encoding="utf-8")
         self.assertIn('"$0" file-io || status=$?', script)

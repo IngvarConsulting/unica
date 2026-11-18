@@ -1,4 +1,8 @@
 //! Durable runtime state, exact resource leases and retained child supervision.
+use crate::runner::{
+    attempt::{CompletedAttempt, RuntimeAttempt, RuntimeAttemptScope, RuntimeJobRunner},
+    operation::{CancelPolicy, RuntimeJobOperation},
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 #[cfg(any(test, feature = "test-support"))]
@@ -18,10 +22,6 @@ use unica_process::runtime_job::{
     RuntimeJobSpawnFailure,
 };
 use unica_redaction::{self as redaction, bounded_char_tail, bounded_redacted_tail};
-use unica_runner::{
-    attempt::{CompletedAttempt, RuntimeAttempt, RuntimeAttemptScope, RuntimeJobRunner},
-    operation::{CancelPolicy, RuntimeJobOperation},
-};
 use unica_work_control::{
     cancellation::{cancelled_error, CancellationToken},
     shared_work::{SharedWork, SharedWorkLease, SharedWorkLifetime, SharedWorkProducer},
@@ -36,11 +36,51 @@ use unica_workspace::{
 use uuid::Uuid;
 type JobResult<T> = Result<T, String>;
 const RECORD_SCHEMA_VERSION: u8 = 1;
+// resource-limit: runtime-job.record-bytes
+// class: format
+// unit: bytes
+// scope: record
+// value: 262144
+// resource: Размер сохранённой записи runtime-задания.
+// status: unproven
+// origin: коммит 02e6b03af (fix(runtime): close quarantine authority gaps)
+// problem: неизвестно
+// on-reach: запись не пишется: «runtime job record exceeds its bounded size»; большая запись не читается
 const RUNTIME_RECORD_BYTES: usize = 256 * 1024;
+// resource-limit: runtime-job.cancel-marker-bytes
+// class: format
+// unit: bytes
+// scope: record
+// value: 4096
+// resource: Размер метки отмены runtime-задания.
+// status: unproven
+// origin: #928, #946 (#1367)
+// problem: неизвестно
+// on-reach: чтение метки отмены завершается ошибкой «read runtime job cancellation»
 const CANCEL_MARKER_BYTES: usize = 4 * 1024;
+// resource-limit: runtime-job.output-tail-bytes
+// class: retention
+// unit: bytes
+// scope: process
+// value: 16384
+// resource: Хвост stdout и stderr runtime-задания, сохраняемый в журналах задания и отдаваемый в его выводе.
+// status: unproven
+// origin: коммит 2bd211f0d (feat: добавить durable runtime job core)
+// problem: неизвестно
+// on-reach: тихо: сохраняются последние 16 КиБ вывода после редактирования секретов
 const OUTPUT_TAIL_BYTES: usize = 16 * 1024;
 const DEFAULT_STALE_AFTER: Duration = Duration::from_secs(5 * 60);
 const LIFECYCLE_LOCK_WAIT: Duration = Duration::from_secs(30);
+// resource-limit: runtime-job.lifecycle-lock-retry
+// class: retry
+// unit: ms
+// scope: workspace
+// value: 20
+// resource: Пауза между попытками взять блокировку жизненного цикла runtime-заданий рабочего пространства.
+// status: unproven
+// origin: #483
+// problem: неизвестно
+// on-reach: попытки повторяются до срока; затем ошибка «another runtime job lifecycle transition still holds the workspace guard»
 const LIFECYCLE_LOCK_RETRY: Duration = Duration::from_millis(20);
 #[cfg(any(test, feature = "test-support"))]
 static INJECT_RUNTIME_RECORD_WRITE_FAILURE: std::sync::atomic::AtomicBool =
@@ -202,18 +242,24 @@ impl<R: RuntimeAttempt> Drop for RuntimeJobService<R> {
             let retained = Arc::new(Mutex::new(Some(active)));
             match spawn_quarantine_supervisor(store, job_id.clone(), Arc::clone(&retained)) {
                 Ok(supervisor) => {
+                    // Drop never panics: a panic here during unwinding aborts the
+                    // test binary. A broken fixture invariant is recorded on its
+                    // owner and fails the test when the owner is drained.
                     #[cfg(any(test, feature = "test-support"))]
-                    {
-                        let admission = self.test_admission.as_ref().expect(
-                            "retained test process must have an explicit fixture owner admission",
-                        );
-                        register_test_quarantine_supervisor(
+                    match self.test_admission.as_ref() {
+                        Some(admission) => register_test_quarantine_supervisor(
                             admission.owner,
                             admission.service_root.clone(),
                             job_id,
                             controlled_test_supervision,
                             supervisor,
-                        );
+                        ),
+                        // Unreachable through the service: every start path
+                        // refuses without an admission. No owner can carry it.
+                        None => eprintln!(
+                            "retained test process {job_id} has no fixture owner admission; \
+                             its quarantine supervisor is detached"
+                        ),
                     }
                     #[cfg(not(any(test, feature = "test-support")))]
                     drop(supervisor);
@@ -303,6 +349,9 @@ pub struct TestFixtureOwnerState {
     pub live_admissions: usize,
     pub exact_service_roots: HashSet<PathBuf>,
     pub supervisors: Vec<TestQuarantineSupervisor>,
+    /// Fixture invariants broken inside a `Drop`, where a panic could abort
+    /// the test binary; draining the owner fails the test with them.
+    pub violations: Vec<String>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -322,19 +371,24 @@ pub struct TestServiceAdmission {
 
 #[cfg(any(test, feature = "test-support"))]
 impl Drop for TestServiceAdmission {
+    /// Never panics; see [`TestFixtureOwnerState::violations`].
     fn drop(&mut self) {
         let mut registry = test_fixture_registry()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let state = registry
-            .owners
-            .get_mut(&self.owner)
-            .expect("test fixture owner outlived its service admission");
-        assert!(
-            state.live_admissions > 0,
-            "test fixture service admission count underflow"
-        );
-        state.live_admissions -= 1;
+        let Some(state) = registry.owners.get_mut(&self.owner) else {
+            eprintln!(
+                "test fixture owner of {} was drained before its service admission",
+                self.service_root.display()
+            );
+            return;
+        };
+        match state.live_admissions.checked_sub(1) {
+            Some(live) => state.live_admissions = live,
+            None => state
+                .violations
+                .push("test fixture service admission count underflow".into()),
+        }
     }
 }
 
@@ -354,21 +408,30 @@ fn register_test_quarantine_supervisor(
     controlled: bool,
     supervisor: QuarantineSupervisor,
 ) {
+    // Called from `RuntimeJobService::drop`: never panics, see
+    // [`TestFixtureOwnerState::violations`].
     let mut registry = test_fixture_registry()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let state = registry
-        .owners
-        .get_mut(&owner)
-        .expect("test fixture owner disappeared before supervisor registration");
-    assert!(
-        state.exact_service_roots.contains(&service_root),
-        "test supervisor service root is not bound to its fixture owner"
-    );
-    assert!(
-        state.live_admissions > 0,
-        "test supervisor registration must precede service admission release"
-    );
+    let Some(state) = registry.owners.get_mut(&owner) else {
+        eprintln!(
+            "test fixture owner of {} disappeared before supervisor registration; \
+             supervisor of job {job_id} is detached",
+            service_root.display()
+        );
+        return;
+    };
+    if !state.exact_service_roots.contains(&service_root) {
+        state.violations.push(format!(
+            "test supervisor service root {} is not bound to its fixture owner",
+            service_root.display()
+        ));
+    }
+    if state.live_admissions == 0 {
+        state
+            .violations
+            .push("test supervisor registration must precede service admission release".into());
+    }
     state.supervisors.push(TestQuarantineSupervisor {
         service_root,
         job_id,
@@ -396,6 +459,7 @@ pub fn create_test_fixture_owner(outer_root: PathBuf) -> TestFixtureOwnerToken {
             live_admissions: 0,
             exact_service_roots: HashSet::from([outer_root]),
             supervisors: Vec::new(),
+            violations: Vec::new(),
         },
     );
     owner
@@ -527,6 +591,20 @@ pub fn drain_test_fixture_owner(owner: TestFixtureOwnerToken) {
     for root in state.exact_service_roots {
         assert_eq!(registry.exact_roots.remove(&root), Some(owner));
     }
+    drop(registry);
+    if state.violations.is_empty() {
+        return;
+    }
+    let message = format!(
+        "test fixture invariants broken while dropping its services: {:?}",
+        state.violations
+    );
+    // A fixture's own Drop may drain it while a test already unwinds.
+    if std::thread::panicking() {
+        eprintln!("{message}");
+    } else {
+        panic!("{message}");
+    }
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -570,7 +648,12 @@ impl TestSupervisorScope {
 impl Drop for TestSupervisorScope {
     fn drop(&mut self) {
         TEST_SUPERVISOR_SCOPES.with(|scopes| {
-            let popped = scopes.borrow_mut().pop().expect("test supervisor scope");
+            let popped = scopes.borrow_mut().pop();
+            // A second panic while a test already panics aborts the binary (#3065).
+            if std::thread::panicking() {
+                return;
+            }
+            let popped = popped.expect("test supervisor scope");
             assert!(Arc::ptr_eq(&popped, &self.owners));
         });
     }
@@ -595,9 +678,11 @@ pub struct RuntimeWorkKey {
 }
 
 #[cfg(test)]
-mod shared_identity_tests {
+mod medium_shared_identity_tests {
     use super::{RuntimeWorkKey, Uuid};
 
+    /// rule: INV.APP.EXACT-LONG-WORK-OWNERSHIP
+    /// rule: INV.APP.EXACT-SHARED-WORK
     #[test]
     fn typed_runtime_keys_remain_exact() {
         assert_ne!(
@@ -1461,7 +1546,7 @@ impl<R: RuntimeAttempt> RuntimeJobService<R> {
                 record
                     .warnings
                     .push(redact_text(&fallback.retry_start_warning(
-                        unica_runner::attempt::RetryStartFailure::Authorization,
+                        crate::runner::attempt::RetryStartFailure::Authorization,
                         &error,
                     )));
                 return self
@@ -1483,7 +1568,7 @@ impl<R: RuntimeAttempt> RuntimeJobService<R> {
                 record
                     .warnings
                     .push(redacted_error(&fallback.retry_start_warning(
-                        unica_runner::attempt::RetryStartFailure::Spawn,
+                        crate::runner::attempt::RetryStartFailure::Spawn,
                         &error,
                     )));
                 return self
@@ -3535,6 +3620,8 @@ pub mod test_support {
     }
 }
 
+#[cfg(test)]
+mod fixture_drop_tests;
 #[cfg(test)]
 mod retry_scope_tests;
 

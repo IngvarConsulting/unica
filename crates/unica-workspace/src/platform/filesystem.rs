@@ -307,7 +307,27 @@ fn ensure_short_private_runtime_dir_unix(path: &Path, uid: libc::uid_t) -> io::R
     use std::os::unix::io::FromRawFd;
     use std::time::Duration;
 
+    // resource-limit: workspace.runtime-dir-setup-attempts
+    // class: retry
+    // unit: count
+    // scope: directory
+    // value: 8
+    // resource: Число попыток подготовить короткий частный каталог исполнения Unix.
+    // status: unproven
+    // origin: #308
+    // problem: неизвестно
+    // on-reach: после попыток каталог проверяется последний раз; неготовый даёт ошибку прав или отсутствия каталога
     const SETUP_ATTEMPTS: usize = 8;
+    // resource-limit: workspace.runtime-dir-retry-delay
+    // class: retry
+    // unit: ms
+    // scope: directory
+    // value: 1
+    // resource: Пауза между попытками подготовить частный каталог исполнения при гонке с другим процессом того же пользователя.
+    // status: unproven
+    // origin: #308
+    // problem: неизвестно
+    // on-reach: после паузы следующая попытка в пределах числа попыток
     const RETRY_DELAY: Duration = Duration::from_millis(1);
 
     for _ in 0..SETUP_ATTEMPTS {
@@ -1532,6 +1552,79 @@ impl RetainedDirectoryCapability {
         }
     }
 
+    /// The stamps of the regular files directly in a relative directory,
+    /// taken in one pass over its retained descriptor; `None` when the
+    /// directory is absent. On Unix `fstatat` reads each inode, so every
+    /// stamp equals [`Self::relative_file_stamp`] of that file.
+    #[cfg(unix)]
+    pub(crate) fn relative_directory_file_stamps(
+        &self,
+        relative: &Path,
+    ) -> io::Result<Option<Vec<(std::ffi::OsString, FileStamp)>>> {
+        self.relative_directory_file_stamps_matching(relative, |_| true)
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn relative_directory_file_stamps_with_extension(
+        &self,
+        relative: &Path,
+        extension: &std::ffi::OsStr,
+    ) -> io::Result<Option<Vec<(std::ffi::OsString, FileStamp)>>> {
+        self.relative_directory_file_stamps_matching(relative, |name| {
+            Path::new(name).extension() == Some(extension)
+        })
+    }
+
+    #[cfg(unix)]
+    fn relative_directory_file_stamps_matching(
+        &self,
+        relative: &Path,
+        selected: impl Fn(&std::ffi::OsStr) -> bool,
+    ) -> io::Result<Option<Vec<(std::ffi::OsString, FileStamp)>>> {
+        use std::path::Component;
+
+        let mut directory = self.retained.directory.try_clone()?;
+        for component in relative.components() {
+            let Component::Normal(name) = component else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "relative directory path contains a non-normal component",
+                ));
+            };
+            directory = match open_directory_child_nofollow(&directory, name) {
+                Ok(child) => child,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+                Err(error) => return Err(error),
+            };
+        }
+        #[cfg(any(test, feature = "test-support"))]
+        retained_read_probe::record(|| {
+            retained_read_probe::RetainedRead::Listed(self.path.join(relative))
+        });
+        directory_regular_file_stamps(&directory, selected).map(Some)
+    }
+
+    /// Elsewhere stamps are taken from each opened file. On Windows a
+    /// directory enumeration reports the length and times of the directory
+    /// entry, which NTFS updates lazily (on close, for the name written
+    /// through) and SMB caches: they need not match the file.
+    #[cfg(not(unix))]
+    pub(crate) fn relative_directory_file_stamps(
+        &self,
+        _relative: &Path,
+    ) -> io::Result<Option<Vec<(std::ffi::OsString, FileStamp)>>> {
+        Ok(None)
+    }
+
+    #[cfg(not(unix))]
+    pub(crate) fn relative_directory_file_stamps_with_extension(
+        &self,
+        _relative: &Path,
+        _extension: &std::ffi::OsStr,
+    ) -> io::Result<Option<Vec<(std::ffi::OsString, FileStamp)>>> {
+        Ok(None)
+    }
+
     pub(crate) fn open_relative_regular_nofollow(&self, relative: &Path) -> io::Result<fs::File> {
         use std::path::Component;
 
@@ -1749,6 +1842,16 @@ fn sync_renamed_regular_child(file: &fs::File) -> io::Result<()> {
 }
 
 /// The portion a checked read takes between two checkpoints.
+// resource-limit: apply.checked-read-chunk-bytes
+// class: step
+// unit: bytes
+// scope: file
+// value: 65536
+// resource: Размер одной порции чтения или сравнения входа apply между проверками срока и отмены.
+// status: unproven
+// origin: #1119
+// problem: неизвестно
+// on-reach: файл читается следующей порцией после проверки срока и отмены
 const CHECKED_READ_CHUNK_BYTES: usize = 64 * 1024;
 
 /// A checked read either failed on the filesystem or was stopped by its
@@ -2345,11 +2448,11 @@ pub(crate) fn open_absolute_directory_path_nofollow(path: &Path) -> io::Result<f
     let mut current = open_directory_nofollow(Path::new("/"))?;
     for component in path.components() {
         match component {
-            Component::RootDir | Component::CurDir => {}
+            Component::RootDir => {}
             Component::Normal(name) => {
                 current = open_directory_child_nofollow(&current, name)?;
             }
-            Component::ParentDir | Component::Prefix(_) => {
+            Component::CurDir | Component::ParentDir | Component::Prefix(_) => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "secure directory path contains a non-normal component",
@@ -2358,6 +2461,41 @@ pub(crate) fn open_absolute_directory_path_nofollow(path: &Path) -> io::Result<f
         }
     }
     Ok(current)
+}
+
+/// `root` with its existing ancestors canonicalized and the rest kept as
+/// given; the final component is never resolved here.
+#[cfg(unix)]
+pub(crate) fn resolve_ancestor_links(root: &Path) -> io::Result<PathBuf> {
+    let Some(name) = root.file_name() else {
+        return Ok(root.to_path_buf());
+    };
+    let mut pending = vec![name.to_os_string()];
+    let mut ancestor = root.parent();
+    while let Some(directory) = ancestor {
+        match fs::canonicalize(directory) {
+            Ok(mut resolved) => {
+                resolved.extend(pending.iter().rev());
+                return Ok(resolved);
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                // A missing `..` cannot be carried over without changing
+                // which directory the path names.
+                let Some(name) = directory.file_name() else {
+                    return Ok(root.to_path_buf());
+                };
+                pending.push(name.to_os_string());
+                ancestor = directory.parent();
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(root.to_path_buf())
+}
+
+#[cfg(not(unix))]
+pub(crate) fn resolve_ancestor_links(root: &Path) -> io::Result<PathBuf> {
+    Ok(root.to_path_buf())
 }
 
 /// Opens an absolute directory path component-by-component and creates only absent directory
@@ -2376,7 +2514,7 @@ pub(crate) fn open_or_create_absolute_directory_path_nofollow(path: &Path) -> io
     let mut current = open_directory_nofollow(Path::new("/"))?;
     for component in path.components() {
         match component {
-            Component::RootDir | Component::CurDir => {}
+            Component::RootDir => {}
             Component::Normal(name) => {
                 current = match open_directory_child_nofollow(&current, name) {
                     Ok(directory) => directory,
@@ -2395,7 +2533,7 @@ pub(crate) fn open_or_create_absolute_directory_path_nofollow(path: &Path) -> io
                     Err(error) => return Err(error),
                 };
             }
-            Component::ParentDir | Component::Prefix(_) => {
+            Component::CurDir | Component::ParentDir | Component::Prefix(_) => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "secure directory path contains a non-normal component",
@@ -2551,6 +2689,60 @@ pub(crate) fn read_directory_names_with_limit(
     }
     names.sort();
     Ok(names)
+}
+
+/// The stamps of the regular files in `directory`: `fstatat` without
+/// following links for each name of one `readdir` pass.
+#[cfg(unix)]
+fn directory_regular_file_stamps(
+    directory: &fs::File,
+    selected: impl Fn(&std::ffi::OsStr) -> bool,
+) -> io::Result<Vec<(std::ffi::OsString, FileStamp)>> {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::io::AsRawFd;
+
+    let mut stamps = Vec::new();
+    for entry in cap_primitives::fs::read_base_dir(directory)? {
+        let name = entry?.file_name();
+        if !selected(&name) {
+            continue;
+        }
+        let Ok(c_name) = std::ffi::CString::new(name.as_bytes()) else {
+            continue;
+        };
+        let mut status = std::mem::MaybeUninit::<libc::stat>::uninit();
+        // SAFETY: the directory descriptor stays open, the name is NUL-terminated and
+        // `status` is writable storage that fstatat fully initializes on success.
+        let result = unsafe {
+            libc::fstatat(
+                directory.as_raw_fd(),
+                c_name.as_ptr(),
+                status.as_mut_ptr(),
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        };
+        if result != 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::NotFound {
+                continue;
+            }
+            return Err(error);
+        }
+        // SAFETY: fstatat returned success, so it initialized `status`.
+        let status = unsafe { status.assume_init() };
+        if status.st_mode & libc::S_IFMT != libc::S_IFREG {
+            continue;
+        }
+        #[allow(clippy::unnecessary_cast)]
+        let stamp = FileStamp::from_observation(
+            FileIdentity::from_observation(status.st_dev as u64, status.st_ino as u64),
+            status.st_size as u64,
+            change_time_as_system_time((status.st_mtime as i64, status.st_mtime_nsec as i64)),
+            change_time_as_system_time((status.st_ctime as i64, status.st_ctime_nsec as i64)),
+        );
+        stamps.push((name, stamp));
+    }
+    Ok(stamps)
 }
 
 #[cfg(unix)]
@@ -2868,431 +3060,6 @@ impl Drop for LocalSecurityDescriptor {
 }
 
 #[cfg(windows)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum WindowsImmutableAclProfile {
-    Ancestry,
-    Installation,
-}
-
-#[cfg(windows)]
-struct SelfRelativeSecurityDescriptor {
-    storage: Vec<usize>,
-    length: usize,
-}
-
-#[cfg(windows)]
-impl SelfRelativeSecurityDescriptor {
-    fn capture(descriptor: windows_sys::Win32::Security::PSECURITY_DESCRIPTOR) -> io::Result<Self> {
-        use std::mem::size_of;
-        use std::ptr;
-        use windows_sys::Win32::Security::{
-            GetSecurityDescriptorControl, GetSecurityDescriptorLength, IsValidSecurityDescriptor,
-            MakeSelfRelativeSD, SE_SELF_RELATIVE,
-        };
-
-        if descriptor.is_null() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "security descriptor is absent",
-            ));
-        }
-        // SAFETY: descriptor is non-null; callers retain the allocation for this call.
-        if unsafe { IsValidSecurityDescriptor(descriptor) } == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "security descriptor is malformed",
-            ));
-        }
-        let mut control = 0;
-        let mut revision = 0;
-        // SAFETY: descriptor was validated and both output pointers are writable.
-        if unsafe { GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) } == 0 {
-            return Err(io::Error::last_os_error());
-        }
-
-        if control & SE_SELF_RELATIVE != 0 {
-            // SAFETY: descriptor is a valid self-relative descriptor.
-            let length = unsafe { GetSecurityDescriptorLength(descriptor) } as usize;
-            if length == 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "security descriptor has zero length",
-                ));
-            }
-            let mut storage = vec![0usize; length.div_ceil(size_of::<usize>())];
-            // SAFETY: storage has at least length writable bytes and descriptor has that many
-            // readable bytes according to GetSecurityDescriptorLength.
-            unsafe {
-                ptr::copy_nonoverlapping(
-                    descriptor.cast::<u8>(),
-                    storage.as_mut_ptr().cast::<u8>(),
-                    length,
-                )
-            };
-            return Ok(Self { storage, length });
-        }
-
-        let mut length = 0;
-        // SAFETY: this size query reads the validated absolute descriptor and writes length.
-        unsafe { MakeSelfRelativeSD(descriptor, ptr::null_mut(), &mut length) };
-        if length == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        let mut storage = vec![0usize; (length as usize).div_ceil(size_of::<usize>())];
-        // SAFETY: storage is aligned and has at least length writable bytes.
-        if unsafe { MakeSelfRelativeSD(descriptor, storage.as_mut_ptr().cast(), &mut length) } == 0
-        {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(Self {
-            storage,
-            length: length as usize,
-        })
-    }
-
-    fn as_ptr(&self) -> windows_sys::Win32::Security::PSECURITY_DESCRIPTOR {
-        self.storage.as_ptr().cast_mut().cast()
-    }
-
-    fn as_bytes(&self) -> &[u8] {
-        // SAFETY: storage owns at least length initialized bytes copied or written above.
-        unsafe { std::slice::from_raw_parts(self.storage.as_ptr().cast::<u8>(), self.length) }
-    }
-}
-
-#[cfg(windows)]
-pub(crate) struct WindowsImmutableEntryEvidence {
-    pub(crate) identity: FileIdentity,
-    pub(crate) security_descriptor_sha256: [u8; 32],
-    descriptor: SelfRelativeSecurityDescriptor,
-}
-
-#[cfg(windows)]
-impl WindowsImmutableEntryEvidence {
-    pub(crate) fn verify(&self, profile: WindowsImmutableAclProfile) -> io::Result<()> {
-        verify_windows_immutable_security_descriptor(self.descriptor.as_ptr(), profile)
-    }
-}
-
-#[cfg(windows)]
-pub(crate) fn capture_windows_immutable_entry_evidence(
-    file: &fs::File,
-) -> io::Result<WindowsImmutableEntryEvidence> {
-    use std::os::windows::io::AsRawHandle;
-    use std::ptr;
-    use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT};
-    use windows_sys::Win32::Security::{DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION};
-
-    let mut descriptor = ptr::null_mut();
-    // SAFETY: file owns a valid handle and descriptor is writable output storage.
-    let status = unsafe {
-        GetSecurityInfo(
-            file.as_raw_handle(),
-            SE_FILE_OBJECT,
-            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
-            ptr::null_mut(),
-            ptr::null_mut(),
-            ptr::null_mut(),
-            ptr::null_mut(),
-            &mut descriptor,
-        )
-    };
-    if status != 0 {
-        return Err(io::Error::from_raw_os_error(status as i32));
-    }
-    let descriptor = LocalSecurityDescriptor(descriptor);
-    let descriptor = SelfRelativeSecurityDescriptor::capture(descriptor.0)?;
-    use sha2::{Digest, Sha256};
-    Ok(WindowsImmutableEntryEvidence {
-        identity: file_identity(file)?,
-        security_descriptor_sha256: Sha256::digest(descriptor.as_bytes()).into(),
-        descriptor,
-    })
-}
-
-#[cfg(windows)]
-fn sid_string(sid: windows_sys::Win32::Security::PSID) -> io::Result<String> {
-    use std::ptr;
-    use windows_sys::Win32::Foundation::LocalFree;
-    use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
-
-    let mut text = ptr::null_mut();
-    // SAFETY: the caller supplies a validated SID and text is writable output storage.
-    if unsafe { ConvertSidToStringSidW(sid, &mut text) } == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: the API returned a live NUL-terminated UTF-16 allocation.
-    let length = unsafe {
-        let mut length = 0;
-        while *text.add(length) != 0 {
-            length += 1;
-        }
-        length
-    };
-    // SAFETY: length ends before the allocation's terminating NUL.
-    let value = String::from_utf16(unsafe { std::slice::from_raw_parts(text, length) })
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error));
-    // SAFETY: ConvertSidToStringSidW allocates with LocalAlloc.
-    unsafe { LocalFree(text.cast()) };
-    value
-}
-
-#[cfg(windows)]
-fn windows_sid_is_trusted(sid: windows_sys::Win32::Security::PSID) -> io::Result<bool> {
-    const TRUSTED_INSTALLER: &str =
-        "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
-    Ok(matches!(
-        sid_string(sid)?.as_str(),
-        TRUSTED_INSTALLER | "S-1-5-18" | "S-1-5-32-544"
-    ))
-}
-
-#[cfg(windows)]
-fn windows_immutable_mutation_mask(profile: WindowsImmutableAclProfile) -> u32 {
-    use windows_sys::Win32::Foundation::{GENERIC_ALL, GENERIC_WRITE};
-    use windows_sys::Win32::Storage::FileSystem::{
-        DELETE, FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_DELETE_CHILD, FILE_WRITE_ATTRIBUTES,
-        FILE_WRITE_DATA, FILE_WRITE_EA, WRITE_DAC, WRITE_OWNER,
-    };
-
-    let substitution =
-        DELETE | FILE_DELETE_CHILD | WRITE_DAC | WRITE_OWNER | GENERIC_WRITE | GENERIC_ALL;
-    match profile {
-        WindowsImmutableAclProfile::Ancestry => substitution,
-        WindowsImmutableAclProfile::Installation => {
-            substitution
-                | FILE_WRITE_DATA
-                | FILE_ADD_FILE
-                | FILE_ADD_SUBDIRECTORY
-                | FILE_WRITE_EA
-                | FILE_WRITE_ATTRIBUTES
-        }
-    }
-}
-
-#[cfg(windows)]
-pub(crate) fn verify_windows_immutable_security_descriptor(
-    descriptor: windows_sys::Win32::Security::PSECURITY_DESCRIPTOR,
-    profile: WindowsImmutableAclProfile,
-) -> io::Result<()> {
-    use std::mem::{offset_of, size_of};
-    use std::ptr;
-    use windows_sys::Win32::Security::{
-        AclSizeInformation, GetAce, GetAclInformation, GetLengthSid, GetSecurityDescriptorDacl,
-        GetSecurityDescriptorOwner, IsValidAcl, IsValidSecurityDescriptor, IsValidSid,
-        ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, ACL_SIZE_INFORMATION,
-    };
-
-    const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
-    const ACCESS_DENIED_ACE_TYPE: u8 = 1;
-    const VALID_INHERIT_FLAGS: u8 = 0x1f;
-    const INHERIT_ONLY_ACE: u8 = 0x08;
-
-    if descriptor.is_null() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "security descriptor is absent",
-        ));
-    }
-    // SAFETY: descriptor is non-null and remains live for this function.
-    if unsafe { IsValidSecurityDescriptor(descriptor) } == 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "security descriptor is malformed",
-        ));
-    }
-
-    let mut owner = ptr::null_mut();
-    let mut owner_defaulted = 0;
-    // SAFETY: descriptor was validated and output pointers are writable.
-    if unsafe { GetSecurityDescriptorOwner(descriptor, &mut owner, &mut owner_defaulted) } == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    if owner.is_null() || unsafe { IsValidSid(owner) } == 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "immutable platform owner SID is absent or malformed",
-        ));
-    }
-    if !windows_sid_is_trusted(owner)? {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "immutable platform owner SID is not trusted",
-        ));
-    }
-
-    let mut dacl_present = 0;
-    let mut dacl: *mut ACL = ptr::null_mut();
-    let mut dacl_defaulted = 0;
-    // SAFETY: descriptor was validated and output pointers are writable.
-    if unsafe {
-        GetSecurityDescriptorDacl(
-            descriptor,
-            &mut dacl_present,
-            &mut dacl,
-            &mut dacl_defaulted,
-        )
-    } == 0
-    {
-        return Err(io::Error::last_os_error());
-    }
-    if dacl_present == 0 || dacl.is_null() {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "immutable platform security descriptor has an absent or null DACL",
-        ));
-    }
-    // SAFETY: dacl is non-null and points inside the validated descriptor.
-    if unsafe { IsValidAcl(dacl) } == 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "immutable platform DACL is malformed",
-        ));
-    }
-
-    let mut information = ACL_SIZE_INFORMATION {
-        AceCount: 0,
-        AclBytesInUse: 0,
-        AclBytesFree: 0,
-    };
-    // SAFETY: dacl is valid and information is writable.
-    if unsafe {
-        GetAclInformation(
-            dacl,
-            (&mut information as *mut ACL_SIZE_INFORMATION).cast(),
-            size_of::<ACL_SIZE_INFORMATION>() as u32,
-            AclSizeInformation,
-        )
-    } == 0
-    {
-        return Err(io::Error::last_os_error());
-    }
-
-    let mutation_mask = windows_immutable_mutation_mask(profile);
-    for index in 0..information.AceCount {
-        let mut ace = ptr::null_mut();
-        // SAFETY: index is within the validated ACL's reported ACE count.
-        if unsafe { GetAce(dacl, index, &mut ace) } == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        // SAFETY: GetAce returned a pointer to a complete ACE header in the validated ACL.
-        let header = unsafe { &*ace.cast::<ACE_HEADER>() };
-        if header.AceFlags & !VALID_INHERIT_FLAGS != 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "immutable platform DACL contains unsupported ACE flags",
-            ));
-        }
-        if !matches!(
-            header.AceType,
-            ACCESS_ALLOWED_ACE_TYPE | ACCESS_DENIED_ACE_TYPE
-        ) {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "immutable platform DACL contains an unsupported ACE type",
-            ));
-        }
-
-        let sid_offset = offset_of!(ACCESS_ALLOWED_ACE, SidStart);
-        let minimum_sid_bytes = 8usize;
-        let ace_size = usize::from(header.AceSize);
-        if ace_size < sid_offset + minimum_sid_bytes {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "immutable platform DACL contains a truncated ACE SID",
-            ));
-        }
-        // SAFETY: the fixed ACE header and minimum SID were bounds-checked against AceSize.
-        let allowed = unsafe { &*ace.cast::<ACCESS_ALLOWED_ACE>() };
-        let sid: windows_sys::Win32::Security::PSID =
-            (&raw const allowed.SidStart).cast_mut().cast();
-        // SAFETY: the minimum SID header is contained in this ACE.
-        let subauthority_count = unsafe { *sid.cast::<u8>().add(1) } as usize;
-        let sid_length = minimum_sid_bytes
-            .checked_add(
-                subauthority_count
-                    .checked_mul(size_of::<u32>())
-                    .ok_or_else(|| {
-                        io::Error::new(io::ErrorKind::InvalidData, "ACE SID length overflowed")
-                    })?,
-            )
-            .ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidData, "ACE SID length overflowed")
-            })?;
-        if sid_offset + sid_length > ace_size {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "immutable platform DACL contains an out-of-bounds ACE SID",
-            ));
-        }
-        // SAFETY: the SID is fully contained in the ACE according to its own length field.
-        if unsafe { IsValidSid(sid) } == 0 || unsafe { GetLengthSid(sid) } as usize != sid_length {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "immutable platform DACL contains a malformed ACE SID",
-            ));
-        }
-
-        if header.AceType == ACCESS_DENIED_ACE_TYPE || header.AceFlags & INHERIT_ONLY_ACE != 0 {
-            continue;
-        }
-        if allowed.Mask & mutation_mask != 0 && !windows_sid_is_trusted(sid)? {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                format!(
-                    "immutable platform DACL grants mutation rights 0x{:08x} to an untrusted SID",
-                    allowed.Mask & mutation_mask
-                ),
-            ));
-        }
-    }
-    Ok(())
-}
-
-#[cfg(windows)]
-pub(crate) fn verify_windows_elevation_value(is_elevated: u32) -> io::Result<()> {
-    if is_elevated == 0 {
-        Ok(())
-    } else {
-        Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "immutable platform execution is refused for an elevated Windows caller",
-        ))
-    }
-}
-
-#[cfg(windows)]
-pub(crate) fn verify_unprivileged_windows_platform_caller() -> io::Result<()> {
-    use std::mem::size_of;
-    use windows_sys::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION};
-
-    let token = ProcessToken::current_user()?;
-    let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 0 };
-    let mut returned = 0;
-    // SAFETY: token is a live process-token handle, elevation is writable storage of the exact
-    // requested type, and returned is writable.
-    if unsafe {
-        GetTokenInformation(
-            token.handle,
-            TokenElevation,
-            (&mut elevation as *mut TOKEN_ELEVATION).cast(),
-            size_of::<TOKEN_ELEVATION>() as u32,
-            &mut returned,
-        )
-    } == 0
-    {
-        return Err(io::Error::last_os_error());
-    }
-    if returned != size_of::<TOKEN_ELEVATION>() as u32 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Windows token elevation proof returned an unexpected size",
-        ));
-    }
-    verify_windows_elevation_value(elevation.TokenIsElevated)
-}
-
-#[cfg(windows)]
 #[allow(
     dead_code,
     reason = "DirectoryAnchor callers are introduced by the following Windows full-dump task"
@@ -3342,6 +3109,28 @@ pub(crate) fn open_directory_nofollow(path: &Path) -> io::Result<fs::File> {
     Ok(file)
 }
 
+/// Отклонить `.` и `..` до нормализации пути.
+///
+/// `std::path::absolute` на Windows разрешает их лексически, по правилам
+/// `GetFullPathName`, и после неё путь выглядит нормальным. На Unix она их
+/// сохраняет, и такой путь отклоняется. Проверка до нормализации даёт обеим
+/// ОС одно правило и один текст отказа.
+#[cfg(windows)]
+fn reject_non_normal_path_components(path: &Path) -> io::Result<()> {
+    use std::path::Component;
+
+    if path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir | Component::CurDir))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "secure directory path contains a non-normal component",
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(windows)]
 pub(crate) fn open_absolute_directory_path_nofollow(path: &Path) -> io::Result<fs::File> {
     use std::path::Component;
@@ -3352,6 +3141,7 @@ pub(crate) fn open_absolute_directory_path_nofollow(path: &Path) -> io::Result<f
             "secure directory path must be absolute",
         ));
     }
+    reject_non_normal_path_components(path)?;
     let absolute = std::path::absolute(path)?;
     let mut components = absolute.components();
     let Some(Component::Prefix(prefix)) = components.next() else {
@@ -3374,8 +3164,10 @@ pub(crate) fn open_absolute_directory_path_nofollow(path: &Path) -> io::Result<f
             Component::Normal(name) => {
                 current = open_directory_child_nofollow(&current, name)?;
             }
-            Component::CurDir => {}
-            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+            Component::CurDir
+            | Component::ParentDir
+            | Component::RootDir
+            | Component::Prefix(_) => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "secure directory path contains a non-normal component",
@@ -3396,6 +3188,7 @@ pub(crate) fn open_or_create_absolute_directory_path_nofollow(path: &Path) -> io
             "secure directory path must be absolute",
         ));
     }
+    reject_non_normal_path_components(path)?;
     let absolute = std::path::absolute(path)?;
     let mut components = absolute.components();
     let Some(Component::Prefix(prefix)) = components.next() else {
@@ -3430,8 +3223,10 @@ pub(crate) fn open_or_create_absolute_directory_path_nofollow(path: &Path) -> io
                     Err(error) => return Err(error),
                 };
             }
-            Component::CurDir => {}
-            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+            Component::CurDir
+            | Component::ParentDir
+            | Component::RootDir
+            | Component::Prefix(_) => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "secure directory path contains a non-normal component",
@@ -3502,13 +3297,6 @@ struct NtIoStatusBlock {
 }
 
 #[cfg(windows)]
-#[repr(C)]
-struct NtFileFsDeviceInformation {
-    device_type: u32,
-    characteristics: u32,
-}
-
-#[cfg(windows)]
 unsafe extern "system" {
     fn NtCreateFile(
         file_handle: *mut windows_sys::Win32::Foundation::HANDLE,
@@ -3530,13 +3318,6 @@ unsafe extern "system" {
         length: u32,
         file_information_class: u32,
     ) -> i32;
-    fn NtQueryVolumeInformationFile(
-        file_handle: windows_sys::Win32::Foundation::HANDLE,
-        io_status_block: *mut NtIoStatusBlock,
-        fs_information: *mut std::ffi::c_void,
-        length: u32,
-        fs_information_class: u32,
-    ) -> i32;
     fn RtlNtStatusToDosError(status: i32) -> u32;
 }
 
@@ -3545,75 +3326,6 @@ fn nt_status_error(status: i32) -> io::Error {
     // SAFETY: RtlNtStatusToDosError accepts all NTSTATUS values and returns a Win32 error code.
     let error = unsafe { RtlNtStatusToDosError(status) };
     io::Error::from_raw_os_error(error as i32)
-}
-
-#[cfg(windows)]
-fn verify_windows_local_fixed_device_info(
-    device_type: u32,
-    characteristics: u32,
-) -> io::Result<()> {
-    const FILE_DEVICE_DISK: u32 = 0x0000_0007;
-    const FILE_REMOTE_DEVICE: u32 = 0x0000_0010;
-    const FILE_REMOVABLE_MEDIA: u32 = 0x0000_0001;
-    const FILE_FLOPPY_DISKETTE: u32 = 0x0000_0004;
-    const FILE_WRITE_ONCE_MEDIA: u32 = 0x0000_0008;
-    const FILE_VIRTUAL_VOLUME: u32 = 0x0000_0040;
-    const FILE_PORTABLE_DEVICE: u32 = 0x0000_4000;
-    const FILE_REMOTE_DEVICE_VSMB: u32 = 0x0008_0000;
-    const UNTRUSTED_CHARACTERISTICS: u32 = FILE_REMOTE_DEVICE
-        | FILE_REMOVABLE_MEDIA
-        | FILE_FLOPPY_DISKETTE
-        | FILE_WRITE_ONCE_MEDIA
-        | FILE_VIRTUAL_VOLUME
-        | FILE_PORTABLE_DEVICE
-        | FILE_REMOTE_DEVICE_VSMB;
-
-    if device_type != FILE_DEVICE_DISK || characteristics & UNTRUSTED_CHARACTERISTICS != 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            format!(
-                "immutable platform volume is not a local fixed disk (device type 0x{device_type:08x}, characteristics 0x{characteristics:08x})"
-            ),
-        ));
-    }
-    Ok(())
-}
-
-#[cfg(windows)]
-pub(crate) fn verify_windows_local_fixed_volume(file: &fs::File) -> io::Result<()> {
-    use std::mem::size_of;
-    use std::os::windows::io::AsRawHandle;
-
-    const FILE_FS_DEVICE_INFORMATION_CLASS: u32 = 4;
-    let mut io_status = NtIoStatusBlock {
-        status: NtIoStatusStatus { status: 0 },
-        information: 0,
-    };
-    let mut information = NtFileFsDeviceInformation {
-        device_type: 0,
-        characteristics: 0,
-    };
-    // SAFETY: file retains a valid handle for the complete call; io_status and information are
-    // writable buffers of the exact native layouts for FileFsDeviceInformation.
-    let status = unsafe {
-        NtQueryVolumeInformationFile(
-            file.as_raw_handle(),
-            &mut io_status,
-            (&mut information as *mut NtFileFsDeviceInformation).cast(),
-            size_of::<NtFileFsDeviceInformation>() as u32,
-            FILE_FS_DEVICE_INFORMATION_CLASS,
-        )
-    };
-    if status < 0 {
-        return Err(nt_status_error(status));
-    }
-    if io_status.information != size_of::<NtFileFsDeviceInformation>() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Windows volume device proof returned an unexpected size",
-        ));
-    }
-    verify_windows_local_fixed_device_info(information.device_type, information.characteristics)
 }
 
 #[cfg(windows)]
@@ -4338,6 +4050,16 @@ fn visit_directory_names<E: From<io::Error>>(
         FileIdBothDirectoryInfo, FileIdBothDirectoryRestartInfo, GetFileInformationByHandleEx,
     };
 
+    // resource-limit: workspace.windows-directory-buffer-bytes
+    // class: step
+    // unit: bytes
+    // scope: directory
+    // value: 65536
+    // resource: Размер буфера одного запроса перечисления имён каталога в Windows.
+    // status: unproven
+    // origin: #284
+    // problem: неизвестно
+    // on-reach: имена читаются следующими запросами до конца каталога
     const BUFFER_BYTES: usize = 64 * 1024;
 
     validate_directory_handle(directory)?;
@@ -4461,8 +4183,12 @@ fn rename_open_child(
         .len()
         .checked_mul(size_of::<u16>())
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "child name is too long"))?;
+    // NtSetInformationFile rejects a buffer shorter than the declared
+    // structure, whose trailing one-character name array is padded; a
+    // one-character name otherwise yields STATUS_INFO_LENGTH_MISMATCH.
     let information_length = offset_of!(RenameInformation, file_name)
         .checked_add(name_bytes)
+        .map(|length| length.max(size_of::<RenameInformation>()))
         .and_then(|length| u32::try_from(length).ok())
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "child name is too long"))?;
     let word_count = (information_length as usize).div_ceil(size_of::<usize>());
@@ -5792,24 +5518,58 @@ pub fn is_foreign_absolute_path(path: &str) -> bool {
 }
 
 #[cfg(windows)]
-pub fn path_starts_with_host_root(path: &Path, root: &Path) -> bool {
-    let path = strip_windows_extended_length_prefix(path);
-    let root = strip_windows_extended_length_prefix(root);
-    let path_components = path.components().collect::<Vec<_>>();
-    let root_components = root.components().collect::<Vec<_>>();
-    path_components.len() >= root_components.len()
-        && path_components
-            .iter()
-            .zip(root_components.iter())
-            .all(|(left, right)| {
-                left.as_os_str().to_string_lossy().to_lowercase()
-                    == right.as_os_str().to_string_lossy().to_lowercase()
-            })
+fn host_path_components_match(
+    left: std::path::Component<'_>,
+    right: std::path::Component<'_>,
+) -> bool {
+    left.as_os_str().to_string_lossy().to_lowercase()
+        == right.as_os_str().to_string_lossy().to_lowercase()
 }
 
 #[cfg(not(windows))]
+fn host_path_components_match(
+    left: std::path::Component<'_>,
+    right: std::path::Component<'_>,
+) -> bool {
+    left == right
+}
+
+/// The part of `path` below `root` under the host's own path rules: on Windows
+/// the `\\?\` spelling of either side and the letter case of a component do not
+/// change which file is named. `None` when `path` is not at or below `root`, or
+/// when the remainder climbs with `..`. An empty result means the same path.
+/// Both sides must be host paths: a logical address has rules of its own.
+pub fn host_path_relative_to(path: &Path, root: &Path) -> Option<PathBuf> {
+    let path = strip_windows_extended_length_prefix(path);
+    let root = strip_windows_extended_length_prefix(root);
+    let mut below = path.components();
+    for expected in root.components() {
+        if !host_path_components_match(below.next()?, expected) {
+            return None;
+        }
+    }
+    let relative = below.as_path();
+    (!relative
+        .components()
+        .any(|component| component == std::path::Component::ParentDir))
+    .then(|| relative.to_path_buf())
+}
+
+/// Whether two host paths name the same file under the rules of
+/// [`host_path_relative_to`].
+pub fn same_host_path(left: &Path, right: &Path) -> bool {
+    host_path_relative_to(left, right).is_some_and(|relative| relative.as_os_str().is_empty())
+}
+
 pub fn path_starts_with_host_root(path: &Path, root: &Path) -> bool {
-    path.starts_with(root)
+    let path = strip_windows_extended_length_prefix(path);
+    let root = strip_windows_extended_length_prefix(root);
+    let mut below = path.components();
+    root.components().all(|expected| {
+        below
+            .next()
+            .is_some_and(|component| host_path_components_match(component, expected))
+    })
 }
 
 #[cfg(all(any(test, feature = "test-support"), unix))]
@@ -6744,7 +6504,7 @@ pub(crate) fn assert_owned_snapshot_markers_present(
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     #[cfg(unix)]
     use super::stable_path_identity_bytes;
     use super::{
@@ -6755,6 +6515,26 @@ mod tests {
     use std::io;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn atomic_directory_publication_accepts_a_one_character_name() {
+        use super::RetainedDirectoryCapability;
+
+        let root = unique_temp_root("one-character-directory");
+        fs::create_dir_all(&root).unwrap();
+        let parent = RetainedDirectoryCapability::open(&fs::canonicalize(&root).unwrap()).unwrap();
+        parent
+            .create_directory_child_atomically(
+                std::ffi::OsStr::new(".private-a"),
+                std::ffi::OsStr::new("A"),
+            )
+            .unwrap();
+        assert!(root.join("A").is_dir());
+        assert!(!root.join(".private-a").exists());
+        drop(parent);
+        fs::remove_dir_all(&root).unwrap();
+    }
 
     #[cfg(windows)]
     #[test]
@@ -7011,6 +6791,51 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    /// На Windows `std::path::absolute` убирала `.` и `..` до проверки, и путь
+    /// проходил; на Unix тот же путь отклонялся. Тест держит одно правило
+    /// и один текст отказа на обеих ОС.
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn secure_absolute_directory_open_rejects_parent_component_on_every_os() {
+        use super::{
+            open_absolute_directory_path_nofollow, open_or_create_absolute_directory_path_nofollow,
+        };
+        use std::path::PathBuf;
+
+        let created = unique_temp_root("secure-open-non-normal");
+        fs::create_dir_all(created.join("inner")).unwrap();
+        // Корень берётся физическим: временный каталог macOS лежит под
+        // симлинком `/var`, и защищённое открытие отвергло бы его раньше,
+        // чем дошло бы до проверяемого элемента.
+        let root = fs::canonicalize(&created).unwrap();
+        // Цель существует: отказ даёт сам элемент `..`, а не её отсутствие.
+        assert!(root.join("inner").is_dir());
+        // Путь собирается строкой: на пути с префиксом `\\?\` (его даёт
+        // `canonicalize` на Windows) `PathBuf::push` убрал бы `..` сам,
+        // и проверялся бы уже нормализованный путь.
+        let mut text = root.into_os_string();
+        for name in ["inner", "..", "inner"] {
+            text.push(std::path::MAIN_SEPARATOR_STR);
+            text.push(name);
+        }
+        let detoured = PathBuf::from(text);
+
+        for error in [
+            open_absolute_directory_path_nofollow(&detoured)
+                .expect_err("путь с `..` не открывается"),
+            open_or_create_absolute_directory_path_nofollow(&detoured)
+                .expect_err("путь с `..` не создаётся"),
+        ] {
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+            assert_eq!(
+                error.to_string(),
+                "secure directory path contains a non-normal component"
+            );
+        }
+
+        fs::remove_dir_all(created).unwrap();
+    }
+
     #[cfg(any(unix, windows))]
     #[test]
     fn secure_absolute_directory_creation_rejects_link_ancestor_without_writing_through_it() {
@@ -7046,8 +6871,8 @@ mod tests {
     mod windows {
         use super::{fs, io, unique_temp_root};
         use crate::platform::filesystem::{
-            capture_windows_immutable_entry_evidence, create_new_directory_child,
-            create_owner_only_directory, create_owner_only_directory_child, create_owner_only_file,
+            create_new_directory_child, create_owner_only_directory,
+            create_owner_only_directory_child, create_owner_only_file,
             create_owner_only_file_child, delete_open_child, directory_query_is_end, file_identity,
             nt_create_options_for_std_file, open_any_child_for_delete, open_any_child_nofollow,
             open_directory_child_for_rename, open_directory_child_nofollow,
@@ -7056,317 +6881,20 @@ mod tests {
             rename_directory_handle_child_no_replace,
             rename_identity_bound_regular_child_no_replace,
             set_before_identity_bound_cleanup_mutation_hook, verify_owner_only_acl,
-            verify_owner_only_security_descriptor, verify_thread_token_fallback_error,
-            verify_windows_elevation_value, verify_windows_immutable_security_descriptor,
-            verify_windows_local_fixed_device_info, verify_windows_local_fixed_volume,
-            with_case_sensitivity_query_error, EffectiveTokenSource, OpenedChildKind,
-            OwnerOnlySecurityAttributes, ProcessToken, RetainedDirectoryCapability,
-            WindowsImmutableAclProfile,
+            verify_owner_only_security_descriptor, with_case_sensitivity_query_error,
+            OpenedChildKind, OwnerOnlySecurityAttributes, RetainedDirectoryCapability,
         };
         use std::ffi::OsString;
         use std::mem::{offset_of, size_of};
         use std::ptr;
-        use windows_sys::Win32::Foundation::{LocalFree, GENERIC_ALL, GENERIC_WRITE};
+
         use windows_sys::Win32::Foundation::{
-            ERROR_ACCESS_DENIED, ERROR_CALL_NOT_IMPLEMENTED, ERROR_CANT_OPEN_ANONYMOUS,
-            ERROR_FILE_NOT_FOUND, ERROR_INVALID_FUNCTION, ERROR_INVALID_PARAMETER,
-            ERROR_NOT_SUPPORTED, ERROR_NO_MORE_FILES, ERROR_NO_TOKEN,
-        };
-        use windows_sys::Win32::Security::Authorization::{
-            ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
-        };
-        use windows_sys::Win32::Security::PSECURITY_DESCRIPTOR;
-        use windows_sys::Win32::Security::{ImpersonateSelf, RevertToSelf, SecurityImpersonation};
-        use windows_sys::Win32::Storage::FileSystem::{
-            DELETE, FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_DELETE_CHILD, FILE_ID_BOTH_DIR_INFO,
-            FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FILE_WRITE_EA, WRITE_DAC, WRITE_OWNER,
+            ERROR_ACCESS_DENIED, ERROR_CALL_NOT_IMPLEMENTED, ERROR_FILE_NOT_FOUND,
+            ERROR_INVALID_FUNCTION, ERROR_INVALID_PARAMETER, ERROR_NOT_SUPPORTED,
+            ERROR_NO_MORE_FILES,
         };
 
-        struct TestSecurityDescriptor(PSECURITY_DESCRIPTOR);
-
-        impl Drop for TestSecurityDescriptor {
-            fn drop(&mut self) {
-                // SAFETY: the SDDL conversion API allocated this descriptor with LocalAlloc.
-                unsafe { LocalFree(self.0) };
-            }
-        }
-
-        fn descriptor_from_sddl(sddl: &str) -> TestSecurityDescriptor {
-            let mut wide = sddl.encode_utf16().collect::<Vec<_>>();
-            wide.push(0);
-            let mut descriptor = ptr::null_mut();
-            // SAFETY: wide is NUL-terminated and descriptor is writable output storage.
-            let converted = unsafe {
-                ConvertStringSecurityDescriptorToSecurityDescriptorW(
-                    wide.as_ptr(),
-                    SDDL_REVISION_1,
-                    &mut descriptor,
-                    ptr::null_mut(),
-                )
-            };
-            assert_ne!(converted, 0, "{}", io::Error::last_os_error());
-            TestSecurityDescriptor(descriptor)
-        }
-
-        fn descriptor_with_untrusted_mask(
-            owner: &str,
-            mask: u32,
-            flags: &str,
-        ) -> TestSecurityDescriptor {
-            descriptor_from_sddl(&format!(
-                "O:{owner}D:(A;;FA;;;SY)(A;{flags};0x{mask:08x};;;BU)"
-            ))
-        }
-
-        #[test]
-        fn windows_immutable_platform_accepts_trusted_owners_and_read_execute_users() {
-            const TRUSTED_INSTALLER: &str =
-                "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
-            for owner in [TRUSTED_INSTALLER, "SY", "BA"] {
-                let descriptor = descriptor_from_sddl(&format!(
-                    "O:{owner}D:(A;;FA;;;SY)(A;;FA;;;BA)(A;;0x001200a9;;;BU)"
-                ));
-
-                verify_windows_immutable_security_descriptor(
-                    descriptor.0,
-                    WindowsImmutableAclProfile::Installation,
-                )
-                .unwrap();
-            }
-        }
-
-        #[test]
-        fn windows_immutable_platform_rejects_an_untrusted_owner() {
-            let descriptor = descriptor_from_sddl("O:BUD:(A;;FA;;;SY)(A;;FRFX;;;BU)");
-
-            let error = verify_windows_immutable_security_descriptor(
-                descriptor.0,
-                WindowsImmutableAclProfile::Installation,
-            )
-            .unwrap_err();
-
-            assert!(error.to_string().contains("owner"), "{error}");
-        }
-
-        #[test]
-        fn windows_immutable_platform_ancestry_allows_sibling_creation_only() {
-            let descriptor =
-                descriptor_with_untrusted_mask("SY", FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY, "");
-
-            verify_windows_immutable_security_descriptor(
-                descriptor.0,
-                WindowsImmutableAclProfile::Ancestry,
-            )
-            .unwrap();
-        }
-
-        #[test]
-        fn windows_immutable_platform_ancestry_rejects_untrusted_substitution_rights() {
-            for mask in [
-                DELETE,
-                FILE_DELETE_CHILD,
-                WRITE_DAC,
-                WRITE_OWNER,
-                GENERIC_WRITE,
-                GENERIC_ALL,
-            ] {
-                let descriptor = descriptor_with_untrusted_mask("SY", mask, "");
-
-                let error = verify_windows_immutable_security_descriptor(
-                    descriptor.0,
-                    WindowsImmutableAclProfile::Ancestry,
-                )
-                .unwrap_err();
-
-                assert!(
-                    error.to_string().contains("mutation"),
-                    "mask 0x{mask:08x}: {error}"
-                );
-            }
-        }
-
-        #[test]
-        fn windows_immutable_platform_inventory_rejects_every_untrusted_mutation_right() {
-            for mask in [
-                FILE_WRITE_DATA,
-                FILE_ADD_FILE,
-                FILE_ADD_SUBDIRECTORY,
-                FILE_WRITE_EA,
-                FILE_WRITE_ATTRIBUTES,
-                FILE_DELETE_CHILD,
-                DELETE,
-                WRITE_DAC,
-                WRITE_OWNER,
-                GENERIC_WRITE,
-                GENERIC_ALL,
-            ] {
-                let descriptor = descriptor_with_untrusted_mask("BA", mask, "");
-
-                let error = verify_windows_immutable_security_descriptor(
-                    descriptor.0,
-                    WindowsImmutableAclProfile::Installation,
-                )
-                .unwrap_err();
-
-                assert!(
-                    error.to_string().contains("mutation"),
-                    "mask 0x{mask:08x}: {error}"
-                );
-            }
-        }
-
-        #[test]
-        fn windows_immutable_platform_ignores_inherit_only_capabilities_on_current_entry() {
-            let descriptor = descriptor_with_untrusted_mask("SY", GENERIC_ALL, "OICIIO");
-
-            verify_windows_immutable_security_descriptor(
-                descriptor.0,
-                WindowsImmutableAclProfile::Installation,
-            )
-            .unwrap();
-        }
-
-        #[test]
-        fn windows_immutable_platform_rejects_missing_null_and_unsupported_dacls() {
-            let absent = descriptor_from_sddl("O:SY");
-            let null = descriptor_from_sddl("O:SYD:NO_ACCESS_CONTROL");
-            let object =
-                descriptor_from_sddl("O:SYD:(OA;;FA;00112233-4455-6677-8899-aabbccddeeff;;BU)");
-            let mut malformed = [0usize; 4];
-
-            for descriptor in [
-                absent.0,
-                null.0,
-                object.0,
-                malformed.as_mut_ptr().cast(),
-                ptr::null_mut(),
-            ] {
-                assert!(verify_windows_immutable_security_descriptor(
-                    descriptor,
-                    WindowsImmutableAclProfile::Installation,
-                )
-                .is_err());
-            }
-        }
-
-        #[test]
-        fn windows_immutable_platform_rejects_an_elevated_caller() {
-            let error = verify_windows_elevation_value(1).unwrap_err();
-
-            assert!(error.to_string().contains("elevated"), "{error}");
-            verify_windows_elevation_value(0).unwrap();
-        }
-
-        #[test]
-        fn windows_immutable_platform_effective_token_falls_back_only_when_thread_has_no_token() {
-            verify_thread_token_fallback_error(ERROR_NO_TOKEN).unwrap();
-
-            for expected in [ERROR_ACCESS_DENIED, ERROR_CANT_OPEN_ANONYMOUS] {
-                let error = verify_thread_token_fallback_error(expected).unwrap_err();
-                assert_eq!(error.raw_os_error(), Some(expected as i32));
-            }
-        }
-
-        #[test]
-        fn windows_immutable_platform_effective_token_uses_process_token_without_impersonation() {
-            let token = ProcessToken::current_user().unwrap();
-
-            assert_eq!(token.source, EffectiveTokenSource::Process);
-        }
-
-        #[test]
-        fn windows_immutable_platform_effective_token_selects_an_impersonation_token() {
-            struct RevertGuard;
-
-            impl Drop for RevertGuard {
-                fn drop(&mut self) {
-                    // SAFETY: this guard is created only after ImpersonateSelf succeeds.
-                    assert_ne!(unsafe { RevertToSelf() }, 0);
-                }
-            }
-
-            // SAFETY: SecurityImpersonation is a documented impersonation level.
-            assert_ne!(
-                unsafe { ImpersonateSelf(SecurityImpersonation) },
-                0,
-                "{}",
-                io::Error::last_os_error()
-            );
-            let _guard = RevertGuard;
-
-            let token = ProcessToken::current_user().unwrap();
-
-            assert_eq!(token.source, EffectiveTokenSource::Thread);
-        }
-
-        #[test]
-        fn windows_immutable_platform_rejects_nonlocal_or_nonfixed_device_information() {
-            const FILE_DEVICE_CD_ROM: u32 = 0x0000_0002;
-            const FILE_DEVICE_DISK: u32 = 0x0000_0007;
-            const FILE_DEVICE_NETWORK_FILE_SYSTEM: u32 = 0x0000_0014;
-            const FILE_DEVICE_VIRTUAL_DISK: u32 = 0x0000_0024;
-            const FILE_PORTABLE_DEVICE: u32 = 0x0000_4000;
-            const FILE_REMOTE_DEVICE: u32 = 0x0000_0010;
-            const FILE_REMOTE_DEVICE_VSMB: u32 = 0x0008_0000;
-            const FILE_REMOVABLE_MEDIA: u32 = 0x0000_0001;
-            const FILE_DEVICE_IS_MOUNTED: u32 = 0x0000_0020;
-
-            verify_windows_local_fixed_device_info(FILE_DEVICE_DISK, FILE_DEVICE_IS_MOUNTED)
-                .unwrap();
-            for (device_type, characteristics) in [
-                (FILE_DEVICE_DISK, FILE_REMOTE_DEVICE),
-                (FILE_DEVICE_DISK, FILE_REMOTE_DEVICE_VSMB),
-                (FILE_DEVICE_DISK, FILE_PORTABLE_DEVICE),
-                (FILE_DEVICE_DISK, FILE_REMOVABLE_MEDIA),
-                (FILE_DEVICE_NETWORK_FILE_SYSTEM, FILE_DEVICE_IS_MOUNTED),
-                (FILE_DEVICE_CD_ROM, FILE_DEVICE_IS_MOUNTED),
-                (FILE_DEVICE_VIRTUAL_DISK, FILE_DEVICE_IS_MOUNTED),
-                (0xffff_ffff, 0),
-            ] {
-                assert!(
-                    verify_windows_local_fixed_device_info(device_type, characteristics).is_err(),
-                    "device type 0x{device_type:08x}, characteristics 0x{characteristics:08x}"
-                );
-            }
-        }
-
-        #[test]
-        fn windows_immutable_platform_accepts_a_real_local_fixed_volume_handle() {
-            let root = unique_temp_root("immutable-local-volume");
-            fs::create_dir_all(&root).unwrap();
-            let handle = open_directory_nofollow(&root).unwrap();
-
-            verify_windows_local_fixed_volume(&handle).unwrap();
-
-            drop(handle);
-            fs::remove_dir_all(root).unwrap();
-        }
-
-        #[test]
-        fn windows_immutable_platform_attestation_handle_evidence_stays_bound_to_the_open_object() {
-            let root = unique_temp_root("immutable-handle-evidence");
-            fs::create_dir_all(&root).unwrap();
-            let original = root.join("entry");
-            let displaced = root.join("displaced");
-            let original_handle = create_owner_only_file(&original).unwrap();
-            let expected_identity = file_identity(&original_handle).unwrap();
-            fs::rename(&original, &displaced).unwrap();
-            fs::write(&original, b"decoy").unwrap();
-            let decoy_handle = fs::File::open(&original).unwrap();
-
-            let retained = capture_windows_immutable_entry_evidence(&original_handle).unwrap();
-            let decoy = capture_windows_immutable_entry_evidence(&decoy_handle).unwrap();
-
-            assert_eq!(retained.identity, expected_identity);
-            assert_ne!(retained.identity, decoy.identity);
-            assert_ne!(
-                retained.security_descriptor_sha256,
-                decoy.security_descriptor_sha256
-            );
-            drop(decoy_handle);
-            drop(original_handle);
-            fs::remove_dir_all(root).unwrap();
-        }
+        use windows_sys::Win32::Storage::FileSystem::{DELETE, FILE_ID_BOTH_DIR_INFO, WRITE_DAC};
 
         #[test]
         fn owner_only_directory_is_opened_without_following_reparse_points() {
@@ -7390,7 +6918,11 @@ mod tests {
             let real = root.join("real");
             let link = root.join("link");
             fs::create_dir_all(&real).unwrap();
-            std::os::windows::fs::symlink_dir(&real, &link).unwrap();
+            // Предмет проверки — точка повторного разбора, а отказ стоит
+            // на её атрибуте, не на метке ссылки. Соединение каталогов несёт
+            // тот же атрибут и создаётся без привилегии, поэтому проверка
+            // исполняется здесь и покрывает второй вид точки.
+            crate::platform::testing::create_directory_junction_for_test(&real, &link).unwrap();
 
             let error = open_directory_nofollow(&link).unwrap_err();
 
@@ -7857,7 +7389,21 @@ mod tests {
             fs::create_dir_all(&root).unwrap();
             let target = root.join("target.txt");
             fs::write(&target, b"target").unwrap();
-            std::os::windows::fs::symlink_file(&target, root.join("link.txt")).unwrap();
+            // Подменяется файл, а соединение бывает только на каталог:
+            // без привилегии ссылок эту точку повторного разбора не создать.
+            let link = crate::platform::testing::create_file_link_fixture_for_test(
+                &target,
+                root.join("link.txt"),
+            )
+            .unwrap();
+            if link != crate::platform::testing::FileLinkFixtureOutcome::Created {
+                fs::remove_dir_all(&root).unwrap();
+                unica_process::test_support::skip_without_host_capability(
+                    unica_process::test_support::HostCapability::Symlink,
+                    "the reparse point of the test is a file symbolic link",
+                );
+                return;
+            }
             let parent = open_directory_nofollow(&root).unwrap();
 
             let (opened, kind) = open_any_child_nofollow(&parent, std::ffi::OsStr::new("link.txt"))
@@ -8151,8 +7697,9 @@ mod tests {
         }
     }
 
-    /// #1119: a whole-file read takes chunks and stops at the checkpoint
+    /// A whole-file read takes chunks and stops at the checkpoint
     /// between them instead of finishing a large file past its deadline.
+    /// rule: INV.SOURCE.REVISION-CONTENT-BOUNDS
     #[test]
     fn checked_read_stops_between_chunks_and_keeps_a_planner_limit() {
         let root = unique_temp_root("checked-read");
@@ -8213,8 +7760,9 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
-    /// #1119: the preimage comparison reads in chunks against the retained
+    /// The preimage comparison reads in chunks against the retained
     /// image and tells equal, changed, shorter and longer files apart.
+    /// rule: INV.SOURCE.REVISION-CONTENT-BOUNDS
     #[test]
     fn checked_comparison_matches_only_the_exact_image() {
         let root = unique_temp_root("checked-compare");
@@ -8412,59 +7960,6 @@ mod tests {
         drop(root);
         fs::remove_file(&root_path).unwrap();
         fs::remove_dir_all(parent_path).unwrap();
-    }
-
-    #[test]
-    fn retained_atomic_replace_flushes_renamed_handle_before_directory_sync() {
-        let source = include_str!("filesystem.rs").replace("\r\n", "\n");
-        let start = source
-            .find("pub(crate) fn replace_regular_child_atomically(")
-            .expect("retained atomic publisher exists");
-        let end = source[start..]
-            .find("pub(crate) fn read_relative_regular_bounded(")
-            .map(|offset| start + offset)
-            .expect("publisher has a bounded source slice");
-        let publisher = &source[start..end];
-        let rename = publisher
-            .find("replace_identity_bound_regular_child(")
-            .expect("publisher retains descriptor-relative rename");
-        let renamed_flush = publisher
-            .find("sync_renamed_regular_child(")
-            .expect("publisher flushes the renamed writable handle");
-        let directory_sync = publisher
-            .find("sync_directory(")
-            .expect("publisher retains supported directory durability");
-
-        assert!(
-            rename < renamed_flush && renamed_flush < directory_sync,
-            "rename must precede descriptor flush, which must precede directory sync"
-        );
-        assert!(
-            publisher.contains("sync_renamed_regular_child(&staged.file)"),
-            "the still-writable staged handle must flush the physical object after rename"
-        );
-
-        let windows_start = source
-            .find("#[cfg(windows)]\npub(crate) fn replace_identity_bound_regular_child(")
-            .expect("Windows descriptor-relative replacement exists");
-        let windows_end = source[windows_start..]
-            .find("#[cfg(not(any(unix, windows)))]")
-            .map(|offset| windows_start + offset)
-            .expect("Windows replacement has a bounded source slice");
-        let windows_replace = &source[windows_start..windows_end];
-        assert!(windows_replace.contains("rename_open_child("));
-        assert!(!windows_replace.contains("MoveFileExW"));
-
-        let rename_start = source
-            .find("#[cfg(windows)]\nfn rename_open_child(")
-            .expect("Windows handle-bound rename exists");
-        let rename_end = source[rename_start..]
-            .find("#[cfg(unix)]\npub(crate) fn create_owner_only_directory_child(")
-            .map(|offset| rename_start + offset)
-            .expect("Windows handle-bound rename has a bounded source slice");
-        let windows_rename = &source[rename_start..rename_end];
-        assert!(windows_rename.contains("FILE_RENAME_INFORMATION_EX_CLASS"));
-        assert!(windows_rename.contains("FILE_RENAME_POSIX_SEMANTICS"));
     }
 
     #[cfg(windows)]
@@ -8784,7 +8279,7 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
-    /// Issue #1463: a retained-apply cleanup may run while another owner (a
+    /// A retained-apply cleanup may run while another owner (a
     /// pending saved plan, a reader) still holds the file or directory. Its
     /// name must leave the parent at once; on Windows a delete-pending name
     /// stayed until the daemon exited and could not be opened by anyone.
@@ -9018,6 +8513,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.WRITE-CONTAINMENT
     #[cfg(unix)]
     #[test]
     fn workspace_policy_rejects_lexically_external_symlink_into_workspace() {
@@ -9048,6 +8544,7 @@ mod tests {
         fs::remove_dir_all(temp).unwrap();
     }
 
+    /// rule: INV.SOURCE.WRITE-CONTAINMENT
     #[cfg(unix)]
     #[test]
     fn workspace_policy_rejects_lexically_internal_symlink_outside_workspace() {
@@ -9401,5 +8898,231 @@ mod tests {
         );
         unknown.unlock().unwrap();
         owner.unlock().unwrap();
+    }
+}
+
+/// The same path as the host may hand it back from `canonicalize`: `\\?\` on
+/// Windows, unchanged elsewhere.
+#[cfg(any(test, feature = "test-support"))]
+pub fn extended_length_spelling_for_test(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let plain = strip_windows_extended_length_prefix(path);
+        PathBuf::from(format!(r"\\?\{}", plain.display()))
+    }
+    #[cfg(not(windows))]
+    {
+        path.to_path_buf()
+    }
+}
+
+/// The same path in other letter case on a host whose path rules ignore it,
+/// unchanged elsewhere.
+#[cfg(any(test, feature = "test-support"))]
+pub fn other_letter_case_for_test(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        PathBuf::from(path.display().to_string().to_uppercase())
+    }
+    #[cfg(not(windows))]
+    {
+        path.to_path_buf()
+    }
+}
+
+#[cfg(test)]
+mod host_path_comparison_tests {
+    use super::{host_path_relative_to, same_host_path};
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn a_path_is_measured_from_a_root_by_whole_components() {
+        let root = std::env::temp_dir().join("root");
+        assert_eq!(
+            host_path_relative_to(&root.join("a").join("b.bsl"), &root),
+            Some(Path::new("a").join("b.bsl"))
+        );
+        assert_eq!(host_path_relative_to(&root, &root), Some(PathBuf::new()));
+        assert_eq!(
+            host_path_relative_to(&std::env::temp_dir().join("root-other"), &root),
+            None
+        );
+        assert!(same_host_path(&root, &root));
+        assert!(!same_host_path(&root.join("a"), &root));
+        assert!(!same_host_path(&root, &root.join("a")));
+    }
+
+    #[test]
+    fn a_remainder_that_climbs_is_not_below_the_root() {
+        let root = std::env::temp_dir().join("root");
+        assert_eq!(
+            host_path_relative_to(&root.join("..").join("other"), &root),
+            None
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_spelling_of_a_path_does_not_change_the_file_it_names() {
+        assert_eq!(
+            host_path_relative_to(
+                Path::new(r"\\?\E:\Work\SRC\Absent\Module.bsl"),
+                Path::new(r"e:\work\src")
+            ),
+            Some(PathBuf::from(r"Absent\Module.bsl"))
+        );
+        assert_eq!(
+            host_path_relative_to(
+                Path::new(r"E:\Work\src\Module.bsl"),
+                Path::new(r"\\?\E:\Work\SRC")
+            ),
+            Some(PathBuf::from("Module.bsl"))
+        );
+        assert_eq!(
+            host_path_relative_to(
+                Path::new(r"\\?\UNC\server\share\src\Module.bsl"),
+                Path::new(r"\\server\share\SRC")
+            ),
+            Some(PathBuf::from("Module.bsl"))
+        );
+        assert!(same_host_path(
+            Path::new(r"\\?\E:\Work\Foo"),
+            Path::new(r"e:\work\foo\")
+        ));
+        assert!(!same_host_path(
+            Path::new(r"E:\Work\Foo"),
+            Path::new(r"F:\Work\Foo")
+        ));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn letter_case_separates_paths_where_the_host_compares_it() {
+        assert_eq!(
+            host_path_relative_to(Path::new("/work/Foo/a"), Path::new("/work/foo")),
+            None
+        );
+        assert!(!same_host_path(
+            Path::new("/work/Foo"),
+            Path::new("/work/foo")
+        ));
+    }
+}
+
+#[cfg(test)]
+mod directory_stamp_tests {
+    use crate::read::open_source_directory;
+    use std::path::Path;
+
+    /// Selecting descriptor names preserves each file's physical stamp and
+    /// still excludes links and directories even when they have that suffix.
+    /// rule: INV.SOURCE.CONFIGURATION-ROOT-CACHE-REUSE
+    #[cfg(unix)]
+    #[test]
+    fn selected_directory_stamps_keep_regular_file_identity_and_extension() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(directory.path()).unwrap();
+        std::fs::create_dir_all(root.join("CommonModules/Directory.xml")).unwrap();
+        std::fs::write(root.join("CommonModules/First.xml"), b"descriptor").unwrap();
+        std::fs::write(root.join("CommonModules/Other.bsl"), b"unselected").unwrap();
+        std::os::unix::fs::symlink(
+            root.join("CommonModules/First.xml"),
+            root.join("CommonModules/Linked.xml"),
+        )
+        .unwrap();
+        let source = open_source_directory(&root).unwrap();
+        let stamps = source
+            .relative_directory_file_stamps_with_extension(
+                Path::new("CommonModules"),
+                std::ffi::OsStr::new("xml"),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(stamps.len(), 1);
+        assert_eq!(stamps[0].0, "First.xml");
+        assert_eq!(
+            Some(stamps[0].1),
+            source
+                .relative_file_stamp(Path::new("CommonModules/First.xml"))
+                .unwrap()
+        );
+        assert!(source
+            .relative_directory_file_stamps_with_extension(
+                Path::new("Absent"),
+                std::ffi::OsStr::new("xml")
+            )
+            .unwrap()
+            .is_none());
+        std::fs::create_dir(root.join("Empty")).unwrap();
+        std::fs::write(root.join("Empty/Other.bsl"), b"unselected").unwrap();
+        assert!(source
+            .relative_directory_file_stamps_with_extension(
+                Path::new("Empty"),
+                std::ffi::OsStr::new("xml")
+            )
+            .unwrap()
+            .unwrap()
+            .is_empty());
+    }
+
+    /// On Unix one pass over a directory gives each regular file the stamp
+    /// its own open gives, so retained proofs compare equal whichever way the
+    /// stamp was taken; links, directories and an absent directory are left
+    /// out.
+    /// rule: INV.SOURCE.CONFIGURATION-ROOT-CACHE-REUSE
+    #[cfg(unix)]
+    #[test]
+    fn directory_stamps_equal_the_stamps_of_opened_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(directory.path()).unwrap();
+        std::fs::create_dir_all(root.join("CommonModules/Nested")).unwrap();
+        std::fs::write(root.join("CommonModules/First.xml"), b"first").unwrap();
+        std::fs::write(root.join("CommonModules/Second.xml"), b"second, longer").unwrap();
+        std::os::unix::fs::symlink(
+            root.join("CommonModules/First.xml"),
+            root.join("CommonModules/Linked.xml"),
+        )
+        .unwrap();
+        let source = open_source_directory(&root).unwrap();
+
+        let mut stamps = source
+            .relative_directory_file_stamps(Path::new("CommonModules"))
+            .unwrap()
+            .expect("an existing directory is listed");
+        stamps.sort_by(|left, right| left.0.cmp(&right.0));
+        let names = stamps
+            .iter()
+            .map(|(name, _)| name.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["First.xml", "Second.xml"]);
+        for (name, stamp) in &stamps {
+            let opened = source
+                .relative_file_stamp(&Path::new("CommonModules").join(name))
+                .unwrap()
+                .unwrap();
+            assert_eq!(*stamp, opened, "{name:?}");
+        }
+        assert!(source
+            .relative_directory_file_stamps(Path::new("Absent"))
+            .unwrap()
+            .is_none());
+    }
+
+    /// A Windows directory entry need not carry the file's own length and
+    /// times, so the port takes no stamps from it: every stamp comes from the
+    /// opened file.
+    /// rule: INV.SOURCE.CONFIGURATION-ROOT-CACHE-REUSE
+    #[cfg(not(unix))]
+    #[test]
+    fn directory_stamps_are_not_taken_from_directory_entries() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(directory.path()).unwrap();
+        std::fs::create_dir_all(root.join("CommonModules")).unwrap();
+        std::fs::write(root.join("CommonModules/First.xml"), b"first").unwrap();
+        let source = open_source_directory(&root).unwrap();
+        assert!(source
+            .relative_directory_file_stamps(Path::new("CommonModules"))
+            .unwrap()
+            .is_none());
     }
 }

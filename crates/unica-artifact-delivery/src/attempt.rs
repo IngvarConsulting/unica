@@ -483,6 +483,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.PKG.INSTALL-ATTEMPT-LOG
     #[test]
     fn an_attempt_is_discoverable_while_its_stage_runs() {
         // Убить процесс могут в любой момент стадии, поэтому запись открывается
@@ -531,6 +532,7 @@ mod tests {
         fs::remove_dir_all(&root).ok();
     }
 
+    /// rule: INV.PKG.INSTALL-ATTEMPT-LOG
     #[test]
     fn a_new_attempt_does_not_erase_the_one_nobody_closed() {
         // Убитый процесс не выполняет деструкторов: брошенная запись — это и
@@ -552,6 +554,7 @@ mod tests {
         fs::remove_dir_all(&root).ok();
     }
 
+    /// rule: INV.PKG.INSTALL-ATTEMPT-LOG
     #[test]
     fn the_received_volume_is_read_from_the_partial_on_disk() {
         // Убитый процесс не успевает записать, сколько получил. Недокачка на
@@ -568,6 +571,7 @@ mod tests {
         fs::remove_dir_all(&root).ok();
     }
 
+    /// rule: INV.PKG.INSTALL-ATTEMPT-LOG
     #[test]
     fn the_stage_reported_is_the_last_one_the_attempt_reached() {
         let root = cache("stage");

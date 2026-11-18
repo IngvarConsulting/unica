@@ -1,0 +1,67 @@
+{
+  "id": "S414",
+  "name": "tabular-section-rename-renames-generated-types",
+  "issue": 1385,
+  "area": "Реквизиты и состав",
+  "task": "Переименование табличной части через newName переименовывает и её созданные типы (`CatalogTabularSection…`, `CatalogTabularSectionRow…`), сохраняя их TypeId, как это делает выгрузка платформы",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.TabularSection.Представления",
+        "ops": [
+          {
+            "op": "tabularSection.set",
+            "args": {
+              "values": {
+                "newName": "Переводы"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}TabularSection/{*}InternalInfo/{*}GeneratedType[@name='CatalogTabularSection.Валюты.Переводы']/{*}TypeId",
+          "eq": [
+            "7c7863ac-88d7-43e6-a7a6-ac2c028d9ce6"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}TabularSection/{*}InternalInfo/{*}GeneratedType[@name='CatalogTabularSectionRow.Валюты.Переводы']/{*}TypeId",
+          "eq": [
+            "d48be48d-cdf3-4bd4-b876-08c8528e8f58"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "xml",
+          "select": ".//{*}GeneratedType[@name='CatalogTabularSection.Валюты.Представления']",
+          "eq": []
+        },
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "xml",
+          "select": ".//{*}GeneratedType[@name='CatalogTabularSectionRow.Валюты.Представления']",
+          "eq": []
+        }
+      ]
+    }
+  ]
+}

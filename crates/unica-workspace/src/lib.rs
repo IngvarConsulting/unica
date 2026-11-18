@@ -20,6 +20,7 @@ pub mod policy_evidence;
 mod retained_directory;
 pub mod selection_evidence;
 pub mod single_file_publisher;
+pub mod source_profile;
 pub mod state;
 pub mod state_scope;
 
@@ -108,15 +109,21 @@ pub mod test_support {
         case_distinct_provider_paths_for_test, clear_execute_permission_for_test,
         create_dir_symlink_for_test, create_directory_link_fixture_for_test,
         create_file_link_fixture_for_test, create_file_symlink_for_test,
-        distinct_non_utf8_provider_paths_for_test, file_identity_for_test,
-        non_utf8_relative_path_for_test, normalize_path_text_for_test, open_handle_count_for_test,
-        path_identity_for_test, path_text_for_test, remove_dir_symlink_for_test,
-        set_unix_mode_for_test, sharing_violation_error_cases_for_test, unix_mode_for_test,
+        distinct_non_utf8_provider_paths_for_test, extended_length_spelling_for_test,
+        file_identity_for_test, non_utf8_relative_path_for_test, normalize_path_text_for_test,
+        open_handles_under_for_test, other_letter_case_for_test, path_identity_for_test,
+        path_text_for_test, remove_dir_symlink_for_test, set_unix_mode_for_test,
+        sharing_violation_error_cases_for_test, unix_mode_for_test,
         windows_extended_length_path_for_test, FileLinkFixtureOutcome,
         RetainedDirectoryReplacementOutcome, RetainedRegularFileRelocationOutcome,
     };
 }
 
-pub mod full_dump;
+pub mod runner_lock;
+
+/// The host branch classes used by v8 filename and installation policy.
+pub mod host_platform {
+    pub use crate::platform::host::{create_new_like, current_host_platform, HostPlatform};
+}
 
 pub mod discovery;

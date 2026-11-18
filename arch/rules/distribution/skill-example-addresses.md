@@ -1,7 +1,5 @@
 ---
 id: INV.SURFACE.SKILL-EXAMPLE-ADDRESSES-ROUTE
-check:
-  - crates/unica-coder/src/infrastructure/logical_tree.rs::every_skill_example_address_is_routable
 ---
 
 # Логические адреса в примерах скиллов поддерживаются грамматикой и профилем

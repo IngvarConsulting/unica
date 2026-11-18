@@ -1,8 +1,5 @@
 ---
 id: INV.SOURCE.LARGE-CONFIGURATION-ROOT-VIEW
-check:
-  - crates/unica-coder/tests/v13_search_integration.rs::canonical_view_reads_configuration_past_eight_mebibytes_with_many_registrations
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::a_descriptor_larger_than_eight_mebibytes_is_read_through_public_view
 gap: https://github.com/IngvarConsulting/unica/issues/1119
 ---
 

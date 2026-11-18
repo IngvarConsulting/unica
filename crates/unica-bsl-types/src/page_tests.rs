@@ -1,4 +1,5 @@
 use super::*;
+use crate::TypeName;
 
 fn page(body: &str) -> String {
     format!("\u{feff}<html><head></head><body>{body}</body></html>")
@@ -24,6 +25,7 @@ const ARRAY: &str =
 const ITEM: &str =
     "<a href=\"v8help://SyntaxHelperContext/objects/catalog9/Item.html\">Элемент</a>";
 
+/// rule: INV.ANALYSIS.PLATFORM-TYPE-CATALOG
 #[test]
 fn a_method_page_gives_its_variants_parameters_returns_and_contexts() {
     let html = page(&format!(
@@ -95,6 +97,7 @@ fn a_method_page_gives_its_variants_parameters_returns_and_contexts() {
     );
 }
 
+/// rule: INV.ANALYSIS.PLATFORM-TYPE-CATALOG
 #[test]
 fn a_property_reads_its_type_and_use_and_a_type_page_its_collection() {
     let property = page(&format!(
@@ -147,6 +150,7 @@ fn ty_html() -> String {
     page("<p class=\"V8SH_title\">X (X)</p>")
 }
 
+/// rule: INV.ANALYSIS.PLATFORM-TYPE-CATALOG
 #[test]
 fn types_named_in_text_are_language_types_or_stay_unknown() {
     let types = |content: &str| {
@@ -180,6 +184,7 @@ fn types_named_in_text_are_language_types_or_stay_unknown() {
     );
 }
 
+/// rule: INV.ANALYSIS.PLATFORM-TYPE-CATALOG
 #[test]
 fn an_array_element_is_named_in_the_same_sentence_only() {
     let element = |content: &str| type_list(content)[0].element.clone();

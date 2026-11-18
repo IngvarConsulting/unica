@@ -111,6 +111,12 @@
                 "kind": "object",
                 "metadataPath": "Catalog.ПримерБ"
               }
+            },
+            {
+              "relation": "handler",
+              "title": "Handler",
+              "at": "main:CommonModule.EventHandlers.Method.OnBeforeWrite",
+              "kind": "Method"
             }
           ]
         }
@@ -267,6 +273,12 @@
                 "kind": "object",
                 "metadataPath": "Catalog.ПримерБ"
               }
+            },
+            {
+              "relation": "handler",
+              "title": "Handler",
+              "at": "main:CommonModule.EventHandlers.Method.OnBeforeWrite",
+              "kind": "Method"
             }
           ]
         }
@@ -402,6 +414,12 @@
                 "kind": "object",
                 "metadataPath": "Catalog.ПримерБ"
               }
+            },
+            {
+              "relation": "handler",
+              "title": "Handler",
+              "at": "main:CommonModule.EventHandlers.Method.OnBeforeWrite",
+              "kind": "Method"
             }
           ]
         }

@@ -5,9 +5,7 @@
 use crate::edit::DcsEdit;
 use crate::facts::DcsFacts;
 use serde_json::{Map, Value};
-use unica_address::source_target::MetadataAddress;
 use unica_metadata::support_state::ObjectSupportData;
-use unica_operations::recovery::NamedLookup;
 use unica_source_contract::proposal::{
     ApplyPlanError, ApplyProposal, ApplySourceAuthority, ProvisionalApplyEffect,
 };
@@ -42,25 +40,6 @@ pub trait DcsCodec: Send + Sync {
         source_kind: SourceSetKind,
         edits: &[(usize, &DcsEdit)],
     ) -> Result<(), ApplyPlanError>;
-
-    /// Путь именованного узла в схеме макета из предложения. Нет схемы —
-    /// `Missing`.
-    fn member_path(
-        &self,
-        staged: &mut ApplyProposal<'_>,
-        source_kind: SourceSetKind,
-        template: &MetadataAddress,
-        member: DcsMember<'_>,
-    ) -> NamedLookup;
-}
-
-/// Именованный узел схемы, который ищет восстановление адреса.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DcsMember<'a> {
-    /// Набор данных, в том числе член объединения (#1353).
-    DataSet(&'a str),
-    /// Именованный элемент структуры варианта настроек (#1357).
-    StructureItem { variant: &'a str, name: &'a str },
 }
 
 /// Настройки проверки схемы.

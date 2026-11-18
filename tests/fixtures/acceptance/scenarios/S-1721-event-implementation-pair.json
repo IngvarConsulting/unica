@@ -306,7 +306,17 @@
           "kind": "sha256",
           "eq": "2ef9115491b0074f9e8167cfc9f6492449cf977e86d8cced79b2ab6dc8f44bf4"
         }
-      ]
+      ],
+      "captures": {
+        "unchanged1": {
+          "file": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "kind": "sha256"
+        },
+        "unchanged2": {
+          "file": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form/Module.bsl",
+          "kind": "sha256"
+        }
+      }
     },
     {
       "tool": "unica.view",
@@ -400,12 +410,12 @@
         {
           "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "433258850b63dbe9afa4799d27e198b6cd464b5a0badc6759c8a33ac769c9a1e"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "2ef9115491b0074f9e8167cfc9f6492449cf977e86d8cced79b2ab6dc8f44bf4"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/CommonModules/GoogleПереводчик.xml",

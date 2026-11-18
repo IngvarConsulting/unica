@@ -1,0 +1,24 @@
+name: cargo-nextest
+description: Поставить cargo-nextest версии из `.config/nextest.toml`, если такой ещё нет.
+
+# Одна установка для `ci.yml` и `release.yml`: очередь проходит тот же путь,
+# что ночь, и поломку установки видит до вливания. Вызывающий шаг задаёт
+# `timeout-minutes`: зависшая загрузка выпуска GitHub не съедает запись.
+runs:
+  using: composite
+  steps:
+    # Постоянные раннеры PVE уже держат nextest: установка с выпусков GitHub
+    # там не нужна и зависает на их 5xx. Шаг не падает: Actions гоняет bash
+    # с -e -o pipefail, а отсутствующий nextest — это обычный исход, после
+    # которого установка идёт как раньше.
+    - id: present
+      shell: bash
+      run: |
+        want=$(grep -o 'recommended = "[^"]*"' .config/nextest.toml | cut -d '"' -f 2) || want=
+        have=$(cargo nextest --version 2>/dev/null | awk 'NR == 1 { print $2 }') || have=
+        echo "nextest: нужен $want, стоит ${have:-нет}"
+        if [ -n "$want" ] && [ "$have" = "$want" ]; then echo "present=true" >> "$GITHUB_OUTPUT"; fi
+    - if: steps.present.outputs.present != 'true'
+      uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2.88.1
+      with:
+        tool: cargo-nextest@0.9.148

@@ -13,6 +13,16 @@ from tests.ci.acceptance_controls import (
 )
 
 
+class AwaitTaskControlTests(unittest.TestCase):
+    def test_only_explicit_terminal_apply_steps_can_await_a_task(self):
+        step = {"tool": "unica.apply", "args": {}, "expect": ["ok"], "awaitTask": True}
+        validate_controls(step)
+        for change in [{"awaitTask": 1}, {"awaitTask": "true"},
+                       {"tool": "unica.view"}, {"expect": ["ok", "task"]}]:
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                validate_controls({**step, **change})
+
+
 class ContentAssertionTests(unittest.TestCase):
     def test_source_text_answer_is_read_only_from_a_successful_envelope(self):
         def answer(first, is_error=False):

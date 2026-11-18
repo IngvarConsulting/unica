@@ -50,6 +50,8 @@ impl std::fmt::Display for Outcome {
 pub enum RefusalCode {
     /// `concurrent_change`
     ConcurrentChange,
+    /// `conflict`
+    Conflict,
     /// `source_selection_changed`
     SourceSelectionChanged,
     /// `deadline_exceeded`
@@ -139,6 +141,7 @@ impl RefusalCode {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::ConcurrentChange => "concurrent_change",
+            Self::Conflict => "conflict",
             Self::SourceSelectionChanged => "source_selection_changed",
             Self::DeadlineExceeded => "deadline_exceeded",
             Self::TaskTransportFailed => "task_transport_failed",
@@ -195,6 +198,7 @@ impl RefusalCode {
     pub const fn outcome(self) -> Outcome {
         match self {
             Self::ConcurrentChange => Outcome::RetryAsIs,
+            Self::Conflict => Outcome::FixCall,
             Self::SourceSelectionChanged => Outcome::RetryAsIs,
             Self::DeadlineExceeded => Outcome::RetryAsIs,
             Self::TaskTransportFailed => Outcome::RetryAsIs,
@@ -247,8 +251,9 @@ impl RefusalCode {
     }
 
     /// Весь словарь — для проверок полноты и порождения ведомостей.
-    pub const ALL: [Self; 42] = [
+    pub const ALL: [Self; 43] = [
         Self::ConcurrentChange,
+        Self::Conflict,
         Self::SourceSelectionChanged,
         Self::DeadlineExceeded,
         Self::TaskTransportFailed,
@@ -456,6 +461,7 @@ mod tests {
     /// против недоступного поставщика. Решение владельца 16.09.2026 — свести
     /// каждую пару к одному имени; тест держит их снятыми, чтобы синоним не
     /// вернулся под видом нового кода.
+    /// rule: INV.WIRE.REFUSAL-CODE-NAMES
     #[test]
     fn the_dictionary_keeps_no_synonym_of_a_code_it_already_carries() {
         let names: BTreeSet<&str> = RefusalCode::ALL.iter().map(|code| code.as_str()).collect();

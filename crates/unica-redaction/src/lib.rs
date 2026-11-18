@@ -9,6 +9,17 @@ pub fn redactor(text: &str) -> String {
 
 const EXACT_SECRET_KEYS: &[&str] = &["connection", "pwd"];
 const SUBSTRING_SECRET_KEYS: &[&str] = &["password", "token", "secret"];
+// resource-limit: redaction.retained-key-bytes
+// class: format
+// unit: bytes
+// scope: frame
+// value: 10
+// derived: true
+// resource: Хвост буфера потокового редактирования, удерживаемый до решения о ключе секрета: длина самого длинного точного ключа («connection»).
+// status: unproven
+// origin: 39907867c
+// problem: неизвестно
+// on-reach: Байты сверх хвоста выводятся; ключ длиннее не распознаётся на стыке порций.
 const MAX_RETAINED_KEY_BYTES: usize = "connection".len();
 
 #[derive(Debug)]
@@ -399,6 +410,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SAFETY.STREAM-SECRET-REDACTION
     #[test]
     fn stream_redactor_covers_production_secret_keys_at_every_chunk_boundary() {
         for key in production_secret_key_matrix() {
@@ -424,6 +436,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.SAFETY.STREAM-SECRET-REDACTION
     #[test]
     fn stream_redactor_hides_complete_connection_strings_at_every_chunk_boundary() {
         for (input, expected) in [

@@ -35,6 +35,7 @@ class ReleaseChannelTests(unittest.TestCase):
     def test_a_release_follows_its_own_prerelease(self) -> None:
         # `sort -V` ставит v0.13.0-rc.3 выше v0.13.0: с ним выход полной
         # версии после предвыпуска был бы отвергнут как откат.
+        """rule: INV.PKG.NEXT-CHANNEL-NOT-OLDER"""
         self.assertTrue(channel_module.is_forward("v0.13.0-rc.3", "v0.13.0"))
         self.assertFalse(channel_module.is_forward("v0.13.0", "v0.13.0-rc.3"))
 
@@ -183,6 +184,7 @@ class ChannelCatalogTests(unittest.TestCase):
                 self.assertEqual((codex["name"], claude["name"]), (name, name))
 
     def test_a_candidate_never_reaches_the_stable_catalog(self) -> None:
+        """rule: INV.PKG.STABLE-CATALOG-RELEASES-ONLY"""
         write_payload(self.payload, "v0.13.0-rc.3")
         with self.assertRaises(channel_module.TagError):
             channel_module.write_catalogs("stable", "v0.13.0-rc.3", self.payload, self.channel)
@@ -216,6 +218,7 @@ class ChannelCatalogTests(unittest.TestCase):
         self.assertEqual(channel_module.catalog_ref(*self.refs(self.channel)), "v0.13.0")
 
     def test_catalogs_resolve_only_the_release_or_its_anchor(self) -> None:
+        """rule: INV.PKG.MARKETPLACE-TAG-IS-PUBLISHED-CATALOG"""
         write_payload(self.payload, "v0.13.0-rc.6")
         for ref in ("main", "next", "v0.13.0-rc.5", "candidate-v0.13.0-rc.5", "candidate-main", "candidate/v0.13.0-rc.6", ""):
             with self.subTest(ref=ref):

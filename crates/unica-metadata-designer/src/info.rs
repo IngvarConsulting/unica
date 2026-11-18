@@ -1,5 +1,5 @@
 use roxmltree::Document;
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 use unica_metadata::*;
 pub fn typed_properties(
     properties: Option<roxmltree::Node<'_, '_>>,
@@ -27,6 +27,25 @@ pub fn typed_properties(
         })
         .collect()
 }
+pub(crate) fn dimension_boolean_xml_space(value: char) -> bool {
+    matches!(value, ' ' | '\t' | '\r' | '\n')
+}
+
+pub(crate) fn dimension_boolean_value(node: roxmltree::Node<'_, '_>) -> Option<bool> {
+    if node.tag_name().namespace() != Some(crate::info_projection::MD_CLASSES_NAMESPACE)
+        || !crate::info_projection::strict_text_leaf_is_valid(node)
+    {
+        return None;
+    }
+    match crate::info_projection::direct_text_content(node)
+        .trim_matches(dimension_boolean_xml_space)
+    {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
+}
+
 pub fn typed_relations(
     document: &Document<'_>,
     properties: Option<roxmltree::Node<'_, '_>>,
@@ -160,7 +179,7 @@ pub fn typed_relations(
                 let valid = if kind == "field" {
                     unica_metadata::MetadataFieldPath::parse(normalized).is_ok()
                 } else {
-                    MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, normalized).is_ok()
+                    MetadataAddress::parse_logical(normalized).is_ok()
                 };
                 if !valid {
                     diagnostics.push(
@@ -314,8 +333,12 @@ pub fn typed_element(
             comment: None,
             r#type: None,
             required: None,
+            master: None,
+            main_filter: None,
+            deny_incomplete_values: None,
             fill_value: None,
             addressing_dimension: None,
+            color: None,
             properties: properties_readback,
             standard_attributes: None,
             property_limits: Vec::new(),
@@ -330,9 +353,21 @@ pub fn typed_element(
         crate::info_projection::direct_md_child_text(properties, "Name").unwrap_or_default();
     let mut incomplete = raw_name.trim().is_empty();
     let name = if incomplete { String::new() } else { raw_name };
-    let synonym = crate::info_projection::direct_md_child(properties, "Synonym")
-        .map(crate::xml_model::meta_info_ml_text)
-        .filter(|value| !value.is_empty());
+    let synonym = match crate::info_projection::localized_property_as_nstr(
+        properties,
+        "metadata collection item",
+        "Synonym",
+    ) {
+        Ok(value) => value,
+        Err(error) => {
+            diagnostics.push(
+                MetaDiagnostic::error(MetaDiagnosticCode::ProviderUnavailable, error)
+                    .with_metadata_path(target.clone())
+                    .with_field(format!("{field}.synonym")),
+            );
+            None
+        }
+    };
     let comment = match crate::info_projection::observe_collection_item_comment(properties) {
         Ok(comment) => comment,
         Err(error) => {
@@ -355,7 +390,10 @@ pub fn typed_element(
                 let typed = if unmodelled {
                     MetaDiagnostic::warning(
                         MetaDiagnosticCode::ValidationWarning,
-                        "metadata type is syntactically valid but not modelled by this format profile",
+                        format!(
+                            "metadata type composition is incomplete: {}",
+                            diagnostic.message
+                        ),
                     )
                 } else {
                     MetaDiagnostic::error(MetaDiagnosticCode::ValidationFailed, diagnostic.message)
@@ -426,6 +464,62 @@ pub fn typed_element(
     } else {
         None
     };
+    let dimension_owner = (node.tag_name().name() == "Dimension")
+        .then(|| target.segments().next())
+        .flatten();
+    let mut dimension_flag = |tag: &str, key: &str, applicable: bool| {
+        if !applicable {
+            return None;
+        }
+        let candidates: Vec<_> = properties
+            .children()
+            .filter(|child| child.is_element() && child.tag_name().name() == tag)
+            .collect();
+        // Absence is an unobserved optional property, not an invented false
+        // value or evidence of a damaged descriptor. Present tags stay strict.
+        if candidates.is_empty() {
+            return None;
+        }
+        let value = candidates
+            .first()
+            .filter(|_| candidates.len() == 1)
+            .and_then(|child| dimension_boolean_value(*child));
+        if value.is_none() {
+            incomplete = true;
+            diagnostics.push(
+                MetaDiagnostic::error(
+                    MetaDiagnosticCode::ValidationFailed,
+                    format!("dimension {tag} is not a unique boolean property"),
+                )
+                .with_metadata_path(target.clone())
+                .with_field(format!("{field}.{key}")),
+            );
+        }
+        value
+    };
+    let master = dimension_flag(
+        "Master",
+        "master",
+        dimension_owner == Some("InformationRegister"),
+    );
+    let main_filter = dimension_flag(
+        "MainFilter",
+        "mainFilter",
+        dimension_owner == Some("InformationRegister"),
+    );
+    let deny_incomplete_values = dimension_flag(
+        "DenyIncompleteValues",
+        "denyIncompleteValues",
+        matches!(
+            dimension_owner,
+            Some(
+                "InformationRegister"
+                    | "AccumulationRegister"
+                    | "AccountingRegister"
+                    | "CalculationRegister"
+            )
+        ),
+    );
     let own_limits = diagnostics[own_diagnostics..]
         .iter()
         .map(element_diagnostic_limit)
@@ -475,6 +569,9 @@ pub fn typed_element(
         .into_iter()
         .chain(profile_properties)
         .collect();
+    let color = (node.tag_name().name() == "EnumValue")
+        .then(|| crate::info_projection::direct_md_child_text(properties, "Color"))
+        .flatten();
     Some(MetaElementData {
         name,
         incomplete,
@@ -482,8 +579,12 @@ pub fn typed_element(
         comment,
         r#type,
         required,
+        master,
+        main_filter,
+        deny_incomplete_values,
         fill_value,
         addressing_dimension,
+        color,
         properties: properties_readback,
         standard_attributes,
         property_limits,
@@ -643,24 +744,25 @@ pub fn parse_typed_meta_local_info_inner(
         .with_metadata_path(target.clone())
         .into());
     }
-    let synonym = properties.and_then(|properties| {
-        let nodes = crate::info_projection::direct_children_with_namespace(
-            properties,
-            super::info_projection::MD_CLASSES_NAMESPACE,
-            "Synonym",
-        );
-        let [node] = nodes.as_slice() else {
-            return None;
-        };
-        crate::info_projection::meta_info_property_value_is_valid(
-            *node,
-            MetaInfoPropertyValueKind::LegacyLocalizedString,
-        )
-        .then(|| crate::xml_model::meta_info_ml_text(*node))
-        .filter(|value| !value.is_empty())
-    });
-
     let mut diagnostics = Vec::new();
+    let synonym =
+        properties.and_then(
+            |properties| match crate::info_projection::localized_property_as_nstr(
+                properties,
+                kind.as_str(),
+                "Synonym",
+            ) {
+                Ok(value) => value,
+                Err(error) => {
+                    diagnostics.push(
+                        MetaDiagnostic::error(MetaDiagnosticCode::ProviderUnavailable, error)
+                            .with_metadata_path(target.clone())
+                            .with_field("properties.Synonym"),
+                    );
+                    None
+                }
+            },
+        );
     for error in crate::info_projection::meta_info_profile_errors(kind, properties, child_objects) {
         diagnostics.push(
             MetaDiagnostic::error(error.code, error.message)
@@ -683,7 +785,11 @@ pub fn parse_typed_meta_local_info_inner(
     );
     let format = unica_source_designer::roots::root_version_literal(xml, doc.root_element());
     let member_read_profile = source_kind.and_then(|source| {
-        unica_metadata::MetaMemberReadProfile::for_source(source, kind, format.as_deref())
+        unica_metadata::MetaMemberReadProfile::for_source(
+            source,
+            kind,
+            crate::dialect::root_version::is_writable(format.as_deref()),
+        )
     });
     let collection_route = |tag, nested_attributes, field| {
         TypedRootCollectionRoute::new(kind, tag, nested_attributes, field)
@@ -719,7 +825,8 @@ pub fn parse_typed_meta_local_info_inner(
             dimensions: typed_root_collection(
                 xml,
                 child_objects,
-                collection_route("Dimension", false, "collections.dimensions"),
+                collection_route("Dimension", false, "collections.dimensions")
+                    .with_member_read_profile(member_read_profile),
                 target,
                 &mut diagnostics,
             ),
@@ -776,7 +883,8 @@ pub fn parse_typed_meta_local_info_inner(
             columns: typed_root_collection(
                 xml,
                 child_objects,
-                collection_route("Column", false, "collections.columns"),
+                collection_route("Column", false, "collections.columns")
+                    .with_member_read_profile(member_read_profile),
                 target,
                 &mut diagnostics,
             ),
@@ -797,7 +905,8 @@ pub fn parse_typed_meta_local_info_inner(
             commands: typed_root_collection(
                 xml,
                 child_objects,
-                collection_route("Command", false, "collections.commands"),
+                collection_route("Command", false, "collections.commands")
+                    .with_member_read_profile(member_read_profile),
                 target,
                 &mut diagnostics,
             ),
@@ -944,6 +1053,31 @@ pub fn typed_optional_root_collection(
         target,
         diagnostics,
     );
+    // This newly exposed collection must prove unique member identities and
+    // must not silently discard a foreign same-named entry as an empty list.
+    if route.tag == "AddressingAttribute" {
+        let foreign = parent.children().any(|node| {
+            node.is_element()
+                && node.tag_name().name() == route.tag
+                && node.tag_name().namespace() != Some(super::info_projection::MD_CLASSES_NAMESPACE)
+        });
+        let mut names = std::collections::HashSet::new();
+        let duplicate = values.iter().any(|item| !names.insert(item.name.as_str()));
+        if foreign || duplicate {
+            diagnostics.push(
+                MetaDiagnostic::error(
+                    MetaDiagnosticCode::ValidationFailed,
+                    if foreign {
+                        "AddressingAttribute has a foreign namespace"
+                    } else {
+                        "AddressingAttribute has duplicate member names"
+                    },
+                )
+                .with_metadata_path(target.clone())
+                .with_field(route.field),
+            );
+        }
+    }
     let errors_after = diagnostics
         .iter()
         .filter(|diagnostic| diagnostic.severity == MetaDiagnosticSeverity::Error)
@@ -1028,5 +1162,135 @@ mod predefined_code_type_tests {
         )
         .iter()
         .any(|error| error.field == "properties.CodeType"));
+    }
+}
+
+#[cfg(test)]
+mod borrowed_2_22_tests {
+    use super::*;
+
+    /// A borrowed object of 8.5.4 names a closed action on a missing
+    /// configuration object; another value is malformed, not dropped.
+    /// rule: INV.SOURCE.INCOMPLETE-METADATA-READ
+    #[test]
+    fn a_borrowed_object_of_format_2_22_refuses_an_unknown_action() {
+        let text = include_str!(
+            "../../../tests/fixtures/formats/platform_xml/2.22/cfe_borrow/extension-document.xml"
+        )
+        .trim_start_matches('\u{feff}');
+        let errors = |text: &str| {
+            let document = roxmltree::Document::parse(text).unwrap();
+            let properties = document
+                .descendants()
+                .find(|node| node.has_tag_name("Properties"))
+                .unwrap();
+            crate::info_projection::meta_info_profile_errors(
+                MetadataKind::Document,
+                Some(properties),
+                None,
+            )
+            .into_iter()
+            .map(|error| error.field)
+            .collect::<Vec<_>>()
+        };
+        assert!(errors(text).is_empty());
+        let damaged = text.replacen(
+            "<ActionOnConfigurationObjectMissing>Auto<",
+            "<ActionOnConfigurationObjectMissing>Sometimes<",
+            1,
+        );
+        assert_eq!(
+            errors(&damaged),
+            vec!["properties.ActionOnConfigurationObjectMissing".to_string()]
+        );
+    }
+}
+
+#[cfg(test)]
+mod dimension_flag_tests {
+    use super::*;
+
+    fn read_flags(flags: &str) -> (MetaElementData, Vec<MetaDiagnostic>) {
+        let xml = format!(
+            r#"<ChildObjects xmlns="http://v8.1c.ru/8.3/MDClasses"><Dimension uuid="22222222-2222-4222-8222-222222222222"><Properties><Name>Item</Name>{flags}</Properties></Dimension></ChildObjects>"#
+        );
+        let document = Document::parse(&xml).unwrap();
+        let target = MetadataAddress::parse_logical("InformationRegister.Facts").unwrap();
+        let mut diagnostics = Vec::new();
+        let mut elements = typed_elements_with_diagnostics(
+            &xml,
+            Some(document.root_element()),
+            "Dimension",
+            false,
+            "dimensions",
+            &target,
+            &mut diagnostics,
+        );
+        (elements.remove(0), diagnostics)
+    }
+
+    #[test]
+    fn dimension_flags_preserve_true_and_false_as_typed_observations() {
+        for value in ["true", "false"] {
+            let (element, diagnostics) = read_flags(&format!("<Master>{value}</Master><MainFilter>{value}</MainFilter><DenyIncompleteValues>{value}</DenyIncompleteValues>"));
+            assert!(diagnostics.is_empty(), "{diagnostics:?}");
+            assert_eq!(element.master, Some(value == "true"));
+            assert_eq!(element.main_filter, Some(value == "true"));
+            assert_eq!(element.deny_incomplete_values, Some(value == "true"));
+            assert!(!element.incomplete);
+        }
+    }
+
+    #[test]
+    fn absent_dimension_flags_remain_unobserved_without_incompleteness() {
+        for flags in [
+            "",
+            "<Master>false</Master>",
+            "<MainFilter>true</MainFilter>",
+            "<DenyIncompleteValues>false</DenyIncompleteValues>",
+        ] {
+            let (element, diagnostics) = read_flags(flags);
+            assert!(diagnostics.is_empty(), "{flags}: {diagnostics:?}");
+            assert!(!element.incomplete, "{flags}");
+            assert!(element.property_limits.is_empty(), "{flags}");
+            assert_eq!(element.master, flags.contains("<Master>").then_some(false));
+            assert_eq!(
+                element.main_filter,
+                flags.contains("<MainFilter>").then_some(true)
+            );
+            assert_eq!(
+                element.deny_incomplete_values,
+                flags.contains("<DenyIncompleteValues>").then_some(false)
+            );
+        }
+    }
+
+    #[test]
+    fn damaged_dimension_flags_are_local_incompleteness_not_false() {
+        for damaged in [
+            "<Master/>",
+            "<Master>yes</Master>",
+            "<Master>\u{00a0}false\u{00a0}</Master>",
+            "<Master>&#xA0;false&#160;</Master>",
+            "<Master>true</Master><Master>false</Master>",
+            "<Master xmlns=\"urn:foreign\">true</Master>",
+            "<Master>true<Unexpected/></Master>",
+            "<Master unexpected=\"x\">true</Master>",
+        ] {
+            let (element, diagnostics) = read_flags(&format!("{damaged}<MainFilter>false</MainFilter><DenyIncompleteValues>true</DenyIncompleteValues>"));
+            assert_eq!(element.master, None, "{damaged}");
+            assert_eq!(element.main_filter, Some(false));
+            assert_eq!(element.deny_incomplete_values, Some(true));
+            assert!(element.incomplete);
+            assert_eq!(diagnostics.len(), 1);
+            assert_eq!(
+                diagnostics[0].field.as_deref(),
+                Some("dimensions[0].master")
+            );
+            assert!(element
+                .property_limits
+                .iter()
+                .any(|limit| limit.contains("master")));
+        }
     }
 }

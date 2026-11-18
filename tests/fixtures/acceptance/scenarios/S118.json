@@ -1,0 +1,25 @@
+{
+  "area": "Создание и удаление объектов",
+  "task": "Узнать из словаря корня, доступно ли создание объектов",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/can",
+          "contains": {
+            "op": "object.create",
+            "args": "values"
+          }
+        }
+      ]
+    }
+  ],
+  "id": "S118"
+}

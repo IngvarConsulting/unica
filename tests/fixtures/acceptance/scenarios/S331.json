@@ -1,0 +1,213 @@
+{
+  "id": "S331",
+  "name": "mxl-reported-cells-example",
+  "issue": 1301,
+  "area": "Макеты",
+  "task": "Исходный сценарий #1301: создать макет, две адресованные cells читаются по порядку; check=mxl passed",
+  "workspace": "tests/fixtures/acceptance/workspace-mxl",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F06Report.Can.template.add"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/items/items/properties/templateType/default",
+          "eq": "SpreadsheetDocument"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F06Report",
+        "ops": [
+          {
+            "op": "template.add",
+            "args": {
+              "items": [
+                {
+                  "name": "Reported",
+                  "templateType": "SpreadsheetDocument"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "exists",
+          "path": "src/cf/Reports/F06Report/Templates/Reported/Ext/Template.xml",
+          "eq": false
+        }
+      ],
+      "captures": {
+        "create": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.create"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F06Report.Template.Reported.Can.area.add"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/items/items/required",
+          "eq": [
+            "name",
+            "cells"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F06Report.Template.Reported",
+        "ops": [
+          {
+            "op": "area.add",
+            "args": {
+              "items": [
+                {
+                  "name": "Header",
+                  "cells": {
+                    "R1C1": "Номенклатура",
+                    "R1C2": "Сумма"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "captures": {
+        "fill": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.fill"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F06Report.Template.Reported.Area.Header.Body"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "index": 1,
+              "template": false,
+              "text": "Номенклатура"
+            },
+            {
+              "index": 2,
+              "template": false,
+              "text": "Сумма"
+            }
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "xml",
+          "path": "src/cf/Reports/F06Report/Templates/Reported/Ext/Template.xml",
+          "select": ".//{http://v8.1c.ru/8.1/data/core}content",
+          "eq": [
+            "Номенклатура",
+            "Сумма"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "cf:Report.F06Report.Template.Reported"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "validators": [
+        "mxl"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/diagnostics",
+          "eq": []
+        }
+      ]
+    }
+  ]
+}

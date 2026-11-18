@@ -1,4 +1,4 @@
-pub(crate) fn current_target_id() -> Result<&'static str, String> {
+pub fn current_target_id() -> Result<&'static str, String> {
     target_id(std::env::consts::OS, std::env::consts::ARCH)
 }
 

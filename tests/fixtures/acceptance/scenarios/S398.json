@@ -1,0 +1,72 @@
+{
+  "id": "S398",
+  "name": "diagnostics-engine-checksum-mismatch",
+  "issue": 549,
+  "area": "Код BSL",
+  "task": "Подменённый анализатор даёт отказ «нет движка» с полями поставки в data, а не сбой анализа",
+  "workspace": "tests/fixtures/acceptance/workspace-diagnostics",
+  "profile": "fault-injection",
+  "driver": "analyzer-jsonl-fault",
+  "evaluation": "checksum-mismatch",
+  "wire": [
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:CommonModule.Пример"
+      },
+      "expect": [
+        "provider"
+      ],
+      "assertions": [
+        {
+          "pointer": "/ok",
+          "eq": false
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "provider_unavailable"
+        },
+        {
+          "pointer": "/diagnostics/0/detailCode",
+          "eq": "provider_absent"
+        },
+        {
+          "pointer": "/diagnostics/0/outcome",
+          "eq": "needsHuman"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "its file does not match the published checksum; reinstall the Unica plugin"
+        },
+        {
+          "pointer": "/data/tool",
+          "eq": "bsl-analyzer"
+        },
+        {
+          "pointer": "/data/stage",
+          "eq": "checksum"
+        },
+        {
+          "pointer": "/data/pinnedVersion",
+          "eq": "0.0.0-test-fixture"
+        },
+        {
+          "pointer": "/data/retryable",
+          "eq": false
+        },
+        {
+          "pointer": "/data/path",
+          "contains": "bsl-analyzer"
+        },
+        {
+          "pointer": "/data/target",
+          "notEq": null
+        },
+        {
+          "pointer": "/data/code",
+          "absent": true
+        }
+      ]
+    }
+  ]
+}

@@ -1,20 +1,5 @@
 ---
 id: INV.WIRE.LOST-SUBMIT-TASK-ID
-check:
-  - crates/unica-coder/src/interfaces/daemon_router.rs::pending_receipt_beyond_the_frontend_cutoff_is_the_reserved_task_not_a_retry
-  - crates/unica-coder/src/interfaces/daemon_router.rs::recovery_window_closing_answers_the_task_reserved_for_the_call
-  - crates/unica-coder/src/interfaces/daemon_router.rs::recovery_without_a_receipt_whose_fence_meets_the_call_names_its_task
-  - crates/unica-coder/src/interfaces/daemon_router.rs::recovery_without_a_receipt_fences_the_exact_key_and_answers_not_delivered
-  - crates/unica-coder/src/interfaces/daemon_router.rs::a_call_whose_connection_never_stood_was_not_delivered
-  - crates/unica-coder/src/interfaces/daemon_router.rs::a_daemon_refusing_the_connection_needs_a_person_not_a_repeat
-  - crates/unica-coder/src/interfaces/daemon_router.rs::a_lost_submit_is_the_queued_task_reserved_for_the_call
-  - crates/unica-coder/src/interfaces/daemon_router.rs::a_lost_task_the_daemon_does_not_know_answers_task_not_found
-  - crates/unica-coder/src/interfaces/mcp.rs::a_lost_submit_is_a_task_for_native_clients_and_a_task_receipt_for_others
-  - crates/unica-coder/src/interfaces/daemon_router.rs::lost_submit_names_its_task_and_a_retry_joins_it_instead_of_running_again
-  - crates/unica-coder/src/interfaces/daemon_router.rs::a_read_whose_answer_was_lost_inline_is_readable_by_its_task_id
-  - crates/unica-coder/src/interfaces/daemon_router.rs::the_task_id_of_a_call_still_inline_can_be_cancelled
-  - crates/unica-coder/src/interfaces/daemon_router.rs::a_fenced_frame_never_runs_and_a_held_one_is_answered_by_its_state
-  - crates/unica-execution/src/receipt_runtime/joining.rs::a_fence_stays_bounded_and_ends_after_its_retention
 gap: https://github.com/IngvarConsulting/unica/issues/1743
 ---
 

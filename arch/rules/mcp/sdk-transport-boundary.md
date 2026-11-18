@@ -1,28 +1,13 @@
 ---
 id: INV.WIRE.SDK-TRANSPORT
-check:
-  - tests/ci/test_product_contracts.py::ProductContractTests.test_rmcp_dependency_is_owned_by_unica_coder_without_macro_features
-  - tests/ci/test_product_contracts.py::ProductContractTests.test_rmcp_transport_is_confined_to_mcp_interface
-  - tests/ci/test_product_contracts.py::ProductContractTests.test_unica_coder_production_library_satisfies_rmcp_handler_bound
-  - tests/ci/test_product_contracts.py::ProductContractTests.test_production_rmcp_handler_assertion_rejects_test_only_or_gated_bound
-  - tests/ci/test_ci_rust_lanes.py::ArchiveFixtureBinaryTests.test_build_binds_only_the_existing_ordinary_archive_non_test_executable
-  - tests/ci/test_ci_prepared_binary.py::PreparedBinaryTests.test_wrong_source_target_toolchain_features_or_path_are_rejected
 ---
 
-# MCP SDK принадлежит транспортному слою
+# MCP SDK знает только дверь MCP
 
-Только Cargo-пакет `unica-coder` прямо зависит от `rmcp` из crates.io.
-Зависимость не переименовывается, отключает default features и включает
-ровно `server` и `transport-io`.
+MCP SDK и транспорт MCP знает только дверь MCP. Ядро, демон и остальные
+компоненты от SDK не зависят и его типов не называют: вызов инструмента
+и его результат они передают через протокол демона и контракты приложения.
 
-Продуктивные ссылки на `rmcp` во всех отслеживаемых Git Rust-файлах `src`
-пакетов workspace находятся только в `crates/unica-coder/src/interfaces/`.
-Комментарии, литералы и элементы с точным `#[cfg(test)]` в эту границу
-не входят.
-
-Производственная library-сборка подтверждает, что `UnicaServer` реализует
-`rmcp::ServerHandler`: соответствие SDK не должно существовать только
-в тестовой сборке. Эту сборку выполняет конвейер Rust, а не Python-набор:
-ordinary-архив в каждом профиле и точный production-набор фич шага
-`product` джобы `Unica CI` во всех кодовых прогонах, кроме pull request
-и push в `main`.
+Протокол MCP — рукопожатие, согласование версии, разбор и отмена
+запросов — в производственной сборке двери ведёт официальный SDK, а не
+собственный цикл двери.

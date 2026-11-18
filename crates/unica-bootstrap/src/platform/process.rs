@@ -108,7 +108,7 @@ fn runtime_command(entrypoint: &Path, args: &[String], handoff: &RuntimeHandoff<
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::*;
 
     #[cfg(unix)]
@@ -335,6 +335,7 @@ mod tests {
             queried && code != STILL_ACTIVE as u32
         }
 
+        /// rule: INV.PLATFORM.PROCESS-TREE-LIFECYCLE
         #[test]
         fn closing_the_bootstrap_job_terminates_the_runtime() {
             // Загрузчик умирает как угодно — вместе с ним закрывается последний
@@ -371,6 +372,7 @@ mod tests {
             );
         }
 
+        /// rule: INV.PLATFORM.PROCESS-TREE-LIFECYCLE
         #[test]
         fn a_failed_assignment_terminates_the_suspended_runtime() {
             // Отказ включения в группу не должен оставить ни сироты, ни следа

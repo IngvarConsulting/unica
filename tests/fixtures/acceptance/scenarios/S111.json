@@ -1,0 +1,49 @@
+{
+  "area": "Создание и удаление объектов",
+  "task": "Удалить устаревший объект конфигурации",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Enum.LanguageAware",
+        "ops": [
+          {
+            "op": "supportRule.set",
+            "args": {
+              "values": {
+                "rule": "off-support"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Enum.LanguageAware",
+        "ops": [
+          {
+            "op": "object.remove"
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S111"
+}

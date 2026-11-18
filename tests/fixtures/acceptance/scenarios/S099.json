@@ -1,0 +1,45 @@
+{
+  "area": "Реквизиты и состав",
+  "task": "Пакет из добавления и правки свойств за один вызов (превью)",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.АктОбУничтоженииПерсональныхДанных",
+        "ops": [
+          {
+            "op": "attribute.add",
+            "args": {
+              "items": [
+                {
+                  "name": "ПакетныйРеквизит",
+                  "type": {
+                    "variants": [
+                      {
+                        "kind": "string",
+                        "length": 25,
+                        "allowedLength": "variable"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "пакетная правка"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S099"
+}

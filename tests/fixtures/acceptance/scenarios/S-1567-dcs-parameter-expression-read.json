@@ -218,7 +218,7 @@
             "type": "StandardPeriod",
             "value": null,
             "expression": null,
-            "restricted": false,
+            "useRestriction": false,
             "availableAsField": null
           }
         },
@@ -232,7 +232,7 @@
             "type": "DateTime",
             "value": "-",
             "expression": "&Период.ДатаНачала",
-            "restricted": true,
+            "useRestriction": true,
             "availableAsField": false
           }
         }
@@ -252,6 +252,36 @@
         },
         "parameterCursor": {
           "pointer": "/cursor"
+        },
+        "props0_type": {
+          "pointer": "/data/items/0/props/type"
+        },
+        "props0_value": {
+          "pointer": "/data/items/0/props/value"
+        },
+        "props0_expression": {
+          "pointer": "/data/items/0/props/expression"
+        },
+        "props0_availableAsField": {
+          "pointer": "/data/items/0/props/availableAsField"
+        },
+        "props0_useRestriction": {
+          "pointer": "/data/items/0/props/useRestriction"
+        },
+        "props1_type": {
+          "pointer": "/data/items/1/props/type"
+        },
+        "props1_value": {
+          "pointer": "/data/items/1/props/value"
+        },
+        "props1_expression": {
+          "pointer": "/data/items/1/props/expression"
+        },
+        "props1_availableAsField": {
+          "pointer": "/data/items/1/props/availableAsField"
+        },
+        "props1_useRestriction": {
+          "pointer": "/data/items/1/props/useRestriction"
         }
       },
       "fileAssertions": [
@@ -302,7 +332,7 @@
             "type": "DateTime",
             "value": "-",
             "expression": "&Период.ДатаОкончания",
-            "restricted": false,
+            "useRestriction": false,
             "availableAsField": true
           }
         },
@@ -316,7 +346,7 @@
             "type": "Boolean",
             "value": "false",
             "expression": "&НачалоПериода < &КонецПериода",
-            "restricted": true,
+            "useRestriction": true,
             "availableAsField": null
           }
         },
@@ -337,6 +367,36 @@
         },
         "props3": {
           "pointer": "/data/items/1/props"
+        },
+        "props2_type": {
+          "pointer": "/data/items/0/props/type"
+        },
+        "props2_value": {
+          "pointer": "/data/items/0/props/value"
+        },
+        "props2_expression": {
+          "pointer": "/data/items/0/props/expression"
+        },
+        "props2_availableAsField": {
+          "pointer": "/data/items/0/props/availableAsField"
+        },
+        "props2_useRestriction": {
+          "pointer": "/data/items/0/props/useRestriction"
+        },
+        "props3_type": {
+          "pointer": "/data/items/1/props/type"
+        },
+        "props3_value": {
+          "pointer": "/data/items/1/props/value"
+        },
+        "props3_expression": {
+          "pointer": "/data/items/1/props/expression"
+        },
+        "props3_availableAsField": {
+          "pointer": "/data/items/1/props/availableAsField"
+        },
+        "props3_useRestriction": {
+          "pointer": "/data/items/1/props/useRestriction"
         }
       }
     },
@@ -358,8 +418,28 @@
           "eq": "$capture.parameter0"
         },
         {
-          "pointer": "/data/props",
-          "eq": "$capture.props0"
+          "pointer": "/data/props/type",
+          "eq": "$capture.props0_type"
+        },
+        {
+          "pointer": "/data/props/value",
+          "eq": "$capture.props0_value"
+        },
+        {
+          "pointer": "/data/props/expression",
+          "eq": "$capture.props0_expression"
+        },
+        {
+          "pointer": "/data/props/availableAsField",
+          "eq": "$capture.props0_availableAsField"
+        },
+        {
+          "pointer": "/data/props/useRestriction",
+          "eq": "$capture.props0_useRestriction"
+        },
+        {
+          "pointer": "/data/props/support",
+          "absent": true
         }
       ]
     },
@@ -381,8 +461,28 @@
           "eq": "$capture.parameter1"
         },
         {
-          "pointer": "/data/props",
-          "eq": "$capture.props1"
+          "pointer": "/data/props/type",
+          "eq": "$capture.props1_type"
+        },
+        {
+          "pointer": "/data/props/value",
+          "eq": "$capture.props1_value"
+        },
+        {
+          "pointer": "/data/props/expression",
+          "eq": "$capture.props1_expression"
+        },
+        {
+          "pointer": "/data/props/availableAsField",
+          "eq": "$capture.props1_availableAsField"
+        },
+        {
+          "pointer": "/data/props/useRestriction",
+          "eq": "$capture.props1_useRestriction"
+        },
+        {
+          "pointer": "/data/props/support",
+          "absent": true
         }
       ]
     },
@@ -536,8 +636,28 @@
           "eq": "$capture.alias0"
         },
         {
-          "pointer": "/data/props",
-          "eq": "$capture.props0"
+          "pointer": "/data/props/type",
+          "eq": "$capture.props0_type"
+        },
+        {
+          "pointer": "/data/props/value",
+          "eq": "$capture.props0_value"
+        },
+        {
+          "pointer": "/data/props/expression",
+          "eq": "$capture.props0_expression"
+        },
+        {
+          "pointer": "/data/props/availableAsField",
+          "eq": "$capture.props0_availableAsField"
+        },
+        {
+          "pointer": "/data/props/useRestriction",
+          "eq": "$capture.props0_useRestriction"
+        },
+        {
+          "pointer": "/data/props/support",
+          "absent": true
         }
       ]
     },
@@ -559,8 +679,28 @@
           "eq": "$capture.alias1"
         },
         {
-          "pointer": "/data/props",
-          "eq": "$capture.props1"
+          "pointer": "/data/props/type",
+          "eq": "$capture.props1_type"
+        },
+        {
+          "pointer": "/data/props/value",
+          "eq": "$capture.props1_value"
+        },
+        {
+          "pointer": "/data/props/expression",
+          "eq": "$capture.props1_expression"
+        },
+        {
+          "pointer": "/data/props/availableAsField",
+          "eq": "$capture.props1_availableAsField"
+        },
+        {
+          "pointer": "/data/props/useRestriction",
+          "eq": "$capture.props1_useRestriction"
+        },
+        {
+          "pointer": "/data/props/support",
+          "absent": true
         }
       ]
     },

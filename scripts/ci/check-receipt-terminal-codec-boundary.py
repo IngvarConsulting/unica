@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import posixpath
 import re
 import sys
 from pathlib import Path, PurePosixPath
@@ -53,9 +54,17 @@ def _diagnostic(path: PurePosixPath, source: str, offset: int, reason: str) -> s
 
 
 def _mask_range(masked: list[str], start: int, end: int) -> None:
-    for index in range(start, end):
-        if masked[index] not in {"\n", "\r"}:
-            masked[index] = " "
+    masked[start:end] = [char if char in "\n\r" else " " for char in masked[start:end]]
+
+
+# Only these characters start a comment or a literal: at any other position
+# every branch of the scanners below falls through, so they skip to the next one.
+_LITERAL_START = re.compile(r"""[/"'rb]""")
+
+
+def _next_literal_start(source: str, index: int) -> int:
+    found = _LITERAL_START.search(source, index + 1)
+    return found.start() if found else len(source)
 
 
 def _raw_string_end(source: str, start: int) -> int | None:
@@ -146,7 +155,7 @@ def _mask_non_code(source: str) -> str:
                 _mask_range(masked, index, end)
                 index = end
                 continue
-        index += 1
+        index = _next_literal_start(source, index)
     return "".join(masked)
 
 
@@ -197,7 +206,7 @@ def _string_literals(source: str) -> list[tuple[int, str]]:
             if end is not None:
                 index = end
                 continue
-        index += 1
+        index = _next_literal_start(source, index)
     return literals
 
 
@@ -229,6 +238,7 @@ def _delimiter_range(masked: str, opening: int) -> tuple[int, int]:
 
 TEST_FILE_MODULE = re.compile(
     rf"(?m)^[ \t]*#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\][ \t]*\r?\n"
+    rf"(?:[ \t]*#\s*\[\s*path\s*=([^\]\r\n]+)\][ \t]*\r?\n)?"
     rf"[ \t]*(?:pub(?:\s*\([^)]*\))?[ \t]+)?mod[ \t]+({RUST_IDENTIFIER})[ \t]*;"
 )
 
@@ -238,16 +248,28 @@ TEST_FILE_MODULE = re.compile(
 _TEST_ONLY_FILES: set[PurePosixPath] = set()
 
 
-def _child_module_path(parent: PurePosixPath, name: str) -> PurePosixPath:
+def _child_module_path(parent: PurePosixPath, name: str, attribute: str | None = None) -> PurePosixPath:
+    if attribute is not None:
+        # `#[path]` on a file-level declaration is relative to the declaring file's directory.
+        return PurePosixPath(posixpath.normpath((parent.parent / attribute).as_posix()))
     directory = parent.parent if parent.name in ("mod.rs", "lib.rs", "main.rs") else parent.with_suffix("")
     return directory / f"{name}.rs"
 
 
-def _collect_test_only_files(sources: dict[PurePosixPath, str]) -> set[PurePosixPath]:
+def _collect_test_only_files(
+    sources: dict[PurePosixPath, str], originals: dict[PurePosixPath, str]
+) -> set[PurePosixPath]:
     found: set[PurePosixPath] = set()
     for path, source in sources.items():
         for match in TEST_FILE_MODULE.finditer(source):
-            child = _child_module_path(path, match.group(1))
+            # The masked text blanks the `#[path]` literal; offsets are preserved.
+            attribute = None
+            if match.start(1) >= 0:
+                literal = originals[path][match.start(1):match.end(1)].strip()
+                if not (len(literal) >= 2 and literal[0] == literal[-1] == '"'):
+                    continue
+                attribute = literal[1:-1]
+            child = _child_module_path(path, match.group(2), attribute)
             if child in sources:
                 found.add(child)
     return found
@@ -296,7 +318,8 @@ def _source_diagnostics(
     diagnostics: list[str] = []
     test_ranges = _test_module_ranges(masked, path)
     for type_name in PREPARED_CONSTRUCTORS:
-        if path == CODEC_PATH:
+        # Every pattern below names the type literally: a file without it has no match.
+        if path == CODEC_PATH or type_name not in masked:
             continue
         for match in _constructor_pattern(type_name).finditer(masked):
             diagnostics.append(
@@ -310,6 +333,8 @@ def _source_diagnostics(
 
     if path != CODEC_PATH:
         for type_name in (*PREPARED_CONSTRUCTORS, DIRECT_SLOT):
+            if type_name not in masked:
+                continue
             import_alias = re.compile(
                 rf"\b(?P<artifact>{re.escape(type_name)})\s+as\s+{RUST_IDENTIFIER}\b"
             )
@@ -479,6 +504,9 @@ def _linear_artifact_diagnostics(
 ) -> list[str]:
     diagnostics: list[str] = []
     for artifact in LINEAR_ARTIFACTS:
+        # Both patterns name the artifact literally: a file without it has no match.
+        if artifact not in masked:
+            continue
         declaration = re.compile(
             rf"(?m)(?P<attrs>(?:^[ \t]*#\s*\[[^\]]*\][ \t]*(?:\r?\n|$))*)"
             rf"^[ \t]*(?:pub(?:\s*\([^)]*\))?[ \t]+)?struct[ \t]+"
@@ -549,7 +577,7 @@ def check_root(root: Path) -> list[str]:
     # производственный файл тестовым и снимать с него проверки хранилища.
     masked_sources = {path: _mask_non_code(source) for path, source in sources.items()}
     _TEST_ONLY_FILES.clear()
-    _TEST_ONLY_FILES.update(_collect_test_only_files(masked_sources))
+    _TEST_ONLY_FILES.update(_collect_test_only_files(masked_sources, sources))
     diagnostics: list[str] = []
     for required_path in REQUIRED_PATHS:
         if required_path not in sources:

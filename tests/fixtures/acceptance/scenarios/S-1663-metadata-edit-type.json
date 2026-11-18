@@ -1,0 +1,2254 @@
+{
+  "id": "S-1663-metadata-edit-type",
+  "issue": 1663,
+  "area": "Метаданные",
+  "workspace": "tests/fixtures/acceptance/workspace-metadata-edit-type",
+  "task": "Через Can и preview/token переключить Catalog.Items и InformationRegister.History InDialog→InList→BothWays→InDialog; повтор InDialog не меняет байты. Все формы, их назначения, члены и модули сохраняются; полное исходное дерево восстанавливается. BothWays подтверждён независимыми нативными экспортами 8.3.27.2214, Both платформой отклонён.",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effectiveSourceSet",
+          "eq": "main"
+        }
+      ],
+      "captures": {
+        "unchanged1": {
+          "file": "src/Catalogs/Items/Ext/ObjectModule.bsl",
+          "kind": "sha256"
+        },
+        "unchanged2": {
+          "file": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form/Module.bsl",
+          "kind": "sha256"
+        },
+        "unchanged3": {
+          "file": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form.xml",
+          "kind": "sha256"
+        },
+        "unchanged4": {
+          "file": "src/Catalogs/Items/Forms/Auxiliary.xml",
+          "kind": "sha256"
+        },
+        "unchanged5": {
+          "file": "src/Catalogs/Items/Forms/List/Ext/Form/Module.bsl",
+          "kind": "sha256"
+        },
+        "unchanged6": {
+          "file": "src/Catalogs/Items/Forms/List/Ext/Form.xml",
+          "kind": "sha256"
+        },
+        "unchanged7": {
+          "file": "src/Catalogs/Items/Forms/List.xml",
+          "kind": "sha256"
+        },
+        "unchanged8": {
+          "file": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256"
+        },
+        "unchanged9": {
+          "file": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "sha256"
+        },
+        "unchanged10": {
+          "file": "src/Catalogs/Items/Forms/Main.xml",
+          "kind": "sha256"
+        },
+        "unchanged11": {
+          "file": "src/Catalogs/Items.xml",
+          "kind": "sha256"
+        },
+        "unchanged12": {
+          "file": "src/ConfigDumpInfo.xml",
+          "kind": "sha256"
+        },
+        "unchanged13": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "unchanged14": {
+          "file": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256"
+        },
+        "unchanged15": {
+          "file": "src/InformationRegisters/History/Ext/RecordSetModule.bsl",
+          "kind": "sha256"
+        },
+        "unchanged16": {
+          "file": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form/Module.bsl",
+          "kind": "sha256"
+        },
+        "unchanged17": {
+          "file": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form.xml",
+          "kind": "sha256"
+        },
+        "unchanged18": {
+          "file": "src/InformationRegisters/History/Forms/Auxiliary.xml",
+          "kind": "sha256"
+        },
+        "unchanged19": {
+          "file": "src/InformationRegisters/History/Forms/List/Ext/Form/Module.bsl",
+          "kind": "sha256"
+        },
+        "unchanged20": {
+          "file": "src/InformationRegisters/History/Forms/List/Ext/Form.xml",
+          "kind": "sha256"
+        },
+        "unchanged21": {
+          "file": "src/InformationRegisters/History/Forms/List.xml",
+          "kind": "sha256"
+        },
+        "unchanged22": {
+          "file": "src/InformationRegisters/History/Forms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256"
+        },
+        "unchanged23": {
+          "file": "src/InformationRegisters/History/Forms/Main/Ext/Form.xml",
+          "kind": "sha256"
+        },
+        "unchanged24": {
+          "file": "src/InformationRegisters/History/Forms/Main.xml",
+          "kind": "sha256"
+        },
+        "unchanged25": {
+          "file": "src/InformationRegisters/History.xml",
+          "kind": "sha256"
+        },
+        "unchanged26": {
+          "file": "src/Languages/Русский.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Catalog.Items"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/EditType",
+          "eq": {
+            "type": "string",
+            "enum": [
+              "InDialog",
+              "InList",
+              "BothWays"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:InformationRegister.History"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.History.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/EditType",
+          "eq": {
+            "type": "string",
+            "enum": [
+              "InDialog",
+              "InList",
+              "BothWays"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "EditType": "InList"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "token0_0": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged1"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged2"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged3"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Auxiliary.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged4"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/List/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged5"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/List/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged6"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/List.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged7"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged8"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged9"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged10"
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged11"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged12"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged13"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged14"
+        },
+        {
+          "path": "src/InformationRegisters/History/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged15"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged16"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged17"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Auxiliary.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged18"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/List/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged19"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/List/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged20"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/List.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged21"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged22"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged23"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Main.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged24"
+        },
+        {
+          "path": "src/InformationRegisters/History.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged25"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged26"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token0_0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged1"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged2"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged3"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Auxiliary.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged4"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/List/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged5"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/List/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged6"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/List.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged7"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged8"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged9"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged10"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged12"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged13"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged14"
+        },
+        {
+          "path": "src/InformationRegisters/History/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged15"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged16"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged17"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Auxiliary.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged18"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/List/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged19"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/List/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged20"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/List.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged21"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged22"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged23"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Main.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged24"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged26"
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}EditType",
+          "eq": [
+            "InList"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/EditType",
+          "eq": "InList"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.History",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "EditType": "InList"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "token0_1": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token0_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged1"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged2"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged3"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Auxiliary.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged4"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/List/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged5"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/List/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged6"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/List.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged7"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged8"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged9"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged10"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged12"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged13"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged14"
+        },
+        {
+          "path": "src/InformationRegisters/History/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged15"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged16"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged17"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Auxiliary.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged18"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/List/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged19"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/List/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged20"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/List.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged21"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged22"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged23"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Main.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged24"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged26"
+        },
+        {
+          "path": "src/InformationRegisters/History.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}EditType",
+          "eq": [
+            "InList"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.History"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/EditType",
+          "eq": "InList"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "EditType": "BothWays"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "token1_0": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token1_0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged1"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged2"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged3"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Auxiliary.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged4"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/List/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged5"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/List/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged6"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/List.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged7"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged8"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged9"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged10"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged12"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged13"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged14"
+        },
+        {
+          "path": "src/InformationRegisters/History/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged15"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged16"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged17"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Auxiliary.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged18"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/List/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged19"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/List/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged20"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/List.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged21"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged22"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged23"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Main.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged24"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged26"
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}EditType",
+          "eq": [
+            "BothWays"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/EditType",
+          "eq": "BothWays"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.History",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "EditType": "BothWays"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "token1_1": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token1_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged1"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged2"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged3"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Auxiliary.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged4"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/List/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged5"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/List/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged6"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/List.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged7"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged8"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged9"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged10"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged12"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged13"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged14"
+        },
+        {
+          "path": "src/InformationRegisters/History/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged15"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged16"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged17"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Auxiliary.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged18"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/List/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged19"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/List/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged20"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/List.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged21"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged22"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged23"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Main.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged24"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged26"
+        },
+        {
+          "path": "src/InformationRegisters/History.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}EditType",
+          "eq": [
+            "BothWays"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.History"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/EditType",
+          "eq": "BothWays"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "EditType": "InDialog"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "token2_0": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token2_0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged1"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged2"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged3"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Auxiliary.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged4"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/List/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged5"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/List/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged6"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/List.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged7"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged8"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged9"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged10"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged12"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged13"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged14"
+        },
+        {
+          "path": "src/InformationRegisters/History/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged15"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged16"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged17"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Auxiliary.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged18"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/List/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged19"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/List/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged20"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/List.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged21"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged22"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged23"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Main.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged24"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged26"
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}EditType",
+          "eq": [
+            "InDialog"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged11"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/EditType",
+          "eq": "InDialog"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.History",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "EditType": "InDialog"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "token2_1": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token2_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged1"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged2"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged3"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Auxiliary.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged4"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/List/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged5"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/List/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged6"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/List.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged7"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged8"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged9"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged10"
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged11"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged12"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged13"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged14"
+        },
+        {
+          "path": "src/InformationRegisters/History/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged15"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged16"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged17"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Auxiliary.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged18"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/List/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged19"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/List/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged20"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/List.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged21"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged22"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged23"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Main.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged24"
+        },
+        {
+          "path": "src/InformationRegisters/History.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged25"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged26"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.History"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/EditType",
+          "eq": "InDialog"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "EditType": "InDialog"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "captures": {
+        "token3_0": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged1"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged2"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged3"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Auxiliary.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged4"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/List/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged5"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/List/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged6"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/List.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged7"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged8"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged9"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged10"
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged11"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged12"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged13"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged14"
+        },
+        {
+          "path": "src/InformationRegisters/History/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged15"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged16"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged17"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Auxiliary.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged18"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/List/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged19"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/List/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged20"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/List.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged21"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged22"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged23"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Main.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged24"
+        },
+        {
+          "path": "src/InformationRegisters/History.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged25"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged26"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token3_0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged1"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged2"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged3"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Auxiliary.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged4"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/List/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged5"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/List/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged6"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/List.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged7"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged8"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged9"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged10"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged12"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged13"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged14"
+        },
+        {
+          "path": "src/InformationRegisters/History/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged15"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged16"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged17"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Auxiliary.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged18"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/List/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged19"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/List/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged20"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/List.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged21"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged22"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged23"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Main.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged24"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged26"
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}EditType",
+          "eq": [
+            "InDialog"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged11"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/EditType",
+          "eq": "InDialog"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.History",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "EditType": "InDialog"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "captures": {
+        "token3_1": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged1"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged2"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged3"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Auxiliary.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged4"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/List/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged5"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/List/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged6"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/List.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged7"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged8"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged9"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged10"
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged11"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged12"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged13"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged14"
+        },
+        {
+          "path": "src/InformationRegisters/History/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged15"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged16"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged17"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Auxiliary.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged18"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/List/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged19"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/List/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged20"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/List.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged21"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged22"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged23"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Main.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged24"
+        },
+        {
+          "path": "src/InformationRegisters/History.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged25"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged26"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token3_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged1"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged2"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged3"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Auxiliary.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged4"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/List/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged5"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/List/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged6"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/List.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged7"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged8"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged9"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged10"
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged11"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged12"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged13"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged14"
+        },
+        {
+          "path": "src/InformationRegisters/History/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged15"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged16"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged17"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Auxiliary.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged18"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/List/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged19"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/List/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged20"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/List.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged21"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged22"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged23"
+        },
+        {
+          "path": "src/InformationRegisters/History/Forms/Main.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged24"
+        },
+        {
+          "path": "src/InformationRegisters/History.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged25"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged26"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.History"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/EditType",
+          "eq": "InDialog"
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:Catalog.Items"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/status",
+          "eq": "passed"
+        },
+        {
+          "pointer": "/data/validators",
+          "eq": [
+            "meta"
+          ]
+        },
+        {
+          "pointer": "/data/diagnosticCount",
+          "eq": 0
+        }
+      ],
+      "status": "passed",
+      "validators": [
+        "meta"
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:InformationRegister.History"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/status",
+          "eq": "passed"
+        },
+        {
+          "pointer": "/data/validators",
+          "eq": [
+            "meta"
+          ]
+        },
+        {
+          "pointer": "/data/diagnosticCount",
+          "eq": 1
+        }
+      ],
+      "status": "passed",
+      "validators": [
+        "meta"
+      ]
+    }
+  ]
+}

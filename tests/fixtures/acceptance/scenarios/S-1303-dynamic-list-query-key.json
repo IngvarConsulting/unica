@@ -1,0 +1,602 @@
+{
+  "id": "S-1303-dynamic-list-query-key",
+  "name": "dynamic-list-query-and-key-settings",
+  "issue": 1303,
+  "area": "Формы",
+  "workspace": "tests/fixtures/acceptance/workspace-dynamic-list",
+  "task": "Прочитать полный произвольный запрос и наблюдённые настройки ключа DynamicList в коллекции и детали. Отсутствующее значение явно null, keyFieldsApplicable сообщает ограничение MainTable, большой текст и массив доступны по Props без изменения XML. Повреждение bool сохраняет другие факты.",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.CorpusReport.Form.Main.Attribute"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Report.CorpusReport.Form.Main.Attribute"
+        },
+        {
+          "pointer": "/data/items/0/props/queryText",
+          "eq": "SELECT 1 AS Code, 2 AS Part"
+        },
+        {
+          "pointer": "/data/items/0/props/keyFields",
+          "eq": [
+            "Code",
+            "Part"
+          ]
+        }
+      ],
+      "captures": {
+        "mainBefore": {
+          "kind": "sha256",
+          "file": "src/Reports/CorpusReport/Forms/Main/Ext/Form.xml"
+        },
+        "probesBefore": {
+          "kind": "sha256",
+          "file": "src/Reports/CorpusReport/Forms/Probes/Ext/Form.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.CorpusReport.Form.Main.Attribute.Rows"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Report.CorpusReport.Form.Main.Attribute.Rows"
+        },
+        {
+          "pointer": "/data/props/manualQuery",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/queryText",
+          "eq": "SELECT 1 AS Code, 2 AS Part"
+        },
+        {
+          "pointer": "/data/props/dynamicDataRead",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/keyType",
+          "eq": "RowKey"
+        },
+        {
+          "pointer": "/data/props/keyFields",
+          "eq": [
+            "Code",
+            "Part"
+          ]
+        },
+        {
+          "pointer": "/data/props/keyFieldsApplicable",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.CorpusReport.Form.Probes.Attribute.Absent"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Report.CorpusReport.Form.Probes.Attribute.Absent"
+        },
+        {
+          "pointer": "/data/props/manualQuery",
+          "eq": null
+        },
+        {
+          "pointer": "/data/props/queryText",
+          "eq": null
+        },
+        {
+          "pointer": "/data/props/dynamicDataRead",
+          "eq": null
+        },
+        {
+          "pointer": "/data/props/keyType",
+          "eq": null
+        },
+        {
+          "pointer": "/data/props/keyFields",
+          "eq": null
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.CorpusReport.Form.Probes.Attribute.Flag"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Report.CorpusReport.Form.Probes.Attribute.Flag"
+        },
+        {
+          "pointer": "/data/props/queryText",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/keyFields",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.CorpusReport.Form.Probes.Attribute.Table"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Report.CorpusReport.Form.Probes.Attribute.Table"
+        },
+        {
+          "pointer": "/data/props/mainTable",
+          "eq": "Catalog.Items"
+        },
+        {
+          "pointer": "/data/props/keyFieldsApplicable",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/keyType",
+          "eq": "Auto"
+        },
+        {
+          "pointer": "/data/props/keyFields",
+          "eq": [
+            "StoredButUnused"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.CorpusReport.Form.Probes.Attribute.AutoQuery"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Report.CorpusReport.Form.Probes.Attribute.AutoQuery"
+        },
+        {
+          "pointer": "/data/props/manualQuery",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/queryText",
+          "eq": "  SELECT 1\n  "
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.CorpusReport.Form.Probes.Attribute"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Report.CorpusReport.Form.Probes.Attribute"
+        },
+        {
+          "pointer": "/data/items/4/props/queryText",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/4/props/manualQuery",
+          "eq": true
+        },
+        {
+          "pointer": "/data/items/4/limits",
+          "contains": "DynamicList queryText exceeds the compact property limit of 2048 bytes; read it whole at main:Report.CorpusReport.Form.Probes.Attribute.Large.Props.queryText"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.CorpusReport.Form.Probes.Attribute.Large"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Report.CorpusReport.Form.Probes.Attribute.Large"
+        },
+        {
+          "pointer": "/data/props/queryText",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/keyFields",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/manualQuery",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/keyType",
+          "eq": "RowKey"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.CorpusReport.Form.Probes.Attribute.Large.Props.queryText"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Report.CorpusReport.Form.Probes.Attribute.Large.Props.queryText"
+        },
+        {
+          "pointer": "/data/props/queryText",
+          "eq": "  SELECT Code\n-- full query line 0\n -- full query line 1\n -- full query line 2\n -- full query line 3\n -- full query line 4\n -- full query line 5\n -- full query line 6\n -- full query line 7\n -- full query line 8\n -- full query line 9\n -- full query line 10\n -- full query line 11\n -- full query line 12\n -- full query line 13\n -- full query line 14\n -- full query line 15\n -- full query line 16\n -- full query line 17\n -- full query line 18\n -- full query line 19\n -- full query line 20\n -- full query line 21\n -- full query line 22\n -- full query line 23\n -- full query line 24\n -- full query line 25\n -- full query line 26\n -- full query line 27\n -- full query line 28\n -- full query line 29\n -- full query line 30\n -- full query line 31\n -- full query line 32\n -- full query line 33\n -- full query line 34\n -- full query line 35\n -- full query line 36\n -- full query line 37\n -- full query line 38\n -- full query line 39\n -- full query line 40\n -- full query line 41\n -- full query line 42\n -- full query line 43\n -- full query line 44\n -- full query line 45\n -- full query line 46\n -- full query line 47\n -- full query line 48\n -- full query line 49\n -- full query line 50\n -- full query line 51\n -- full query line 52\n -- full query line 53\n -- full query line 54\n -- full query line 55\n -- full query line 56\n -- full query line 57\n -- full query line 58\n -- full query line 59\n -- full query line 60\n -- full query line 61\n -- full query line 62\n -- full query line 63\n -- full query line 64\n -- full query line 65\n -- full query line 66\n -- full query line 67\n -- full query line 68\n -- full query line 69\n -- full query line 70\n -- full query line 71\n -- full query line 72\n -- full query line 73\n -- full query line 74\n -- full query line 75\n -- full query line 76\n -- full query line 77\n -- full query line 78\n -- full query line 79\n -- full query line 80\n -- full query line 81\n -- full query line 82\n -- full query line 83\n -- full query line 84\n -- full query line 85\n -- full query line 86\n -- full query line 87\n -- full query line 88\n -- full query line 89\n -- full query line 90\n -- full query line 91\n -- full query line 92\n -- full query line 93\n -- full query line 94\n -- full query line 95\n -- full query line 96\n -- full query line 97\n -- full query line 98\n -- full query line 99\n -- full query line 100\n -- full query line 101\n -- full query line 102\n -- full query line 103\n -- full query line 104\n -- full query line 105\n -- full query line 106\n -- full query line 107\n -- full query line 108\n -- full query line 109\n -- full query line 110\n -- full query line 111\n -- full query line 112\n -- full query line 113\n -- full query line 114\n -- full query line 115\n -- full query line 116\n -- full query line 117\n -- full query line 118\n -- full query line 119\n  "
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.CorpusReport.Form.Probes.Attribute.Large.Props.keyFields"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Report.CorpusReport.Form.Probes.Attribute.Large.Props.keyFields"
+        },
+        {
+          "pointer": "/data/props/keyFields",
+          "eq": [
+            "Field0",
+            "Field1",
+            "Field2",
+            "Field3",
+            "Field4",
+            "Field5",
+            "Field6",
+            "Field7",
+            "Field8",
+            "Field9",
+            "Field10",
+            "Field11",
+            "Field12",
+            "Field13",
+            "Field14",
+            "Field15",
+            "Field16",
+            "Field17",
+            "Field18",
+            "Field19",
+            "Field20",
+            "Field21",
+            "Field22",
+            "Field23",
+            "Field24",
+            "Field25",
+            "Field26",
+            "Field27",
+            "Field28",
+            "Field29",
+            "Field30",
+            "Field31",
+            "Field32",
+            "Field33",
+            "Field34",
+            "Field35",
+            "Field36",
+            "Field37",
+            "Field38",
+            "Field39",
+            "Field40",
+            "Field41",
+            "Field42",
+            "Field43",
+            "Field44",
+            "Field45",
+            "Field46",
+            "Field47",
+            "Field48",
+            "Field49",
+            "Field50",
+            "Field51",
+            "Field52",
+            "Field53",
+            "Field54",
+            "Field55",
+            "Field56",
+            "Field57",
+            "Field58",
+            "Field59",
+            "Field60",
+            "Field61",
+            "Field62",
+            "Field63",
+            "Field64",
+            "Field65",
+            "Field66",
+            "Field67",
+            "Field68",
+            "Field69",
+            "Field70",
+            "Field71",
+            "Field72",
+            "Field73",
+            "Field74",
+            "Field75",
+            "Field76",
+            "Field77",
+            "Field78",
+            "Field79",
+            "Field80",
+            "Field81",
+            "Field82",
+            "Field83",
+            "Field84",
+            "Field85",
+            "Field86",
+            "Field87",
+            "Field88",
+            "Field89",
+            "Field90",
+            "Field91",
+            "Field92",
+            "Field93",
+            "Field94",
+            "Field95",
+            "Field96",
+            "Field97",
+            "Field98",
+            "Field99",
+            "Field100",
+            "Field101",
+            "Field102",
+            "Field103",
+            "Field104",
+            "Field105",
+            "Field106",
+            "Field107",
+            "Field108",
+            "Field109",
+            "Field110",
+            "Field111",
+            "Field112",
+            "Field113",
+            "Field114",
+            "Field115",
+            "Field116",
+            "Field117",
+            "Field118",
+            "Field119",
+            "Field120",
+            "Field121",
+            "Field122",
+            "Field123",
+            "Field124",
+            "Field125",
+            "Field126",
+            "Field127",
+            "Field128",
+            "Field129",
+            "Field130",
+            "Field131",
+            "Field132",
+            "Field133",
+            "Field134",
+            "Field135",
+            "Field136",
+            "Field137",
+            "Field138",
+            "Field139",
+            "Field140",
+            "Field141",
+            "Field142",
+            "Field143",
+            "Field144",
+            "Field145",
+            "Field146",
+            "Field147",
+            "Field148",
+            "Field149",
+            "Field150",
+            "Field151",
+            "Field152",
+            "Field153",
+            "Field154",
+            "Field155",
+            "Field156",
+            "Field157",
+            "Field158",
+            "Field159",
+            "Field160",
+            "Field161",
+            "Field162",
+            "Field163",
+            "Field164",
+            "Field165",
+            "Field166",
+            "Field167",
+            "Field168",
+            "Field169",
+            "Field170",
+            "Field171",
+            "Field172",
+            "Field173",
+            "Field174",
+            "Field175",
+            "Field176",
+            "Field177",
+            "Field178",
+            "Field179",
+            "Field180",
+            "Field181",
+            "Field182",
+            "Field183",
+            "Field184",
+            "Field185",
+            "Field186",
+            "Field187",
+            "Field188",
+            "Field189",
+            "Field190",
+            "Field191",
+            "Field192",
+            "Field193",
+            "Field194",
+            "Field195",
+            "Field196",
+            "Field197",
+            "Field198",
+            "Field199",
+            "Field200",
+            "Field201",
+            "Field202",
+            "Field203",
+            "Field204",
+            "Field205",
+            "Field206",
+            "Field207",
+            "Field208",
+            "Field209",
+            "Field210",
+            "Field211",
+            "Field212",
+            "Field213",
+            "Field214",
+            "Field215",
+            "Field216",
+            "Field217",
+            "Field218",
+            "Field219",
+            "Field220",
+            "Field221",
+            "Field222",
+            "Field223",
+            "Field224",
+            "Field225",
+            "Field226",
+            "Field227",
+            "Field228",
+            "Field229",
+            "Field230",
+            "Field231",
+            "Field232",
+            "Field233",
+            "Field234",
+            "Field235",
+            "Field236",
+            "Field237",
+            "Field238",
+            "Field239",
+            "Field240",
+            "Field241",
+            "Field242",
+            "Field243",
+            "Field244",
+            "Field245",
+            "Field246",
+            "Field247",
+            "Field248",
+            "Field249",
+            "Field250",
+            "Field251",
+            "Field252",
+            "Field253",
+            "Field254",
+            "Field255",
+            "Field256",
+            "Field257",
+            "Field258",
+            "Field259"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.CorpusReport.Form.Probes.Attribute.Damaged"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Report.CorpusReport.Form.Probes.Attribute.Damaged"
+        },
+        {
+          "pointer": "/data/props/manualQuery",
+          "eq": null
+        },
+        {
+          "pointer": "/data/props/queryText",
+          "eq": "SELECT 1"
+        },
+        {
+          "pointer": "/data/props/keyType",
+          "eq": "RowNumber"
+        },
+        {
+          "pointer": "/data/limits",
+          "contains": "DynamicList ManualQuery: invalid boolean"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Reports/CorpusReport/Forms/Main/Ext/Form.xml",
+          "eq": "$capture.mainBefore"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Reports/CorpusReport/Forms/Probes/Ext/Form.xml",
+          "eq": "$capture.probesBefore"
+        }
+      ]
+    }
+  ]
+}

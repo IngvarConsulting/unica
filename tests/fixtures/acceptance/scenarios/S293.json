@@ -1,0 +1,53 @@
+{
+  "id": "S293",
+  "area": "Объекты метаданных",
+  "task": "Удалить объект, на который ещё ссылаются права роли, с force — аргумент снят из контракта, поверхность отказывает bad_value до записи",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [
+          {
+            "op": "supportRule.set",
+            "args": {
+              "values": {
+                "rule": "off-support"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [
+          {
+            "op": "object.remove",
+            "args": {
+              "force": true
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: `object.remove` does not accept `force`: remove the references from other metadata first; references only in module code or query text are listed as a warning i"
+    }
+  ]
+}

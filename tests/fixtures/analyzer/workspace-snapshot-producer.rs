@@ -60,16 +60,6 @@ fn main() {
             println!("{{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":{{}}}}");
             io::stdout().flush().unwrap();
             continue;
-        } else if mode == "rlm" && line.contains("rlm_start") {
-            "{\"session_id\":\"snapshot-session\",\"index\":{\"index_status\":\"ready\"}}"
-                .to_string()
-        } else if mode == "rlm" && line.contains("rlm_end") {
-            "{}".to_string()
-        } else if mode == "rlm" {
-            format!(
-                "{{\"stdout\":{}}}",
-                quoted(&format!("[{}]", quoted(&snapshot)))
-            )
         } else {
             let name = snapshot
                 .split_whitespace()

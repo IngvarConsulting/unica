@@ -110,16 +110,23 @@ fn working_directory_selection_rejects_missing_and_regular_file_candidates() {
     assert_eq!(fs::read(&file).unwrap(), b"preserve this file");
 }
 
-fn directory_alias(source: &Path, alias: &Path) {
+/// Creates the alias, or reports the missing link privilege as a host skip:
+/// without the fixture this is not alias-containment acceptance. The caller
+/// returns on `false`.
+fn directory_alias(source: &Path, alias: &Path) -> bool {
     let outcome = create_directory_link_fixture_for_test(source, alias)
         .expect("directory alias fixture creation must report its real OS error");
-    assert_eq!(
-        outcome,
-        FileLinkFixtureOutcome::Created,
-        "directory alias fixture unavailable; this is not alias-containment acceptance"
-    );
+    if outcome != FileLinkFixtureOutcome::Created {
+        unica_process::test_support::skip_without_host_capability(
+            unica_process::test_support::HostCapability::Symlink,
+            "creating a directory alias fixture needs the symlink privilege",
+        );
+        return false;
+    }
+    true
 }
 
+/// rule: INV.APP.PERSISTENT-PROVIDER-CWD
 #[test]
 fn working_directory_selection_uses_physical_candidate_and_root_identity() {
     let fixture = CwdFixture::new(true);
@@ -129,9 +136,12 @@ fn working_directory_selection_uses_physical_candidate_and_root_identity() {
     let workspace_alias = fixture.external.join("workspace-alias");
     let source_alias = fixture.external.join("source-alias");
     let external_alias = fixture.root.join("external-alias");
-    directory_alias(&fixture.context.workspace_root, &workspace_alias);
-    directory_alias(&source, &source_alias);
-    directory_alias(&fixture.external, &external_alias);
+    if !directory_alias(&fixture.context.workspace_root, &workspace_alias)
+        || !directory_alias(&source, &source_alias)
+        || !directory_alias(&fixture.external, &external_alias)
+    {
+        return;
+    }
 
     for candidate in [
         workspace_alias.join("nested/deeper"),
@@ -198,15 +208,6 @@ fn persistent_commands_reject_when_every_candidate_is_inside_workspace_or_source
     ));
     let identity = WorkspaceServiceIdentity::new(&context, source).unwrap();
     let commands = [
-        (
-            "RLM",
-            rlm_transport_command_for_build(
-                PathBuf::from("never-spawned-rlm"),
-                &context,
-                source,
-                &fixture.build,
-            ),
-        ),
         (
             "BSL",
             bsl_analyzer_command(Path::new("never-spawned-bsl"), &context, source),

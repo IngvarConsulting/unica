@@ -3,12 +3,14 @@ use unica_address::module_routes::{
     has_direct_module_route, has_nested_module_route, module_prefix_route, module_route,
     ModuleRole, ModuleRoute, ModuleRouteKind,
 };
+use unica_source_contract::format_identity::PlatformLine;
 
 pub const PLATFORM_PROFILE_8_3_27: &str = "8.3.27";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlatformProfile {
     id: &'static str,
+    line: PlatformLine,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,7 +52,43 @@ impl PlatformProfile {
     pub const fn v8_3_27() -> Self {
         Self {
             id: PLATFORM_PROFILE_8_3_27,
+            line: PlatformLine::new(8, 3, 27),
         }
+    }
+
+    /// The semantic profile of a platform line: which modules, events and
+    /// roles exist (axis 2 of the source profile). `None` for a line whose
+    /// capabilities are not described yet.
+    pub fn for_line(line: PlatformLine) -> Option<Self> {
+        // 8.5.1 and 8.5.4 keep the module and role tables of 8.3.27. Their
+        // event tables do not: the vendor help of 8.5.1 adds `Click` to the
+        // extension of a usual form group, and 8.5.4 adds two more events on
+        // the queue manager. Until those owners enter the catalog, every line
+        // is still served the 8.3.27 event tables, so an 8.5 set is answered
+        // about events the way 8.3.27 is.
+        unica_source_contract::format_identity::DESCRIBED_PLATFORM_LINES
+            .iter()
+            .find(|(described, _)| *described == line)
+            .map(|(line, id)| Self { id, line: *line })
+    }
+
+    /// Профиль линии набора, а при неизвестной или неописанной линии — профиль
+    /// младшей описанной линии. Рабочий код берёт профиль здесь: имя линии
+    /// названо один раз, в самом профиле, и не расходится по вызовам
+    /// (#2980).
+    ///
+    /// Подстановка младшей линии относится к **таблицам профиля** — модулям,
+    /// ролям и маршрутам, — где линии 8.5 законно держат таблицы 8.3.27,
+    /// и это измерено. К **каталогу событий** она не относится: у каждой
+    /// описанной линии каталог свой, подстановки там нет
+    /// (`INV.PLATFORM.MODULE-EVENT-CATALOG`). Не читайте эту функцию как
+    /// разрешение обслужить набор чужими событиями.
+    pub fn for_line_or_base(line: Option<PlatformLine>) -> Self {
+        line.and_then(Self::for_line).unwrap_or_else(Self::v8_3_27)
+    }
+
+    pub const fn line(self) -> PlatformLine {
+        self.line
     }
 
     pub const fn id(self) -> &'static str {
@@ -101,7 +139,7 @@ impl PlatformProfile {
 
 #[cfg(test)]
 mod tests {
-    use super::{ModuleRole, PlatformProfile};
+    use super::{ModuleRole, PlatformLine, PlatformProfile};
     use serde::Deserialize;
     use std::collections::HashSet;
     use unica_address::address::{NodeKind, QualifiedAddress};
@@ -130,6 +168,25 @@ mod tests {
     }
 
     #[test]
+    fn every_described_platform_line_has_a_semantic_profile() {
+        for (line, id) in [
+            (PlatformLine::new(8, 3, 27), "8.3.27"),
+            (PlatformLine::new(8, 5, 1), "8.5.1"),
+            (PlatformLine::new(8, 5, 4), "8.5.4"),
+        ] {
+            let profile = PlatformProfile::for_line(line).expect("a described line");
+            assert_eq!((profile.line(), profile.id()), (line, id));
+        }
+        assert_eq!(
+            PlatformProfile::for_line(PlatformLine::new(8, 3, 27)),
+            Some(PlatformProfile::v8_3_27())
+        );
+        for line in [PlatformLine::new(8, 3, 26), PlatformLine::new(8, 5, 2)] {
+            assert_eq!(PlatformProfile::for_line(line), None, "{line}");
+        }
+    }
+
+    #[test]
     fn every_approved_module_role_is_a_closed_8_3_27_capability() {
         let fixture = fixture();
         assert_eq!(fixture.profile, "8.3.27");
@@ -153,6 +210,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.PLATFORM-CAPABILITY-EXISTENCE
     #[test]
     fn service_bot_websocket_and_absent_grpc_capabilities_are_not_conflated() {
         let profile = PlatformProfile::v8_3_27();

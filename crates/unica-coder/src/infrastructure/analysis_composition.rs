@@ -6,7 +6,7 @@ use std::sync::Arc;
 use unica_analysis_services::backend::ServiceEnvironment;
 use unica_artifact_delivery::engine::{BundledTool, BundledToolError, MissingEngine};
 use unica_code_intelligence::source_locations::SearchSourceBindings;
-use unica_daemon::identity::{verify_executable_build, CoreIdentity};
+use unica_daemon_protocol::identity::{verify_executable_build, CoreIdentity};
 use unica_execution_contract::adapter_outcome::AdapterOutcome;
 use unica_source_contract::workspace::{ResolvedSourceRoot, WorkspaceContext};
 use unica_workspace::policies::WorkspacePolicies;
@@ -40,25 +40,6 @@ pub(crate) struct AnalysisEnvironment;
 static ANALYSIS_ENVIRONMENT: AnalysisEnvironment = AnalysisEnvironment;
 pub(crate) fn environment() -> &'static AnalysisEnvironment {
     &ANALYSIS_ENVIRONMENT
-}
-impl unica_adapter_rlm::environment::RlmEnvironment for AnalysisEnvironment {
-    fn find_plugin_root(&self, cwd: &Path) -> Option<PathBuf> {
-        plugin_runtime::find_plugin_root(cwd)
-    }
-    fn resolve_bundled_tool(
-        &self,
-        root: &Path,
-        tool: &str,
-        allow_download: bool,
-    ) -> Result<BundledTool, BundledToolError> {
-        bundled_tools::resolve_bundled_tool(root, tool, allow_download)
-    }
-    fn resolve_source_root(
-        &self,
-        context: &WorkspaceContext,
-    ) -> Result<ResolvedSourceRoot, String> {
-        source_roots::resolve_source_root(context, None)
-    }
 }
 impl unica_adapter_bsl_analyzer::environment::BslEnvironment for AnalysisEnvironment {
     fn find_plugin_root(&self, cwd: &Path) -> Option<PathBuf> {
@@ -122,34 +103,58 @@ static BSL_CLIENT: unica_adapter_bsl_analyzer::provider::WorkspaceBslToolClient 
     unica_adapter_bsl_analyzer::provider::WorkspaceBslToolClient {
         environment: service_environment,
     };
-static RLM_SEARCH_CLIENT: unica_adapter_rlm::provider::WorkspaceRlmSearchClient =
-    unica_adapter_rlm::provider::WorkspaceRlmSearchClient {
-        environment: service_environment,
-    };
-static RLM_NAV_CLIENT: unica_adapter_rlm::navigation::WorkspaceRlmNavigationClient =
-    unica_adapter_rlm::navigation::WorkspaceRlmNavigationClient {
-        environment: service_environment,
-    };
 static BSL_DIAGNOSTIC_BACKEND:
     unica_adapter_bsl_analyzer::diagnostics::WorkspaceBslDiagnosticBackend =
     unica_adapter_bsl_analyzer::diagnostics::WorkspaceBslDiagnosticBackend {
         environment: &ANALYSIS_ENVIRONMENT,
     };
-pub(crate) fn bsl_provider() -> unica_adapter_bsl_analyzer::provider::BslAnalyzerProvider<'static> {
+pub fn bsl_provider() -> unica_adapter_bsl_analyzer::provider::BslAnalyzerProvider<'static> {
     unica_adapter_bsl_analyzer::provider::BslAnalyzerProvider::new(&BSL_CLIENT, source_bindings())
 }
 /// The analyzer behind the symbol port for one source set.
-pub(crate) fn bsl_symbols(
+pub fn bsl_symbols(
     context: unica_code_intelligence::model::CodeIntelligenceContext,
 ) -> unica_adapter_bsl_analyzer::symbols::BslAnalyzerSymbols<'static> {
     unica_adapter_bsl_analyzer::symbols::BslAnalyzerSymbols::new(&BSL_CLIENT, context)
 }
-pub(crate) fn rlm_provider() -> unica_adapter_rlm::provider::RlmProvider<'static> {
-    unica_adapter_rlm::provider::RlmProvider::new(
-        &RLM_SEARCH_CLIENT,
-        &RLM_NAV_CLIENT,
-        source_bindings(),
-    )
+
+/// Members of the platform's global context from the help of the
+/// installation at `root`, for completion in the editor.
+pub fn platform_members(
+    root: &Path,
+) -> Result<Vec<unica_code_intelligence::completion::PlatformMember>, String> {
+    use unica_documentation_sources::platform_help::provider::{
+        global_context_members, GlobalContextMemberKind,
+    };
+    Ok(global_context_members(root)?
+        .into_iter()
+        .map(
+            |member| unica_code_intelligence::completion::PlatformMember {
+                method: member.kind == GlobalContextMemberKind::Method,
+                name: member.name_ru,
+                parameters: member.parameters,
+            },
+        )
+        .collect())
+}
+
+/// The host of long analysis work: one shared piece of work per engine,
+/// target and capability set, owned by the daemon for its lifetime.
+pub mod provider_host {
+    pub use unica_analysis_services::provider_host::{
+        LongWorkFailure, ProviderHostKey, ProviderHostOwner,
+    };
+}
+
+/// The engine of candidate lines for the literal text search.
+pub fn candidate_lines() -> &'static dyn unica_code_intelligence::candidate_lines::CandidateLines {
+    static LINES: std::sync::OnceLock<unica_adapter_lexical::lines::GitCandidateLines> =
+        std::sync::OnceLock::new();
+    LINES.get_or_init(|| {
+        unica_adapter_lexical::lines::GitCandidateLines::new(
+            unica_process::runner::system_process_runner(),
+        )
+    })
 }
 pub(crate) fn lexical_provider() -> unica_adapter_lexical::GitGrepProvider<'static> {
     unica_adapter_lexical::GitGrepProvider::new(source_bindings())
@@ -161,15 +166,7 @@ pub(crate) fn diagnostic_provider(
         crate::infrastructure::diagnostics::findings_module_path,
     )
 }
-#[cfg(test)]
-pub(crate) fn rlm_navigation_client(
-) -> &'static dyn unica_adapter_rlm::navigation::RlmNavigationClient {
-    &RLM_NAV_CLIENT
-}
-pub(crate) fn index_is_ready(context: &WorkspaceContext) -> bool {
-    unica_adapter_rlm::index::bsl_index_is_ready(context, environment())
-}
-pub(crate) fn run_workspace_service(args: &[String]) -> Result<(), String> {
+pub fn run_workspace_service(args: &[String]) -> Result<(), String> {
     unica_analysis_services::run_workspace_service_from_args(
         args,
         Arc::new(
@@ -177,9 +174,30 @@ pub(crate) fn run_workspace_service(args: &[String]) -> Result<(), String> {
                 AnalysisEnvironment,
             )),
         ),
-        Arc::new(unica_adapter_rlm::backend::RlmWorkspaceBackend::new(
-            Arc::new(AnalysisEnvironment),
-        )),
         service_environment(),
     )
+}
+
+/// Diagnostics providers behind the `diagnostics` port that record or fail
+/// the analysis deadline.
+#[cfg(any(test, feature = "test-support"))]
+pub mod diagnostics_probe {
+    pub use unica_adapter_bsl_analyzer::adapter::AnalyzerRunFailureKind;
+    pub use unica_adapter_bsl_analyzer::diagnostics::analyze_timeout_probe::{
+        failing_provider, recording_provider, RecordingAnalyzeBackend,
+    };
+
+    /// The real provider over a resident answering its `file` questions with
+    /// `replies` in order, for the module the product proves.
+    pub fn resident_provider(
+        replies: Vec<String>,
+    ) -> (
+        std::sync::Arc<dyn unica_diagnostics::model::DiagnosticProvider>,
+        &'static RecordingAnalyzeBackend,
+    ) {
+        unica_adapter_bsl_analyzer::diagnostics::analyze_timeout_probe::resident_provider(
+            crate::infrastructure::diagnostics::findings_module_path,
+            replies,
+        )
+    }
 }

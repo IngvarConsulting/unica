@@ -26,3 +26,7 @@ tempfile.workspace = true
 unica-workspace = { path = "../unica-workspace", features = ["test-support"] }
 unica-process = { path = "../unica-process", features = ["test-support"] }
 unica-code-intelligence = { path = "../unica-code-intelligence", features = ["test-support"] }
+
+[package.metadata.unica]
+component = "adapter"
+file-io = "owned"

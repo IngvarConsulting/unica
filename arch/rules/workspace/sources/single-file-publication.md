@@ -1,7 +1,5 @@
 ---
 id: INV.SOURCE.ATOMIC-PUBLISH
-check:
-  - crates/unica-workspace/src/single_file_publisher.rs::precommit_failpoints_preserve_target_and_remove_stage
 ---
 
 # Ошибка подготовки замены файла сохраняет его содержимое

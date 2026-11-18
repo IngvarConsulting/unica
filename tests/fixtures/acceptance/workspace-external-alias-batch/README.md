@@ -1,0 +1,1 @@
+Point-only external owner fixture: source.xml is unchanged from workspace-external-alias (the pinned synthetic Designer export). Its ObjectModule has a controlled method and an outside line. Other companion resources are intentionally absent; broken.xml must not participate in proving this module or its lines.

@@ -5,9 +5,9 @@ use crate::layout::{
 use std::path::{Component, Path, PathBuf};
 use unica_address::address::{AddressSegment, NodeKind, QualifiedAddress};
 use unica_address::module_routes::{
-    has_direct_module_route, has_nested_module_route, ModuleRole, ModuleRouteKind,
+    has_direct_module_route, has_nested_module_role, ModuleRole, ModuleRouteKind,
 };
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 use unica_source_contract::SourceSetKind;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -325,11 +325,17 @@ impl PlatformXmlModuleLayoutDescriptor {
                             .is_some_and(|(owner, role)| has_direct_module_route(owner, role))
                     })
             }
-            ModuleLayoutCapability::NestedFormOrCommand => captures.kind.is_some_and(|kind| {
-                NodeKind::parse(kind.tag)
-                    .ok()
-                    .is_some_and(has_nested_module_route)
-            }),
+            ModuleLayoutCapability::NestedFormOrCommand => {
+                let role = match self.fixed_role {
+                    Some(PlatformXmlModuleRole::FormModule) => ModuleRole::Form,
+                    Some(PlatformXmlModuleRole::CommandModule) => ModuleRole::Command,
+                    _ => return false,
+                };
+                captures
+                    .kind
+                    .and_then(|kind| NodeKind::parse(kind.tag).ok())
+                    .is_some_and(|owner| has_nested_module_role(owner, role))
+            }
         }
     }
 
@@ -536,11 +542,7 @@ fn module_identity(
     role: PlatformXmlModuleRole,
     descriptors: Vec<PathBuf>,
 ) -> Result<PlatformXmlModuleIdentity, String> {
-    let address = MetadataAddress::parse(
-        unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &address,
-    )
-    .map_err(|error| error.to_string())?;
+    let address = MetadataAddress::parse_logical(&address).map_err(|error| error.to_string())?;
     Ok(PlatformXmlModuleIdentity {
         owner,
         address,
@@ -616,7 +618,7 @@ mod tests {
         assert_eq!(descriptors.len(), cases.len());
         for ((expected_family, address, relative), descriptor) in cases.into_iter().zip(descriptors)
         {
-            let address = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, address).unwrap();
+            let address = MetadataAddress::parse_logical(address).unwrap();
 
             assert_eq!(descriptor.family(), expected_family);
             assert_eq!(
@@ -632,11 +634,8 @@ mod tests {
 }
 
 pub fn form_module_target(form: &MetadataAddress) -> Result<MetadataAddress, String> {
-    MetadataAddress::parse(
-        PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &format!("{}.FormModule", form.as_str()),
-    )
-    .map_err(|error| error.to_string())
+    MetadataAddress::parse_logical(&format!("{}.FormModule", form.as_str()))
+        .map_err(|error| error.to_string())
 }
 pub fn form_descriptor_requirements(
     form: &MetadataAddress,
@@ -651,16 +650,11 @@ pub fn form_descriptor_requirements(
             "form target does not retain a typed metadata owner chain",
         ));
     };
-    let owner = MetadataAddress::parse(
-        PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &format!("{owner_kind}.{owner_name}"),
-    )
-    .map_err(|error| error.to_string())?;
-    let nested = MetadataAddress::parse(
-        PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &format!("{owner_kind}.{owner_name}.Form.{form_name}"),
-    )
-    .map_err(|error| error.to_string())?;
+    let owner = MetadataAddress::parse_logical(&format!("{owner_kind}.{owner_name}"))
+        .map_err(|error| error.to_string())?;
+    let nested =
+        MetadataAddress::parse_logical(&format!("{owner_kind}.{owner_name}.Form.{form_name}"))
+            .map_err(|error| error.to_string())?;
     Ok(vec![
         metadata_descriptor_relative(&owner, source_set_kind)?,
         metadata_descriptor_relative(&nested, source_set_kind)?,
@@ -689,8 +683,8 @@ pub fn module_descriptor_requirements(
             ))
         }
     };
-    let descriptor = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &descriptor_raw)
-        .map_err(|error| error.to_string())?;
+    let descriptor =
+        MetadataAddress::parse_logical(&descriptor_raw).map_err(|error| error.to_string())?;
     let nested = metadata_descriptor_relative(&descriptor, source_set_kind)?;
     if matches!(
         route_kind,
@@ -699,7 +693,7 @@ pub fn module_descriptor_requirements(
         source_set_kind,
         SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
     ) {
-        let owner = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &parts[..2].join("."))
+        let owner = MetadataAddress::parse_logical(&parts[..2].join("."))
             .map_err(|error| error.to_string())?;
         return Ok(vec![
             metadata_descriptor_relative(&owner, source_set_kind)?,
@@ -789,8 +783,7 @@ pub fn module_source_address(
             )
         }
     };
-    MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &logical)
-        .map_err(|error| error.to_string())
+    MetadataAddress::parse_logical(&logical).map_err(|error| error.to_string())
 }
 fn required_segment_name(
     segment: Option<&AddressSegment>,
@@ -972,6 +965,13 @@ mod code_layout_tests {
                 "Constant.Mode",
                 "ValueManagerModule",
             ),
+            // Очередь линии 8.5.4: выгрузка кладёт её модуль менеджера
+            // в общее для прямых модулей место.
+            (
+                "Queues/Probe/Ext/ManagerModule.bsl",
+                "Queue.Probe",
+                "ManagerModule",
+            ),
         ];
         for (path, owner, role) in direct_cases {
             assert_module_identity(path, owner, role);
@@ -1012,12 +1012,31 @@ mod code_layout_tests {
         }
     }
     #[test]
+    fn settings_storage_form_module_maps_in_both_directions() {
+        let relative = Path::new("SettingsStorages/User/Forms/Save/Ext/Form/Module.bsl");
+        let identity = module_identity(relative).unwrap();
+        assert_eq!(identity.owner, "SettingsStorage.User");
+        assert_eq!(identity.role.as_str(), "FormModule");
+        assert_eq!(
+            super::platform_xml_module_relative(&identity.address).unwrap(),
+            relative,
+        );
+        assert!(module_identity(Path::new(
+            "SettingsStorages/User/Commands/Open/Ext/CommandModule.bsl"
+        ))
+        .is_err());
+    }
+
+    #[test]
     fn noncanonical_or_unsupported_module_layouts_are_rejected() {
         for path in [
             "Catalogs/Items/Trash/Ext/FakeModule.bsl",
             "Catalogs/Items/Ext/Module.bsl",
             "CommonModules/X/Ext/ObjectModule.bsl",
             "Languages/Ru/Ext/ManagerModule.bsl",
+            // У очереди есть только модуль менеджера; файл модуля объекта
+            // рядом с её дескриптором — не её раскладка.
+            "Queues/Probe/Ext/ObjectModule.bsl",
             "Catalogs/Items/Forms/Main/Ext/Module.bsl",
             "Catalogs/Items/Commands/Print/Ext/Module.bsl",
             "Catalogs/Items/Ext/FakeModule.bsl",

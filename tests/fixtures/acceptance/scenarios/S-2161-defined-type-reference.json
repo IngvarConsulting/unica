@@ -39,11 +39,11 @@
           "eq": "DefinedType"
         },
         {
-          "pointer": "/data/props/type/variants/0/kind",
+          "pointer": "/data/props/Type/variants/0/kind",
           "eq": "number"
         },
         {
-          "pointer": "/data/props/type/variants/0/digits",
+          "pointer": "/data/props/Type/variants/0/digits",
           "eq": 15
         }
       ]

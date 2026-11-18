@@ -1,0 +1,37 @@
+{
+  "id": "S299",
+  "name": "view-foreign-cursor-refused",
+  "issue": 1340,
+  "area": "Навигация и чтение",
+  "task": "Продолжить страницу чужим курсором — отказ вместо чужого ответа",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration",
+        "limit": 2,
+        "cursor": "не-наш-курсор"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_cursor: view cursor is invalid, expired, or belongs to another question",
+      "assertions": [
+        {
+          "pointer": "/ok",
+          "eq": false
+        },
+        {
+          "pointer": "/diagnostics",
+          "eq": [
+            {
+              "code": "invalid_cursor",
+              "outcome": "fixCall",
+              "message": "view cursor is invalid, expired, or belongs to another question"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

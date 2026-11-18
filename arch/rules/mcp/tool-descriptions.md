@@ -1,8 +1,5 @@
 ---
 id: INV.SURFACE.ARGUMENTS-DESCRIBED
-check:
-  - crates/unica-coder/src/interfaces/mcp.rs::canonical_tools_are_described_within_wire_budget
-  - crates/unica-coder/src/application/v13/tool_catalog.rs::canonical_arguments_are_described_within_wire_budget
 ---
 
 # Каталог инструментов описывает аргументы и укладывается в бюджет клиента

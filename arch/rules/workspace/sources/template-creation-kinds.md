@@ -1,6 +1,5 @@
 ---
 id: INV.SOURCE.TEMPLATE-CREATION-KINDS
-check: []
 gap: https://github.com/IngvarConsulting/unica/issues/992
 ---
 

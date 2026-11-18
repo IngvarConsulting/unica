@@ -1,6 +1,5 @@
 ---
 id: INV.SOURCE.ROLE-DEPENDENT-RIGHTS
-check: []
 gap: https://github.com/IngvarConsulting/unica/issues/941
 ---
 

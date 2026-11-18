@@ -1,0 +1,22 @@
+{
+  "id": "S301",
+  "area": "Навигация и чтение",
+  "workspace": "tests/fixtures/acceptance/workspace-format",
+  "task": "Проверить корень старой выгрузки 2.17 — check сообщает, что формат прочитан по диалекту 2.20",
+  "wire": [
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "older:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "diagnostic": "formatVersionUnverified",
+      "validators": [
+        "cf"
+      ]
+    }
+  ]
+}

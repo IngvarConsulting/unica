@@ -1,0 +1,17 @@
+{
+  "family": "Code",
+  "operations": [
+    {
+      "variant": "Insert",
+      "operation": "code.insert",
+      "applicability": "CodeInsert",
+      "skeleton": "Text"
+    },
+    {
+      "variant": "Replace",
+      "operation": "code.replace",
+      "applicability": "Code",
+      "skeleton": "Text"
+    }
+  ]
+}

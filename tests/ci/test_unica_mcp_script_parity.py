@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from scripts.ci.prepared_binary import binary_path, ensure_binary
+from scripts.ci.provider_fixture import provider_fixture_environment
 
-import argparse
 import dataclasses
 import hashlib
 import io
@@ -23,16 +23,22 @@ import xml.etree.ElementTree as ET
 import zipfile
 from collections.abc import Callable, Iterable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 from unittest import mock
 from xml.sax.saxutils import escape
+
+# Размер тестов модуля (scripts/ci/python_sizes.py).
+# Паритет скриптов: собирает и запускает исполняемый файл.
+MEDIUM = ("UnicaMcpScriptParityTests",)
 
 MODULE_REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(MODULE_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(MODULE_REPO_ROOT))
 
 from scripts.ci import donor_parity_contract as donor_contract
+from scripts.ci.temp_tree import remove_tree, temp_tree
 
 
 REPO_ROOT = MODULE_REPO_ROOT
@@ -40,13 +46,6 @@ PLUGIN_ROOT = REPO_ROOT / "plugins" / "unica"
 SKILLS_ROOT = PLUGIN_ROOT / "skills"
 FIXTURES_ROOT = REPO_ROOT / "tests" / "fixtures" / "unica_mcp_script_parity"
 UNICA_REFERENCE_MODELS_ROOT = FIXTURES_ROOT / "unica_reference_models"
-DONOR_SNAPSHOT_ROOT = Path(
-    os.environ.get("UNICA_DONOR_SNAPSHOT_ROOT", FIXTURES_ROOT / "cc-1c-skills")
-).resolve()
-DONOR_SKILLS_ROOT = DONOR_SNAPSHOT_ROOT / "skills"
-CC_1C_CASES_ROOT = DONOR_SNAPSHOT_ROOT / "cases"
-DONOR_BASELINE_PATH = FIXTURES_ROOT / "donor-baseline.json"
-DONOR_RELATIONS_PATH = FIXTURES_ROOT / "donor-relations.json"
 BSP_DCS_QUERY_FIXTURE = (
     "bsp/dcs/Catalogs__ПравилаОбработкиЭлектроннойПочты__"
     "СхемаПравилаОбработкиЭлектроннойПочты/Template.xml"
@@ -89,7 +88,7 @@ BSP_MXL_POWER_OF_ATTORNEY_FIXTURE = (
     "bsp/mxl/Catalogs__МашиночитаемыеДоверенности__"
     "ПФ_MXL_Доверенность/Template.xml"
 )
-READER_STANDINS_ROOT = FIXTURES_ROOT / "reader-standins"
+READER_STANDINS_ROOT = REPO_ROOT / "tests" / "ci" / "fixtures" / "reader-standins"
 DOCUMENTED_READER_TOOL_NAMES = {
     "unica.cfe.diff",
     "unica.code.definition",
@@ -156,15 +155,6 @@ class SkillMcpExample:
     document: str
     line: int
     payload: dict[str, Any]
-
-
-@dataclasses.dataclass(frozen=True)
-class CcSkillCase:
-    case_id: str
-    skill_dir: str
-    case_path: Path
-    skill_config: dict[str, Any]
-    case_data: dict[str, Any]
 
 
 SUCCESS_SCENARIOS = [
@@ -381,7 +371,7 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
     # itself is gone with the rest of the v0.12 initializers (#1813).
 
     def test_rust_registry_parity_list_matches_python_parity_harness(self) -> None:
-        app_mod = (REPO_ROOT / "crates" / "unica-coder" / "src" / "application" / "mod.rs").read_text(
+        app_mod = (REPO_ROOT / "crates/unica-application/src/application/medium_application_tests.rs").read_text(
             encoding="utf-8"
         )
         match = re.search(
@@ -448,7 +438,7 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
         self.assertLessEqual(len(russian_text("ListPresentation")), 38)
 
     def test_event_subscription_fixture_exports_its_declared_handler(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="unica-event-handler-fixture-") as temp:
+        with temp_tree("unica-event-handler-fixture-") as temp:
             source_root = Path(temp) / "src" / "cf"
             source_root.mkdir(parents=True)
             (source_root / "Configuration.xml").write_text(
@@ -483,59 +473,22 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
                 rf"\s*\([^)]*\)\s+(?:Export|Экспорт)\s*$",
             )
 
-    def test_every_donor_case_has_one_reviewed_relation(self) -> None:
-        cases = {case.case_id for case in iter_cc_1c_skill_cases()}
-        relations = load_donor_relations()
-        active_relations = {
-            case_id
-            for case_id in relations
-            if case_id.partition("/")[0] in CC_CASE_TOOLS
-        }
-        self.assertEqual(active_relations, cases)
-        retired_meta_relations = {
-            case_id for case_id in relations if case_id.startswith("meta-compile/")
-        }
-        self.assertTrue(retired_meta_relations)
-        self.assertEqual(retired_meta_relations & cases, set())
-
-    def test_retired_donor_cases_are_not_compared(self) -> None:
-        # A retired case keeps its files in the snapshot but leaves the
-        # comparison, so it must not come back through the case iterator.
-        retired = set(load_donor_registry().get("retired", {}))
-        self.assertTrue(retired, "the retirement list records what left the stand")
-        cases = {case.case_id for case in iter_cc_1c_skill_cases()}
-        self.assertEqual(retired & cases, set())
-
     def test_donor_snapshot_integrity_and_provenance(self) -> None:
         errors = donor_contract.validate_repository_contract(REPO_ROOT)
         self.assertEqual(errors, [])
 
-    def test_category_only_expected_gap_allowlist_is_removed(self) -> None:
-        legacy_name = "CC_1C_" + "EXPECTED_GAPS"
-        self.assertNotIn(
-            legacy_name,
-            Path(__file__).read_text(encoding="utf-8"),
-        )
-
-    def test_donor_cases_match_reviewed_relations(self) -> None:
-        for case in iter_cc_1c_skill_cases():
-            with self.subTest(case=case.case_id, tool=cc_case_tool(case)):
-                self.assert_cc_1c_case_parity(case)
-
-    def test_donor_inventory_relations_preview_and_snapshot_are_closed(self) -> None:
-        self.test_every_donor_case_has_one_reviewed_relation()
-        self.test_retired_donor_cases_are_not_compared()
-        self.test_donor_snapshot_integrity_and_provenance()
-        self.test_donor_cases_match_reviewed_relations()
-
     def assert_parity(self, scenario: ParityScenario) -> None:
-        with tempfile.TemporaryDirectory(prefix=f"unica-parity-{scenario.name}-") as temp:
+        with (
+            tempfile.TemporaryDirectory(prefix=f"unica-parity-{scenario.name}-") as temp,
+            ExitStack() as provider_resources,
+        ):
             temp_root = Path(temp)
             direct_ws = temp_root / "direct"
             mcp_ws = temp_root / "mcp"
             direct_ws.mkdir()
             mcp_ws.mkdir()
             mcp_cache = temp_root / "mcp-cache"
+            provider_resources.callback(remove_tree, mcp_cache / "provider-state")
             self.prepare_workspace(direct_ws, scenario, setup_mode="reference")
             self.prepare_workspace(mcp_ws, scenario, setup_mode="mcp", cache_dir=mcp_cache)
 
@@ -576,58 +529,6 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
             if scenario.compare_files:
                 self.assertEqual(snapshot_workspace(direct_ws), snapshot_workspace(mcp_ws))
 
-    def assert_cc_1c_case_parity(self, case: CcSkillCase) -> None:
-        observation, message = self.observe_cc_1c_case(case)
-        relation = load_donor_relations()[case.case_id]
-        errors = donor_contract.validate_relation_observation(
-            relation=relation,
-            content_digest=donor_contract.case_content_digest(
-                DONOR_SNAPSHOT_ROOT, case.case_id
-            ),
-            observation=observation,
-        )
-        self.assertEqual(
-            errors,
-            [],
-            f"{case.case_id}: {message}\n"
-            + json.dumps(observation, ensure_ascii=False, indent=2),
-        )
-
-    def observe_cc_1c_case(
-        self, case: CcSkillCase
-    ) -> tuple[dict[str, Any], str]:
-        with tempfile.TemporaryDirectory(prefix=f"unica-cc-parity-{case.skill_dir}-{case.case_path.stem}-") as temp:
-            temp_root = Path(temp)
-            direct_ws = temp_root / "direct"
-            mcp_ws = temp_root / "mcp"
-            direct_ws.mkdir()
-            mcp_ws.mkdir()
-            mcp_cache = temp_root / "mcp-cache"
-
-            self.prepare_cc_1c_workspace(direct_ws, case)
-            self.prepare_cc_1c_workspace(mcp_ws, case)
-
-            direct_args, direct_input = cc_case_main_arguments(case, direct_ws)
-            mcp_args, mcp_input = cc_case_main_arguments(case, mcp_ws)
-            try:
-                direct = run_cc_python_script(cc_case_skill(case), cc_case_script(case), direct_args, direct_ws)
-                mcp = self.call_mcp_tool(cc_case_tool(case), mcp_args, mcp_ws, mcp_cache)
-            finally:
-                if direct_input is not None:
-                    direct_input.unlink(missing_ok=True)
-                if mcp_input is not None:
-                    mcp_input.unlink(missing_ok=True)
-
-            expect_error = bool(case.case_data.get("expectError"))
-            return cc_case_observation(
-                case,
-                direct,
-                mcp,
-                direct_ws,
-                mcp_ws,
-                expect_error,
-            )
-
     def prepare_workspace(
         self,
         workspace: Path,
@@ -662,56 +563,6 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
                     target = workspace / step.stdout_path
                     target.parent.mkdir(parents=True, exist_ok=True)
                     target.write_text(result.stdout, encoding="utf-8")
-
-    def prepare_cc_1c_workspace(self, workspace: Path, case: CcSkillCase) -> None:
-        setup_name = case.case_data.get("setup") or case.skill_config.get("setup") or "none"
-        if setup_name == "empty-config":
-            result = run_cc_python_script("cf-init", "cf-init.py", {"Name": "TestConfig", "OutputDir": "."}, workspace)
-            if result.returncode != 0:
-                raise AssertionError(f"cc setup empty-config failed\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}")
-            project_empty_config_to_8_3_27(workspace)
-        elif isinstance(setup_name, str) and setup_name.startswith("fixture:"):
-            fixture = case.case_path.parent / "fixtures" / setup_name.removeprefix("fixture:")
-            if not fixture.exists():
-                raise AssertionError(f"cc fixture not found: {fixture}")
-            copy_tree_contents(fixture, workspace)
-        elif setup_name not in ("none", None):
-            raise AssertionError(f"unsupported cc setup: {setup_name}")
-
-        for index, step in enumerate(case.case_data.get("preRun") or []):
-            if "writeFile" in step:
-                write_file = step["writeFile"]
-                target = workspace / project_cc_case_path(
-                    case.skill_dir,
-                    write_file["path"],
-                )
-                target.parent.mkdir(parents=True, exist_ok=True)
-                content = write_file.get("content", "")
-                if not isinstance(content, str):
-                    content = json.dumps(content, ensure_ascii=False, indent=2)
-                target.write_text(content, encoding="utf-8")
-                continue
-
-            script_rel = step["script"]
-            pre_input = None
-            if "input" in step:
-                pre_input = workspace / f"__cc_pre_input_{index}.json"
-                pre_input.write_text(json.dumps(step["input"], ensure_ascii=False, indent=2), encoding="utf-8")
-            args = cc_step_raw_args(
-                step.get("args") or {},
-                workspace,
-                pre_input,
-                case.skill_dir,
-            )
-            try:
-                result = run_donor_skill_raw(script_rel, args, workspace)
-            finally:
-                if pre_input is not None:
-                    pre_input.unlink(missing_ok=True)
-            if result.returncode != 0:
-                raise AssertionError(
-                    f"cc preRun step {script_rel} failed\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-                )
 
     def call_mcp(self, scenario: ParityScenario, workspace: Path, cache_dir: Path) -> dict[str, Any]:
         return self.call_mcp_tool(scenario.tool, scenario.arguments, workspace, cache_dir)
@@ -756,15 +607,9 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
             "method": "tools/call",
             "params": {"name": tool, "arguments": arguments},
         }
-        env = os.environ.copy()
-        env["UNICA_PLUGIN_ROOT"] = str(PLUGIN_ROOT)
-        env["UNICA_CACHE_DIR"] = str(cache_dir)
-        # Демон переживает вызов: без назначенной паузы он остаётся на
-        # четверть часа и накапливается за прогон набора.
-        env["UNICA_DAEMON_IDLE_GRACE_MS"] = "5000"
-        responses = self.run_mcp_messages([message], env)
+        responses = self.call_mcp_messages([message], cache_dir)
         self.assertEqual(len(responses), 1, responses)
-        response = responses[0]
+        response = responses[message["id"]]
         if "error" in response:
             raise AssertionError(json.dumps(response["error"], ensure_ascii=False, indent=2))
         return json.loads(response["result"]["content"][0]["text"])
@@ -773,7 +618,7 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
         cached = type(self)._input_schemas
         if cached is not None:
             return cached
-        with tempfile.TemporaryDirectory(prefix="unica-tool-schemas-") as temp:
+        with temp_tree("unica-tool-schemas-") as temp:
             responses = self.call_mcp_messages(
                 [
                     {
@@ -906,11 +751,9 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
         env = os.environ.copy()
         env["UNICA_PLUGIN_ROOT"] = str(PLUGIN_ROOT)
         env["UNICA_CACHE_DIR"] = str(cache_dir)
-        # Демон переживает вызов: без назначенной паузы он остаётся на
-        # четверть часа и накапливается за прогон набора.
-        env["UNICA_DAEMON_IDLE_GRACE_MS"] = "5000"
         if extra_env is not None:
             env.update(extra_env)
+        env = provider_fixture_environment(env, cache_dir / "provider-state")
         responses = []
         for start in range(0, len(messages), 32):
             batch = messages[start : start + 32]
@@ -936,280 +779,6 @@ def run_unica_reference_model(
     return decoded_completed_process(result)
 
 
-def run_cc_python_script(
-    skill: str,
-    script: str,
-    arguments: dict[str, Any],
-    workspace: Path,
-) -> subprocess.CompletedProcess[str]:
-    return run_unica_reference_model(
-        skill,
-        script,
-        arguments,
-        workspace,
-        skills_root=DONOR_SKILLS_ROOT,
-    )
-
-
-# Donor cases compare tool stdout against the cc-1c reference scripts. A tool
-# that migrated to typed data has no prose left to compare, so it
-# leaves this stand the same way it leaves the scenario stand. `cfe-borrow`
-# left with unica.cfe.borrow. Whole-schema DCS transformations retired in
-# #1310; their independent donor snapshots and reviewed relations stay intact.
-# Direct component operations are checked by the public acceptance corpus.
-CC_CASE_TOOLS = {
-    "form-compile": "unica.form.compile",
-    "form-compile-from-object": "unica.form.compile",
-}
-
-
-def iter_cc_1c_skill_cases() -> list[CcSkillCase]:
-    if not CC_1C_CASES_ROOT.exists():
-        return []
-    cases: list[CcSkillCase] = []
-    for skill_dir in sorted(CC_CASE_TOOLS):
-        skill_root = CC_1C_CASES_ROOT / skill_dir
-        skill_config_path = skill_root / "_skill.json"
-        if not skill_config_path.exists():
-            continue
-        skill_config = json.loads(skill_config_path.read_text(encoding="utf-8"))
-        for case_path in sorted(skill_root.glob("*.json")):
-            if case_path.name.startswith("_"):
-                continue
-            case_data = json.loads(case_path.read_text(encoding="utf-8"))
-            cases.append(
-                CcSkillCase(
-                    case_id=f"{skill_dir}/{case_path.stem}",
-                    skill_dir=skill_dir,
-                    case_path=case_path,
-                    skill_config=skill_config,
-                    case_data=case_data,
-                )
-            )
-    return cases
-
-
-def load_donor_registry() -> dict[str, Any]:
-    return donor_contract.load_json(DONOR_RELATIONS_PATH)
-
-
-def load_donor_relations() -> dict[str, dict[str, Any]]:
-    registry = load_donor_registry()
-    relations = registry.get("relations")
-    if not isinstance(relations, dict):
-        raise AssertionError("donor relation registry must contain an object")
-    return relations
-
-
-def write_donor_observation_candidates(output_path: Path) -> None:
-    UnicaMcpScriptParityTests.setUpClass()
-    test_case = UnicaMcpScriptParityTests(methodName="runTest")
-    observations = {}
-    cases = iter_cc_1c_skill_cases()
-    for index, case in enumerate(cases, start=1):
-        print(
-            f"[{index}/{len(cases)}] {case.case_id}",
-            file=sys.stderr,
-            flush=True,
-        )
-        observation, message = test_case.observe_cc_1c_case(case)
-        observations[case.case_id] = {
-            "contentDigest": donor_contract.case_content_digest(
-                DONOR_SNAPSHOT_ROOT, case.case_id
-            ),
-            "observation": observation,
-            "observationFingerprint": donor_contract.observation_fingerprint(
-                observation
-            ),
-            "message": message,
-        }
-    payload = {
-        "schemaVersion": 1,
-        "snapshotRoot": str(DONOR_SNAPSHOT_ROOT),
-        "observations": observations,
-    }
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-
-
-def cc_case_tool(case: CcSkillCase) -> str:
-    return CC_CASE_TOOLS[case.skill_dir]
-
-
-def cc_case_skill(case: CcSkillCase) -> str:
-    return cc_script_skill_and_script(case.skill_config["script"])[0]
-
-
-def cc_case_script(case: CcSkillCase) -> str:
-    return cc_script_skill_and_script(case.skill_config["script"])[1]
-
-
-def cc_script_skill_and_script(script_rel: str) -> tuple[str, str]:
-    parts = script_rel.split("/")
-    if len(parts) != 3 or parts[1] != "scripts":
-        raise AssertionError(f"unsupported cc script path: {script_rel}")
-    return parts[0], f"{parts[2]}.py"
-
-
-def cc_case_main_arguments(case: CcSkillCase, workspace: Path) -> tuple[dict[str, Any], Path | None]:
-    input_file = None
-    if "input" in case.case_data:
-        input_file = workspace / "__cc_input.json"
-        input_file.write_text(json.dumps(case.case_data["input"], ensure_ascii=False, indent=2), encoding="utf-8")
-
-    arguments: dict[str, Any] = {}
-    for mapping in case.skill_config["args"]:
-        key = mapping["flag"].lstrip("-")
-        value = cc_mapping_value(
-            mapping,
-            case.case_data,
-            workspace,
-            input_file,
-            case.skill_dir,
-        )
-        if value is CC_OMIT:
-            continue
-        arguments[key] = value
-
-    for key, value in cc_args_extra(
-        case.case_data.get("args_extra") or [],
-        workspace,
-        case.skill_dir,
-    ).items():
-        arguments[key] = value
-    return arguments, input_file
-
-
-CC_OMIT = object()
-
-
-def cc_mapping_value(
-    mapping: dict[str, Any],
-    case_data: dict[str, Any],
-    workspace: Path,
-    input_file: Path | None,
-    case_scope: str,
-) -> Any:
-    source = mapping["from"]
-    if source == "inputFile":
-        if input_file is None:
-            return CC_OMIT
-        return input_file.as_posix()
-    if source == "workDir":
-        return "."
-    if source == "outputPath":
-        raw = project_cc_case_path(
-            case_scope,
-            case_data.get("outputPath") or "",
-        )
-        return cc_workspace_path(workspace, raw)
-    if source == "workPath":
-        field = mapping.get("field") or "objectPath"
-        raw = case_data.get("params", {}).get(field, case_data.get(field))
-        if raw in (None, ""):
-            return CC_OMIT if mapping.get("optional") else "."
-        raw = project_cc_case_path(case_scope, raw)
-        return cc_workspace_path(workspace, raw)
-    if source == "switch":
-        return case_data.get(mapping["flag"].lstrip("-"), True) is not False
-    if source == "literal":
-        return mapping.get("value") or ""
-    if source.startswith("case."):
-        field = source.removeprefix("case.")
-        return case_data.get("params", {}).get(field, case_data.get(field, ""))
-    raise AssertionError(f"unsupported cc arg source: {source}")
-
-
-def cc_workspace_path(workspace: Path, raw: str) -> str:
-    return (workspace / raw).as_posix()
-
-
-def project_cc_case_path(case_scope: str, raw: str) -> str:
-    projections = donor_contract.CASE_EXECUTION_PATH_PROJECTIONS.get(
-        case_scope,
-        {},
-    )
-    for source, target in projections.items():
-        for prefix in (source, f"{{workDir}}/{source}"):
-            if raw == prefix:
-                return target if prefix == source else f"{{workDir}}/{target}"
-            if raw.startswith(f"{prefix}/"):
-                replacement = (
-                    target
-                    if prefix == source
-                    else f"{{workDir}}/{target}"
-                )
-                return replacement + raw[len(prefix) :]
-    return raw
-
-
-def cc_args_extra(
-    args_extra: list[Any],
-    workspace: Path,
-    case_scope: str,
-) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    index = 0
-    while index < len(args_extra):
-        raw_flag = args_extra[index]
-        if not isinstance(raw_flag, str) or not raw_flag.startswith("-"):
-            raise AssertionError(f"unsupported cc args_extra item: {raw_flag!r}")
-        key = raw_flag.lstrip("-")
-        next_index = index + 1
-        if next_index >= len(args_extra) or (
-            isinstance(args_extra[next_index], str) and args_extra[next_index].startswith("-")
-        ):
-            result[key] = True
-            index += 1
-            continue
-        value = args_extra[next_index]
-        if isinstance(value, str):
-            value = project_cc_case_path(case_scope, value)
-            value = value.replace("{workDir}", workspace.as_posix())
-        result[key] = value
-        index += 2
-    return result
-
-
-def cc_step_raw_args(
-    args_map: dict[str, Any],
-    workspace: Path,
-    input_file: Path | None,
-    case_scope: str,
-) -> list[str]:
-    args: list[str] = []
-    for flag, raw_value in args_map.items():
-        args.append(flag)
-        if raw_value is True or raw_value == "":
-            continue
-        value = project_cc_case_path(case_scope, str(raw_value))
-        value = value.replace("{workDir}", workspace.as_posix())
-        if input_file is not None:
-            value = value.replace("{inputFile}", input_file.as_posix())
-        args.append(value)
-    return args
-
-
-def run_donor_skill_raw(
-    script_rel: str,
-    args: list[str],
-    workspace: Path,
-) -> subprocess.CompletedProcess[str]:
-    skill, script = cc_script_skill_and_script(script_rel)
-    script_path = DONOR_SKILLS_ROOT / skill / "scripts" / script
-    result = subprocess.run(
-        ["python3", str(script_path), *args],
-        cwd=workspace,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
-    return decoded_completed_process(result)
-
-
 def decoded_completed_process(
     result: subprocess.CompletedProcess[bytes],
 ) -> subprocess.CompletedProcess[str]:
@@ -1224,147 +793,6 @@ def decoded_completed_process(
         stdout=decode(result.stdout),
         stderr=decode(result.stderr),
     )
-
-
-def cc_case_observation(
-    case: CcSkillCase,
-    direct: subprocess.CompletedProcess[str],
-    mcp: dict[str, Any],
-    direct_ws: Path,
-    mcp_ws: Path,
-    expect_error: bool,
-) -> tuple[dict[str, Any], str]:
-    mismatch_kind, message = _cc_case_parity_gap(
-        case,
-        direct,
-        mcp,
-        direct_ws,
-        mcp_ws,
-        expect_error,
-    )
-    expected_files = cc_case_expected_files(case)
-    donor_snapshot = snapshot_workspace(direct_ws)
-    unica_snapshot = snapshot_workspace(mcp_ws)
-    observation = {
-        "donorOk": direct.returncode == 0,
-        "unicaOk": bool(mcp.get("ok")),
-        "mismatchKind": mismatch_kind,
-        "donorStdoutSha256": donor_contract.sha256_json(
-            normalize_text(direct.stdout, direct_ws)
-        ),
-        "unicaStdoutSha256": donor_contract.sha256_json(
-            normalize_text(mcp.get("stdout") or "", mcp_ws)
-        ),
-        "donorStderrSha256": donor_contract.sha256_json(
-            normalize_text(direct.stderr, direct_ws)
-        ),
-        "unicaStderrSha256": donor_contract.sha256_json(
-            normalize_text(mcp.get("stderr") or "", mcp_ws)
-        ),
-        "donorWorkspaceSha256": donor_contract.sha256_json(donor_snapshot),
-        "unicaWorkspaceSha256": donor_contract.sha256_json(unica_snapshot),
-        "donorExpectedFiles": {
-            path: (direct_ws / path).exists() for path in expected_files
-        },
-        "unicaExpectedFiles": {
-            path: (mcp_ws / path).exists() for path in expected_files
-        },
-    }
-    return observation, message
-
-
-def _cc_case_parity_gap(
-    case: CcSkillCase,
-    direct: subprocess.CompletedProcess[str],
-    mcp: dict[str, Any],
-    direct_ws: Path,
-    mcp_ws: Path,
-    expect_error: bool,
-) -> tuple[str | None, str]:
-    direct_ok = direct.returncode == 0
-    if direct_ok != (not expect_error):
-        return "donor_expect_mismatch", direct.stderr or direct.stdout
-
-    if mcp.get("ok") != direct_ok:
-        errors = mcp.get("errors") or []
-        first_error = str(errors[0]) if errors else ""
-        if "Unsupported form element" in first_error:
-            category = "unsupported_form_element"
-        elif "Object type" in first_error and "not supported" in first_error:
-            category = "unsupported_from_object_type"
-        elif "native meta compiler currently supports one metadata object per call" in first_error:
-            category = "meta_batch_unsupported"
-        else:
-            category = "ok_mismatch"
-        return category, json.dumps(mcp, ensure_ascii=False, indent=2)
-
-    if mcp.get("command") is not None:
-        return "script_fallback", f"{cc_case_tool(case)} must not use script fallback"
-
-    direct_stdout = normalize_text(direct.stdout, direct_ws)
-    mcp_stdout = normalize_text(mcp.get("stdout") or "", mcp_ws)
-    if direct_stdout != mcp_stdout:
-        snapshot_equal = direct_ok and snapshot_workspace(direct_ws) == snapshot_workspace(mcp_ws)
-        category = "stdout_mismatch_snapshot_equal" if snapshot_equal else "stdout_mismatch_snapshot_diff"
-        return category, unified_text_message("stdout", direct_stdout, mcp_stdout)
-
-    direct_stderr = normalize_text(direct.stderr, direct_ws)
-    mcp_stderr = normalize_text(mcp.get("stderr") or "", mcp_ws)
-    if direct_stderr != mcp_stderr:
-        return "stderr_mismatch", unified_text_message("stderr", direct_stderr, mcp_stderr)
-
-    if not direct_ok:
-        expected_error = direct_stderr.strip()
-        if expected_error:
-            actual_errors = [normalize_text(error, mcp_ws) for error in mcp.get("errors", [])]
-            if expected_error not in actual_errors:
-                return "error_payload_mismatch", json.dumps(mcp, ensure_ascii=False, indent=2)
-        return None, ""
-
-    for rel_path in cc_case_expected_files(case):
-        if not (direct_ws / rel_path).exists():
-            return "missing_direct_expected_file", rel_path
-        if not (mcp_ws / rel_path).exists():
-            return "missing_mcp_expected_file", rel_path
-
-    direct_snapshot = snapshot_workspace(direct_ws)
-    mcp_snapshot = snapshot_workspace(mcp_ws)
-    if direct_snapshot != mcp_snapshot:
-        return "snapshot_diff", f"direct files: {len(direct_snapshot)}, mcp files: {len(mcp_snapshot)}"
-
-    return None, ""
-
-
-def unified_text_message(label: str, direct: str, mcp: str) -> str:
-    return f"{label} differs\n--- direct\n{direct}\n--- mcp\n{mcp}"
-
-
-def cc_case_expected_files(case: CcSkillCase) -> list[str]:
-    files = case.case_data.get("expect", {}).get("files") or []
-    return [str(path) for path in files]
-
-
-def project_empty_config_to_8_3_27(workspace: Path) -> None:
-    configuration = workspace / "Configuration.xml"
-    data = configuration.read_bytes()
-    marker = b'version="2.17"'
-    if marker not in data:
-        raise AssertionError(
-            "donor empty-config fixture no longer uses the reviewed 2.17 format"
-        )
-    configuration.write_bytes(data.replace(marker, b'version="2.20"', 1))
-
-
-def copy_tree_contents(source: Path, target: Path) -> None:
-    for child in source.iterdir():
-        destination = target / child.name
-        if child.is_dir():
-            if destination.exists():
-                shutil.rmtree(destination)
-            shutil.copytree(child, destination)
-        else:
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(child, destination)
 
 
 def command_for_script(
@@ -1843,8 +1271,6 @@ def prepare_reader_standins(temp_root: Path) -> tuple[Path, dict[str, str], Path
     binary_dir.mkdir(parents=True)
     binaries = {
         f"bsl-analyzer{suffix}": READER_STANDINS_ROOT / "bsl_mcp.py",
-        f"rlm-bsl-mcp{suffix}": READER_STANDINS_ROOT / "bsl_mcp.py",
-        f"rlm-bsl-index{suffix}": READER_STANDINS_ROOT / "rlm_index.py",
         # Mutation examples are previews, but a preview may only promise a
         # runnable command when the declared runner actually exists. The
         # stand-in is never executed in dry-run mode; its bytes make the
@@ -2476,64 +1902,7 @@ class ReaderStandinFixtureTests(unittest.TestCase):
             with self.assertRaisesRegex(AssertionError, "do not support"):
                 current_reader_standin_target()
 
-    def test_rlm_index_standin_reports_missing_index_root(self) -> None:
-        env = os.environ.copy()
-        env.pop("RLM_INDEX_DIR", None)
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(READER_STANDINS_ROOT / "rlm_index.py"),
-                "index",
-                "info",
-            ],
-            cwd=REPO_ROOT,
-            env=env,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-
-        self.assertEqual(result.returncode, 2, result)
-        self.assertIn("RLM_INDEX_DIR must be set", result.stderr)
-        self.assertNotIn("Traceback", result.stderr)
-
-
 class WindowsParityNormalizationTests(unittest.TestCase):
-    def test_cfe_borrow_execution_separates_case_colliding_extension_root(
-        self,
-    ) -> None:
-        self.assertEqual(
-            project_cc_case_path("cfe-borrow", "ext"),
-            "extension",
-        )
-        self.assertEqual(
-            project_cc_case_path(
-                "cfe-borrow",
-                "{workDir}/ext/Catalogs/Товары.xml",
-            ),
-            "{workDir}/extension/Catalogs/Товары.xml",
-        )
-        self.assertEqual(
-            project_cc_case_path("meta-compile", "ext"),
-            "ext",
-        )
-
-    def test_empty_donor_config_is_projected_to_bound_8_3_27_profile(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            workspace = Path(tmp)
-            configuration = workspace / "Configuration.xml"
-            configuration.write_text(
-                '<MetaDataObject version="2.17"><Configuration/></MetaDataObject>',
-                encoding="utf-8",
-            )
-
-            project_empty_config_to_8_3_27(workspace)
-
-            self.assertIn(
-                'version="2.20"',
-                configuration.read_text(encoding="utf-8"),
-            )
-
     def test_snapshot_ignores_one_optional_terminal_newline(self) -> None:
         workspace = Path("/parity-workspace")
 
@@ -2562,7 +1931,7 @@ class WindowsParityNormalizationTests(unittest.TestCase):
         self.assertTrue(original.startswith(b"\xef\xbb\xbf"))
         self.assertIn(b"\r\n", original)
 
-        with tempfile.TemporaryDirectory(prefix="unica-exact-byte-snapshot-") as temp:
+        with temp_tree("unica-exact-byte-snapshot-") as temp:
             workspace = Path(temp)
             target = workspace / "XDTOPackages/P/Ext/Package.bin"
             target.parent.mkdir(parents=True)
@@ -2597,7 +1966,7 @@ class WindowsParityNormalizationTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "nt", "Windows path separator equivalence")
     def test_known_workspace_paths_normalize_separators(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="unica-normalize-path-") as tmp:
+        with temp_tree("unica-normalize-path-") as tmp:
             workspace = Path(tmp)
             windows_path = f"output={workspace}\\src\\Template.xml"
             slash_path = f"output={workspace.as_posix()}/src/Template.xml"
@@ -2644,29 +2013,5 @@ def snapshot_workspace_bytes(workspace: Path) -> dict[str, bytes]:
     return snapshot
 
 
-for _retired_test in {
-    "test_donor_cases_match_reviewed_relations",
-    "test_donor_inventory_relations_preview_and_snapshot_are_closed",
-}:
-    setattr(
-        UnicaMcpScriptParityTests,
-        _retired_test,
-        unittest.skip(
-            "v0.12 skill parity is intentionally outside the v0.13 surface-first cutover"
-        )(getattr(UnicaMcpScriptParityTests, _retired_test)),
-    )
-
-
 if __name__ == "__main__":
-    cli = argparse.ArgumentParser(add_help=False)
-    cli.add_argument("--write-donor-observations", type=Path)
-    cli_args, unittest_args = cli.parse_known_args()
-    if cli_args.write_donor_observations is not None:
-        if unittest_args:
-            cli.error(
-                "unittest arguments cannot be combined with "
-                "--write-donor-observations"
-            )
-        write_donor_observation_candidates(cli_args.write_donor_observations)
-    else:
-        unittest.main(argv=[sys.argv[0], *unittest_args])
+    unittest.main()

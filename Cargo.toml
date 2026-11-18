@@ -1,5 +1,7 @@
 [workspace]
-members = ["crates/unica-daemon", "crates/unica-bindings", "crates/unica-bindings-integration-tests", "crates/unica-metadata-integration-tests", "crates/unica-forms-integration-tests", "crates/unica-dcs-integration-tests", "crates/unica-analysis-services", "crates/unica-adapter-rlm", "crates/unica-adapter-bsl-analyzer", "crates/unica-adapter-lexical", "crates/unica-source-integration-tests", "crates/unica-dcs-designer", "crates/unica-roles-designer", "crates/unica-templates-designer", "crates/unica-forms-designer", "crates/unica-metadata-designer", "crates/unica-xdto-designer", "crates/unica-runner", "crates/unica-adapter-v8-runner", "crates/unica-bootstrap", "crates/unica-coder", "crates/unica-workspace", "crates/unica-redaction", "crates/unica-operations", "crates/unica-templates", "crates/unica-dcs", "crates/unica-xdto", "crates/unica-bsl", "crates/unica-diagnostics", "crates/unica-navigation", "crates/unica-code-intelligence", "crates/unica-network", "crates/unica-work-control", "crates/unica-operation-contract", "crates/unica-xml-format", "crates/unica-artifact-delivery", "crates/unica-process", "crates/unica-address", "crates/unica-documentation", "crates/unica-refusal", "crates/unica-execution-contract", "crates/unica-execution", "crates/unica-roles", "crates/unica-bsl-parser", "crates/unica-source-contract", "crates/unica-source-designer", "crates/unica-metadata", "crates/unica-configuration", "crates/unica-project-health", "crates/unica-forms", "crates/unica-documentation-sources", "crates/unica-bsl-types"]
+members = ["crates/*"]
+# Исследовательские тесты собираются отдельно и только вручную.
+exclude = ["crates/unica-research"]
 resolver = "2"
 
 [workspace.package]
@@ -11,8 +13,8 @@ repository = "https://github.com/IngvarConsulting/unica"
 [workspace.dependencies]
 base64 = "0.22.1"
 # Keep these revisions aligned with the bundled analyzer in tools.lock.json.
-bsl-parser = { package = "parser", git = "https://github.com/itrous/bsl-analyzer", rev = "53d8765288adf3b9277b7a4112dba167e51690b7" }
-bsl-syntax = { package = "syntax", git = "https://github.com/itrous/bsl-analyzer", rev = "53d8765288adf3b9277b7a4112dba167e51690b7" }
+bsl-parser = { package = "parser", git = "https://github.com/itrous/bsl-analyzer", rev = "0a82ed78e597dc3ffb1bbaebc66a98974a988435" }
+bsl-syntax = { package = "syntax", git = "https://github.com/itrous/bsl-analyzer", rev = "0a82ed78e597dc3ffb1bbaebc66a98974a988435" }
 diffy = "0.5.0"
 fs2 = "0.4"
 jsonschema = { version = "0.30", default-features = false }
@@ -20,7 +22,7 @@ flate2 = "1"
 libc = "0.2"
 # MCP transport is owned by the official Rust SDK (ADR-0013); macros stay off
 # because tool schemas are data-driven by operation descriptors (ADR-0001).
-rmcp = { version = "3.1.2", default-features = false, features = ["server", "transport-io"] }
+rmcp = { version = "3.9.0", default-features = false, features = ["server", "transport-io", "elicitation"] }
 chrono = { version = "0.4.45", default-features = false, features = ["std"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "io-util"] }
 serde = { version = "1.0", features = ["derive", "rc"] }
@@ -59,11 +61,11 @@ regex = "1"
 # строит искатель заново на каждый вызов. Уже в графе через regex/aho-corasick.
 memchr = "2.8"
 regex-syntax = "0.8"
-ureq = { version = "2.12", features = ["json"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "gzip"] }
+bytes = "1"
 rustls = { version = "0.23.27", default-features = false, features = ["std", "ring", "tls12", "logging"] }
 rustls-platform-verifier = "0.7"
-# Запас, когда в хранилище ОС нет ни одного корня; тот же набор, что был
-# у ureq по умолчанию.
+# Запас, когда в хранилище ОС нет ни одного корня.
 webpki-roots = "1"
 # Только для стендов TLS в тестах: корень и сертификат сервера на лету.
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
@@ -71,6 +73,7 @@ url = "2.5.4"
 percent-encoding = "2.3"
 uuid = { version = "1", features = ["v4"] }
 windows-sys = { version = "0.59", features = [
+  "Wdk_System_SystemInformation",
   "Win32_Foundation",
   "Win32_Globalization",
   "Win32_Security",
@@ -90,9 +93,26 @@ cap-fs-ext = "4.0.2"
 # The daemon identity hashes the running executable at every frontend and
 # daemon start; an unoptimized SHA-256 spends seconds of the connect budget
 # on a debug binary.
+[profile.dev.package."*"]
+opt-level = 1
+
+[profile.dev.package.unica-execution]
+opt-level = 1
+
+[profile.dev.package.unica-execution-contract]
+opt-level = 1
+
+[profile.dev.package.unica-xml-format]
+opt-level = 1
+
+[profile.dev.package.unica-source-designer]
+opt-level = 1
+
+[profile.dev.package.unica-metadata-designer]
+opt-level = 1
+
+[profile.dev.package.unica-workspace]
+opt-level = 1
+
 [profile.dev.package.sha2]
 opt-level = 3
-
-[patch.crates-io]
-# Preserve completed HTTP responses when connection reuse preparation fails.
-ureq = { path = "vendor/ureq" }

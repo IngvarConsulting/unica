@@ -1,8 +1,5 @@
 ---
 id: INV.SAFETY.CONFIG-ERROR-REDACTION
-check:
-  - crates/unica-coder/src/infrastructure/operational_config.rs::diagnostics_never_expose_absolute_paths_raw_toml_or_values
-  - crates/unica-coder/src/infrastructure/operational_config.rs::read_errors_are_redacted_to_the_fixed_basename
 gap: https://github.com/IngvarConsulting/unica/issues/969
 ---
 

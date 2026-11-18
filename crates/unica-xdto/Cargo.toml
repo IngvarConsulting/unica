@@ -20,3 +20,7 @@ serde_json.workspace = true
 
 [dev-dependencies]
 jsonschema.workspace = true
+
+[package.metadata.unica]
+component = "family"
+file-io = "domain"

@@ -1,0 +1,884 @@
+{
+  "id": "S-1698-calculation-code-type-predefined",
+  "issue": 1698,
+  "area": "Метаданные",
+  "workspace": "tests/fixtures/acceptance/workspace-calculation-code-type",
+  "task": "Отказать скрытой миграции кодов, затем явно сменить CodeType и оба предопределённых кода в одном пакете в обоих порядках операций. Preview не пишет, token публикует, view читает новый вид, SHA всего XML/BSL подтверждают сохранение неуказанных байтов, а строки Code получают/теряют только ожидаемый xsi:type.",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCalculationTypes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "codeOwner": {
+          "pointer": "/data/items/0/at"
+        },
+        "unchanged1": {
+          "file": "src/AccountingRegisters/Бухгалтерский/Ext/RecordSetModule.bsl",
+          "kind": "sha256"
+        },
+        "unchanged2": {
+          "file": "src/AccountingRegisters/Бухгалтерский.xml",
+          "kind": "sha256"
+        },
+        "unchanged3": {
+          "file": "src/AccumulationRegisters/Остатки/Ext/RecordSetModule.bsl",
+          "kind": "sha256"
+        },
+        "unchanged4": {
+          "file": "src/AccumulationRegisters/Остатки.xml",
+          "kind": "sha256"
+        },
+        "unchanged5": {
+          "file": "src/CalculationRegisters/Начисления/Ext/RecordSetModule.bsl",
+          "kind": "sha256"
+        },
+        "unchanged6": {
+          "file": "src/CalculationRegisters/Начисления.xml",
+          "kind": "sha256"
+        },
+        "unchanged7": {
+          "file": "src/ChartsOfAccounts/Хозрасчетный/Ext/ObjectModule.bsl",
+          "kind": "sha256"
+        },
+        "unchanged8": {
+          "file": "src/ChartsOfAccounts/Хозрасчетный.xml",
+          "kind": "sha256"
+        },
+        "unchanged9": {
+          "file": "src/ChartsOfCalculationTypes/ВидыРасчета/Ext/ObjectModule.bsl",
+          "kind": "sha256"
+        },
+        "unchanged10": {
+          "file": "src/ChartsOfCalculationTypes/ВидыРасчета/Ext/Predefined.xml",
+          "kind": "sha256"
+        },
+        "unchanged11": {
+          "file": "src/ChartsOfCalculationTypes/ВидыРасчета.xml",
+          "kind": "sha256"
+        },
+        "unchanged12": {
+          "file": "src/ChartsOfCalculationTypes/ПустойПлан/Ext/ObjectModule.bsl",
+          "kind": "sha256"
+        },
+        "unchanged13": {
+          "file": "src/ChartsOfCalculationTypes/ПустойПлан.xml",
+          "kind": "sha256"
+        },
+        "unchanged14": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "unchanged15": {
+          "file": "src/Documents/Приход/Ext/ObjectModule.bsl",
+          "kind": "sha256"
+        },
+        "unchanged16": {
+          "file": "src/Documents/Приход.xml",
+          "kind": "sha256"
+        },
+        "unchanged17": {
+          "file": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256"
+        },
+        "unchanged18": {
+          "file": "src/InformationRegisters/Цены/Ext/RecordSetModule.bsl",
+          "kind": "sha256"
+        },
+        "unchanged19": {
+          "file": "src/InformationRegisters/Цены.xml",
+          "kind": "sha256"
+        },
+        "unchanged20": {
+          "file": "src/Languages/Русский.xml",
+          "kind": "sha256"
+        },
+        "unchanged21": {
+          "file": "v8project.yaml",
+          "kind": "sha256"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:ChartOfCalculationTypes.ВидыРасчета"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.codeOwner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/CodeType",
+          "eq": "String"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.codeOwner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "CodeType": "Number"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: final CodeType is incompatible with Predefined.xml: predefined numeric Code requires xsi:type; explicitly update the affected predefined codes in the same apply",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        },
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values.CodeType"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/AccountingRegisters/Бухгалтерский/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged1"
+        },
+        {
+          "path": "src/AccountingRegisters/Бухгалтерский.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged2"
+        },
+        {
+          "path": "src/AccumulationRegisters/Остатки/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged3"
+        },
+        {
+          "path": "src/AccumulationRegisters/Остатки.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged4"
+        },
+        {
+          "path": "src/CalculationRegisters/Начисления/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged5"
+        },
+        {
+          "path": "src/CalculationRegisters/Начисления.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged6"
+        },
+        {
+          "path": "src/ChartsOfAccounts/Хозрасчетный/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged7"
+        },
+        {
+          "path": "src/ChartsOfAccounts/Хозрасчетный.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged8"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/ВидыРасчета/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged9"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/ВидыРасчета/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged10"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/ВидыРасчета.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged11"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/ПустойПлан/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged12"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/ПустойПлан.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged13"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged14"
+        },
+        {
+          "path": "src/Documents/Приход/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged15"
+        },
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged16"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged17"
+        },
+        {
+          "path": "src/InformationRegisters/Цены/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged18"
+        },
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged19"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged20"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged21"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/ПустойПлан/Ext/Predefined.xml",
+          "kind": "exists",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.codeOwner",
+        "ops": [
+          {
+            "op": "predefinedItem.set",
+            "args": {
+              "at": "main:ChartOfCalculationTypes.ВидыРасчета.PredefinedItem.Запасной",
+              "values": {
+                "code": "2"
+              }
+            }
+          },
+          {
+            "op": "predefinedItem.set",
+            "args": {
+              "at": "main:ChartOfCalculationTypes.ВидыРасчета.PredefinedItem.ОкладПоДням",
+              "values": {
+                "code": "1"
+              }
+            }
+          },
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "CodeType": "Number"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "codesToNumber": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/AccountingRegisters/Бухгалтерский/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged1"
+        },
+        {
+          "path": "src/AccountingRegisters/Бухгалтерский.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged2"
+        },
+        {
+          "path": "src/AccumulationRegisters/Остатки/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged3"
+        },
+        {
+          "path": "src/AccumulationRegisters/Остатки.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged4"
+        },
+        {
+          "path": "src/CalculationRegisters/Начисления/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged5"
+        },
+        {
+          "path": "src/CalculationRegisters/Начисления.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged6"
+        },
+        {
+          "path": "src/ChartsOfAccounts/Хозрасчетный/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged7"
+        },
+        {
+          "path": "src/ChartsOfAccounts/Хозрасчетный.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged8"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/ВидыРасчета/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged9"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/ВидыРасчета/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged10"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/ВидыРасчета.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged11"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/ПустойПлан/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged12"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/ПустойПлан.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged13"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged14"
+        },
+        {
+          "path": "src/Documents/Приход/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged15"
+        },
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged16"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged17"
+        },
+        {
+          "path": "src/InformationRegisters/Цены/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged18"
+        },
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged19"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged20"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged21"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/ПустойПлан/Ext/Predefined.xml",
+          "kind": "exists",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.codesToNumber"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/AccountingRegisters/Бухгалтерский/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged1"
+        },
+        {
+          "path": "src/AccountingRegisters/Бухгалтерский.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged2"
+        },
+        {
+          "path": "src/AccumulationRegisters/Остатки/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged3"
+        },
+        {
+          "path": "src/AccumulationRegisters/Остатки.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged4"
+        },
+        {
+          "path": "src/CalculationRegisters/Начисления/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged5"
+        },
+        {
+          "path": "src/CalculationRegisters/Начисления.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged6"
+        },
+        {
+          "path": "src/ChartsOfAccounts/Хозрасчетный/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged7"
+        },
+        {
+          "path": "src/ChartsOfAccounts/Хозрасчетный.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged8"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/ВидыРасчета/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged9"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/ВидыРасчета/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "aacee590d5656c69cd346dc02ae500a5df9fbdf4dd9dd1fa2a08f5fb579f455d"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/ВидыРасчета.xml",
+          "kind": "sha256",
+          "eq": "d6ee9e982474ef403f584dbcf7686ec7a3313fca49381dd0aa790d6835dc12e1"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/ПустойПлан/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged12"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/ПустойПлан.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged13"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged14"
+        },
+        {
+          "path": "src/Documents/Приход/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged15"
+        },
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged16"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged17"
+        },
+        {
+          "path": "src/InformationRegisters/Цены/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged18"
+        },
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged19"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged20"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged21"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/ПустойПлан/Ext/Predefined.xml",
+          "kind": "exists",
+          "eq": false
+        }
+      ],
+      "captures": {
+        "unchanged22": {
+          "file": "src/ChartsOfCalculationTypes/ВидыРасчета/Ext/Predefined.xml",
+          "kind": "sha256"
+        },
+        "unchanged23": {
+          "file": "src/ChartsOfCalculationTypes/ВидыРасчета.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.codeOwner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/CodeType",
+          "eq": "Number"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.codeOwner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "CodeType": "String"
+              }
+            }
+          },
+          {
+            "op": "predefinedItem.set",
+            "args": {
+              "at": "main:ChartOfCalculationTypes.ВидыРасчета.PredefinedItem.Запасной",
+              "values": {
+                "code": "00002"
+              }
+            }
+          },
+          {
+            "op": "predefinedItem.set",
+            "args": {
+              "at": "main:ChartOfCalculationTypes.ВидыРасчета.PredefinedItem.ОкладПоДням",
+              "values": {
+                "code": "00001"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "codesToString": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/AccountingRegisters/Бухгалтерский/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged1"
+        },
+        {
+          "path": "src/AccountingRegisters/Бухгалтерский.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged2"
+        },
+        {
+          "path": "src/AccumulationRegisters/Остатки/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged3"
+        },
+        {
+          "path": "src/AccumulationRegisters/Остатки.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged4"
+        },
+        {
+          "path": "src/CalculationRegisters/Начисления/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged5"
+        },
+        {
+          "path": "src/CalculationRegisters/Начисления.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged6"
+        },
+        {
+          "path": "src/ChartsOfAccounts/Хозрасчетный/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged7"
+        },
+        {
+          "path": "src/ChartsOfAccounts/Хозрасчетный.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged8"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/ВидыРасчета/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged9"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/ВидыРасчета/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged22"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/ВидыРасчета.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged23"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/ПустойПлан/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged12"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/ПустойПлан.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged13"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged14"
+        },
+        {
+          "path": "src/Documents/Приход/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged15"
+        },
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged16"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged17"
+        },
+        {
+          "path": "src/InformationRegisters/Цены/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged18"
+        },
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged19"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged20"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged21"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/ПустойПлан/Ext/Predefined.xml",
+          "kind": "exists",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.codesToString"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/AccountingRegisters/Бухгалтерский/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged1"
+        },
+        {
+          "path": "src/AccountingRegisters/Бухгалтерский.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged2"
+        },
+        {
+          "path": "src/AccumulationRegisters/Остатки/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged3"
+        },
+        {
+          "path": "src/AccumulationRegisters/Остатки.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged4"
+        },
+        {
+          "path": "src/CalculationRegisters/Начисления/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged5"
+        },
+        {
+          "path": "src/CalculationRegisters/Начисления.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged6"
+        },
+        {
+          "path": "src/ChartsOfAccounts/Хозрасчетный/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged7"
+        },
+        {
+          "path": "src/ChartsOfAccounts/Хозрасчетный.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged8"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/ВидыРасчета/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged9"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/ВидыРасчета/Ext/Predefined.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged10"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/ВидыРасчета.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged11"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/ПустойПлан/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged12"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/ПустойПлан.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged13"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged14"
+        },
+        {
+          "path": "src/Documents/Приход/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged15"
+        },
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged16"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged17"
+        },
+        {
+          "path": "src/InformationRegisters/Цены/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged18"
+        },
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged19"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged20"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged21"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/ПустойПлан/Ext/Predefined.xml",
+          "kind": "exists",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.codeOwner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/CodeType",
+          "eq": "String"
+        }
+      ]
+    }
+  ]
+}

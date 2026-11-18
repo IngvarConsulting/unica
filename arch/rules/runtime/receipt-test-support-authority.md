@@ -1,8 +1,5 @@
 ---
 id: INV.APP.RECEIPT-TEST-SUPPORT-AUTHORITY
-check:
-  - crates/unica-coder/tests/daemon_receipt_ledger/facade_guards.rs::facade_source_keeps_the_exact_abi_and_has_no_production_authority
-  - crates/unica-coder/tests/daemon_receipt_ledger/facade_guards.rs::facade_and_non_owner_helpers_have_no_direct_receipt_ledger_authority
 ---
 
 # Тестовая поддержка ReceiptLedger не получает полномочий владельца

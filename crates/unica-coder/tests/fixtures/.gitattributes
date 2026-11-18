@@ -1,0 +1,23 @@
+# Staged-dump fixtures keep the BOM and CRLF an 8.3.27 dump writes.
+additional_indexes/AdditionalIndexes.xml -text whitespace=cr-at-eol
+accumulation_register_aggregates/Aggregates.xml -text whitespace=cr-at-eol
+job_schedule/*.xml -text -whitespace
+
+# Native form exports keep the BOM and CRLF 8.3.27 writes.
+form-native-profile/*.xml -text -whitespace
+form-root-properties/*.xml -text -whitespace
+
+# Native new-XML oracles retain BOM, CRLF and absence of a terminal newline.
+new-xml/native-form-descriptor.xml -text whitespace=cr-at-eol
+new-xml/native-form-content.xml -text whitespace=cr-at-eol
+new-xml/native-catalog-descriptor.xml -text whitespace=cr-at-eol
+new-xml/native-form-module.bsl -text whitespace=cr-at-eol
+new-xml/native-chart-of-accounts-descriptor.xml -text whitespace=cr-at-eol
+
+# Platform re-exports of configuration and extension roots edited by props.set.
+configuration_root_props/**/*.xml -text whitespace=cr-at-eol
+# Platform re-exports of panel layouts and home pages written by apply.
+client_interface/**/*.xml -text whitespace=cr-at-eol
+
+# Mutating tool schema snapshots are compared after LF normalization; keep them LF.
+mutation-schemas/*.json text eol=lf

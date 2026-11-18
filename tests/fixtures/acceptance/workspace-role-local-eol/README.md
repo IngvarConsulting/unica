@@ -1,0 +1,1 @@
+Synthetic role fixture for #1860. Rights.xml deliberately has a UTF-8 BOM, CRLF structural lines and a lone LF inside the RLS template. Edits must preserve all bytes outside the inserted rights/object blocks. No vendor configuration is included.

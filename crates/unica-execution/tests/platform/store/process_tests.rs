@@ -30,13 +30,13 @@ const CHILD_CONFIG: &str = "UNICA_EXECUTION_STORE_PROCESS_TEST";
 const MESSAGE_PREFIX: &str = "EXECUTION_STORE_PROCESS_MESSAGE ";
 const WATCHDOG: Duration = Duration::from_secs(30);
 const FROZEN_TEST: &str =
-    "store::process_tests::frozen_owner_process_holds_lease_after_worker_drop_until_pid_exit";
+    "store::medium_process_tests::frozen_owner_process_holds_lease_after_worker_drop_until_pid_exit";
 const HEALTHY_TEST: &str =
-    "store::process_tests::quiescent_owner_process_releases_lease_while_pid_remains_alive";
+    "store::medium_process_tests::quiescent_owner_process_releases_lease_while_pid_remains_alive";
 const BEGUN_TEST: &str =
-    "store::process_tests::dead_owner_begun_without_outcome_recovers_uncertain_through_factory";
+    "store::medium_process_tests::dead_owner_begun_without_outcome_recovers_uncertain_through_factory";
 const KILLED_TEST: &str =
-    "store::process_tests::forced_process_death_recovers_accepted_begun_and_durable_outcome";
+    "store::medium_process_tests::forced_process_death_recovers_accepted_begun_and_durable_outcome";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 enum Mode {
@@ -613,6 +613,7 @@ fn persisted_record(config: &Configuration) -> unica_execution_contract::storage
         .unwrap()
 }
 
+/// rule: INV.APP.EXECUTION-AUTHORITY
 #[test]
 fn forced_process_death_recovers_accepted_begun_and_durable_outcome() {
     if let Ok(value) = std::env::var(CHILD_CONFIG) {

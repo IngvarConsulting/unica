@@ -32,38 +32,38 @@
   "tools": [
     {
       "name": "bsl-analyzer",
-      "version": "0.2.86",
+      "version": "0.4.6",
       "repository": "https://github.com/itrous/bsl-analyzer",
-      "sourceTag": "v0.2.86",
-      "sourceCommit": "53d8765288adf3b9277b7a4112dba167e51690b7",
+      "sourceTag": "v0.4.6",
+      "sourceCommit": "0a82ed78e597dc3ffb1bbaebc66a98974a988435",
       "assetRepository": "https://github.com/IngvarConsulting/unica-toolchain",
-      "assetTag": "bsl-analyzer-v0.2.86-build.1",
-      "license": "LGPL-3.0-or-later",
+      "assetTag": "bsl-analyzer-v0.4.6-build.1",
+      "license": "MIT",
       "assetStrategy": "direct-release-asset",
       "binaryName": "bsl-analyzer",
       "assets": {
         "darwin-arm64": {
           "assetName": "bsl-analyzer-darwin-arm64",
-          "sha256": "dcca384a1f97761f017933235156a57696936f23992690cd0b92ab83a6e5de29"
+          "sha256": "230ce5c61c4642162003bb9987caf21465aacf2805656c6c17bf63c7b4868701"
         },
         "linux-x64": {
           "assetName": "bsl-analyzer-linux-x64",
-          "sha256": "e0131a2c5f281e3ad1c5d5167fe67edad48e245a7a1e41e7efb9054b500335e6"
+          "sha256": "57587e02f6f4a9b99d4f9aae7c4e8a588172be05c734d8cf2f4582cd388b5456"
         },
         "win-x64": {
           "assetName": "bsl-analyzer-win-x64.exe",
-          "sha256": "3736453d18dd7ea12634b6a78839eed1fd3a8d821819b752b39f51afd91869d9"
+          "sha256": "55ecdfdfb27ea94d9a0c1c975fac9ab5952e752195617eef82f05c4605041d4f"
         }
       }
     },
     {
       "name": "v8-runner",
-      "version": "0.15.3",
+      "version": "0.17.4",
       "repository": "https://github.com/IngvarConsulting/v8-runner-rust",
-      "sourceTag": "v0.15.3",
-      "sourceCommit": "319db061eb89123030c606cb93cfebcb6f0961e7",
+      "sourceTag": "v0.17.4",
+      "sourceCommit": "0781c9b125a72231e4b17ce24253c29901750f63",
       "assetRepository": "https://github.com/IngvarConsulting/v8-runner-rust",
-      "assetTag": "v0.15.3",
+      "assetTag": "v0.17.4",
       "license": "AGPL-3.0-only",
       "assetStrategy": "upstream-archive-release-asset",
       "binaryName": "v8-runner",
@@ -71,86 +71,20 @@
         "darwin-arm64": {
           "assetName": "v8-runner-macos-aarch64.tar.gz",
           "archiveBinary": "v8-runner-macos-aarch64/v8-runner",
-          "sha256": "b03b11c5eea74b3e1cd3c049d5373491098a0de694c4635729cb6a8089b2ddcb",
-          "size": 4668908
+          "sha256": "65bc7ad874f55b3cff8e04b94795a9ba8d037b15d1ca8ecc461b26aa6bb3c2ba",
+          "size": 5306028
         },
         "linux-x64": {
           "assetName": "v8-runner-linux-x86_64-musl.tar.gz",
           "archiveBinary": "v8-runner-linux-x86_64-musl/v8-runner",
-          "sha256": "04d108ac2728dd8924506388edacd2eae5d0da0dfd5e1b26e14eecf4f231ba43",
-          "size": 5278035
+          "sha256": "6c740b005947998e2034dae2497c7cafefc2d9b746777f5f580f90815d2fa459",
+          "size": 6081745
         },
         "win-x64": {
           "assetName": "v8-runner-windows-x86_64.zip",
           "archiveBinary": "v8-runner-windows-x86_64/v8-runner.exe",
-          "sha256": "87965362804559b7e02c7478c1da9916b687c10736abb1f964436d554f7f8be1",
-          "size": 4183368
-        }
-      }
-    },
-    {
-      "name": "rlm-bsl-mcp",
-      "version": "1.42.0",
-      "repository": "https://github.com/Dach-Coin/rlm-tools-bsl",
-      "sourceTag": "v1.42.0",
-      "sourceCommit": "9a84f24f0c156630e1d4e757b30070a13a56d0e0",
-      "assetRepository": "https://github.com/IngvarConsulting/unica-toolchain",
-      "assetTag": "rlm-tools-bsl-v1.42.0-build.1",
-      "releaseName": "rlm-tools-bsl",
-      "license": "MIT",
-      "assetStrategy": "archive-release-asset",
-      "binaryName": "rlm-bsl-mcp",
-      "assets": {
-        "darwin-arm64": {
-          "assetName": "rlm-tools-bsl-darwin-arm64.tar.gz",
-          "archiveBinary": "rlm-bsl-mcp",
-          "sha256": "412cbe92aa51f6823e9d2dea43d8ace5717f0f3ad5ee1c53d47ef2ce940f5cff",
-          "size": 75135269
-        },
-        "linux-x64": {
-          "assetName": "rlm-tools-bsl-linux-x64.tar.gz",
-          "archiveBinary": "rlm-bsl-mcp",
-          "sha256": "43ff374feea19f7d2cd7a8071810ffab1be67500b69857663f2645bca2f4fea9",
-          "size": 109405738
-        },
-        "win-x64": {
-          "assetName": "rlm-tools-bsl-win-x64.tar.gz",
-          "archiveBinary": "rlm-bsl-mcp.exe",
-          "sha256": "1c7e19dc53b2d924eeef3b47ac53ea90c76bd106a8fe4594f7c9c58869088471",
-          "size": 77494107
-        }
-      }
-    },
-    {
-      "name": "rlm-bsl-index",
-      "version": "1.42.0",
-      "repository": "https://github.com/Dach-Coin/rlm-tools-bsl",
-      "sourceTag": "v1.42.0",
-      "sourceCommit": "9a84f24f0c156630e1d4e757b30070a13a56d0e0",
-      "assetRepository": "https://github.com/IngvarConsulting/unica-toolchain",
-      "assetTag": "rlm-tools-bsl-v1.42.0-build.1",
-      "releaseName": "rlm-tools-bsl",
-      "license": "MIT",
-      "assetStrategy": "archive-release-asset",
-      "binaryName": "rlm-bsl-index",
-      "assets": {
-        "darwin-arm64": {
-          "assetName": "rlm-tools-bsl-darwin-arm64.tar.gz",
-          "archiveBinary": "rlm-bsl-index",
-          "sha256": "412cbe92aa51f6823e9d2dea43d8ace5717f0f3ad5ee1c53d47ef2ce940f5cff",
-          "size": 75135269
-        },
-        "linux-x64": {
-          "assetName": "rlm-tools-bsl-linux-x64.tar.gz",
-          "archiveBinary": "rlm-bsl-index",
-          "sha256": "43ff374feea19f7d2cd7a8071810ffab1be67500b69857663f2645bca2f4fea9",
-          "size": 109405738
-        },
-        "win-x64": {
-          "assetName": "rlm-tools-bsl-win-x64.tar.gz",
-          "archiveBinary": "rlm-bsl-index.exe",
-          "sha256": "1c7e19dc53b2d924eeef3b47ac53ea90c76bd106a8fe4594f7c9c58869088471",
-          "size": 77494107
+          "sha256": "b0fa55084664b86c96589f85e1aa9a57396c12b207d36c796ee4afd277ade38f",
+          "size": 4808050
         }
       }
     },
@@ -163,7 +97,7 @@
       "license": "LGPL-3.0-or-later",
       "assetStrategy": "cargo-workspace",
       "binaryName": "unica",
-      "cargoPackage": "unica-coder",
+      "cargoPackage": "unica-product",
       "cargoBin": "unica",
       "assets": {
         "darwin-arm64": {

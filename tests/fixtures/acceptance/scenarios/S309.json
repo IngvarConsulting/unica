@@ -1,0 +1,34 @@
+{
+  "id": "S309",
+  "area": "Рабочее пространство",
+  "workspace": "tests/fixtures/acceptance/workspace-bare",
+  "task": "Позвать поверхность из каталога, который не является рабочей областью 1С — отказ называет причину и приводит туда, где отвечают без набора исходников",
+  "wire": [
+    {
+      "tool": "unica.search",
+      "args": {
+        "corpus": "names",
+        "query": "Валюты"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_state: no PlatformXml source set is admitted: workspace is uninitialized; no v8project.yaml or 1C source roots were found"
+    },
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "status": "failed"
+    }
+  ]
+}

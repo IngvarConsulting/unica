@@ -1,0 +1,32 @@
+{
+  "area": "Навигация и чтение",
+  "task": "Узнать словарь операций регистра сведений",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.АдминистративнаяИерархия"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/can",
+          "contains": {
+            "op": "dimension.add",
+            "args": "items"
+          }
+        },
+        {
+          "pointer": "/data/can",
+          "contains": {
+            "op": "resource.add",
+            "args": "items"
+          }
+        }
+      ]
+    }
+  ],
+  "id": "S029"
+}

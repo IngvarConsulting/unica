@@ -1,0 +1,25 @@
+{
+  "area": "Код BSL",
+  "task": "Заменить реализацию функции модуля",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.GoogleПереводчик",
+        "ops": [
+          {
+            "op": "code.replace",
+            "args": {
+              "at": "main:CommonModule.GoogleПереводчик.Method.МаксимальныйРазмерПорции",
+              "text": "Функция МаксимальныйРазмерПорции()\n\tВозврат 100;\nКонецФункции"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S157"
+}

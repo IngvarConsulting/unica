@@ -112,7 +112,9 @@ fn deny_incomplete_values_allowed(
     site: Option<MetadataSite>,
 ) -> bool {
     collection == crate::MetaCollection::Dimensions
-        && site.is_some_and(|site| crate::metadata_deny_incomplete_values_is_allowed(site.owner))
+        && site.is_some_and(|site| {
+            !site.in_section && crate::metadata_deny_incomplete_values_is_allowed(site.owner)
+        })
 }
 
 pub const IDENTIFIER_PATTERN: &str = r"^[_A-Za-zА-Яа-яЁё][_A-Za-zА-Яа-яЁё0-9]*$";
@@ -126,10 +128,13 @@ fn metadata_element_base_fields() -> &'static Map<String, Value> {
     FIELDS.get_or_init(|| Map::from_iter([
         ("name".into(), json!({"type":"string","minLength":1})),
         ("newName".into(), json!({"type":"string","minLength":1})),
-        ("synonym".into(), json!({"type":"string"})),
+        ("synonym".into(), crate::localized_value_schema()),
         ("comment".into(), json!({"type":"string"})),
         ("type".into(), metadata_type_schema()),
         ("required".into(), json!({"type":"boolean"})),
+        ("master".into(), json!({"type":"boolean"})),
+        ("mainFilter".into(), json!({"type":"boolean"})),
+        ("denyIncompleteValues".into(), json!({"type":"boolean"})),
         ("fillValue".into(), fill_value_schema()),
         ("position".into(), position_schema()),
         (
@@ -183,10 +188,21 @@ pub fn metadata_element_input_schema(update: bool, attributes: bool) -> &'static
             }
         } else {
             fields.remove("templateType");
-            fields.insert("denyIncompleteValues".into(), json!({"type":"boolean"}));
+            fields.insert("toolTip".into(), crate::localized_value_schema());
+            fields.insert("typeReductionMode".into(), json!({"type":"string", "enum":["Deny", "TransformValues"]}));
+            fields.insert("color".into(), enum_value_color_schema());
         }
         json!({"type":"object","additionalProperties":false,"required":["name"],"properties":fields})
     })
+}
+
+/// The color of an enumeration value, from 8.5.1: `auto`, `#RRGGBB`, or a
+/// web or style color by the name the platform knows, as for a style item.
+pub fn enum_value_color_schema() -> Value {
+    json!({"anyOf":[
+        {"type":"string","enum":["auto"]},
+        crate::style_color::StyleItemColor::argument_schema(),
+    ]})
 }
 
 /// Preserve the host-visible internal envelope while deriving its field
@@ -223,13 +239,45 @@ fn metadata_element_schema(
             "position" => spec.allows_position,
             "indexing" => spec.allows_indexing,
             "templateType" => false,
+            "master" | "mainFilter" => {
+                collection == MetaCollection::Dimensions
+                    && site.is_some_and(|site| {
+                        site.owner == crate::MetadataKind::InformationRegister && !site.in_section
+                    })
+            }
+            "denyIncompleteValues" => {
+                if update {
+                    deny_incomplete_values_allowed(collection, site)
+                } else {
+                    collection == MetaCollection::Dimensions
+                        && site.is_some_and(|site| {
+                            site.owner == crate::MetadataKind::InformationRegister
+                                && !site.in_section
+                        })
+                }
+            }
             "synonym" | "comment" => true,
             _ => unreachable!("unclassified Metadata input field: {name}"),
         })
         .map(|(name, value)| (name.clone(), value.clone()))
         .collect();
-    if update && deny_incomplete_values_allowed(collection, site) {
-        fields.insert("denyIncompleteValues".into(), json!({"type":"boolean"}));
+    if update
+        && collection == MetaCollection::Dimensions
+        && site.is_some_and(|site| {
+            site.owner == crate::MetadataKind::InformationRegister && !site.in_section
+        })
+    {
+        fields.insert(
+            "typeReductionMode".into(),
+            json!({"type":"string", "enum":["Deny", "TransformValues"]}),
+        );
+    }
+    if update
+        && site.is_some_and(|site| {
+            crate::operations::metadata_tool_tip_is_allowed(site.owner, collection, site.in_section)
+        })
+    {
+        fields.insert("toolTip".into(), crate::localized_value_schema());
     }
     let selector = if update { "newName" } else { "name" };
     fields[selector]
@@ -389,7 +437,7 @@ pub fn metadata_member_set(
         },
         effect: "Change the listed fields of the member; newName renames it. Unlisted fields stay.",
         notes: "The member is named by its address, not by values.name. Read the member first. Cross-field rules — fillValue must match the member type — are checked by the planner, not by this schema.",
-        example_args: json!({"values":{"synonym":"Sample"}}),
+        example_args: json!({"values":{"synonym":"ru = 'Sample'"}}),
         help: METADATA_HELP,
         format_validators: &[],
     }
@@ -613,7 +661,7 @@ pub fn metadata_template_set() -> OperationContract {
                 (
                     "values",
                     json!({"type":"object","additionalProperties":false,"minProperties":1,
-            "properties":{"synonym":{"type":"string"},"comment":{"type":"string"},
+            "properties":{"synonym":crate::localized_value_schema(),"comment":{"type":"string"},
                 "templateType":{"type":"string","enum":crate::MetaTemplateKind::ALL.iter().map(|kind| kind.as_str()).collect::<Vec<_>>()}}}),
                 ),
             ],
@@ -623,7 +671,7 @@ pub fn metadata_template_set() -> OperationContract {
         effect:
             "Change the listed properties of the template descriptor. Unlisted properties stay.",
         notes: "The template is named by its address; there is no name argument.",
-        example_args: json!({"values":{"synonym":"Sample"}}),
+        example_args: json!({"values":{"synonym":"ru = 'Sample'"}}),
         help: METADATA_HELP,
         format_validators: &[],
     }

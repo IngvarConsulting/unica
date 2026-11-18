@@ -53,11 +53,11 @@ mod owner_tests;
 
 #[cfg(test)]
 #[path = "../tests/platform/store/process_tests.rs"]
-mod process_tests;
+mod medium_process_tests;
 
 #[cfg(test)]
 #[path = "../tests/platform/store/bootstrap_tests.rs"]
-mod bootstrap_tests;
+mod medium_bootstrap_tests;
 
 #[cfg(test)]
 #[path = "../tests/platform/store/windows_durability_tests.rs"]

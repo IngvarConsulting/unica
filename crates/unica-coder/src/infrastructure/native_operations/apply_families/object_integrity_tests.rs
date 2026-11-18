@@ -19,6 +19,10 @@ use unica_workspace::test_support::tree_snapshot;
 
 const MD: &str = "http://v8.1c.ru/8.3/MDClasses";
 
+mod numerator_tests {
+    include!("object_integrity_tests/numerator.rs");
+}
+
 struct Fixture {
     _root: tempfile::TempDir,
     source: PathBuf,
@@ -254,6 +258,9 @@ fn assert_member_names(path: &Path, kind: &str, names: &[&str]) {
     assert_eq!(actual, names);
 }
 
+/// rule: INV.SOURCE.METADATA-MUTATION-VALIDITY
+/// rule: INV.SOURCE.MUTATION-PREVIEW-VALIDATION
+/// rule: INV.SOURCE.OBJECT-INTEGRITY-AT-PUBLICATION
 #[test]
 fn canonical_preview_refuses_creating_objects_without_the_required_final_composition() {
     for (kind, reason) in [
@@ -281,6 +288,9 @@ fn canonical_preview_refuses_creating_objects_without_the_required_final_composi
     }
 }
 
+/// rule: INV.SOURCE.METADATA-MUTATION-VALIDITY
+/// rule: INV.SOURCE.MUTATION-PREVIEW-VALIDATION
+/// rule: INV.SOURCE.OBJECT-INTEGRITY-AT-PUBLICATION
 #[test]
 fn canonical_preview_refuses_removing_the_last_required_register_field() {
     for (kind, directory, child, operation, reason) in [
@@ -318,6 +328,9 @@ fn canonical_preview_refuses_removing_the_last_required_register_field() {
     }
 }
 
+/// rule: INV.SOURCE.METADATA-MUTATION-VALIDITY
+/// rule: INV.SOURCE.MUTATION-PREVIEW-VALIDATION
+/// rule: INV.SOURCE.OBJECT-INTEGRITY-AT-PUBLICATION
 #[test]
 fn canonical_preview_refuses_clearing_a_web_service_namespace() {
     let fixture = Fixture::new(SourceSetKind::Configuration);
@@ -335,6 +348,9 @@ fn canonical_preview_refuses_clearing_a_web_service_namespace() {
     );
 }
 
+/// rule: INV.SOURCE.METADATA-MUTATION-VALIDITY
+/// rule: INV.SOURCE.MUTATION-PREVIEW-VALIDATION
+/// rule: INV.SOURCE.OBJECT-INTEGRITY-AT-PUBLICATION
 #[test]
 fn canonical_create_then_complete_registers_previews_and_publishes_minimal_composition() {
     for (kind, directory, operation, child) in [
@@ -367,6 +383,9 @@ fn canonical_create_then_complete_registers_previews_and_publishes_minimal_compo
     }
 }
 
+/// rule: INV.SOURCE.METADATA-MUTATION-VALIDITY
+/// rule: INV.SOURCE.MUTATION-PREVIEW-VALIDATION
+/// rule: INV.SOURCE.OBJECT-INTEGRITY-AT-PUBLICATION
 #[test]
 fn canonical_create_then_set_namespace_previews_and_publishes_a_web_service() {
     let fixture = Fixture::new(SourceSetKind::Configuration);
@@ -383,6 +402,7 @@ fn canonical_create_then_set_namespace_previews_and_publishes_a_web_service() {
     );
 }
 
+/// rule: INV.SOURCE.OBJECT-INTEGRITY-AT-PUBLICATION
 #[test]
 fn canonical_integrity_uses_the_final_batch_after_an_intervening_other_family() {
     let fixture = Fixture::new(SourceSetKind::Configuration);
@@ -412,6 +432,7 @@ fn canonical_integrity_uses_the_final_batch_after_an_intervening_other_family() 
         .contains("intervening family"));
 }
 
+/// rule: INV.SOURCE.OBJECT-INTEGRITY-AT-PUBLICATION
 #[test]
 fn canonical_creation_of_a_calculation_register_without_a_resource_remains_allowed() {
     let fixture = Fixture::new(SourceSetKind::Configuration);
@@ -423,6 +444,7 @@ fn canonical_creation_of_a_calculation_register_without_a_resource_remains_allow
     );
 }
 
+/// rule: INV.SOURCE.OBJECT-INTEGRITY-AT-PUBLICATION
 #[test]
 fn canonical_object_removal_does_not_validate_a_deleted_descriptor() {
     let fixture = Fixture::new(SourceSetKind::Configuration);
@@ -439,6 +461,7 @@ fn canonical_object_removal_does_not_validate_a_deleted_descriptor() {
         .exists());
 }
 
+/// rule: INV.SOURCE.OBJECT-INTEGRITY-AT-PUBLICATION
 #[test]
 fn canonical_integrity_checks_own_extension_objects_but_preserves_inherited_composition() {
     for (kind, directory) in [
@@ -470,6 +493,7 @@ fn canonical_integrity_checks_own_extension_objects_but_preserves_inherited_comp
     );
 }
 
+/// rule: INV.SOURCE.OBJECT-INTEGRITY-AT-PUBLICATION
 #[test]
 fn canonical_integrity_rejects_a_foreign_borrowing_marker_without_rejecting_a_metadata_prefix() {
     let own = Fixture::new(SourceSetKind::Extension);
@@ -499,6 +523,7 @@ fn canonical_integrity_rejects_a_foreign_borrowing_marker_without_rejecting_a_me
     );
 }
 
+/// rule: INV.SOURCE.OBJECT-INTEGRITY-AT-PUBLICATION
 #[test]
 fn canonical_integrity_does_not_scan_unrelated_incomplete_objects() {
     let fixture = Fixture::new(SourceSetKind::Configuration);

@@ -1,0 +1,199 @@
+{
+  "id": "S435",
+  "name": "form-element-add-adds-one-element-without-nested-content",
+  "issue": 1447,
+  "area": "Формы",
+  "task": "item.add добавляет один элемент: вложенные children и событие on отказывают bad_value без записи, next ведёт к контракту item.add; группа и поле в ней добавляются двумя операциями, обработчик — event.bind на адресе события",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+        "ops": [
+          {
+            "op": "item.add",
+            "args": {
+              "items": [
+                {
+                  "name": "ГруппаКомментарий",
+                  "type": "Group",
+                  "children": [
+                    {
+                      "name": "ПолеКомментарий",
+                      "type": "InputField",
+                      "path": "Объект.Наименование"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: item.add adds one element without nested content; drop `children` and add each nested element with a separate item.add at `main:Catalog.Валюты.Form.ФормаЭлемент",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.items[0].children"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.item.add"
+        },
+        {
+          "pointer": "/summary",
+          "contains": "`main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаКомментарий`"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+        "ops": [
+          {
+            "op": "item.add",
+            "args": {
+              "items": [
+                {
+                  "name": "ПолеКомментарий",
+                  "type": "InputField",
+                  "path": "Объект.Наименование",
+                  "on": [
+                    "OnChange"
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: item.add does not bind events; drop `on` and bind each handler with event.bind at `main:Catalog.Валюты.Form.ФормаЭлемента.Item.ПолеКомментарий.Event.<Event>` on",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.items[0].on"
+        },
+        {
+          "pointer": "/summary",
+          "contains": "`main:Catalog.Валюты.Form.ФормаЭлемента.Item.ПолеКомментарий.Event.<Event>`"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+        "ops": [
+          {
+            "op": "item.add",
+            "args": {
+              "items": [
+                {
+                  "name": "ГруппаКомментарий",
+                  "type": "Group"
+                }
+              ]
+            }
+          },
+          {
+            "op": "item.add",
+            "args": {
+              "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаКомментарий",
+              "items": [
+                {
+                  "name": "ПолеКомментарий",
+                  "type": "InputField",
+                  "path": "Объект.Наименование"
+                }
+              ]
+            }
+          },
+          {
+            "op": "event.bind",
+            "args": {
+              "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаКомментарий.Item.ПолеКомментарий.Event.OnChange",
+              "values": {
+                "handler": "ПолеКомментарийПриИзменении"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "captures": {
+        "groupToken": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.groupToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/xcf/logform}UsualGroup[@name='ГруппаКомментарий']/{http://v8.1c.ru/8.3/xcf/logform}ChildItems/{http://v8.1c.ru/8.3/xcf/logform}InputField[@name='ПолеКомментарий']/{http://v8.1c.ru/8.3/xcf/logform}Events/{http://v8.1c.ru/8.3/xcf/logform}Event[@name='OnChange']",
+          "eq": [
+            "ПолеКомментарийПриИзменении"
+          ]
+        }
+      ]
+    }
+  ]
+}

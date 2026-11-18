@@ -1,0 +1,26 @@
+{
+  "area": "Формы",
+  "task": "Назначить основную форму списка",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "defaultListForm": "ФормаСписка"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S127"
+}

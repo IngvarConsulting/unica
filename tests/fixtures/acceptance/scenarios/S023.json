@@ -1,0 +1,17 @@
+{
+  "area": "Навигация и чтение",
+  "task": "Найти общий модуль Google-переводчика",
+  "wire": [
+    {
+      "tool": "unica.search",
+      "args": {
+        "corpus": "names",
+        "query": "GoogleПереводчик"
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S023"
+}

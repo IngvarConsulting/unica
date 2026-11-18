@@ -36,31 +36,31 @@ mod tests {
 
     const COMPLEX: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/fixtures/v013/modules/complex.bsl"
+        "/tests/fixtures/modules/complex.bsl"
     ));
     const EXTENSION: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/fixtures/v013/modules/extension.bsl"
+        "/tests/fixtures/modules/extension.bsl"
     ));
     const SYNTAX_BOUNDARIES: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/fixtures/v013/modules/syntax-boundaries.bsl"
+        "/tests/fixtures/modules/syntax-boundaries.bsl"
     ));
     const NESTED_REGION_ADDRESSES: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/fixtures/v013/modules/nested-region-addresses.bsl"
+        "/tests/fixtures/modules/nested-region-addresses.bsl"
     ));
     const DECLARATIVE_HTTP: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/fixtures/v013/modules/declarative-http.bsl"
+        "/tests/fixtures/modules/declarative-http.bsl"
     ));
     const DECLARATIVE_SOAP: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/fixtures/v013/modules/declarative-soap.bsl"
+        "/tests/fixtures/modules/declarative-soap.bsl"
     ));
     const DECLARATIVE_INTEGRATION: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/fixtures/v013/modules/declarative-integration.bsl"
+        "/tests/fixtures/modules/declarative-integration.bsl"
     ));
 
     #[derive(Debug, Deserialize)]
@@ -111,7 +111,7 @@ mod tests {
     fn module_fixture() -> ModuleFixture {
         serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/v013/modules/module-cases.json"
+            "/tests/fixtures/modules/module-cases.json"
         )))
         .unwrap()
     }
@@ -119,7 +119,7 @@ mod tests {
     fn form_fixture() -> FormFixture {
         serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/v013/modules/form-bindings.json"
+            "/tests/fixtures/modules/form-bindings.json"
         )))
         .unwrap()
     }
@@ -127,7 +127,7 @@ mod tests {
     fn declarative_fixture() -> DeclarativeFixture {
         serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/v013/modules/declarative-handlers.json"
+            "/tests/fixtures/modules/declarative-handlers.json"
         )))
         .unwrap()
     }
@@ -143,7 +143,10 @@ mod tests {
 
     fn form_context(xml: &str, owner_kind: NodeKind) -> unica_forms::events::FormEventContext {
         let document = roxmltree::Document::parse(xml).unwrap();
-        let mut context = context_from_root(document.root_element());
+        let mut context = context_from_root(
+            document.root_element(),
+            Some(PlatformProfile::v8_3_27().line()),
+        );
         context.metadata_owner = Some(owner_kind);
         context
     }
@@ -186,6 +189,7 @@ mod tests {
                 return_values_reuse: Some("DuringRequest".to_string()),
             });
         project_module(ModuleProjectionRequest {
+            platform: profile,
             at: &at,
             capability,
             title: format!("{} module", capability.role().as_str()),
@@ -200,6 +204,7 @@ mod tests {
         .unwrap()
     }
 
+    /// rule: INV.SOURCE.MODULE-SUMMARY
     #[test]
     fn every_approved_module_role_projects_without_a_parallel_role_registry() {
         let fixture = module_fixture();
@@ -372,9 +377,10 @@ mod tests {
             "Процедура Пустая(\n)\nКонецПроцедуры\n"
         );
         let serialized = serde_json::to_value(empty).unwrap();
-        assert_eq!(serialized["branches"][1]["count"], 3);
+        assert_eq!(serialized["branches"][0]["count"], 3);
     }
 
+    /// rule: INV.SOURCE.MODULE-COMPILATION
     #[test]
     fn method_compilation_count_and_nested_guards_match_actual_ranges() {
         let projection = project("main:CommonModule.ЗаказыСервер", Some(SYNTAX_BOUNDARIES));
@@ -384,7 +390,8 @@ mod tests {
             .find(|method| method.name == "Контекстная")
             .unwrap();
         let serialized = serde_json::to_value(method).unwrap();
-        assert_eq!(serialized["branches"][0]["count"], 3);
+        assert_eq!(method.compilation_count, 3);
+        assert!(serialized["props"].get("compile").is_none());
         assert_eq!(method.compile.guard.as_deref(), Some("Client"));
         assert!(method.compile.conditional_body);
         let ranges = projection
@@ -403,6 +410,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.MODULE-COMPILATION-AND-BODY
     #[test]
     fn crlf_method_text_keeps_the_source_line_endings() {
         let source = SYNTAX_BOUNDARIES.replace('\n', "\r\n");
@@ -551,6 +559,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.MODULE-EVENT-STATE
     #[test]
     fn form_handler_parameters_are_compared_with_the_item_and_the_form_check_rule() {
         let client = vec![
@@ -665,6 +674,55 @@ mod tests {
         assert_eq!(action_state(&["Команда"]), EventState::Implemented);
         assert_eq!(action_state(&[]), EventState::Implemented);
         assert_eq!(action_state(&["Команда", "Лишний"]), EventState::Invalid);
+    }
+
+    /// rule: INV.SOURCE.MODULE-EVENT-STATE
+    #[test]
+    fn duplicate_module_event_methods_keep_all_handlers_and_reverse_links() {
+        for (second_name, unique_names) in [("BeforeWrite", true), ("передзаписью", false)]
+        {
+            let source = format!("Процедура ПередЗаписью(Отказ)\nКонецПроцедуры\n\nПроцедура {second_name}(Отказ)\nКонецПроцедуры\n");
+            let projection = project("main:Catalog.Products.Module.Object", Some(&source));
+            let event = projection
+                .events()
+                .iter()
+                .find(|event| event.event_id == "BeforeWrite")
+                .unwrap();
+            assert_eq!(event.state, EventState::Invalid);
+            assert!(event.implementation_at.is_none());
+            assert!(event.handler.is_empty());
+            assert!(event.handler_en.is_empty());
+            assert!(event.signature.is_empty());
+            assert_eq!(event.handlers.len(), 2);
+            assert_eq!(projection.methods().len(), 2);
+            for (binding, method) in event.handlers.iter().zip(projection.methods()) {
+                assert_eq!(binding.handler, method.name);
+                assert_eq!(
+                    binding.implementation_at.as_deref(),
+                    unique_names.then_some(method.at.as_str())
+                );
+                assert!(binding.call_type.is_none());
+                assert_eq!(method.handles.len(), 1);
+                assert_eq!(method.handles[0].at, event.at);
+                assert_eq!(method.handles[0].event, "BeforeWrite");
+            }
+        }
+        // A single compatible handler keeps its ordinary implementation link.
+        let projection = project(
+            "main:Catalog.Products.Module.Object",
+            Some("Процедура ПередЗаписью(Отказ)\nКонецПроцедуры\n"),
+        );
+        let event = projection
+            .events()
+            .iter()
+            .find(|event| event.event_id == "BeforeWrite")
+            .unwrap();
+        assert_eq!(event.state, EventState::Implemented);
+        assert_eq!(
+            event.implementation_at.as_deref(),
+            Some(projection.methods()[0].at.as_str())
+        );
+        assert!(event.handlers.is_empty());
     }
 
     #[test]
@@ -1297,6 +1355,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.PLATFORM.FORM-EVENT-CALL-TYPE
     #[test]
     fn form_event_implementation_requires_call_type_valid_for_the_form_definition() {
         let regular = form_context(
@@ -1404,6 +1463,7 @@ mod tests {
         assert!(declarative_source(&case.owner).contains(&method.signature));
     }
 
+    /// rule: INV.SOURCE.MODULE-SUMMARY
     #[test]
     fn valid_missing_physical_file_keeps_possible_events_but_no_source_projection() {
         let projection = project("main:Document.Пустой.Module.Object", None);
@@ -1431,6 +1491,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.MODULE-EVENT-STATE
     #[test]
     fn platform_event_state_requires_exact_kind_parameter_shape_and_effective_contexts() {
         let exact = project(
@@ -1472,9 +1533,10 @@ mod tests {
         }
     }
 
-    /// #1381 (по PR #1364): без любого из четырёх флагов среды контексты
+    /// Без любого из четырёх флагов среды контексты
     /// методов и областей неизвестны, тело без фильтра доступно; все флаги
     /// `false` дают известный пустой список.
+    /// rule: INV.SOURCE.MODULE-COMMON-PROPERTIES
     #[test]
     fn unknown_execution_flags_do_not_become_empty_or_universal_contexts() {
         use unica_bsl::projection::CommonModuleProperties;
@@ -1489,7 +1551,8 @@ mod tests {
             external_connection: Some(false),
         };
         let at = QualifiedAddress::parse("ext:CommonModule.Probe").unwrap();
-        let capability = PlatformProfile::v8_3_27().module_capability(&at).unwrap();
+        let profile = PlatformProfile::v8_3_27();
+        let capability = profile.module_capability(&at).unwrap();
         for missing in 0..5 {
             let mut props = known.clone();
             match missing {
@@ -1500,6 +1563,7 @@ mod tests {
                 _ => {}
             }
             let projection = project_module(ModuleProjectionRequest {
+                platform: profile,
                 at: &at, capability, title: "Probe".into(), rev: "fixture", source: Some("#Если Сервер Тогда\nПроцедура Test() Экспорт\nСообщить(1);\nКонецПроцедуры\n#КонецЕсли"),
                 common_module: Some(props), handles: &[], declarative_bindings: &[], extension_targets: &[], platform_event_write: PlatformEventWriteCapability::Unproved,
             }).unwrap();
@@ -1516,11 +1580,13 @@ mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.MODULE-COMMON-PROPERTIES
     #[test]
     fn common_module_requires_all_normalized_flags() {
         let at = QualifiedAddress::parse("main:CommonModule.ЗаказыСервер").unwrap();
         let profile = PlatformProfile::v8_3_27();
         let error = project_module(ModuleProjectionRequest {
+            platform: profile,
             at: &at,
             capability: profile.module_capability(&at).unwrap(),
             title: "Общий модуль".to_string(),
@@ -1536,6 +1602,7 @@ mod tests {
         assert!(error.contains("common-module flags"), "{error}");
     }
 
+    /// rule: INV.SOURCE.MODULE-METHOD-DECLARATION
     #[test]
     fn method_projection_uses_ast_and_omits_body_text() {
         let handles = [
@@ -1558,6 +1625,7 @@ mod tests {
             QualifiedAddress::parse("main:Document.Заказ.Form.ФормаДокумента.Module.Form").unwrap();
         let profile = PlatformProfile::v8_3_27();
         let projection = project_module(ModuleProjectionRequest {
+            platform: profile,
             at: &at,
             capability: profile.module_capability(&at).unwrap(),
             title: "Модуль формы".to_string(),
@@ -1602,6 +1670,8 @@ mod tests {
         assert!(!json.contains("source"));
     }
 
+    /// rule: INV.SOURCE.MODULE-COMPILATION-AND-BODY
+    /// rule: INV.SOURCE.MODULE-METHOD-DECLARATION
     #[test]
     fn method_text_spans_doc_comment_directive_declaration_and_end_without_preprocessor() {
         let source = concat!(
@@ -1626,6 +1696,10 @@ mod tests {
             "КонецПроцедуры",
         );
         let projection = project("main:CommonModule.ЗаказыСервер", Some(source));
+        let documented = &projection.methods()[0];
+        assert_eq!(documented.text_from_line, 3);
+        assert_eq!(documented.declaration_line, 6);
+        assert_eq!(documented.name_column, Some(11));
         let text = |name: &str| {
             let method = projection
                 .methods()
@@ -1658,6 +1732,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.MODULE-REGION-INTERFACE
     #[test]
     fn nested_regions_interface_projections_and_ambiguity_are_exact() {
         let projection = project("main:CommonModule.ЗаказыСервер", Some(COMPLEX));
@@ -1705,6 +1780,7 @@ mod tests {
         assert!(projection.region("Повтор").unwrap_err().is_ambiguous());
     }
 
+    /// rule: INV.SOURCE.MODULE-REGION-INTERFACE
     #[test]
     fn method_area_is_the_nearest_normative_region_whatever_the_export() {
         let source = "#Область ПрограммныйИнтерфейс\n\
@@ -1766,6 +1842,7 @@ mod tests {
         assert_eq!(duplicates, vec![Some(MethodArea::Public), None]);
     }
 
+    /// rule: INV.SOURCE.MODULE-EXTENSION-BINDING
     #[test]
     fn extension_annotations_resolve_independently_from_compilation_directives() {
         let targets = [
@@ -1785,6 +1862,7 @@ mod tests {
         let at = QualifiedAddress::parse("sales:Document.Заказ.Module.Object").unwrap();
         let profile = PlatformProfile::v8_3_27();
         let projection = project_module(ModuleProjectionRequest {
+            platform: profile,
             at: &at,
             capability: profile.module_capability(&at).unwrap(),
             title: "Расширение".to_string(),
@@ -1876,6 +1954,7 @@ mod tests {
         assert!(!evaluate_guard(&guard, "server"));
     }
 
+    /// rule: INV.SOURCE.MODULE-EVENT-STATE
     #[test]
     fn form_binding_owners_and_all_four_event_states_are_projected() {
         let fixture = form_fixture();

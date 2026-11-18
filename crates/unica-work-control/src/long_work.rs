@@ -35,6 +35,16 @@ pub struct WorkState {
 /// Тридцать секунд выведены из замеренного канала: 4,2 МБ/с на живой машине
 /// покрывают за это время около ста двадцати мегабайт, то есть обычный случай
 /// остаётся одним вызовом.
+// resource-limit: work.default-sync-window
+// class: deadline
+// unit: ms
+// scope: operation
+// value: 30000
+// resource: Сколько вызов долгой работы ждёт синхронно, прежде чем ответить состоянием.
+// status: unproven
+// origin: #604
+// problem: Тридцать секунд при замеренных 4,2 МБ/с покрывают около 120 МБ, чтобы обычный случай оставался одним вызовом.
+// on-reach: вызов отвечает состоянием работы с интервалом опроса вместо результата
 pub const DEFAULT_SYNC_WINDOW: Duration = Duration::from_secs(30);
 
 /// Запас, чтобы успеть ответить раньше хоста.
@@ -92,7 +102,7 @@ mod tests {
     fn a_working_state_serializes_with_the_protocol_vocabulary() {
         let state = WorkState {
             status: WorkStatus::Working,
-            status_message: "delivering rlm-tools-bsl: 12 of 69 bytes".to_owned(),
+            status_message: "delivering bsl-analyzer: 12 of 69 bytes".to_owned(),
             poll_interval_ms: Some(5_000),
         };
 

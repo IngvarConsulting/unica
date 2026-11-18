@@ -1,0 +1,105 @@
+{
+  "id": "S348",
+  "name": "metadata-warning-failed",
+  "issue": 858,
+  "area": "Метаданные",
+  "task": "Предупреждение имеет свой код и сохраняет вердикт failed",
+  "workspace": "tests/fixtures/acceptance/workspace-metadata-warning",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:DocumentJournal.MixedJournal"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "unchanged1": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "unchanged2": {
+          "file": "src/DocumentJournals/MixedJournal.xml",
+          "kind": "sha256"
+        },
+        "unchanged3": {
+          "file": "src/DocumentJournals/WarningJournal.xml",
+          "kind": "sha256"
+        },
+        "unchanged4": {
+          "file": "src/Languages/Русский.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:DocumentJournal.MixedJournal"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "failed",
+      "validators": [
+        "meta"
+      ],
+      "diagnostic": "validation_warning",
+      "assertions": [
+        {
+          "pointer": "/ok",
+          "eq": true
+        },
+        {
+          "pointer": "/data/diagnostics",
+          "contains": {
+            "code": "validation_warning",
+            "severity": "warning",
+            "message": "10. DocumentJournal: no RegisteredDocuments specified",
+            "metadataPath": "DocumentJournal.MixedJournal",
+            "field": "properties",
+            "validator": "meta"
+          }
+        },
+        {
+          "pointer": "/data/diagnosticCount",
+          "eq": 2
+        },
+        {
+          "pointer": "/data/diagnostics",
+          "contains": {
+            "code": "validation_failed",
+            "severity": "error",
+            "message": "14. DocumentJournal Column 'Broken': empty References (will fail on LoadConfigFromFiles)",
+            "metadataPath": "DocumentJournal.MixedJournal",
+            "field": "columns",
+            "validator": "meta"
+          }
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.unchanged1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/DocumentJournals/MixedJournal.xml",
+          "eq": "$capture.unchanged2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/DocumentJournals/WarningJournal.xml",
+          "eq": "$capture.unchanged3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "eq": "$capture.unchanged4"
+        }
+      ]
+    }
+  ]
+}

@@ -62,7 +62,7 @@ fn prompt_visible_skills(skills_root: &Path) -> Result<BTreeSet<String>> {
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::*;
 
     use std::path::PathBuf;

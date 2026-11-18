@@ -1,8 +1,5 @@
 ---
 id: INV.PKG.DEV-PACKAGE-ISOLATED
-check:
-  - tests/ci/test_package_unica_plugin.py::PackageUnicaPluginTests.test_local_debug_mode_remains_current_host_only_and_uses_unica_dev
-  - tests/ci/test_package_unica_plugin.py::PackageUnicaPluginTests.test_load_tool_bundles_can_filter_one_release_target
 ---
 
 # Отладочный пакет содержит только выбранную платформу

@@ -23,3 +23,7 @@ serde_json.workspace = true
 [dev-dependencies]
 unica-workspace = { path = "../unica-workspace", features = ["test-support"] }
 unica-process = { path = "../unica-process", features = ["test-support"] }
+
+[package.metadata.unica]
+component = "service"
+file-io = "owned"

@@ -27,3 +27,13 @@ unica-forms-designer = { path = "../unica-forms-designer" }
 unica-metadata = { path = "../unica-metadata", features = ["test-support"] }
 roxmltree.workspace = true
 serde_json.workspace = true
+
+[package.metadata.unica]
+component = "integration-tests"
+file-io = "owned"
+inputs = [
+    "crates/unica-metadata/src/platform-event-catalog-8.3.27.json",
+    "crates/unica-metadata/src/platform-event-catalog-8.5.1.json",
+    "crates/unica-metadata/src/platform-event-catalog-8.5.4.json",
+    "plugins/unica/skills/form-compile/SKILL.md",
+]

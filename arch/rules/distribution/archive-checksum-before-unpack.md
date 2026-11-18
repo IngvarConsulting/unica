@@ -1,7 +1,5 @@
 ---
 id: INV.PKG.CORRUPT-ARCHIVE-NOT-READY
-check:
-  - crates/unica-artifact-delivery/tests/runtime_install.rs::corrupt_archive_never_publishes_a_ready_runtime
 ---
 
 # Архив с неверной контрольной суммой не распаковывается

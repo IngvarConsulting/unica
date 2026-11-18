@@ -35,7 +35,7 @@ fn observation() -> String {
     };
     #[cfg(windows)]
     let identity = "not-unix;not-unix".to_string();
-    let generation = env::var_os("RLM_INDEX_DIR")
+    let generation = env::var_os("UNICA_CWD_PROBE_GENERATION")
         .map(|value| native_hex(&value))
         .unwrap_or_default();
     let args = env::args_os()

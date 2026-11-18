@@ -1,0 +1,407 @@
+use super::*;
+
+/// rule: INV.SOURCE.MODULE-REGION-INTERFACE
+#[test]
+fn region_links_only_to_direct_children_and_unambiguous_methods() {
+    let fixture = RealReaderFixture::new();
+    let module = fixture
+        .source
+        .join("CommonModules/РеактивныйСервер/Ext/Module.bsl");
+    fs::write(
+        module,
+        r"#Область Outer
+Процедура Direct()
+КонецПроцедуры
+#Область Inner
+Процедура Nested()
+КонецПроцедуры
+#Если Сервер Тогда
+Процедура Duplicate()
+КонецПроцедуры
+#КонецЕсли
+#КонецОбласти
+#КонецОбласти
+#Если Клиент Тогда
+Процедура Duplicate()
+КонецПроцедуры
+#КонецЕсли
+",
+    )
+    .unwrap();
+    let service = fixture.view_service();
+    let base = "main:CommonModule.РеактивныйСервер";
+    let read = |suffix: &str| {
+        let result = service.view(ViewRequest::new(&format!("{base}.{suffix}")).unwrap());
+        assert!(result.ok, "{:?}", refusal_codes(&result));
+        result.data.unwrap()
+    };
+    let outer = read("Region.Outer");
+    assert_eq!(
+        outer["items"],
+        json!([
+            {"at": format!("{base}.Region.Outer.Region.Inner"), "kind": "Region"},
+            {"at": format!("{base}.Method.Direct"), "kind": "Method"}
+        ])
+    );
+    let inner = read("Region.Outer.Region.Inner");
+    assert_eq!(
+        inner["items"],
+        json!([{"at": format!("{base}.Method.Nested"), "kind": "Method"}])
+    );
+    assert_eq!(
+        inner["limits"],
+        json!([format!(
+            "method address `{base}.Method.Duplicate` is ambiguous"
+        )])
+    );
+}
+
+/// `Body` отдаёт исходные строки с их номерами: среза по контексту у `view`
+/// нет, и клиентский код формы остаётся в ответе.
+/// rule: INV.SOURCE.MODULE-COMPILATION-AND-BODY
+#[test]
+fn module_body_returns_the_source_text_byte_for_byte() {
+    let fixture = RealReaderFixture::new();
+    let module = fixture
+        .source
+        .join("Reports/ParityReport/Forms/MainForm/Ext/Form/Module.bsl");
+    let at = "main:Report.ParityReport.Form.MainForm.Module.Form.Body";
+    let original = fs::read_to_string(&module).unwrap();
+    // Начальные U+FEFF снимаются, CRLF, табуляция, кавычки и отсутствие
+    // разделителя в конце файла сохраняются как есть.
+    let crlf = "\u{feff}// Комментарий \"формы\".\r\nПроцедура А()\r\n\tВозврат;\r\nКонецПроцедуры";
+    for source in [original.as_str(), crlf] {
+        fs::write(&module, source).unwrap();
+        let result = fixture.view_service().view(ViewRequest::new(at).unwrap());
+        assert!(result.ok, "module Body must be read");
+        assert_eq!(
+            result.source_text.as_deref(),
+            Some(source.trim_start_matches('\u{feff}'))
+        );
+        let data = result.data.as_ref().unwrap();
+        assert_eq!(data["at"], at);
+        assert_eq!(data["kind"], "Body");
+        assert!(data.get("items").is_none());
+        assert!(result.cursor.is_none());
+    }
+}
+
+/// rule: INV.SOURCE.CODE-REPLACE-TEXT-REVISION
+#[test]
+fn module_revision_follows_the_whole_text_of_a_body_or_range() {
+    let fixture = RealReaderFixture::new();
+    let module = fixture
+        .source
+        .join("Reports/ParityReport/Forms/MainForm/Ext/Form/Module.bsl");
+    let owner = "main:Report.ParityReport.Form.MainForm.Module.Form";
+    let text = concat!(
+        "// Before\r\nПроцедура А()\r\n\tВозврат;\r\nКонецПроцедуры\r\n",
+        "\r\nПроцедура Б()\r\nКонецПроцедуры\r\n",
+    );
+    fs::write(&module, format!("\u{feff}{text}")).unwrap();
+    let service = fixture.view_service();
+    let whole = service.view(ViewRequest::new(&format!("{owner}.Body")).unwrap());
+    assert!(whole.ok, "{:?}", refusal_codes(&whole));
+    assert_eq!(
+        whole.rev.as_deref(),
+        Some(unica_source_contract::read::module_text_revision(text.as_bytes()).as_str()),
+    );
+    for suffix in ["Body#L1-L1", "Method.А.Body"] {
+        let body = service.view(ViewRequest::new(&format!("{owner}.{suffix}")).unwrap());
+        assert!(body.ok, "{:?}", refusal_codes(&body));
+        assert_ne!(body.source_text, whole.source_text);
+        assert_eq!(body.rev, whole.rev);
+    }
+    fs::write(&module, text.replace("\r\n", "\n")).unwrap();
+    let lf = fixture
+        .view_service()
+        .view(ViewRequest::new(&format!("{owner}.Body")).unwrap());
+    assert!(lf.ok, "{:?}", refusal_codes(&lf));
+    assert_ne!(lf.rev, whole.rev);
+}
+
+/// rule: INV.WIRE.SOURCE-TEXT-RESPONSE-BUDGET
+#[test]
+fn view_never_returns_module_text_above_the_largest_host_budget() {
+    let fixture = RealReaderFixture::new();
+    let module = fixture
+        .source
+        .join("Reports/ParityReport/Forms/MainForm/Ext/Form/Module.bsl");
+    let at = "main:Report.ParityReport.Form.MainForm.Module.Form.Body";
+    // 72 КиБ — наибольший бюджет известного хоста; число записано здесь
+    // явно, чтобы смена предела в коде была видна этой проверке.
+    let mut source = vec![b'a'; 73_728];
+    fs::write(&module, &source).unwrap();
+    let whole = fixture.view_service().view(ViewRequest::new(at).unwrap());
+    assert_eq!(whole.source_text.as_ref().map(String::len), Some(73_728));
+    source.push(b'a');
+    fs::write(&module, &source).unwrap();
+    let refused = fixture.view_service().view(ViewRequest::new(at).unwrap());
+    assert_eq!(refused.diagnostics[0]["code"], "result_too_large");
+    assert!(refused.source_text.is_none());
+    assert!(refused.rev.is_none());
+}
+
+/// rule: INV.SOURCE.MODULE-COMPILATION-AND-BODY
+/// rule: INV.WIRE.SOURCE-TEXT-RESPONSE-BUDGET
+#[test]
+fn module_body_beyond_the_limit_is_still_checked_as_utf8_in_full() {
+    let fixture = RealReaderFixture::new();
+    let module = fixture
+        .source
+        .join("Reports/ParityReport/Forms/MainForm/Ext/Form/Module.bsl");
+    let at = "main:Report.ParityReport.Form.MainForm.Module.Form.Body";
+    let mut source = vec![b'a'; crate::application::v13::source_text::MAX_SOURCE_TEXT_BYTES + 1];
+    let valid = fixture.view_service();
+    fs::write(&module, &source).unwrap();
+    let oversized = valid.view(ViewRequest::new(at).unwrap());
+    assert_eq!(oversized.diagnostics[0]["code"], "result_too_large");
+    // Неверный байт за пределом не теряется: отказ называет испорченный
+    // исходник, а не размер.
+    source.push(0xff);
+    fs::write(&module, &source).unwrap();
+    let broken = fixture.view_service().view(ViewRequest::new(at).unwrap());
+    assert!(!broken.ok);
+    assert_ne!(
+        broken.diagnostics[0]["code"], "result_too_large",
+        "a broken byte beyond the limit must not be reported as size"
+    );
+    assert!(broken.source_text.is_none());
+}
+
+/// rule: INV.SOURCE.PLATFORM-CAPABILITY-EXISTENCE
+#[test]
+fn missing_owner_module_branch_is_not_invented_but_registered_owner_without_bsl_is_kept() {
+    let fixture = RealReaderFixture::new();
+    let service = fixture.view_service();
+
+    let missing = service.view(ViewRequest::new("main:Document.Missing.Module").unwrap());
+    assert!(
+        !missing.ok,
+        "missing owner produced a module branch: {missing:?}"
+    );
+    assert_eq!(missing.diagnostics[0]["code"], "not_found");
+
+    let registered = service.view(ViewRequest::new("main:Catalog.Items.Module").unwrap());
+    assert!(registered.ok, "{:?}", registered.diagnostics);
+    let items = registered.data.as_ref().unwrap()["items"]
+        .as_array()
+        .unwrap();
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0]["at"], "main:Catalog.Items.Module.Object");
+    assert_eq!(items[1]["at"], "main:Catalog.Items.Module.Manager");
+}
+
+/// rule: INV.SOURCE.MODULE-CURRENT-SOURCE
+#[test]
+pub(crate) fn one_read_parses_each_module_source_once_per_actor_revision() {
+    let fixture = RealReaderFixture::new();
+    let authority = fixture.read_authority();
+    assert_reader_reaches(
+        &authority,
+        &[
+            "main:CommonModule.РеактивныйСервер.Method",
+            "main:Catalog.Items",
+            "main:Catalog.Items.TabularSection.Lines",
+            "main:Catalog.Items.TabularSection.Lines.Attribute.Quantity",
+            "main:Configuration",
+        ],
+    );
+    assert_eq!(
+        authority.module_source_read_count("CommonModule.РеактивныйСервер.Module"),
+        1,
+        "one actor-owned revision must parse each module source once",
+    );
+    assert_eq!(
+        authority.configuration_payload_read_count(),
+        1,
+        "one actor-owned revision must parse its source-set inventory once",
+    );
+
+    let module = fixture
+        .source
+        .join("CommonModules/РеактивныйСервер/Ext/Module.bsl");
+    let mut changed = fs::read_to_string(&module).unwrap();
+    changed.push_str("\nProcedure AfterRevisionChange()\nEndProcedure\n");
+    fs::write(&module, changed).unwrap();
+    assert_reader_reaches(
+        &authority,
+        &[
+            "main:CommonModule.РеактивныйСервер.Method",
+            "main:Catalog.Items",
+            "main:Catalog.Items.TabularSection.Lines",
+            "main:Catalog.Items.TabularSection.Lines.Attribute.Quantity",
+            "main:Configuration",
+        ],
+    );
+    assert_eq!(
+        authority.module_source_read_count("CommonModule.РеактивныйСервер.Module"),
+        1,
+        "one read keeps its own projection; it is not a snapshot of later edits",
+    );
+    assert_eq!(authority.configuration_payload_read_count(), 1);
+    let changed_methods = ViewService::new(fixture.read_authority(), ViewCursorStore::default())
+        .view(ViewRequest::new("main:CommonModule.РеактивныйСервер.Method").unwrap());
+    assert!(
+        changed_methods.ok,
+        "a new read of the changed module must succeed"
+    );
+    assert!(
+        serde_json::to_string(&changed_methods.data)
+            .unwrap()
+            .contains("AfterRevisionChange"),
+        "a new read must parse the changed module source"
+    );
+
+    let second_authority = fixture.read_authority();
+    assert_reader_reaches(
+        &second_authority,
+        &[
+            "main:CommonModule.РеактивныйСервер.Method",
+            "main:Catalog.Items",
+            "main:Catalog.Items.TabularSection.Lines",
+            "main:Catalog.Items.TabularSection.Lines.Attribute.Quantity",
+            "main:Configuration",
+        ],
+    );
+    assert_eq!(
+        second_authority.module_source_read_count("CommonModule.РеактивныйСервер.Module"),
+        1,
+        "a second actor must own an independent operation-local projection",
+    );
+    assert_eq!(second_authority.configuration_payload_read_count(), 1);
+}
+
+#[test]
+fn an_open_buffer_is_read_in_place_of_its_module_file_and_the_file_is_untouched() {
+    use unica_workspace::documents::{DocumentOverlay, DocumentText};
+
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = temp.path().canonicalize().unwrap();
+    let module = Path::new("CommonModules/Общий/Ext/Module.bsl");
+    fs::create_dir_all(workspace.as_path().join(module).parent().unwrap()).unwrap();
+    fs::write(workspace.as_path().join(module), "\u{feff}// диск\n").unwrap();
+    let target = MetadataAddress::parse_logical("CommonModule.Общий.Module").unwrap();
+    let absent = MetadataAddress::parse_logical("CommonModule.Новый.Module").unwrap();
+    let overlay = DocumentOverlay::default();
+    for relative in [module, Path::new("CommonModules/Новый/Ext/Module.bsl")] {
+        overlay
+            .put(
+                "editor",
+                "main",
+                relative,
+                DocumentText {
+                    version: 3,
+                    text: Arc::from("\u{feff}// буфер\n// вторая\n"),
+                },
+            )
+            .unwrap();
+    }
+    let reader = |documents| {
+        let root =
+            Arc::new(unica_workspace::read::open_source_directory(workspace.as_path()).unwrap());
+        let reader =
+            ProviderReadAuthority::new("main", "actor-main", SourceSetKind::Configuration, root);
+        match documents {
+            Some(documents) => reader.with_documents(documents),
+            None => reader,
+        }
+    };
+
+    let editor = reader(Some(overlay.session_documents("editor", "main").unwrap()));
+    assert_eq!(
+        editor.module_source(&target).unwrap().as_deref(),
+        Some("// буфер\n// вторая\n")
+    );
+    assert!(editor.module_source_exists(&absent).unwrap());
+    assert_eq!(
+        editor.module_source(&absent).unwrap().as_deref(),
+        Some("// буфер\n// вторая\n")
+    );
+
+    // Every read of the module in this session sees the same buffer.
+    let lines = editor.module_line_count(&target, || Ok(())).unwrap();
+    assert_eq!(
+        lines,
+        reader(None)
+            .module_line_count(&target, || Ok(()))
+            .unwrap()
+            .map(|n| n + 1)
+    );
+
+    // Another session and an agent call read the disk.
+    for other in [
+        Some(overlay.session_documents("agent", "main").unwrap()),
+        None,
+    ] {
+        let other = reader(other);
+        assert_eq!(
+            other.module_source(&target).unwrap().as_deref(),
+            Some("// диск\n")
+        );
+        assert!(!other.module_source_exists(&absent).unwrap());
+    }
+    assert_eq!(
+        fs::read_to_string(workspace.as_path().join(module)).unwrap(),
+        "\u{feff}// диск\n"
+    );
+    assert!(!workspace
+        .as_path()
+        .join("CommonModules/Новый")
+        .join("Ext/Module.bsl")
+        .exists());
+}
+
+#[test]
+fn method_view_reports_declaration_and_name_without_changing_body_start() {
+    for newline in ["\n", "\r\n"] {
+        for (declaration, closing, name, column) in [
+            (
+                "\tПроцедура Проверка() Экспорт",
+                "КонецПроцедуры",
+                "Проверка",
+                12,
+            ),
+            ("  Function Check() Export", "EndFunction", "Check", 12),
+            (
+                "\tАсинх Процедура Проверка()",
+                "КонецПроцедуры",
+                "Проверка",
+                18,
+            ),
+            ("  Async Function Check()", "EndFunction", "Check", 18),
+        ] {
+            for (prefix, line, declaration_line) in [
+                ("// Описание 😀\n\n&НаСервере\n", 3, 4),
+                ("// Описание 😀\n&НаСервере\n", 1, 3),
+                ("// Описание 😀\n\n&НаСервере\n&Перед(\"Original\")\n", 3, 5),
+                ("", 1, 1),
+            ] {
+                let fixture = RealReaderFixture::new();
+                let module = fixture
+                    .source
+                    .join("CommonModules/РеактивныйСервер/Ext/Module.bsl");
+                let source = format!("{prefix}{declaration}\n{closing}\n").replace('\n', newline);
+                fs::write(module, &source).unwrap();
+                let at = format!("main:CommonModule.РеактивныйСервер.Method.{name}");
+                let result = fixture.view_service().view(ViewRequest::new(&at).unwrap());
+                assert!(result.ok, "{source:?}: {:?}", refusal_codes(&result));
+                let data = result.data.unwrap();
+                assert_eq!(data["props"]["line"], line, "{source:?}");
+                assert_eq!(
+                    data["props"]["declarationLine"], declaration_line,
+                    "{source:?}"
+                );
+                assert_eq!(data["props"]["nameColumn"], column, "{source:?}");
+                let body = fixture
+                    .view_service()
+                    .view(ViewRequest::new(&format!("{at}.Body")).unwrap());
+                let expected = source
+                    .split_inclusive(newline)
+                    .skip(line - 1)
+                    .collect::<String>();
+                assert_eq!(body.source_text.as_deref(), Some(expected.as_str()));
+            }
+        }
+    }
+}

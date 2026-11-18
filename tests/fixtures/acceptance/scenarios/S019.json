@@ -1,0 +1,22 @@
+{
+  "area": "Навигация и чтение",
+  "task": "Прочитать ветку реквизитов справочника страницей по её адресу",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.Attribute"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Attribute"
+        }
+      ]
+    }
+  ],
+  "id": "S019"
+}

@@ -1,0 +1,16 @@
+{
+  "area": "Код BSL",
+  "task": "Найти использования строкового литерала (адрес сервиса)",
+  "wire": [
+    {
+      "tool": "unica.search",
+      "args": {
+        "query": "translation.googleapis.com"
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S149"
+}

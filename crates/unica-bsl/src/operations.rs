@@ -38,9 +38,6 @@ code_operations!(
 );
 
 impl unica_operations::FamilyOperation for CodeOperation {
-    fn retired_arguments(self) -> &'static [unica_operations::recovery::RetiredArgument] {
-        crate::recovery::RETIRED_ARGUMENTS
-    }
     fn contract(self) -> Option<unica_operation_contract::OperationContract> {
         Some(self.contract(None))
     }

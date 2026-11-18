@@ -2,6 +2,7 @@
 pub mod adapter;
 pub mod baseline;
 pub mod diagnostics;
+mod editor_codes;
 pub mod environment;
 pub mod filters;
 pub mod jsonl;

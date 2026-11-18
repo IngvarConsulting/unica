@@ -1,0 +1,20 @@
+{
+  "area": "Макеты",
+  "task": "Проверить табличный макет",
+  "wire": [
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:Report.АнализВерсийОбъектов.Template.МакетОтчета"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "validators": [
+        "mxl"
+      ]
+    }
+  ],
+  "id": "S201"
+}

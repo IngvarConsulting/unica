@@ -1,9 +1,9 @@
 use super::xml_model::MD_CLASSES_NS;
+use crate::dialect::root_version::{self, RootVersionReport};
 use roxmltree::Document;
 use std::collections::HashSet;
 use unica_address::source_target::MetadataAddress;
 use unica_metadata::validation_subject::MetadataTemplateType;
-use unica_source_designer::format_profile::ACTIVE_FORMAT_PROFILE;
 use unica_source_designer::owner::{PlatformXmlRootExpectation, DCS_ROOT, MXL_ROOT};
 use unica_source_designer::roots::root_version_literal;
 pub fn document_registers(bytes: &[u8], expected: &str) -> bool {
@@ -299,11 +299,8 @@ pub fn parse_owner_child_artifact(
     if name.is_empty() {
         return Err(format!("{child_kind} owner entry name is empty"));
     }
-    let child = MetadataAddress::parse(
-        PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &format!("{owner}.{child_kind}.{name}"),
-    )
-    .map_err(|_| "owner child identity is not representable".to_string())?;
+    let child = MetadataAddress::parse_logical(&format!("{owner}.{child_kind}.{name}"))
+        .map_err(|_| "owner child identity is not representable".to_string())?;
     Ok(ClosedOwnerChild {
         child,
         kind,
@@ -567,7 +564,7 @@ pub fn exact_metadata_artifact<'a, 'input>(
     if root.tag_name().namespace() != Some(MD_CLASSES_NS)
         || root.tag_name().name() != "MetaDataObject"
         || (admission == MetadataAdmission::Writable
-            && root.attribute("version") != Some(ACTIVE_FORMAT_PROFILE.export_format))
+            && !root_version::is_writable(root.attribute("version")))
     {
         return Err("metadata descriptor root does not match the active MDClasses profile".into());
     }
@@ -711,10 +708,10 @@ pub fn validate_exact_version_xml(
     let (source, document) = parse_typed_payload_xml(bytes, role)?;
     let root = document.root_element();
     require_exact_payload_root(root, expected, role)?;
-    if root_version_literal(source, root).as_deref() != Some(ACTIVE_FORMAT_PROFILE.export_format) {
+    if !root_version::is_writable(root_version_literal(source, root).as_deref()) {
         return Err(format!(
             "{role} must use export format {}",
-            ACTIVE_FORMAT_PROFILE.export_format
+            root_version::writable_formats()
         ));
     }
     Ok(())
@@ -804,7 +801,7 @@ impl ClosedChildKind {
 
 use std::collections::BTreeMap;
 use std::path::Path;
-use unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20;
+
 use unica_bsl_parser::{
     exact_bsl_method_facts, exported_bsl_procedure_matches, BslProcedureRequirement,
 };
@@ -816,7 +813,6 @@ use unica_metadata::{
 };
 use unica_source_contract::discovery::ProjectDiscoveryRead;
 use unica_source_contract::workspace::WorkspaceContext;
-use unica_source_designer::format_profile::{classify_root_version, FormatCompatibility};
 use unica_source_designer::read::{path_exists, path_is_dir, read_utf8_sig};
 #[derive(Clone, Copy)]
 pub struct MetadataValidationSource<'a> {
@@ -1647,7 +1643,7 @@ pub fn validate_auxiliary_xml(
             kind
         ));
     }
-    if root.attribute("version") != Some(ACTIVE_FORMAT_PROFILE.export_format) {
+    if !root_version::is_writable(root.attribute("version")) {
         return Err("auxiliary XML format version is unsupported".to_string());
     }
     Ok(())
@@ -1668,12 +1664,10 @@ pub fn validate_child_resource(
                 .map_err(|error| format!("form content is not valid XML: {error}"))?;
             let root = document.root_element();
             (form_root.0)(root)?;
-            if root_version_literal(source, root).as_deref()
-                != Some(ACTIVE_FORMAT_PROFILE.export_format)
-            {
+            if !root_version::is_writable(root_version_literal(source, root).as_deref()) {
                 return Err(format!(
                     "form content must use export format {}",
-                    ACTIVE_FORMAT_PROFILE.export_format
+                    root_version::writable_formats()
                 ));
             }
             Ok(())
@@ -2077,11 +2071,8 @@ pub fn parse_child_artifact(
         ),
         _ => unreachable!(),
     };
-    let child = MetadataAddress::parse(
-        PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &format!("{owner}.{child_kind}.{name}"),
-    )
-    .map_err(|_| "child descriptor identity is not representable".to_string())?;
+    let child = MetadataAddress::parse_logical(&format!("{owner}.{child_kind}.{name}"))
+        .map_err(|_| "child descriptor identity is not representable".to_string())?;
     Ok(ClosedChildDescriptor { child, profile })
 }
 
@@ -2099,14 +2090,7 @@ fn template_descriptor_type(
         .ok_or_else(|| "Template descriptor has unsupported TemplateType".into())
 }
 
-/// Read the top-level template through the same closed type vocabulary and
-/// descriptor admission as a physical child template. This is a read profile,
-/// not a new metadata creation kind.
-pub struct CommonTemplateDescriptorFacts {
-    pub template_type: MetadataTemplateType,
-    pub synonym: Option<String>,
-    pub unreadable_synonym: Option<String>,
-}
+pub use unica_metadata::validation_subject::CommonTemplateDescriptorFacts;
 
 pub fn parse_common_template_descriptor_from_bytes(
     bytes: &[u8],
@@ -2126,29 +2110,13 @@ pub fn parse_common_template_descriptor_from_bytes(
         return Err("common template descriptor belongs to another logical address".into());
     }
     let template_type = template_descriptor_type(*properties)?;
-    let synonyms = properties
-        .children()
-        .filter(|node| node.is_element() && node.tag_name().name() == "Synonym")
-        .collect::<Vec<_>>();
-    let (synonym, unreadable_synonym) = match synonyms.as_slice() {
-        [] => (None, None),
-        [node]
-            if super::info_projection::meta_info_property_value_is_valid(
-                *node,
-                unica_metadata::MetaInfoPropertyValueKind::LocalizedString,
-            ) && super::info_projection::direct_text_content(*node)
-                .trim()
-                .is_empty() =>
-        {
-            let value = super::xml_model::meta_info_ml_text(*node);
-            ((!value.is_empty()).then_some(value), None)
-        }
-        _ => (
-            None,
-            Some(
-                "CommonTemplate Synonym is malformed, duplicated or has a foreign namespace".into(),
-            ),
-        ),
+    let (synonym, unreadable_synonym) = match crate::info_projection::localized_property_as_nstr(
+        *properties,
+        "CommonTemplate",
+        "Synonym",
+    ) {
+        Ok(synonym) => (synonym, None),
+        Err(error) => (None, Some(error)),
     };
     Ok(CommonTemplateDescriptorFacts {
         template_type,
@@ -2485,10 +2453,8 @@ pub fn validate_event_subscription_binding_subject(
         }
     }
 
-    let module_target = match MetadataAddress::parse(
-        PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &format!("CommonModule.{module_name}"),
-    ) {
+    let module_target = match MetadataAddress::parse_logical(&format!("CommonModule.{module_name}"))
+    {
         Ok(target) => target,
         Err(_) => {
             return fail(
@@ -2853,8 +2819,7 @@ impl MetaValidationReporter {
 }
 
 pub fn metadata_address(raw: impl AsRef<str>) -> Result<MetadataAddress, String> {
-    MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw.as_ref())
-        .map_err(|error| error.to_string())
+    MetadataAddress::parse_logical(raw.as_ref()).map_err(|error| error.to_string())
 }
 
 pub fn metadata_collection(object_type: &str) -> Option<&'static str> {
@@ -2909,12 +2874,10 @@ pub fn meta_validate_source(
     }
 
     let version_literal = root_version_literal(source, root);
-    match classify_root_version(version_literal.as_deref()) {
-        Ok(FormatCompatibility::Supported { .. }) => report.ok("Export format: 2.20"),
-        Ok(compatibility) => report.warn(
-            unica_source_designer::format_profile::format_compatibility_warning(&compatibility),
-        ),
-        Err(error) => report.error(error.to_string()),
+    match root_version::report(version_literal.as_deref()) {
+        RootVersionReport::Ok(line) => report.ok(line),
+        RootVersionReport::Warn(line) => report.warn(line),
+        RootVersionReport::Error(line) => report.error(line),
     }
     let version = version_literal.as_deref().unwrap_or("");
 
@@ -3440,6 +3403,19 @@ pub fn meta_validate_check_standard_attributes(
     };
     let std_attrs = unica_xml_format::read::child_elements(std_attr_node, "StandardAttribute");
     let expected_std_attrs = meta_validate_standard_attributes(md_type).unwrap_or_default();
+    // RecordType belongs to balances. Keep the common attributes checkable
+    // when the register kind is not proven, without inventing a default kind.
+    let record_type_applies = if md_type == "AccumulationRegister" {
+        let applies = accumulation_register_record_type_applies(props_node);
+        if applies.is_none() {
+            report.warn(
+                "5. Cannot determine RecordType applicability: RegisterType is missing or invalid",
+            );
+        }
+        applies
+    } else {
+        Some(true)
+    };
     let mut check_ok = true;
     let mut found_names = Vec::<String>::new();
     for standard_attr in &std_attrs {
@@ -3450,7 +3426,8 @@ pub fn meta_validate_check_standard_attributes(
             continue;
         }
         found_names.push(name.to_string());
-        if !expected_std_attrs.contains(&name)
+        if (!expected_std_attrs.contains(&name)
+            || (name == "RecordType" && record_type_applies == Some(false)))
             && !meta_validate_dynamic_standard_attr(md_type, name)
         {
             report.warn(format!(
@@ -3460,6 +3437,7 @@ pub fn meta_validate_check_standard_attributes(
     }
     let missing_attrs = expected_std_attrs
         .iter()
+        .filter(|attr| **attr != "RecordType" || record_type_applies == Some(true))
         .filter(|attr| !found_names.iter().any(|found| found == **attr))
         .copied()
         .collect::<Vec<_>>();
@@ -3474,6 +3452,25 @@ pub fn meta_validate_check_standard_attributes(
             "5. StandardAttributes: {} entries",
             std_attrs.len()
         ));
+    }
+}
+
+fn accumulation_register_record_type_applies(properties: roxmltree::Node<'_, '_>) -> Option<bool> {
+    let kinds = unica_xml_format::read::child_elements_in_namespace(
+        properties,
+        "RegisterType",
+        MD_CLASSES_NS,
+    );
+    let [kind] = kinds.as_slice() else {
+        return None;
+    };
+    if kind.attributes().len() != 0 || kind.children().any(|child| child.is_element()) {
+        return None;
+    }
+    match unica_xml_format::read::direct_text(*kind).as_str() {
+        "Balance" => Some(true),
+        "Turnovers" => Some(false),
+        _ => None,
     }
 }
 
@@ -4370,10 +4367,7 @@ pub fn meta_validate_check_method_reference(
     }
     if let Some(subject) = proof_subject {
         let module_reference = format!("CommonModule.{module_name}");
-        let module_target = match MetadataAddress::parse(
-            PLATFORM_XML_8_3_27_FORMAT_2_20,
-            &module_reference,
-        ) {
+        let module_target = match MetadataAddress::parse_logical(&module_reference) {
             Ok(target) => target,
             Err(_) => {
                 report.error(format!(

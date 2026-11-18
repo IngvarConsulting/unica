@@ -1,12 +1,5 @@
 ---
 id: INV.SOURCE.EVENT-IMPLEMENTATION-PAIR
-check:
-  - crates/unica-coder/tests/platform/event_implementation.rs::staged_property_planner_composes_two_events_and_poisoned_batch_publishes_nothing
-  - crates/unica-coder/tests/platform/event_implementation.rs::staged_missing_property_keeps_form_byte_exact_and_platform_creates_only_module
-  - crates/unica-coder/tests/platform/event_views.rs::implementation_shape_uses_typed_owner_leaf_and_the_selected_catalog_record
-  - crates/unica-coder/tests/platform/code_patch_composition.rs::staged_code_first_body_materializes_a_missing_module_chain
-  - crates/unica-coder/tests/platform/code_patch_composition.rs::staged_code_missing_module_chain_keeps_a_foreign_appearance
-  - tests/ci/test_acceptance_scenarios.py::AcceptanceCorpusRunTests.test_every_wire_answers_its_frozen_classes
 ---
 
 # Реализация события готовит метод и привязку вместе
@@ -19,6 +12,19 @@ check:
 первым параметром, если его передаёт платформа
 ([список параметров](form-event-handler-parameters.md)); обработчик события
 самой формы и команды получает сигнатуру справки.
+
+Метод ложится в область обработчиков по стандарту 455. Обработчик события
+модуля — в «ОбработчикиСобытий», события формы — в «ОбработчикиСобытийФормы»,
+элемента шапки формы — в «ОбработчикиСобытийЭлементовШапкиФормы». Таблицы
+формы, её колонок и элементов внутри неё — в
+«ОбработчикиСобытийЭлементовТаблицыФормы<ИмяТаблицы>», своя для каждой таблицы.
+Команды формы — в «ОбработчикиКомандФормы». В английском варианте кода —
+«EventHandlers», «FormEventHandlers», «FormHeaderItemsEventHandlers»,
+«FormTableItemsEventHandlers<ИмяТаблицы>», «FormCommandsEventHandlers».
+Отсутствующая область вставляется на своё место в порядке областей стандарта:
+перед первой стандартной областью верхнего уровня, которая по стандарту идёт
+после неё, а если такой нет — в конец модуля. Остальной текст модуля не
+переписывается.
 
 Проверки проходят планировщик событий и создание первой цепочки каталогов
 модуля. Публикация использует общий механизм атомарного применения.

@@ -1,0 +1,207 @@
+{
+  "id": "S-1603-turnover-standard-attributes",
+  "issue": 1603,
+  "area": "Метаданные",
+  "workspace": "tests/fixtures/acceptance/workspace-turnover-attributes",
+  "task": "Проверить нативный оборотный регистр без RecordType через публичный check: meta/passed без ложного предупреждения RecordType, с сохранением входных XML. Контрпримеры Balance и повреждения вида проверяет регрессия валидатора.",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:AccumulationRegister.Остатки"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "unchanged1": {
+          "file": "src/AccountingRegisters/Бухгалтерский/Ext/RecordSetModule.bsl",
+          "kind": "sha256"
+        },
+        "unchanged2": {
+          "file": "src/AccountingRegisters/Бухгалтерский.xml",
+          "kind": "sha256"
+        },
+        "unchanged3": {
+          "file": "src/AccumulationRegisters/Остатки/Ext/RecordSetModule.bsl",
+          "kind": "sha256"
+        },
+        "unchanged4": {
+          "file": "src/AccumulationRegisters/Остатки.xml",
+          "kind": "sha256"
+        },
+        "unchanged5": {
+          "file": "src/CalculationRegisters/Начисления/Ext/RecordSetModule.bsl",
+          "kind": "sha256"
+        },
+        "unchanged6": {
+          "file": "src/CalculationRegisters/Начисления.xml",
+          "kind": "sha256"
+        },
+        "unchanged7": {
+          "file": "src/ChartsOfAccounts/Хозрасчетный/Ext/ObjectModule.bsl",
+          "kind": "sha256"
+        },
+        "unchanged8": {
+          "file": "src/ChartsOfAccounts/Хозрасчетный.xml",
+          "kind": "sha256"
+        },
+        "unchanged9": {
+          "file": "src/ChartsOfCalculationTypes/ВидыРасчета/Ext/ObjectModule.bsl",
+          "kind": "sha256"
+        },
+        "unchanged10": {
+          "file": "src/ChartsOfCalculationTypes/ВидыРасчета.xml",
+          "kind": "sha256"
+        },
+        "unchanged11": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "unchanged12": {
+          "file": "src/Documents/Приход/Ext/ObjectModule.bsl",
+          "kind": "sha256"
+        },
+        "unchanged13": {
+          "file": "src/Documents/Приход.xml",
+          "kind": "sha256"
+        },
+        "unchanged14": {
+          "file": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256"
+        },
+        "unchanged15": {
+          "file": "src/InformationRegisters/Цены/Ext/RecordSetModule.bsl",
+          "kind": "sha256"
+        },
+        "unchanged16": {
+          "file": "src/InformationRegisters/Цены.xml",
+          "kind": "sha256"
+        },
+        "unchanged17": {
+          "file": "src/Languages/Русский.xml",
+          "kind": "sha256"
+        },
+        "unchanged18": {
+          "file": "v8project.yaml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:AccumulationRegister.Остатки"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "validators": [
+        "meta"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/diagnostics",
+          "noneMatches": {
+            "code": "validation_warning",
+            "field": "standardAttributes",
+            "message": "5. Missing StandardAttributes: RecordType"
+          }
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/AccountingRegisters/Бухгалтерский/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged1"
+        },
+        {
+          "path": "src/AccountingRegisters/Бухгалтерский.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged2"
+        },
+        {
+          "path": "src/AccumulationRegisters/Остатки/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged3"
+        },
+        {
+          "path": "src/AccumulationRegisters/Остатки.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged4"
+        },
+        {
+          "path": "src/CalculationRegisters/Начисления/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged5"
+        },
+        {
+          "path": "src/CalculationRegisters/Начисления.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged6"
+        },
+        {
+          "path": "src/ChartsOfAccounts/Хозрасчетный/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged7"
+        },
+        {
+          "path": "src/ChartsOfAccounts/Хозрасчетный.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged8"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/ВидыРасчета/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged9"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/ВидыРасчета.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged10"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged11"
+        },
+        {
+          "path": "src/Documents/Приход/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged12"
+        },
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged13"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged14"
+        },
+        {
+          "path": "src/InformationRegisters/Цены/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged15"
+        },
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged16"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged17"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged18"
+        }
+      ]
+    }
+  ]
+}

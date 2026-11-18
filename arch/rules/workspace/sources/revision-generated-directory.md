@@ -1,9 +1,5 @@
 ---
 id: INV.SOURCE.REVISION-EXCLUDES-GENERATED-DIRECTORY
-check:
-  - crates/unica-workspace/src/apply.rs::source_generated_guard_uses_each_retained_parent_case_policy
-  - crates/unica-coder/src/infrastructure/workspace_actor_contract_tests.rs::source_role_rejects_platform_equivalent_generated_components
-  - crates/unica-coder/src/infrastructure/workspace_actor_contract_tests.rs::workspace_root_source_allows_exact_generated_cache_descendant
 ---
 
 # План исходников не включает служебный каталог .build

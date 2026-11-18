@@ -1,0 +1,20 @@
+{
+  "area": "Подсистемы и интерфейс",
+  "task": "Проверить подсистему",
+  "wire": [
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:Subsystem.Администрирование"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "validators": [
+        "subsystem"
+      ]
+    }
+  ],
+  "id": "S210"
+}

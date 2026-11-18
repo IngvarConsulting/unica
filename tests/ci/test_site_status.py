@@ -117,6 +117,35 @@ class ChannelTests(unittest.TestCase):
         )
 
 
+class LatestAlphaTests(unittest.TestCase):
+    REPO = "IngvarConsulting/unica"
+
+    def setUp(self) -> None:
+        self.module = load_module()
+
+    def release(self, tag: str, slice_: str = "a" * 40) -> dict[str, str]:
+        return {
+            "tag_name": tag,
+            "published_at": "2026-11-06T02:00:00Z",
+            "html_url": f"https://github.com/{self.REPO}/releases/tag/{tag}",
+            "body": f"Срез main@{slice_}. Гарантий нет.",
+        }
+
+    def test_the_newest_alpha_by_number_names_its_slice_and_assets(self) -> None:
+        found = self.module.latest_alpha(
+            [self.release("v0.15.0-alpha.9"), self.release("v0.15.0-alpha.10"), self.release("v0.15.0-rc.1")], self.REPO
+        )
+        self.assertEqual(found["alpha_tag"], "v0.15.0-alpha.10")
+        self.assertEqual(found["alpha_commit"], "a" * 7)
+        self.assertEqual(found["alpha_commit_url"], f"https://github.com/{self.REPO}/commit/{'a' * 40}")
+        self.assertEqual(found["alpha_download"], f"https://github.com/{self.REPO}/releases/download/v0.15.0-alpha.10")
+
+    def test_no_alpha_gives_dashes_and_points_at_the_releases(self) -> None:
+        found = self.module.latest_alpha([self.release("v0.15.0-rc.1")], self.REPO)
+        self.assertEqual(found["alpha_tag"], "—")
+        self.assertEqual(found["alpha_download"], f"https://github.com/{self.REPO}/releases")
+
+
 class CandidateTests(unittest.TestCase):
     """Карточка кандидата на главной зовёт поставить то, что раздаёт канал."""
 

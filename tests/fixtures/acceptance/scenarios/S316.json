@@ -1,0 +1,47 @@
+{
+  "id": "S316",
+  "area": "Код BSL",
+  "task": "После правки функции проверить анализатором только изменённый модуль",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.GoogleПереводчик",
+        "ops": [
+          {
+            "op": "code.replace",
+            "args": {
+              "at": "main:CommonModule.GoogleПереводчик.Method.МаксимальныйРазмерПорции",
+              "text": "Функция МаксимальныйРазмерПорции()\n\tВозврат 100;\nКонецФункции"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:CommonModule.GoogleПереводчик.Body"
+      },
+      "expect": [
+        "ok",
+        "provider"
+      ],
+      "validators": [
+        "bsl"
+      ]
+    }
+  ]
+}

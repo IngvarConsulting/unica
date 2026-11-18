@@ -43,6 +43,7 @@ fn group_order_writer_rewrites_only_the_named_group_in_place() {
     assert_eq!(second(&text), names(&["X", "Y"]));
 }
 
+/// rule: INV.SOURCE.INTERFACE-ORDER-MEMBERSHIP
 #[test]
 fn order_membership_accepts_a_permutation_or_a_first_order_only() {
     let stored = names(&["A", "B", "C"]);

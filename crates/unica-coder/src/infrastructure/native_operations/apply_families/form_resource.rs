@@ -1,7 +1,7 @@
 //! Typed family dispatch and batch ownership; codec-owned plans have no publication authority.
 use super::validate_platform_xml_binding;
 use serde_json::Value;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_address::address::QualifiedAddress;
 
 use unica_metadata_designer::resource_planner::{self, MetadataResourcePlan};
@@ -35,7 +35,7 @@ impl FormResourcePlanOperation {
 
 /// Разбор без семейства, выбранного вызывающим: общее имя (`attribute.add`
 /// формы и объекта, #1465) выбирает запись реестра по адресу вызова.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn parse_form_resource_plan_operation(
     operation: &str,
     args: &Value,
@@ -111,6 +111,7 @@ pub(crate) fn parse_form_resource_plan_operation_in(
                         object,
                         op_index,
                         binding.source_set_name(),
+                        binding.source_kind(),
                     )?)
                 }
                 None => return Err(hidden_apply_family_unimplemented(op_index)),
@@ -126,6 +127,7 @@ pub(crate) fn parse_form_resource_plan_operation_in(
                         object,
                         op_index,
                         binding.source_set_name(),
+                        binding.source_profile().semantic_line(),
                     )?)
                 }
                 None => return Err(hidden_apply_family_unimplemented(op_index)),
@@ -170,6 +172,16 @@ pub(crate) fn plan_form_resource_batch(
                     &mut provisional,
                     &reader,
                 )?;
+                if let unica_forms_designer::planner::FormPlan::FormRemove { owner, form } = plan {
+                    resource_planner::stage_removed_form_home_page(
+                        staged,
+                        authority,
+                        owner,
+                        form,
+                        op_index,
+                        &mut provisional,
+                    )?;
+                }
             }
             FormResourcePlanKind::Unsupported => {
                 return Err(hidden_apply_family_unimplemented(op_index));
@@ -198,7 +210,7 @@ pub(crate) fn plan_form_resource_batch(
     Ok(provisional)
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn plan_form_resource_batch_owned_for_test(
     mut staged: unica_workspace::apply::ApplyStagedState,
     authority: unica_workspace::actor::FormResourceApplyAuthority<'_>,
@@ -266,7 +278,7 @@ mod tests {
         String::from_utf8(bytes).unwrap()
     }
 
-    /// Р2 (#1447): `item.add` добавляет один элемент. Вложенное дерево,
+    /// Р2: `item.add` добавляет один элемент. Вложенное дерево,
     /// companion-содержимое и события отказывают `bad_value` по точному
     /// пути до записи, а `next` ведёт к контракту `item.add`.
     #[test]
@@ -343,6 +355,7 @@ mod tests {
         match schema["type"].as_str() {
             Some("boolean") => vec![json!(true), json!(false)],
             Some("integer") | Some("number") => vec![json!(7)],
+            Some("string") if schema["format"] == "localized-nstr" => vec![json!("en = 'Sample'")],
             Some("string") => vec![json!("Sample")],
             Some("object") => {
                 let mut sample = serde_json::Map::new();
@@ -364,11 +377,11 @@ mod tests {
 
     /// Контракт `item.add` и писатель согласны по каждому виду: каждый
     /// опубликованный ключ принимают контракт и планировщик, и хотя бы одно
-    /// его значение меняет записанный XML вида (#1447). Ключ, который
+    /// его значение меняет записанный XML вида. Ключ, который
     /// писатель вида не пишет, в контракт не попадает.
     #[test]
     fn every_published_element_key_reaches_the_xml_of_its_kind() {
-        use unica_forms_designer::codec::{emit_form_element, FormIdAllocator};
+        use unica_forms_designer::codec::{emit_form_element, FormEmissionContext, FormTextMode};
         let fixture = ApplySeamFixture::new();
         let contract = unica_forms::operations::FormOperation::ItemAdd.contract();
         let variants = contract.schema["properties"]["items"]["items"]["anyOf"]
@@ -387,8 +400,8 @@ mod tests {
                 &mut lines,
                 &definition,
                 "\t",
-                &mut FormIdAllocator::new(),
-                Some("en"),
+                &mut FormEmissionContext::new(),
+                FormTextMode::NStr(Some("en")),
             )
             .unwrap_or_else(|error| panic!("{item}: {error}"));
             lines.join("\n")
@@ -401,22 +414,29 @@ mod tests {
             let published = variant["properties"].as_object().unwrap();
             assert_eq!(
                 published.len(),
-                kind.keys.len() + 3,
-                "{}: name, type, after and the kind keys",
+                kind.keys.len()
+                    + 3
+                    + usize::from(
+                        unica_forms::contracts::FORM_ORIENTATION_KINDS.contains(&kind.kind)
+                    ),
+                "{}: name, type, after, the kind keys and an orientation",
                 kind.kind
             );
-            for key in kind.keys {
+            let orientation = unica_forms::contracts::FORM_ORIENTATION_KINDS
+                .contains(&kind.kind)
+                .then_some("orientation");
+            for key in kind.key_names().chain(orientation) {
                 let mut baseline = json!({"name": "Sample", "type": kind.kind});
                 if kind.kind == "TextDocumentField" {
                     baseline["path"] = json!("Protocol");
                 }
-                if unica_forms::contracts::FORM_DYNAMIC_LIST_KEYS.contains(key) {
+                if unica_forms::contracts::FORM_DYNAMIC_LIST_KEYS.contains(&key) {
                     baseline["_dynList"] = json!(true);
                 }
                 let before = emit(&baseline);
-                let written = sample_values(&published[*key]).into_iter().any(|value| {
+                let written = sample_values(&published[key]).into_iter().any(|value| {
                     let mut item = baseline.clone();
-                    item[*key] = value;
+                    item[key] = value;
                     parse_form_resource_plan_operation(
                         "item.add",
                         &json!({"at": "main:Document.First.Form.ФормаДокумента", "items": [item.clone()]}),
@@ -435,7 +455,7 @@ mod tests {
     #[test]
     fn element_enums_match_the_writer_enum_contract() {
         use unica_forms::contracts::form_element_enum;
-        use unica_forms_designer::codec::form_8_3_27_enum_values_for_test as writer;
+        use unica_forms_designer::codec::form_enum_values_for_test as writer;
         for (kind, key, xml) in [
             ("InputField", "titleLocation", "FormElementTitleLocation"),
             ("CheckBox", "checkBoxType", "CheckBoxType"),
@@ -465,7 +485,7 @@ mod tests {
         }
     }
 
-    /// Реквизит формы принимает только то, что пишет его писатель (#1447);
+    /// Реквизит формы принимает только то, что пишет его писатель;
     /// проверка заполнения пишется тегом `<FillCheck>`, который знает 8.3.27.
     #[test]
     fn form_attribute_add_refuses_unwritten_keys_and_writes_fill_check() {
@@ -506,7 +526,7 @@ mod tests {
             "A",
             1,
             "\t\t",
-            Some("ru"),
+            unica_forms_designer::codec::FormTextMode::NStr(Some("ru")),
         )
         .unwrap();
         let text = lines.join("\n");
@@ -556,11 +576,9 @@ mod tests {
         }
     }
 
-    /// #1257: titles, tooltips and input hints of new form elements,
-    /// attributes and commands are written in the default language of the
-    /// source set; an explicit language-to-text value is written as given.
+    /// rule: INV.SOURCE.LOCALIZED-STRING-NSTR
     #[test]
-    fn form_item_titles_and_tooltips_write_the_configuration_default_language() {
+    fn form_items_attributes_and_commands_write_all_supplied_translations() {
         let fixture = ApplySeamFixture::new();
         fixture.use_english_only_language();
         let admission = fixture.admission();
@@ -585,23 +603,23 @@ mod tests {
             parse(
                 "item.add",
                 json!({"at": form, "items": [
-                    {"name": "Header", "type": "Group", "title": "Header"},
-                    {"name": "Total", "path": "Объект.Total", "title": "Total",
-                     "tooltip": "Total hint", "inputHint": "Type the total"},
+                    {"name": "Header", "type": "Group", "title": "en = 'Header'"},
+                    {"name": "Total", "path": "Объект.Total", "title": "en = 'Total'",
+                     "tooltip": "en = 'Total hint'", "inputHint": "en = 'Type the total'"},
                     {"name": "Count", "path": "Объект.Total",
-                     "tooltip": {"en": "Count hint", "de": "Anzahl"}},
-                    {"name": "Note", "type": "Label", "title": "Note"}
+                     "tooltip": "en = 'Count hint'; de = 'Anzahl'"},
+                    {"name": "Note", "type": "Label", "title": "en = 'Note'"}
                 ]}),
                 1,
             ),
             parse(
                 "attribute.add",
-                json!({"at": form, "items": [{"name": "Comment", "type": "String", "title": "Comment"}]}),
+                json!({"at": form, "items": [{"name": "Comment", "type": "String", "title": "en = 'Comment'"}]}),
                 2,
             ),
             parse(
                 "command.add",
-                json!({"at": form, "items": [{"name": "Refresh", "title": "Refresh"}]}),
+                json!({"at": form, "items": [{"name": "Refresh", "title": "en = 'Refresh'"}]}),
                 3,
             ),
         ];
@@ -643,11 +661,9 @@ mod tests {
         );
     }
 
-    /// Only a plain-string text needs the default language: in a source set
-    /// whose language cannot be read, an element without text, an explicit
-    /// translation and a removal pass, a plain-string title is refused.
+    /// rule: INV.SOURCE.LOCALIZED-STRING-NSTR
     #[test]
-    fn form_edits_without_plain_text_do_not_read_the_default_language() {
+    fn form_edits_with_nstr_do_not_read_the_default_language() {
         let fixture = ApplySeamFixture::new();
         let form = "main:Document.First.Form.Main";
         let plan = |operations: &[(&str, serde_json::Value)]| {
@@ -677,7 +693,7 @@ mod tests {
             ),
             (
                 "item.add",
-                json!({"at": form, "items": [{"name": "Header", "type": "Group", "title": "Header"}]}),
+                json!({"at": form, "items": [{"name": "Header", "type": "Group", "title": "en = 'Header'"}]}),
             ),
         ])
         .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
@@ -693,13 +709,6 @@ mod tests {
         }
         std::fs::remove_file(fixture.source_dir().join("Languages/Русский.xml")).unwrap();
 
-        let error = plan(&[(
-            "item.add",
-            json!({"at": form, "items": [{"name": "Footer", "type": "Group", "title": "Footer"}]}),
-        )])
-        .expect_err("a new title needs the default language");
-        assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidSource, "{error:?}");
-
         let staged = plan(&[
             (
                 "item.add",
@@ -708,7 +717,7 @@ mod tests {
             (
                 "item.add",
                 json!({"at": form, "items": [{"name": "Hinted", "path": "Объект.Total",
-                    "tooltip": {"en": "Hint"}}]}),
+                    "tooltip": "en = 'Hint'"}]}),
             ),
         ])
         .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
@@ -723,6 +732,80 @@ mod tests {
         assert!(!text.contains("name=\"Header\""), "{text}");
     }
 
+    #[test]
+    fn english_script_variant_controls_generated_form_names_and_regions() {
+        for use_staged_profile in [false, true] {
+            let fixture = ApplySeamFixture::new();
+            let configuration = fixture.source_dir().join("Configuration.xml");
+            let text = std::fs::read_to_string(&configuration).unwrap();
+            // Keep DefaultLanguage=Russian: script syntax is independent of text language.
+            let english = text.replace(
+                "</Properties>",
+                "<ScriptVariant>English</ScriptVariant></Properties>",
+            );
+            if !use_staged_profile {
+                std::fs::write(&configuration, &english).unwrap();
+            }
+            let admission = fixture.admission();
+            let mut staged = admission.staged_state().unwrap();
+            if use_staged_profile {
+                staged
+                    .proposal()
+                    .replace("Configuration.xml", text.as_bytes(), english.into_bytes())
+                    .unwrap();
+            }
+            let authority = admission
+                .form_resource_planning_authority(&fixture.binding)
+                .unwrap();
+            let form = "main:Document.First.Form.Main";
+            let operations = [
+            ("form.add", json!({"at": "main:Document.First", "items": [{"name": "Main", "type": "ObjectForm"}]})),
+            ("command.add", json!({"at": form, "items": [{"name": "TestCommand", "title": "en = 'Test'", "action": "TestCommand"}]})),
+            ("item.add", json!({"at": form, "items": [{"name": "TestButton", "type": "Button", "command": "TestCommand"}]})),
+            ("item.add", json!({"at": form, "items": [{"name": "TestInput", "path": "Object.Total"}]})),
+        ].into_iter().enumerate().map(|(index, (op, args))| {
+            IndexedPlanOperation::new(index, parse_form_resource_plan_operation(op, &args, index, &fixture.binding)
+                .unwrap_or_else(|error| panic!("{op}: {error:?}")))
+        }).collect::<Vec<_>>();
+            let (staged, _) =
+                plan_form_resource_batch_owned_for_test(staged, authority, &operations)
+                    .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
+            let xml = staged_text(&staged, "Documents/First/Forms/Main/Ext/Form.xml");
+            let document = roxmltree::Document::parse(&xml).unwrap();
+            let names = document
+                .descendants()
+                .filter_map(|node| node.attribute("name"))
+                .collect::<Vec<_>>();
+            for name in [
+                "FormCommandBar",
+                "Object",
+                "TestButtonExtendedTooltip",
+                "TestInputContextMenu",
+                "TestInputExtendedTooltip",
+            ] {
+                assert!(names.contains(&name), "missing {name}: {names:?}");
+            }
+            let module = staged_text(&staged, "Documents/First/Forms/Main/Ext/Form/Module.bsl");
+            let expected = concat!(
+                "\u{feff}#Region FormEventHandlers\r\n\r\n#EndRegion\r\n\r\n",
+                "#Region FormHeaderItemsEventHandlers\r\n\r\n#EndRegion\r\n\r\n",
+                "#Region FormCommandsEventHandlers\r\n\r\n#EndRegion\r\n\r\n",
+                "#Region NotificationHandlers\r\n\r\n#EndRegion\r\n\r\n",
+                "#Region Private\r\n\r\n#EndRegion"
+            );
+            assert_eq!(module, expected);
+            assert!(
+                !fixture
+                    .source_dir()
+                    .join("Documents/First/Forms/Main/Ext/Form.xml")
+                    .exists(),
+                "planning must not publish files"
+            );
+        }
+    }
+
+    /// rule: INV.SOURCE.FORM-OPERATION-TARGETS
+    /// rule: INV.WIRE.OPERATION-CREATION-PARENT
     #[test]
     fn form_add_then_element_and_event_edits_compose_in_one_batch() {
         let fixture = ApplySeamFixture::new();
@@ -757,7 +840,7 @@ mod tests {
                 "item.add",
                 json!({
                     "at": "main:Document.First.Form.ФормаДокумента.Item.ГруппаИтог",
-                    "items": [{"name": "ПолеИтог", "path": "Объект.Total", "title": "Итог"}]
+                    "items": [{"name": "ПолеИтог", "path": "Объект.Total", "title": "ru = 'Итог'"}]
                 }),
                 2,
             ),
@@ -866,9 +949,9 @@ mod tests {
                             "visible":false,
                             "enabled":false,
                             "readOnly":true,
-                            "title":"Протокол",
+                            "title":"ru = 'Протокол'",
                             "titleLocation":"Top",
-                            "tooltip":"Подсказка",
+                            "tooltip":"ru = 'Подсказка'",
                             "tooltipRepresentation":"Button",
                             "width":35,
                             "autoMaxWidth":false,
@@ -907,7 +990,7 @@ mod tests {
         let document = roxmltree::Document::parse(text.trim_start_matches('\u{feff}')).unwrap();
         let platform_export = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/platform_8_3_27/text-document-field/Form.xml"
+            "/tests/fixtures/text-document-field/Form.xml"
         ));
         let platform = roxmltree::Document::parse(platform_export).unwrap();
         for name in ["Протокол1", "Протокол2"] {
@@ -957,10 +1040,11 @@ mod tests {
         assert!(!text.contains("<InputField name=\"Протокол2\""));
     }
 
-    /// Узел правки формы — ровно адрес (#1355): цепочка `Item` сверяется
+    /// Узел правки формы — ровно адрес: цепочка `Item` сверяется
     /// с формой, отсутствующий элемент даёт `not_found`, в поле не
     /// добавить, сосед `after` берётся только из адресованного контейнера,
     /// а удаление и событие касаются только названного элемента.
+    /// rule: INV.SOURCE.FORM-OPERATION-TARGETS
     #[test]
     fn a_form_edit_writes_only_the_addressed_item() {
         let fixture = ApplySeamFixture::new();
@@ -1133,7 +1217,7 @@ mod tests {
         }
     }
 
-    /// Сосед `after` может быть добавлен раньше в том же `items` (#1443).
+    /// Сосед `after` может быть добавлен раньше в том же `items`.
     #[test]
     fn item_add_after_names_an_item_added_earlier_in_the_same_list() {
         let fixture = ApplySeamFixture::new();
@@ -1190,7 +1274,7 @@ mod tests {
 
     /// События из каталога 8.3.27, зависящие от вида владельца формы и пути
     /// данных таблицы, принимаются и при добавлении элемента, и итоговой
-    /// проверкой формы (#1443).
+    /// проверкой формы.
     #[test]
     fn owner_and_data_path_specific_events_pass_planning_and_final_validation() {
         let fixture = ApplySeamFixture::new();
@@ -1235,7 +1319,7 @@ mod tests {
                 2,
             ),
             // Событие нового элемента привязывает `event.bind` на его адресе
-            // (Р2, #1447).
+            // (Р2).
             parse(
                 "event.bind",
                 json!({
@@ -1270,6 +1354,7 @@ mod tests {
     /// значения видимости по ролям — соседние элементы того же блока —
     /// остаются как были. Читатель их не показывает, поэтому наивный писатель,
     /// переписывающий блок по прочитанному, снёс бы их молча.
+    /// rule: INV.SOURCE.COMMAND-INTERFACE-SECTION-ISOLATION
     #[test]
     fn command_visibility_edits_common_and_leaves_role_values_alone() {
         let fixture = ApplySeamFixture::new();
@@ -1351,6 +1436,7 @@ mod tests {
         assert!(seen < important, "группы переставлены: {text}");
     }
 
+    /// rule: INV.WIRE.OPERATION-TARGET-ADDRESS
     #[test]
     fn right_set_grants_lists_and_restricts_rights_on_the_staged_document() {
         let fixture = ApplySeamFixture::new();
@@ -1376,7 +1462,7 @@ mod tests {
             )
         };
         // Запись прав создаёт `right.add` на роли, а `right.set` меняет
-        // существующую запись по её адресу (#1354).
+        // существующую запись по её адресу.
         let operations = [
             parse(
                 "right.set",
@@ -1595,6 +1681,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.WIRE.V13-CAN-DICTIONARY
     #[test]
     fn subsystem_interface_contracts_match_decoder_for_every_registered_operation() {
         let fixture = ApplySeamFixture::new();
@@ -1746,6 +1833,8 @@ mod tests {
         }
     }
 
+    /// rule: INV.WIRE.OPERATION-CREATION-PARENT
+    /// rule: INV.WIRE.V13-CAN-DICTIONARY
     #[test]
     fn role_create_contract_preserves_typed_names_and_rejects_unknown_args() {
         let fixture = ApplySeamFixture::new();
@@ -1790,7 +1879,7 @@ mod tests {
                 json!({"values":{"name":"Reader","synonym":"Ignored"}}),
                 "ops[0].args.values.synonym",
             ),
-            // Previously ignored top-level fields are intentionally closed by #1468.
+            // Top-level fields outside the contract are refused.
             (
                 json!({"values":{"name":"Reader"},"ignored":true}),
                 "ops[0].args.ignored",
@@ -1912,7 +2001,7 @@ mod tests {
         assert!(text.contains("<Subsystem>Orders</Subsystem>"), "{text}");
         // Пустой тег раскрывается так, как пишет платформа: элемент на своей
         // строке с отступом на уровень глубже, закрывающий тег — с отступом
-        // контейнера (#1889).
+        // контейнера.
         let indent = |tag: &str| {
             let at = stub.find(tag).unwrap();
             stub[..at].rsplit('\n').next().unwrap().to_owned()
@@ -2069,6 +2158,7 @@ mod tests {
             .any(|n| n.has_tag_name(("http://v8.1c.ru/8.3/xcf/readable", "Item"))));
     }
 
+    /// rule: INV.WIRE.V13-CAN-DICTIONARY
     #[test]
     fn support_contracts_and_productive_parser_agree_on_closed_arguments() {
         let fixture = ApplySeamFixture::new();
@@ -2453,8 +2543,9 @@ mod tests {
     }
 
     /// Имя дочерней подсистемы задаёт адрес: аргумент, который его
-    /// повторял, отказывает и в разборе планировщиком (#1353). Форму создаёт
+    /// повторял, отказывает и в разборе планировщиком. Форму создаёт
     /// `form.add` на владельце: снятую `form.create` планировщик не знает.
+    /// rule: INV.WIRE.OPERATION-TARGET-ADDRESS
     #[test]
     fn form_and_child_subsystem_names_come_only_from_the_address() {
         let fixture = ApplySeamFixture::new();
@@ -2501,15 +2592,15 @@ mod tests {
 
     /// `command.add` принимает ровно ключи, которые писатель кладёт
     /// в `<Command>`, и передаёт их писателю; остальное отказывает
-    /// `bad_value` до записи, а не теряется молча (#1439).
+    /// `bad_value` до записи, а не теряется молча.
     #[test]
     fn form_command_add_accepts_only_the_keys_its_writer_writes() {
         let fixture = ApplySeamFixture::new();
         let at = "main:Catalog.Items.Form.Item";
         let item = json!({
             "name": "Refresh",
-            "title": "Refresh",
-            "tooltip": "Refresh the list",
+            "title": "en = 'Refresh'",
+            "tooltip": "en = 'Refresh the list'",
             "shortcut": "F5",
             "picture": "StdPicture.Refresh",
             "representation": "TextPicture",
@@ -2538,6 +2629,14 @@ mod tests {
         };
         assert_eq!(definition, &json!({"commands": [expected]}));
 
+        parse_form_resource_plan_operation(
+            "command.add",
+            &json!({"at": at, "items": [{"name": "Refresh", "title": "", "tooltip": ""}]}),
+            0,
+            &fixture.binding,
+        )
+        .expect("empty NStr explicitly supplies no translations");
+
         for (field, value) in [
             ("use", json!(false)),
             ("functionalOptions", json!(["FunctionalOption.X"])),
@@ -2550,14 +2649,14 @@ mod tests {
             ("picture", json!({"src": "StdPicture.Refresh"})),
             ("picture", json!("abs:picture.png")),
             ("title", json!({"ru": "Обновить"})),
-            ("title", json!("")),
+            ("title", json!("Обновить")),
             ("callType", json!("Before")),
             (
                 "actions",
                 json!([{"callType": "Before", "handler": "RefreshBefore"}]),
             ),
             ("tooltip", json!({"ru": "Обновить"})),
-            ("tooltip", json!("")),
+            ("tooltip", json!("Обновить список")),
             ("shortcut", json!("")),
         ] {
             let error = parse_form_resource_plan_operation(
@@ -2671,5 +2770,63 @@ mod tests {
         .unwrap_err();
         assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue);
         assert_eq!(error.path(), Some("ops[0].args.at"));
+    }
+
+    #[test]
+    fn removing_a_form_attribute_uses_its_address_and_preserves_its_neighbour() {
+        let fixture = ApplySeamFixture::new();
+        let admission = fixture.admission();
+        let form = "main:Document.First.Form.Main";
+        let requests = [
+            (
+                "form.add",
+                json!({"at":"main:Document.First","items":[{"name":"Main","type":"ObjectForm"}]}),
+            ),
+            (
+                "attribute.add",
+                json!({"at":form,"items":[{"name":"Unused","type":"Boolean"},{"name":"UnusedExtra","type":"Boolean"}]}),
+            ),
+            (
+                "attribute.remove",
+                json!({"at":format!("{form}.Attribute.Unused")}),
+            ),
+        ];
+        let operations = requests
+            .into_iter()
+            .enumerate()
+            .map(|(index, (operation, args))| {
+                IndexedPlanOperation::new(
+                    index,
+                    parse_form_resource_plan_operation(operation, &args, index, &fixture.binding)
+                        .expect("form attribute removal is parsed"),
+                )
+            })
+            .collect::<Vec<_>>();
+        let authority = admission
+            .form_resource_planning_authority(&fixture.binding)
+            .unwrap();
+        let (staged, _) = plan_form_resource_batch_owned_for_test(
+            admission.staged_state().unwrap(),
+            authority,
+            &operations,
+        )
+        .expect("an unused form attribute can be removed");
+        let text = staged_text(&staged, "Documents/First/Forms/Main/Ext/Form.xml");
+        let doc = roxmltree::Document::parse(text.trim_start_matches('\u{feff}')).unwrap();
+        let names = doc
+            .descendants()
+            .filter(|n| n.has_tag_name(("http://v8.1c.ru/8.3/xcf/logform", "Attribute")))
+            .filter_map(|n| n.attribute("name"))
+            .collect::<Vec<_>>();
+        assert!(!names.contains(&"Unused"));
+        assert!(names.contains(&"UnusedExtra"));
+        assert!(names.contains(&"Объект"));
+        assert!(
+            !fixture
+                .source_dir()
+                .join("Documents/First/Forms/Main/Ext/Form.xml")
+                .exists(),
+            "preview must not publish the new form"
+        );
     }
 }

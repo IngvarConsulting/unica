@@ -1,0 +1,280 @@
+//! Исходный текст BSL, который `view` отдаёт по адресам `Body` модуля
+//! и `Method.<имя>.Body`, и предел его объёма.
+use sha2::{Digest, Sha256};
+use unica_address::address::BodyLineRange;
+#[cfg(test)]
+use unica_execution_contract::source_text_budget::complete_prefix;
+use unica_source_contract::read::{module_text_revision, MODULE_UTF8_BOM};
+
+/// Наибольший текст `Body` модуля и `Method.<имя>.Body`, который `view`
+/// вообще отдаёт: наибольший бюджет ответа среди известных хостов. Сколько
+/// получит конкретный клиент, решает его бюджет ([`unica_execution_contract::source_text_budget::apply_response_budget`]),
+/// по умолчанию 16 КиБ. Текст сверх предела не режется на части: ответ
+/// отказывает `result_too_large`.
+// resource-limit: view.source-text-bytes
+// class: result
+// unit: bytes
+// scope: request
+// value: 73728
+// derived: true
+// resource: Наибольший текст Body модуля или метода BSL, который view отдаёт хоть какому-то клиенту (наибольший бюджет ответа известных хостов, 72 КиБ).
+// status: unproven
+// origin: 7d6701571 (#1458, #1478); наибольший бюджет хоста по замеру 15.10.2026 в unica-bootstrap host/response_budget.rs
+// problem: Ответ с текстом должен целиком доходить до модели без усечения и выноса в файл (правило arch/rules/mcp/source-text-response-budget.md).
+// on-reach: Отказ result_too_large; текст на части не режется, остаётся выбор строк.
+// issue: #1119
+// review: #1119 PR9
+pub const MAX_SOURCE_TEXT_BYTES: usize = unica_bootstrap::MAX_RESPONSE_BUDGET;
+
+/// Текст модуля, прочитанный не дальше предела.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModuleText {
+    /// Файл без начальных U+FEFF; разделители строк — как в файле.
+    Text { text: String, revision: String },
+    /// Текст длиннее [`MAX_SOURCE_TEXT_BYTES`]; `bytes` — его полный размер.
+    TooLarge {
+        bytes: u64,
+        prefix: String,
+        lines: usize,
+    },
+}
+
+impl ModuleText {
+    pub fn whole(text: String) -> Self {
+        let revision = module_text_revision(text.as_bytes());
+        Self::Text { text, revision }
+    }
+}
+
+/// Считает ревизию полного модуля без начальных U+FEFF. Хранит в памяти
+/// лишь текст выбранного диапазона до предела ответа.
+#[derive(Debug, Default)]
+pub struct ModuleTextAccumulator {
+    bom_prefix: usize,
+    past_bom: bool,
+    text: Vec<u8>,
+    revision: Sha256,
+    bytes: u64,
+    range: Option<BodyLineRange>,
+    newlines: usize,
+    last: Option<u8>,
+}
+
+impl ModuleTextAccumulator {
+    pub fn with_range(range: BodyLineRange) -> Self {
+        Self {
+            range: Some(range),
+            ..Self::default()
+        }
+    }
+
+    pub fn line_count(&self) -> usize {
+        self.newlines + usize::from(self.last.is_some_and(|last| last != b'\n'))
+    }
+
+    pub fn push(&mut self, chunk: &[u8]) {
+        let mut text = chunk;
+        if !self.past_bom {
+            let mut bytes = chunk.iter();
+            while let Some(byte) = bytes.next() {
+                if *byte == MODULE_UTF8_BOM[self.bom_prefix % 3] {
+                    self.bom_prefix += 1;
+                    continue;
+                }
+                self.past_bom = true;
+                // Неполная последовательность U+FEFF в начале — уже текст.
+                let partial = self.bom_prefix % 3;
+                self.revision.update(&MODULE_UTF8_BOM[..partial]);
+                for bom_byte in &MODULE_UTF8_BOM[..partial] {
+                    self.keep(*bom_byte);
+                }
+                text = &chunk[chunk.len() - bytes.len() - 1..];
+                break;
+            }
+            if !self.past_bom {
+                return;
+            }
+        }
+        self.revision.update(text);
+        for byte in text {
+            self.keep(*byte);
+        }
+    }
+
+    fn keep(&mut self, byte: u8) {
+        let line = self.newlines + 1;
+        self.newlines += usize::from(byte == b'\n');
+        self.last = Some(byte);
+        if self
+            .range
+            .is_some_and(|range| line < range.from || line > range.to)
+        {
+            return;
+        }
+        self.bytes += 1;
+        if self.text.len() <= MAX_SOURCE_TEXT_BYTES {
+            self.text.push(byte);
+        }
+    }
+
+    #[cfg(test)]
+    fn retained(&self) -> usize {
+        self.text.capacity()
+    }
+
+    /// Текст в пределе или его полный размер; `Err` — текст не UTF-8.
+    #[allow(clippy::result_unit_err)]
+    pub fn finish(mut self) -> Result<ModuleText, ()> {
+        if !self.past_bom {
+            // Файл из одних U+FEFF пуст; хвост неполной метки — уже текст.
+            let partial = self.bom_prefix % 3;
+            self.revision.update(&MODULE_UTF8_BOM[..partial]);
+            for bom_byte in &MODULE_UTF8_BOM[..partial] {
+                self.keep(*bom_byte);
+            }
+        }
+        if self.bytes > MAX_SOURCE_TEXT_BYTES as u64 {
+            let end = self.text[..MAX_SOURCE_TEXT_BYTES]
+                .iter()
+                .rposition(|byte| *byte == b'\n')
+                .map_or(0, |last| last + 1);
+            let prefix = String::from_utf8(self.text[..end].to_vec()).map_err(|_| ())?;
+            return Ok(ModuleText::TooLarge {
+                bytes: self.bytes,
+                prefix,
+                lines: self.line_count(),
+            });
+        }
+        let text = String::from_utf8(self.text).map_err(|_| ())?;
+        Ok(ModuleText::Text {
+            text,
+            revision: format!("{:x}", self.revision.finalize()),
+        })
+    }
+}
+
+/// Проверка предела для уже прочитанного текста; `Err` несёт его размер.
+pub fn admit_text(text: &str) -> Result<(), u64> {
+    if text.len() > MAX_SOURCE_TEXT_BYTES {
+        Err(text.len() as u64)
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MAX_SOURCE_TEXT_BYTES;
+
+    /// rule: INV.WIRE.SOURCE-TEXT-RESPONSE-BUDGET
+    #[test]
+    fn source_text_limit_is_the_largest_known_host_budget() {
+        assert_eq!(MAX_SOURCE_TEXT_BYTES, unica_bootstrap::MAX_RESPONSE_BUDGET);
+        const { assert!(MAX_SOURCE_TEXT_BYTES >= unica_bootstrap::DEFAULT_RESPONSE_BUDGET) };
+        // Предел считается в байтах UTF-8, а не в символах.
+        let cyrillic = "я".repeat(MAX_SOURCE_TEXT_BYTES / 2);
+        assert!(super::admit_text(&cyrillic).is_ok());
+        assert_eq!(
+            super::admit_text(&format!("{cyrillic}a")),
+            Err(MAX_SOURCE_TEXT_BYTES as u64 + 1)
+        );
+    }
+
+    fn accumulate(chunks: &[&[u8]]) -> Result<super::ModuleText, ()> {
+        let mut text = super::ModuleTextAccumulator::default();
+        for chunk in chunks {
+            text.push(chunk);
+        }
+        text.finish()
+    }
+
+    /// rule: INV.SOURCE.MODULE-COMPILATION-AND-BODY
+    #[test]
+    fn streamed_module_text_keeps_memory_bounded_and_counts_the_whole_size() {
+        let mut text = super::ModuleTextAccumulator::default();
+        let chunk = vec![b'a'; 64 * 1024];
+        for _ in 0..320 {
+            text.push(&chunk);
+            assert!(text.retained() <= 2 * (MAX_SOURCE_TEXT_BYTES + 1));
+        }
+        assert_eq!(
+            text.finish(),
+            Ok(super::ModuleText::TooLarge {
+                bytes: 320 * 64 * 1024,
+                prefix: String::new(),
+                lines: 1
+            })
+        );
+    }
+
+    /// rule: INV.SOURCE.MODULE-COMPILATION-AND-BODY
+    #[test]
+    fn streamed_module_text_strips_repeated_bom_across_chunks_and_keeps_a_partial_one() {
+        let bom = [0xef_u8, 0xbb, 0xbf];
+        assert_eq!(
+            accumulate(&[&bom[..2], &bom[2..], &bom, "а\r\n".as_bytes()]),
+            Ok(super::ModuleText::whole("а\r\n".into()))
+        );
+        assert_eq!(
+            accumulate(&[&bom, &bom]),
+            Ok(super::ModuleText::whole(String::new()))
+        );
+        // Неполная метка — это байты текста, а не U+FEFF; такой текст не UTF-8.
+        assert_eq!(accumulate(&[&bom, &bom[..2], b"a"]), Err(()));
+        assert_eq!(accumulate(&[&bom[..1]]), Err(()));
+        // Метка в середине текста остаётся текстом.
+        assert_eq!(
+            accumulate(&[b"a", &bom]),
+            Ok(super::ModuleText::whole("a\u{feff}".into()))
+        );
+    }
+
+    #[test]
+    fn module_text_limit_counts_bytes_after_the_bom() {
+        let bom = [0xef_u8, 0xbb, 0xbf];
+        let exact = vec![b'a'; MAX_SOURCE_TEXT_BYTES];
+        assert!(matches!(
+            accumulate(&[&bom, &exact]),
+            Ok(super::ModuleText::Text { text, .. }) if text.len() == MAX_SOURCE_TEXT_BYTES
+        ));
+        assert_eq!(
+            accumulate(&[&bom, &exact, b"a"]),
+            Ok(super::ModuleText::TooLarge {
+                bytes: MAX_SOURCE_TEXT_BYTES as u64 + 1,
+                prefix: String::new(),
+                lines: 1
+            })
+        );
+    }
+}
+
+#[cfg(test)]
+mod body_chunks {
+    use super::*;
+
+    #[test]
+    fn oversized_read_keeps_only_a_complete_bounded_prefix() {
+        let line = "я\r\n";
+        let text = line.repeat(MAX_SOURCE_TEXT_BYTES / line.len() + 10);
+        let mut accumulator = ModuleTextAccumulator::default();
+        for chunk in text.as_bytes().chunks(13) {
+            accumulator.push(chunk);
+        }
+        let ModuleText::TooLarge {
+            bytes,
+            prefix,
+            lines,
+        } = accumulator.finish().unwrap()
+        else {
+            panic!("oversized");
+        };
+        assert_eq!(bytes, text.len() as u64);
+        assert!(prefix.len() <= MAX_SOURCE_TEXT_BYTES);
+        assert!(prefix.ends_with("\r\n"));
+        assert_eq!(lines, text.lines().count());
+        assert_eq!(
+            prefix,
+            complete_prefix(&text, unica_bootstrap::MAX_RESPONSE_BUDGET)
+        );
+    }
+}

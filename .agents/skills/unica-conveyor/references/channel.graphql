@@ -1,0 +1,35 @@
+# Канал координации: обсуждение 2495. Запуск от корня репозитория в любой оболочке.
+# Прочитать тему и последние комментарии:
+# gh api graphql -F query=@.agents/skills/unica-conveyor/references/channel.graphql -f operationName=Read
+# Добавить свой комментарий состояния (id обсуждения — из Read, текст — из файла):
+# gh api graphql -F query=@.agents/skills/unica-conveyor/references/channel.graphql -f operationName=Add -f id=<id> -F body=@<файл>
+# Обновить свой комментарий (id комментария — из Read):
+# gh api graphql -F query=@.agents/skills/unica-conveyor/references/channel.graphql -f operationName=Update -f id=<id> -F body=@<файл>
+query Read {
+  repository(owner: "IngvarConsulting", name: "unica") {
+    discussion(number: 2495) {
+      id
+      body
+      comments(last: 100) {
+        nodes {
+          id
+          author { login }
+          updatedAt
+          body
+        }
+      }
+    }
+  }
+}
+
+mutation Add($id: ID!, $body: String!) {
+  addDiscussionComment(input: { discussionId: $id, body: $body }) {
+    comment { id url }
+  }
+}
+
+mutation Update($id: ID!, $body: String!) {
+  updateDiscussionComment(input: { commentId: $id, body: $body }) {
+    comment { id url }
+  }
+}

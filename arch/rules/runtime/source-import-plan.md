@@ -1,24 +1,5 @@
 ---
 id: INV.WIRE.SOURCE-IMPORT-APPLIES-THE-PREVIEWED-MODES
-check:
-  - crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs::preview_plans_every_declared_source_set_with_its_mode_without_dispatching_designer
-  - crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs::preview_of_one_source_set_with_full_rebuild_asks_the_runner_for_exactly_that
-  - crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs::preview_refuses_other_sets_a_dispatched_designer_and_edt_sources
-  - crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs::direct_apply_checks_its_plan_and_attributes_the_infobase_state_to_the_provider
-  - crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs::apply_refuses_a_plan_that_changed_during_execution
-  - crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs::apply_where_the_runner_skipped_every_set_names_the_infobase_state_unverified
-  - crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs::captured_runner_skip_is_answered_as_an_unverified_infobase_state
-  - crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs::apply_names_only_loaded_sets_as_changed_and_the_skipped_ones_as_unverified
-  - crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs::apply_refuses_a_dispatch_flag_that_contradicts_the_steps
-  - crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs::apply_that_skips_a_previewed_load_is_a_concurrent_change
-  - crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs::apply_that_loads_a_previewed_skip_names_the_changed_infobase
-  - crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs::force_is_optional_and_only_force_overwrites_the_infobase
-  - crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs::captured_exchange_refusals_name_both_ways_out_and_the_generations
-  - crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs::apply_names_an_earlier_unapplied_load_the_runner_applied
-  - crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs::a_push_whose_apply_failed_names_the_load_left_unapplied
-  - crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs::a_failed_apply_after_an_applied_set_names_both_sets
-  - crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs::captured_unapplied_loads_are_applied_or_named_when_the_infobase_moved
-  - crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs::captured_runner_015_loads_a_module_restored_with_its_old_mtime
 gap: https://github.com/IngvarConsulting/unica/issues/950
 ---
 
@@ -40,13 +21,14 @@ Preview `push` не запускает конфигуратор и называ�
 план охватывает все объявленные наборы; `full` и `force:true` требуют полного
 режима. План для другого состава или EDT отклоняется. Поколение базы preview
 не читает: `non_fast_forward` приходит только при исполнении, а отказ без
-памяти о базе (`no_memory`) — уже на preview.
+памяти о базе (`untracked_base`) — уже на preview.
 
 `push` использует [режим previewApply](../mcp/run-operation-names.md).
-Исполненный план сравнивается с планом текущего вызова по составу наборов
-и режимам; несовпадение даёт `concurrent_change`. Состояние базы после импорта называется
+Исполненный план сверяется с аргументами вызова: состав наборов совпадает
+с запрошенным, а `full` и `force:true` требуют полного режима каждого набора.
+Несовпадение даёт `concurrent_change`. Состояние базы после импорта называется
 засвидетельствованным провайдером, путь платформы не публикуется. Если
-исполненный план разошёлся с планом и при этом раннер что-то загрузил, отказ
+исполненный план разошёлся с аргументами и при этом раннер что-то загрузил, отказ
 `concurrent_change` говорит, что база уже изменена, и называет загруженные
 наборы в `changed`.
 
@@ -69,8 +51,7 @@ Preview `push` не запускает конфигуратор и называ�
 противоречит шагам, отвергается. Режим `partial` тоже выбирается по памяти
 раннера; сверка с состоянием базы не обещается.
 
-Внутри вызова проектный файл, его локальное дополнение и объявленный
-состав наборов сверяются до и после внутреннего preview раннера.
-Их изменение даёт `concurrent_change` до исполнения.
+Исполнение не запускает preview раннера: входы вызова читаются один раз до
+запуска раннера, и исполнение идёт по ним.
 Проверки используют управляемые ответы раннера; отказ после
 его исполнения не означает откат изменений информационной базы.

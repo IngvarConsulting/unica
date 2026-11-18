@@ -580,112 +580,6 @@ fn project_health_git_ignore_materializes_distinct_staged_blobs_with_bounded_pro
 }
 
 #[test]
-fn project_health_git_ignore_batch_reads_staged_blobs_past_the_former_limits_with_two_children() {
-    struct CountingGitRunner<'a> {
-        inner: &'a dyn ProcessRunner,
-        commands: RefCell<Vec<Vec<String>>>,
-    }
-
-    impl ProcessRunner for CountingGitRunner<'_> {
-        fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
-            self.commands.borrow_mut().push(command.args.clone());
-            self.inner.run(command)
-        }
-
-        fn run_with_input(
-            &self,
-            command: &ProcessCommand,
-            input: &[u8],
-        ) -> Result<ProcessOutput, String> {
-            self.commands.borrow_mut().push(command.args.clone());
-            self.inner.run_with_input(command, input)
-        }
-
-        // The real streams, so the blobs reach their files without a capture.
-        fn run_streaming_records(
-            &self,
-            command: &ProcessCommand,
-            input: &[u8],
-            delimiter: u8,
-            on_record: &mut dyn FnMut(&[u8]) -> unica_process::StreamControl,
-        ) -> Result<unica_process::runner::ProcessStreamOutput, String> {
-            self.commands.borrow_mut().push(command.args.clone());
-            self.inner
-                .run_streaming_records(command, input, delimiter, on_record)
-        }
-
-        fn run_streaming_bytes(
-            &self,
-            command: &ProcessCommand,
-            input: &[u8],
-            on_chunk: &mut dyn FnMut(&[u8]) -> unica_process::StreamControl,
-        ) -> Result<unica_process::runner::ProcessStreamOutput, String> {
-            self.commands.borrow_mut().push(command.args.clone());
-            self.inner.run_streaming_bytes(command, input, on_chunk)
-        }
-    }
-
-    let repository = TempDir::new().unwrap();
-    git(repository.path(), &["init"]);
-    // 1025 files and more than 8 MiB of policy: past the former 1024-file
-    // and 8 MiB refusals. The blobs are streamed into their files.
-    for index in 0..1025 {
-        let directory = repository.path().join(format!("policy/{index:04}"));
-        fs::create_dir_all(&directory).unwrap();
-        fs::write(
-            directory.join(".gitignore"),
-            format!("ignored-{index:04}\n"),
-        )
-        .unwrap();
-    }
-    let large = format!("large\n{}", "# padding\n".repeat(9 * 1024 * 1024 / 10));
-    fs::write(repository.path().join("policy/0000/.gitignore"), &large).unwrap();
-    git(repository.path(), &["add", "policy"]);
-    let output = Command::new("git")
-        .args(["ls-files", "--cached", "--stage", "-z"])
-        .current_dir(repository.path())
-        .output()
-        .unwrap();
-    assert!(output.status.success());
-    let entries = parse_git_index_entries(&String::from_utf8(output.stdout).unwrap()).unwrap();
-    assert_eq!(entries.len(), 1025);
-    let runner = CountingGitRunner {
-        inner: unica_process::runner::system_process_runner(),
-        commands: RefCell::new(Vec::new()),
-    };
-
-    let materialized = materialize_staged_ignore_files(
-        &runner,
-        repository.path(),
-        &entries,
-        &[],
-        &StagedBlobReadSafety::LocalOnlyGuaranteed,
-        &CancellationToken::new(),
-        ProviderDeadline::from_budget(Duration::from_secs(30)),
-    )
-    .unwrap();
-
-    assert_eq!(
-        fs::read(materialized.path().join("policy/0000/.gitignore")).unwrap(),
-        large.as_bytes()
-    );
-    assert_eq!(
-        fs::read(materialized.path().join("policy/1024/.gitignore")).unwrap(),
-        b"ignored-1024\n"
-    );
-    let commands = runner.commands.borrow();
-    assert_eq!(
-        commands.len(),
-        2,
-        "one child per blob exceeds the check budget"
-    );
-    assert!(commands[0]
-        .iter()
-        .any(|arg| arg.starts_with("--batch-check=")));
-    assert!(commands[1].iter().any(|arg| arg == "--batch"));
-}
-
-#[test]
 fn project_health_git_ignore_batch_reuses_a_duplicate_oid_for_each_path() {
     let repository = TempDir::new().unwrap();
     let oid = "a".repeat(40);
@@ -1495,6 +1389,7 @@ fn project_health_git_info_exclude_is_local_only() {
     );
 }
 
+/// rule: INV.SOURCE.PORTABLE-GIT
 #[test]
 fn project_health_git_ignore_uses_staged_empty_file_not_valid_worktree_file() {
     let fixture = parent_repository_fixture();
@@ -1765,11 +1660,15 @@ fn project_health_git_ignore_negated_rule_does_not_ignore_the_path() {
     );
 }
 
+const IGNORED_PATTERN_FILE_WARNING: &str = "ignoring excessively large pattern file";
+
 #[test]
 fn project_health_git_ignore_file_that_git_skips_is_reported_not_trusted() {
-    // Git skips a pattern file of 100 MiB or more with a warning. The skipped
-    // file holds every required rule, so trusting the answer would report the
-    // rules missing; the check must say the policy could not be read instead.
+    // Git 2.46 and later skip a pattern file of 100 MiB or more with a warning.
+    // The skipped file holds every required rule, so trusting the answer would
+    // report the rules missing; the check must say the policy could not be read
+    // instead. Earlier versions read the file and find the rules: that answer
+    // is complete. In neither case are the rules reported missing.
     let fixture = parent_repository_fixture();
     let mut policy = "**/.build/\nConfigDumpInfo.xml\nDumpFilesIndex.txt\n".to_string();
     policy.push_str(&"# padding\n".repeat(101 * 1024 * 1024 / 10));
@@ -1786,15 +1685,26 @@ fn project_health_git_ignore_file_that_git_skips_is_reported_not_trusted() {
         )
         .unwrap();
 
-    assert!(
+    let probe = Command::new("git")
+        .args(["check-ignore", "--no-index", "-q", "ConfigDumpInfo.xml"])
+        .current_dir(&fixture.repository_root)
+        // The warning is translated; the service reads it in this locale too.
+        .env("LC_ALL", "C")
+        .env("LANG", "C")
+        .output()
+        .unwrap();
+    let this_git_skips_the_file =
+        String::from_utf8_lossy(&probe.stderr).contains(IGNORED_PATTERN_FILE_WARNING);
+    assert_eq!(
         inspection.facts.iter().any(|fact| matches!(
             fact,
             ProjectHealthFact::GitInspectionIncomplete {
                 check: ProjectCheckId::RepositoryIgnore,
                 reason,
                 ..
-            } if reason.contains("ignoring excessively large pattern file")
+            } if reason.contains(IGNORED_PATTERN_FILE_WARNING)
         )),
+        this_git_skips_the_file,
         "{:?}",
         inspection.facts
     );
@@ -1804,6 +1714,112 @@ fn project_health_git_ignore_file_that_git_skips_is_reported_not_trusted() {
     )));
 }
 
+/// The refusal itself, on any installed Git: its answer is replayed the way a
+/// version with the size limit gives it.
+#[test]
+fn project_health_git_ignore_warning_makes_the_policy_incomplete_on_any_git() {
+    struct SkippingIgnoreFiles {
+        status: &'static str,
+        stdout: &'static str,
+    }
+
+    impl SkippingIgnoreFiles {
+        fn inner() -> &'static (dyn ProcessRunner + Send + Sync) {
+            unica_process::runner::system_process_runner()
+        }
+    }
+
+    impl ProcessRunner for SkippingIgnoreFiles {
+        fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
+            Self::inner().run(command)
+        }
+
+        fn run_with_input(
+            &self,
+            command: &ProcessCommand,
+            input: &[u8],
+        ) -> Result<ProcessOutput, String> {
+            if command.args.iter().any(|arg| arg == "check-ignore") {
+                return Ok(ProcessOutput {
+                    status: self.status.into(),
+                    stderr: format!("warning: {IGNORED_PATTERN_FILE_WARNING}: .gitignore\n"),
+                    ..process_output(self.status == "exit status: 0", self.stdout)
+                });
+            }
+            Self::inner().run_with_input(command, input)
+        }
+
+        fn run_streaming_records(
+            &self,
+            command: &ProcessCommand,
+            input: &[u8],
+            delimiter: u8,
+            on_record: &mut dyn FnMut(&[u8]) -> unica_process::StreamControl,
+        ) -> Result<unica_process::runner::ProcessStreamOutput, String> {
+            Self::inner().run_streaming_records(command, input, delimiter, on_record)
+        }
+
+        fn run_streaming_bytes(
+            &self,
+            command: &ProcessCommand,
+            input: &[u8],
+            on_chunk: &mut dyn FnMut(&[u8]) -> unica_process::StreamControl,
+        ) -> Result<unica_process::runner::ProcessStreamOutput, String> {
+            Self::inner().run_streaming_bytes(command, input, on_chunk)
+        }
+    }
+
+    let fixture = parent_repository_fixture();
+    fs::write(
+        fixture.repository_root.join(".gitignore"),
+        "**/.build/\nConfigDumpInfo.xml\nDumpFilesIndex.txt\n",
+    )
+    .unwrap();
+    git(&fixture.repository_root, &["add", ".gitignore"]);
+    let layout = inspect_layout(&fixture.context);
+
+    // Nothing matched, or another ignore file matched while one was skipped.
+    for runner in [
+        SkippingIgnoreFiles {
+            status: "exit status: 1",
+            stdout: "",
+        },
+        SkippingIgnoreFiles {
+            status: "exit status: 0",
+            stdout: ".git/info/exclude\u{0}1\u{0}ConfigDumpInfo.xml\u{0}ConfigDumpInfo.xml\u{0}",
+        },
+    ] {
+        let inspection = GitRepositoryInspector::with_runner(&runner)
+            .inspect_base(
+                &fixture.context,
+                &layout,
+                &CancellationToken::new(),
+                ProviderDeadline::no_deadline(),
+            )
+            .unwrap();
+
+        assert!(
+            inspection.facts.iter().any(|fact| matches!(
+                fact,
+                ProjectHealthFact::GitInspectionIncomplete {
+                    check: ProjectCheckId::RepositoryIgnore,
+                    reason,
+                    ..
+                } if reason.contains(IGNORED_PATTERN_FILE_WARNING)
+            )),
+            "{}: {:?}",
+            runner.status,
+            inspection.facts
+        );
+        assert!(!inspection.facts.iter().any(|fact| matches!(
+            fact,
+            ProjectHealthFact::IgnoreRuleMissing { .. }
+                | ProjectHealthFact::IgnoreRuleLocalOnly { .. }
+        )));
+    }
+}
+
+/// rule: INV.SOURCE.PORTABLE-GIT
 #[test]
 fn project_health_git_untracked_gitignore_is_local_only() {
     let fixture = parent_repository_fixture();

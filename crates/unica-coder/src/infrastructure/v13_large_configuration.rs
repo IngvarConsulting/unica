@@ -20,7 +20,18 @@ use unica_source_contract::read::{FileStamp, ReadFile, RetainedSourceRead, Sourc
 use xml::name::OwnedName;
 use xml::reader::{ParserConfig, XmlEvent};
 
+// resource-limit: view.registration-run-bytes
+// class: step
+// unit: bytes
+// scope: request
+// value: 1048576
+// resource: Объём одной отсортированной порции регистраций при потоковом чтении большого Configuration.xml.
+// status: unproven
+// origin: #1130
+// problem: неизвестно
+// on-reach: порция сбрасывается, чтение продолжается следующей
 const REGISTRATION_RUN_BYTES: usize = 1024 * 1024;
+const DATA_CORE_NS: &str = "http://v8.1c.ru/8.1/data/core";
 const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 
 /// Kind, name and the position in `ChildObjects`; a repeated key keeps the
@@ -222,7 +233,7 @@ impl Default for RegistrationSorter {
 /// The data run is sorted and unique; a second file stores fixed-width offsets
 /// so a named read requires logarithmically many seeks without keeping every
 /// registration key in process memory. Both files disappear on drop.
-pub(crate) struct RegistrationIndex {
+pub struct RegistrationIndex {
     inner: Mutex<RegistrationIndexFiles>,
     count: u64,
 }
@@ -237,7 +248,7 @@ pub(crate) struct RegistrationIndex {
 /// если штамп устоялся (обе метки времени известны и старше окна); иначе
 /// файл разбирается при каждом обращении. Обхода дерева нет. Отравленная
 /// блокировка сбрасывает запись, а не отказывает дальше.
-pub(crate) struct RegistrationCache {
+pub struct RegistrationCache {
     /// Which modules of the set spell a name, built in the background.
     names: Arc<crate::infrastructure::name_index::SourceNameIndex>,
     registrations: Mutex<Option<(FileStamp, Arc<RegistrationIndex>)>>,
@@ -245,13 +256,43 @@ pub(crate) struct RegistrationCache {
     support: Mutex<Option<RetainedSupportState>>,
     subsystems: Mutex<Option<RetainedSubsystemTopology>>,
     settle_window: std::time::Duration,
-    #[cfg(test)]
+    /// Proven owner descriptors by source-root-relative path, each under the
+    /// stamp it had before it was read.
+    owner_evidence: Mutex<
+        RetainedByDescriptor<unica_source_designer::owner::PlatformXmlSourceSetOwnerEvidence>,
+    >,
+    /// Common module synonyms (with the limits of a damaged one) by
+    /// descriptor path, each under the stamp it had before it was read.
+    common_module_synonyms: Mutex<RetainedByDescriptor<CommonModuleSynonym>>,
+    /// The background proof of all top-level descriptors has been started.
+    /// Test builds start it marked, so tests that watch which files a call
+    /// opens see only that call; the test of the warm-up clears the mark.
+    owner_warmup: std::sync::atomic::AtomicBool,
+    #[cfg(any(test, feature = "test-support"))]
     registration_builds: std::sync::atomic::AtomicUsize,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     after_parse: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
+/// Records retained per descriptor path, each under the stamp the
+/// descriptor had before it was read.
+type RetainedByDescriptor<T> = std::collections::HashMap<std::path::PathBuf, (FileStamp, Arc<T>)>;
+
+/// The synonym of a common module as its descriptor states it: absent or
+/// empty is `Ok(None)`, an unreadable property is `Err` with its reason.
+pub(crate) type CommonModuleSynonym = Result<Option<String>, String>;
+
 /// Timestamp granularity window: a stamp younger than this is never cached.
+// resource-limit: view.registration-settle-window-ms
+// class: retention
+// unit: ms
+// scope: cache
+// value: 2000
+// resource: Окно гранулярности отметки времени: файл моложе окна не кешируется в индексе регистраций и перечитывается индексом имён при следующем обходе.
+// status: unproven
+// origin: b054c6196 (#1457, #1481)
+// problem: Отметка времени моложе окна не доказывает неизменность файла (комментарий в v13_large_configuration.rs).
+// on-reach: Запись не кешируется, корень разбирается заново при следующем вызове.
 pub(crate) const SETTLE_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
 
 impl Default for RegistrationCache {
@@ -263,9 +304,15 @@ impl Default for RegistrationCache {
             support: Mutex::new(None),
             subsystems: Mutex::new(None),
             settle_window: SETTLE_WINDOW,
-            #[cfg(test)]
+            owner_evidence: Mutex::new(std::collections::HashMap::new()),
+            common_module_synonyms: Mutex::new(std::collections::HashMap::new()),
+            owner_warmup: std::sync::atomic::AtomicBool::new(cfg!(any(
+                test,
+                feature = "test-support"
+            ))),
+            #[cfg(any(test, feature = "test-support"))]
             registration_builds: std::sync::atomic::AtomicUsize::new(0),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             after_parse: Mutex::new(None),
         }
     }
@@ -341,7 +388,7 @@ fn slot<T>(mutex: &Mutex<Option<T>>) -> std::sync::MutexGuard<'_, Option<T>> {
 }
 
 impl RegistrationCache {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn with_settle_window_for_test(window: std::time::Duration) -> Self {
         Self {
             settle_window: window,
@@ -350,13 +397,13 @@ impl RegistrationCache {
     }
 
     /// Runs once after the next parse, before its stamp is checked again.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn after_next_parse_for_test(&self, hook: impl FnOnce() + Send + 'static) {
         *slot(&self.after_parse) = Some(Box::new(hook));
     }
 
     fn parsed(&self) {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if let Some(hook) = slot(&self.after_parse).take() {
             hook();
         }
@@ -367,13 +414,77 @@ impl RegistrationCache {
         &self.names
     }
 
+    pub(crate) fn retained_common_module_synonym(
+        &self,
+        relative: &std::path::Path,
+        stamp: &FileStamp,
+    ) -> Option<Arc<CommonModuleSynonym>> {
+        let synonyms = self.common_module_synonyms.lock().ok()?;
+        synonyms
+            .get(relative)
+            .filter(|(cached, _)| cached == stamp)
+            .map(|(_, fact)| Arc::clone(fact))
+    }
+
+    pub(crate) fn retain_common_module_synonym(
+        &self,
+        relative: std::path::PathBuf,
+        stamp: FileStamp,
+        fact: Arc<CommonModuleSynonym>,
+    ) {
+        if self.retains(&stamp) {
+            if let Ok(mut synonyms) = self.common_module_synonyms.lock() {
+                synonyms.insert(relative, (stamp, fact));
+            }
+        }
+    }
+
+    /// Lets a test build start the descriptor warm-up of this cache.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn allow_owner_warmup_for_test(&self) {
+        self.owner_warmup
+            .store(false, std::sync::atomic::Ordering::Release);
+    }
+
+    /// True for the one caller that starts the descriptor warm-up.
+    pub(crate) fn claim_owner_warmup(&self) -> bool {
+        !self
+            .owner_warmup
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
+    }
+
+    pub(crate) fn retained_owner_evidence(
+        &self,
+        relative: &std::path::Path,
+        stamp: &FileStamp,
+    ) -> Option<Arc<unica_source_designer::owner::PlatformXmlSourceSetOwnerEvidence>> {
+        let owners = self.owner_evidence.lock().ok()?;
+        owners
+            .get(relative)
+            .filter(|(cached, _)| cached == stamp)
+            .map(|(_, evidence)| Arc::clone(evidence))
+    }
+
+    pub(crate) fn retain_owner_evidence(
+        &self,
+        relative: std::path::PathBuf,
+        stamp: FileStamp,
+        evidence: Arc<unica_source_designer::owner::PlatformXmlSourceSetOwnerEvidence>,
+    ) {
+        if self.retains(&stamp) {
+            if let Ok(mut owners) = self.owner_evidence.lock() {
+                owners.insert(relative, (stamp, evidence));
+            }
+        }
+    }
+
     fn retains(&self, stamp: &FileStamp) -> bool {
         stamp.settled(std::time::SystemTime::now(), self.settle_window)
     }
 
     /// The registration index of `Configuration.xml` under `root`, parsed
     /// again unless a settled, unchanged stamp proves the retained one.
-    pub(crate) fn registrations(
+    pub fn registrations(
         &self,
         root: &SourceDirectory,
         checkpoint: &dyn Fn() -> Result<(), ViewError>,
@@ -390,7 +501,7 @@ impl RegistrationCache {
                 return Ok(Arc::clone(index));
             }
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         self.registration_builds
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let built = Arc::new(read_configuration_registration_index(file, checkpoint)?);
@@ -513,8 +624,8 @@ impl RegistrationCache {
         Ok(topology)
     }
 
-    #[cfg(test)]
-    pub(crate) fn registration_builds_for_test(&self) -> usize {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn registration_builds_for_test(&self) -> usize {
         self.registration_builds
             .load(std::sync::atomic::Ordering::Relaxed)
     }
@@ -576,7 +687,7 @@ impl RegistrationIndex {
         })
     }
 
-    pub(crate) fn contains(
+    pub fn contains(
         &self,
         kind: &str,
         name: &str,
@@ -623,7 +734,7 @@ impl RegistrationIndex {
     /// Return the complete duplicate-free branch in `ChildObjects` order. The
     /// collection response itself holds these names, so only output-sized
     /// memory is used.
-    pub(crate) fn names_for_kind(
+    pub fn names_for_kind(
         &self,
         kind: &str,
         checkpoint: &dyn Fn() -> Result<(), ViewError>,
@@ -794,12 +905,14 @@ pub(super) fn read_configuration_root(
     panels: Value,
     checkpoint: &dyn Fn() -> Result<(), ViewError>,
 ) -> Result<StreamedConfigurationRoot, ViewError> {
-    let state = parse_configuration_owner(file, checkpoint)?;
+    let state = parse_configuration_owner(file, checkpoint, true)?;
     let RootState {
         properties,
+        purpose,
         version,
         total_objects,
         registrations,
+        property_limits,
         ..
     } = state;
     let mut counts = BTreeMap::<String, usize>::new();
@@ -822,15 +935,47 @@ pub(super) fn read_configuration_root(
     })?;
     let property = |name: &str| properties.get(name).cloned();
     let optional = |name: &str| property(name).filter(|value| !value.is_empty());
-    let payload = json!({
+    // The parts of a composite property by their camel-case names, in the
+    // order the platform writes them, as the bounded reader keeps them; a
+    // set whose line lacks the property has `null`.
+    let parts = |name: &str| {
+        let mut parts = properties
+            .iter()
+            .filter_map(|(key, value)| Some((key.strip_prefix(name)?.strip_prefix('.')?, value)))
+            .collect::<Vec<_>>();
+        let order = |part: &str| {
+            unica_metadata::descriptor_operations::DescriptorProperty::ActionOnExtendedConfigurationObjectsMissing
+                .parts()
+                .iter()
+                .position(|names| names[0] == part)
+                .unwrap_or(usize::MAX)
+        };
+        parts.sort_by_key(|(part, _)| order(part));
+        let parts = parts
+            .into_iter()
+            .filter_map(|(part, value)| {
+                let mut chars = part.chars();
+                let first = chars.next()?.to_lowercase().collect::<String>();
+                Some((format!("{first}{}", chars.as_str()), json!(value)))
+            })
+            .collect::<serde_json::Map<_, _>>();
+        (!parts.is_empty()).then_some(Value::Object(parts))
+    };
+    let mut payload = json!({
         "format": version,
         "name": property("Name").unwrap_or_default(),
         "synonym": optional("Synonym"),
+        "caption": optional("Caption"),
+        "shortCaption": optional("ShortCaption"),
         "version": optional("Version"),
         "vendor": optional("Vendor"),
         "extensionPurpose": optional("ConfigurationExtensionPurpose"),
         "support": support,
         "properties": {
+            "usePurposes": purpose.use_purposes,
+            "defaultRoles": purpose.default_roles,
+            "usedMobileApplicationFunctionalities": purpose.used_mobile_application_functionalities,
+            "includeHelpInContents": purpose.include_help_in_contents,
             "compatibilityMode": optional("CompatibilityMode"),
             "defaultRunMode": optional("DefaultRunMode"),
             "scriptVariant": optional("ScriptVariant"),
@@ -843,15 +988,38 @@ pub(super) fn read_configuration_root(
             "synchronousCallUseMode": optional("SynchronousPlatformExtensionAndAddInCallUseMode"),
             "databaseTablespacesUseMode": optional("DatabaseTablespacesUseMode"),
             "mainWindowMode": optional("MainClientApplicationWindowMode"),
+            "mainWindowInterfaceVariant": optional("MainClientApplicationWindowInterfaceVariant"),
+            "clientApplicationTheme": optional("ClientApplicationTheme"),
+            "windowsOpenVariant": optional("ClientApplicationWindowsOpenVariant"),
+            "version85InterfaceMigrationMode": optional("Version85InterfaceMigrationMode"),
+            "actionOnConfigurationObjectMissing": optional("ActionOnConfigurationObjectMissing"),
+            "defaultExtensionPropertyCheckAction": optional("DefaultExtensionPropertyCheckAction"),
+            "typeReductionByConfigurationExtensionMode":
+                optional("TypeReductionByConfigurationExtensionMode"),
+            "actionOnExtendedConfigurationObjectsMissing":
+                parts("ActionOnExtendedConfigurationObjectsMissing"),
             "comment": optional("Comment"),
             "namePrefix": optional("NamePrefix"),
             "updateCatalogAddress": optional("UpdateCatalogAddress"),
+            "forms": unica_metadata::configuration::root_form_slots(|name| {
+                properties.get(name).map(String::as_str)
+            }),
         },
         "totalObjects": total_objects,
         "homePage": home_page,
         "interface": interface,
         "panels": panels,
     });
+    if !property_limits.is_empty() {
+        payload["propertyLimits"] = json!(property_limits);
+    }
+    for (tag, key) in unica_metadata::descriptor_operations::CONFIGURATION_LOCALIZED_PROPERTIES {
+        if !matches!(*key, "synonym" | "caption" | "shortCaption") {
+            if let Some(value) = optional(tag) {
+                payload["properties"][key] = json!(value);
+            }
+        }
+    }
     Ok(StreamedConfigurationRoot { payload, counts })
 }
 
@@ -859,21 +1027,13 @@ pub(crate) fn read_configuration_registration_index(
     file: impl Read + Seek,
     checkpoint: &dyn Fn() -> Result<(), ViewError>,
 ) -> Result<RegistrationIndex, ViewError> {
-    let state = parse_configuration_owner(file, checkpoint)?;
+    let state = parse_configuration_owner(file, checkpoint, false)?;
     RegistrationIndex::from_sorter(state.registrations, checkpoint)
 }
 
-fn parse_configuration_owner(
-    mut file: impl Read + Seek,
-    checkpoint: &dyn Fn() -> Result<(), ViewError>,
-) -> Result<RootState, ViewError> {
-    skip_leading_boms(&mut file, checkpoint)?;
-    let checkpoint_failure = Rc::new(RefCell::new(None));
-    let checked = CheckedRead {
-        file,
-        checkpoint,
-        failure: Rc::clone(&checkpoint_failure),
-    };
+/// One parser policy for complete registration reads and the lexical root
+/// header observation; no default token-size ceiling becomes a write limit.
+fn configuration_parser_config() -> ParserConfig {
     let mut config = ParserConfig::new()
         .coalesce_characters(false)
         .ignore_comments(false);
@@ -891,8 +1051,106 @@ fn parse_configuration_owner(
     // treats an XML declaration's encoding as syntax, not as an instruction to
     // reinterpret those bytes. Keep the same behavior for streamed bytes.
     config.ignore_invalid_encoding_declarations = true;
-    let mut parser = config.create_reader(BufReader::new(checked));
+    config
+}
+
+/// Observe only the opening root after the caller has proved the complete
+/// Configuration owner. XML events identify the header; roxmltree supplies
+/// its raw attribute span, so entity-equivalent versions stay distinguishable.
+/// The existing streamed owner proof still validates the complete tail.
+pub(crate) fn read_configuration_root_version_literal(
+    mut file: impl Read + Seek,
+    checkpoint: &dyn Fn() -> Result<(), ViewError>,
+) -> Result<Option<String>, ViewError> {
+    skip_leading_boms(&mut file, checkpoint)?;
+    let failure = Rc::new(RefCell::new(None));
+    let checked = CheckedRead {
+        file,
+        checkpoint,
+        failure: Rc::clone(&failure),
+    };
+    let capture = RootHeaderRead {
+        inner: BufReader::new(checked),
+        bytes: Vec::new(),
+    };
+    let mut parser = configuration_parser_config().create_reader(capture);
+    loop {
+        checkpoint()?;
+        let event = parser.next().map_err(|error| {
+            failure.borrow_mut().take().unwrap_or_else(|| {
+                source_unreadable(&format!("Configuration header parse error: {error}"))
+            })
+        })?;
+        match event {
+            XmlEvent::StartElement { name, .. } => {
+                if name.namespace.as_deref() != Some(MD_NS) || name.local_name != "MetaDataObject" {
+                    return Err(source_unreadable("Configuration owner has the wrong root"));
+                }
+                let qualified = name.prefix.as_ref().map_or_else(
+                    || name.local_name.clone(),
+                    |prefix| format!("{prefix}:{}", name.local_name),
+                );
+                let header = std::str::from_utf8(&parser.source().bytes)
+                    .map_err(|error| source_unreadable(&error.to_string()))?;
+                let complete = format!("{header}</{qualified}>");
+                let document = roxmltree::Document::parse(&complete)
+                    .map_err(|error| source_unreadable(&error.to_string()))?;
+                return Ok(unica_source_designer::roots::root_version_literal(
+                    &complete,
+                    document.root_element(),
+                ));
+            }
+            XmlEvent::Doctype { .. } => {
+                return Err(source_unreadable(
+                    "Configuration.xml has an unsupported DOCTYPE",
+                ))
+            }
+            XmlEvent::EndDocument => {
+                return Err(source_unreadable("Configuration.xml has no root"))
+            }
+            _ => {}
+        }
+    }
+}
+
+// Capture above BufReader: parser character reads retain only the consumed
+// header, while buffering and cancellation still operate on ordinary chunks.
+struct RootHeaderRead<R> {
+    inner: R,
+    bytes: Vec<u8>,
+}
+impl<R: Read> Read for RootHeaderRead<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        let count = self.inner.read(buffer)?;
+        self.bytes.try_reserve(count).map_err(io::Error::other)?;
+        self.bytes.extend_from_slice(&buffer[..count]);
+        Ok(count)
+    }
+}
+
+fn parse_configuration_owner(
+    mut file: impl Read + Seek,
+    checkpoint: &dyn Fn() -> Result<(), ViewError>,
+    read_purpose: bool,
+) -> Result<RootState, ViewError> {
+    skip_leading_boms(&mut file, checkpoint)?;
+    let checkpoint_failure = Rc::new(RefCell::new(None));
+    let checked = CheckedRead {
+        file,
+        checkpoint,
+        failure: Rc::clone(&checkpoint_failure),
+    };
+    let mut parser = configuration_parser_config().create_reader(BufReader::new(checked));
     let mut state = RootState::new();
+    // Retain only the four structured purpose properties, using the same
+    // namespace-aware codec as the ordinary root. The rest remains streamed.
+    let mut purpose_xml = xml::writer::EmitterConfig::new()
+        .write_document_declaration(false)
+        .create_writer(Vec::new());
+    purpose_xml
+        .write(xml::writer::XmlEvent::start_element("Properties").default_ns(MD_NS))
+        .map_err(|error| source_unreadable(&error.to_string()))?;
+    let mut purpose_depth = 0_usize;
     loop {
         checkpoint()?;
         let event = match parser.next() {
@@ -907,6 +1165,24 @@ fn parse_configuration_owner(
                 ));
             }
         };
+        let starts_purpose = read_purpose
+            && matches!(&event, XmlEvent::StartElement { name, .. }
+            if state.ignored_depth == 0
+                && matches!(state.stack.last().map(|frame| &frame.role), Some(FrameRole::Properties))
+                && name.namespace.as_deref() == Some(MD_NS)
+                && matches!(name.local_name.as_str(), "UsePurposes" | "DefaultRoles" | "UsedMobileApplicationFunctionalities" | "IncludeHelpInContents"));
+        if purpose_depth != 0 || starts_purpose {
+            if let Some(writer_event) = event.as_writer_event() {
+                purpose_xml
+                    .write(writer_event)
+                    .map_err(|error| source_unreadable(&error.to_string()))?;
+            }
+            match &event {
+                XmlEvent::StartElement { .. } => purpose_depth += 1,
+                XmlEvent::EndElement { .. } => purpose_depth -= 1,
+                _ => {}
+            }
+        }
         match event {
             XmlEvent::StartDocument { .. } => {}
             XmlEvent::StartElement {
@@ -937,6 +1213,16 @@ fn parse_configuration_owner(
         return Err(source_unreadable(
             "Configuration.xml has no single Configuration/Properties owner",
         ));
+    }
+    purpose_xml
+        .write(xml::writer::XmlEvent::end_element())
+        .map_err(|error| source_unreadable(&error.to_string()))?;
+    let purpose_xml = String::from_utf8(purpose_xml.into_inner())
+        .map_err(|error| source_unreadable(&error.to_string()))?;
+    if read_purpose {
+        state.purpose =
+            unica_metadata_designer::configuration::read_cf_purpose_properties_xml(&purpose_xml)
+                .map_err(|error| source_unreadable(&error))?;
     }
     Ok(state)
 }
@@ -998,6 +1284,8 @@ struct RootState {
     saw_first_child_objects: bool,
     version: String,
     properties: BTreeMap<String, String>,
+    property_limits: Vec<String>,
+    purpose: unica_metadata::configuration::CfPurposeProperties,
     total_objects: usize,
     registrations: RegistrationSorter,
 }
@@ -1067,15 +1355,31 @@ impl RootState {
                 role = FrameRole::ChildObjects { primary };
             }
             Some(FrameRole::Properties) if md => {
-                if name.local_name == "Synonym" && !self.properties.contains_key("Synonym") {
+                if let Some(property) = localized_root_property(&name.local_name) {
                     role = FrameRole::Synonym {
-                        ru: None,
-                        fallback: None,
+                        property,
+                        values: Vec::new(),
+                        malformed: !attributes.is_empty() || self.properties.contains_key(property),
                     };
                 } else if is_root_property(&name.local_name)
                     && !self.properties.contains_key(&name.local_name)
                 {
                     role = FrameRole::Property(name.local_name);
+                } else if COMPOSITE_ROOT_PROPERTIES.contains(&name.local_name.as_str()) {
+                    // The first such property counts, like a scalar one, even
+                    // when it has no parts.
+                    if !self.properties.contains_key(&name.local_name) {
+                        self.properties
+                            .insert(name.local_name.clone(), String::new());
+                        role = FrameRole::Parts(name.local_name);
+                    }
+                }
+            }
+            // A part is read under `Property.Part`.
+            Some(FrameRole::Parts(property)) => {
+                let key = format!("{property}.{}", name.local_name);
+                if !self.properties.contains_key(&key) {
+                    role = FrameRole::Property(key);
                 }
             }
             Some(FrameRole::ChildObjects { primary }) => {
@@ -1107,20 +1411,48 @@ impl RootState {
                 *name_seen = true;
                 role = FrameRole::RegistrationName;
             }
-            Some(FrameRole::Synonym { .. }) => {
+            Some(FrameRole::Synonym { .. })
+                if name.namespace.as_deref() == Some(DATA_CORE_NS) && name.local_name == "item" =>
+            {
                 role = FrameRole::SynonymItem {
-                    lang: String::new(),
-                    last_content: String::new(),
-                    first_content: None,
-                }
+                    lang: None,
+                    content: None,
+                    malformed: !attributes.is_empty(),
+                };
             }
-            Some(FrameRole::SynonymItem { .. }) if name.local_name == "lang" => {
+            Some(FrameRole::SynonymItem { .. })
+                if name.namespace.as_deref() == Some(DATA_CORE_NS)
+                    && attributes.is_empty()
+                    && name.local_name == "lang" =>
+            {
                 role = FrameRole::SynonymLang
             }
-            Some(FrameRole::SynonymItem { .. }) if name.local_name == "content" => {
+            Some(FrameRole::SynonymItem { .. })
+                if name.namespace.as_deref() == Some(DATA_CORE_NS)
+                    && attributes.is_empty()
+                    && name.local_name == "content" =>
+            {
                 role = FrameRole::SynonymContent
             }
             _ => {}
+        }
+        if matches!(role, FrameRole::Other) {
+            if let Some(parent) = self.stack.last_mut() {
+                match &mut parent.role {
+                    FrameRole::Synonym { malformed, .. }
+                    | FrameRole::SynonymItem { malformed, .. } => *malformed = true,
+                    FrameRole::SynonymLang | FrameRole::SynonymContent => {
+                        if let Some(Frame {
+                            role: FrameRole::SynonymItem { malformed, .. },
+                            ..
+                        }) = self.stack.iter_mut().rev().nth(1)
+                        {
+                            *malformed = true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
         }
         if matches!(role, FrameRole::Other) {
             self.ignored_depth = 1;
@@ -1139,6 +1471,13 @@ impl RootState {
             return;
         }
         if let Some(frame) = self.stack.last_mut() {
+            if !text.trim().is_empty() {
+                match &mut frame.role {
+                    FrameRole::Synonym { malformed, .. }
+                    | FrameRole::SynonymItem { malformed, .. } => *malformed = true,
+                    _ => {}
+                }
+            }
             if !frame.first_text_closed
                 && matches!(
                     &frame.role,
@@ -1160,7 +1499,12 @@ impl RootState {
     fn text_boundary(&mut self) {
         if self.ignored_depth == 0 {
             if let Some(frame) = self.stack.last_mut() {
-                frame.first_text_closed = true;
+                if !matches!(
+                    frame.role,
+                    FrameRole::SynonymLang | FrameRole::SynonymContent
+                ) {
+                    frame.first_text_closed = true;
+                }
             }
         }
     }
@@ -1183,54 +1527,68 @@ impl RootState {
                     .entry(name)
                     .or_insert_with(|| frame.first_text.unwrap_or_default());
             }
-            FrameRole::Synonym { ru, fallback } => {
-                self.properties
-                    .entry("Synonym".to_string())
-                    .or_insert(ru.or(fallback).unwrap_or_default());
+            FrameRole::Synonym {
+                property,
+                values,
+                malformed,
+            } => {
+                match (!malformed)
+                    .then(|| unica_metadata::format_nstr(&values))
+                    .flatten()
+                {
+                    Some(value) => {
+                        self.properties.insert(property.to_string(), value);
+                    }
+                    None => {
+                        self.properties.insert(property.to_string(), String::new());
+                        self.property_limits.push(format!(
+                            "Configuration properties.{property} is unreadable as NStr"
+                        ));
+                    }
+                }
             }
             FrameRole::SynonymItem {
                 lang,
-                last_content,
-                first_content,
+                content,
+                malformed,
             } => {
                 if let Some(Frame {
-                    role: FrameRole::Synonym { ru, fallback },
-                    ..
-                }) = self.stack.last_mut()
-                {
-                    if ru.is_none() && lang == "ru" && !last_content.is_empty() {
-                        *ru = Some(last_content);
-                    }
-                    if fallback.is_none() {
-                        *fallback = first_content;
-                    }
-                }
-            }
-            FrameRole::SynonymLang => {
-                if let Some(Frame {
-                    role: FrameRole::SynonymItem { lang, .. },
-                    ..
-                }) = self.stack.last_mut()
-                {
-                    *lang = frame.first_text.unwrap_or_default();
-                }
-            }
-            FrameRole::SynonymContent => {
-                if let Some(Frame {
                     role:
-                        FrameRole::SynonymItem {
-                            last_content,
-                            first_content,
+                        FrameRole::Synonym {
+                            values,
+                            malformed: parent,
                             ..
                         },
                     ..
                 }) = self.stack.last_mut()
                 {
-                    let content = frame.first_text.unwrap_or_default();
-                    if first_content.is_none() && !content.is_empty() {
-                        *first_content = Some(content.clone());
+                    match (lang, content, malformed) {
+                        (Some(lang), Some(content), false) => {
+                            values.push(unica_metadata::LocalizedItem::new(lang, content))
+                        }
+                        _ => *parent = true,
                     }
-                    *last_content = content;
+                }
+            }
+            FrameRole::SynonymLang | FrameRole::SynonymContent => {
+                if let Some(Frame {
+                    role:
+                        FrameRole::SynonymItem {
+                            lang,
+                            content,
+                            malformed,
+                        },
+                    ..
+                }) = self.stack.last_mut()
+                {
+                    let field = if matches!(frame.role, FrameRole::SynonymLang) {
+                        lang
+                    } else {
+                        content
+                    };
+                    *malformed |= field
+                        .replace(frame.first_text.unwrap_or_default())
+                        .is_some();
                 }
             }
             FrameRole::RegistrationName if self.stack.len() >= 2 => {
@@ -1278,6 +1636,8 @@ enum FrameRole {
     Configuration,
     Properties,
     Property(String),
+    /// A root property of named parts.
+    Parts(String),
     ChildObjects {
         primary: bool,
     },
@@ -1291,17 +1651,27 @@ enum FrameRole {
     },
     RegistrationName,
     Synonym {
-        ru: Option<String>,
-        fallback: Option<String>,
+        property: &'static str,
+        values: Vec<unica_metadata::LocalizedItem>,
+        malformed: bool,
     },
     SynonymItem {
-        lang: String,
-        last_content: String,
-        first_content: Option<String>,
+        lang: Option<String>,
+        content: Option<String>,
+        malformed: bool,
     },
     SynonymLang,
     SynonymContent,
 }
+
+fn localized_root_property(name: &str) -> Option<&'static str> {
+    unica_metadata::descriptor_operations::CONFIGURATION_LOCALIZED_PROPERTIES
+        .iter()
+        .find_map(|(tag, _)| (*tag == name).then_some(*tag))
+}
+
+/// The root properties of named parts the view reads, from 8.5.4.
+const COMPOSITE_ROOT_PROPERTIES: &[&str] = &["ActionOnExtendedConfigurationObjectsMissing"];
 
 fn is_root_property(name: &str) -> bool {
     matches!(
@@ -1322,10 +1692,17 @@ fn is_root_property(name: &str) -> bool {
             | "SynchronousPlatformExtensionAndAddInCallUseMode"
             | "DatabaseTablespacesUseMode"
             | "MainClientApplicationWindowMode"
+            | "MainClientApplicationWindowInterfaceVariant"
+            | "ClientApplicationTheme"
+            | "ClientApplicationWindowsOpenVariant"
+            | "Version85InterfaceMigrationMode"
+            | "ActionOnConfigurationObjectMissing"
+            | "DefaultExtensionPropertyCheckAction"
+            | "TypeReductionByConfigurationExtensionMode"
             | "Comment"
             | "NamePrefix"
             | "UpdateCatalogAddress"
-    )
+    ) || unica_metadata::configuration::ROOT_FORM_SLOTS.contains(&name)
 }
 
 #[cfg(test)]
@@ -1640,7 +2017,8 @@ mod tests {
 
     /// One topology answers every object of a source state: it is reused
     /// while every file it was built from keeps its stamp, and built again
-    /// once a subsystem descriptor changes (#2235).
+    /// once a subsystem descriptor changes.
+    /// rule: INV.SOURCE.RELATIONS-ANSWER-IN-ONE-BRANCH
     #[test]
     fn retained_subsystem_topology_is_reused_until_a_descriptor_changes() {
         let directory = tempfile::tempdir().unwrap();
@@ -1656,10 +2034,9 @@ mod tests {
         let root = Arc::new(unica_workspace::read::open_source_directory(&path).unwrap());
         let cache = settled_cache();
         let module = |name: &str| {
-            unica_address::source_target::MetadataAddress::parse(
-                unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-                &format!("CommonModule.{name}"),
-            )
+            unica_address::source_target::MetadataAddress::parse_logical(&format!(
+                "CommonModule.{name}"
+            ))
             .unwrap()
         };
 
@@ -1675,6 +2052,7 @@ mod tests {
         assert_eq!(rebuilt.memberships_of(&module("Other"), None).len(), 1);
     }
 
+    /// rule: INV.SOURCE.CONFIGURATION-ROOT-CACHE-REUSE
     #[test]
     fn retained_registrations_are_reused_until_their_file_changes() {
         let fixture = artifact_root("First");
@@ -1718,6 +2096,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.CONFIGURATION-ROOT-CACHE-REUSE
     #[test]
     fn a_stamp_inside_the_racy_window_is_never_retained() {
         let fixture = artifact_root("First");
@@ -1751,6 +2130,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.CONFIGURATION-ROOT-CACHE-REUSE
     #[test]
     fn stamps_differ_by_every_identity_field() {
         use unica_source_contract::read::FileStamp;
@@ -1770,6 +2150,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.CONFIGURATION-ROOT-CACHE-REUSE
     #[test]
     fn a_file_changed_during_its_parse_is_not_retained() {
         let fixture = artifact_root("First");
@@ -1811,7 +2192,7 @@ mod tests {
             parser
                 .feed(
                     &std::fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
-                        "../../tests/fixtures/platform_8_3_27/support-edit-bin-only/src/Ext/ParentConfigurations.bin",
+                        "../../tests/fixtures/formats/platform_xml/2.20/support-edit-bin-only/src/Ext/ParentConfigurations.bin",
                     ))
                     .unwrap(),
                 )
@@ -1838,6 +2219,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.CONFIGURATION-ROOT-CACHE-REUSE
     #[test]
     fn every_payload_file_invalidates_the_retained_root() {
         let fixture = artifact_root("First");
@@ -1885,6 +2267,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.CONFIGURATION-ROOT-CACHE-REUSE
     #[test]
     fn a_poisoned_retained_index_is_rebuilt() {
         let fixture = artifact_root("First");
@@ -1909,6 +2292,7 @@ mod tests {
         assert!(Arc::ptr_eq(&rebuilt, &retained));
     }
 
+    /// rule: INV.SOURCE.CONFIGURATION-ROOT-CACHE-REUSE
     #[test]
     fn a_poisoned_slot_is_emptied_and_reused() {
         let fixture = artifact_root("First");
@@ -1960,5 +2344,72 @@ mod tests {
             state.properties.get("Comment").map(String::as_str),
             Some("")
         );
+    }
+}
+
+#[cfg(test)]
+mod root_version_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn parent_version_keeps_literal_spelling_and_ignores_prolog_lookalikes() {
+        for version in ["2.20", "2.21", "2.&#50;0", "2.20 "] {
+            let header=format!("<?xml version='1.0'?><!-- version='wrong' --><cfg:MetaDataObject xmlns:cfg='{MD_NS}' note='>' version='{version}'>");
+            assert_eq!(
+                read_configuration_root_version_literal(Cursor::new(header.into_bytes()), &|| Ok(
+                    ()
+                ))
+                .unwrap(),
+                Some(version.to_string())
+            );
+        }
+        let header = format!("<MetaDataObject xmlns='{MD_NS}'>");
+        assert_eq!(
+            read_configuration_root_version_literal(Cursor::new(header.into_bytes()), &|| Ok(()))
+                .unwrap(),
+            None
+        );
+    }
+
+    struct HeaderOnly(Cursor<Vec<u8>>);
+    impl Read for HeaderOnly {
+        fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+            if self.0.position() == self.0.get_ref().len() as u64 {
+                return Err(io::Error::other(
+                    "the full owner body was already proved; do not parse it again",
+                ));
+            }
+            self.0.read(bytes)
+        }
+    }
+    impl Seek for HeaderOnly {
+        fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+            self.0.seek(position)
+        }
+    }
+
+    #[test]
+    fn lexical_version_probe_stops_before_parsing_the_owner_body() {
+        let header=format!("\u{feff}<?xml version='1.0'?><!-- Юникод & raw comment --><m:MetaDataObject xmlns:m='{MD_NS}' version='2.20'>");
+        let source = HeaderOnly(Cursor::new(header.into_bytes()));
+        assert_eq!(
+            read_configuration_root_version_literal(source, &|| Ok(())).unwrap(),
+            Some("2.20".into())
+        );
+    }
+
+    #[test]
+    fn lexical_version_probe_preserves_checkpoint_refusal() {
+        let source =
+            Cursor::new(format!("<MetaDataObject xmlns='{MD_NS}' version='2.20'>").into_bytes());
+        let error = read_configuration_root_version_literal(source, &|| {
+            Err(ViewError::new(
+                unica_refusal::RefusalCode::Cancelled,
+                "cancelled header observation",
+            ))
+        })
+        .unwrap_err();
+        assert_eq!(error.code(), unica_refusal::RefusalCode::Cancelled);
     }
 }

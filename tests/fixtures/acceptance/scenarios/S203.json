@@ -1,0 +1,29 @@
+{
+  "area": "Макеты",
+  "task": "Добавить печатный макет документу",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.АктОбУничтоженииПерсональныхДанных",
+        "ops": [
+          {
+            "op": "template.add",
+            "args": {
+              "items": [
+                {
+                  "name": "ПФ_MXL_Акт",
+                  "templateType": "SpreadsheetDocument"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S203"
+}

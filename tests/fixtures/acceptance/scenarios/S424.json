@@ -1,0 +1,105 @@
+{
+  "id": "S424",
+  "name": "interface-group-with-a-dot-is-addressed",
+  "issue": 1356,
+  "area": "Подсистемы и интерфейс",
+  "task": "Группа командного интерфейса CommandGroup.X публикуется адресом с экранированной точкой и читается по нему; порядок её команд задаётся на этом адресе, а commandOrder.set на интерфейсе отказывает без записи с next к его словарю",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Subsystem.Администрирование.Interface.Group"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/5/at",
+          "eq": "main:Subsystem.Администрирование.Interface.Group.CommandGroup\\.НастройкиПрограммы"
+        },
+        {
+          "pointer": "/data/items/5/commands",
+          "eq": 2
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Subsystem.Администрирование.Interface.Group.CommandGroup\\.НастройкиПрограммы"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/command",
+          "eq": "CommonCommand.НастройкиПрограммы"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Subsystem.Администрирование.Interface",
+        "ops": [
+          {
+            "op": "commandOrder.set",
+            "args": {
+              "values": {
+                "group": "CommandGroup.НастройкиПрограммы",
+                "commands": [
+                  "CommonCommand.ПараметрыРаботыПрограммы",
+                  "CommonCommand.НастройкиПрограммы"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: apply operation `commandOrder.set` does not apply to Interface `main:Subsystem.Администрирование.Interface`; it addresses `Subsystem.Name[.Subsystem.Child].Inte",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].at"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:Subsystem.Администрирование.Interface"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Subsystem.Администрирование.Interface.Group.CommandGroup\\.НастройкиПрограммы",
+        "ops": [
+          {
+            "op": "commandOrder.set",
+            "args": {
+              "values": {
+                "commands": [
+                  "CommonCommand.ПараметрыРаботыПрограммы",
+                  "CommonCommand.НастройкиПрограммы"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ]
+    }
+  ]
+}

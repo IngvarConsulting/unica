@@ -6,7 +6,7 @@ use std::fs;
 use std::path::PathBuf;
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::*;
     use unica_metadata::MetadataKind;
 

@@ -1,8 +1,5 @@
 ---
 id: INV.PKG.BUILD-TOOL-CLOSURE
-check:
-  - tests/ci/test_build_unica_tools.py::BuildUnicaToolsTests.test_bundle_builder_downloads_shared_archive_once_and_declares_runtime_closure
-  - tests/ci/test_build_unica_tools.py::BuildUnicaToolsTests.test_upstream_archive_is_delivered_as_published_and_described_completely
 ---
 
 # Сборщик описывает все файлы внешнего архива

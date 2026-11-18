@@ -1,4 +1,4 @@
-use crate::application::{OperationResult, UnicaApplication};
+use crate::application::OperationResult;
 use crate::composition::testing::{
     with_meta_add_after_authorization_hook, with_meta_edit_before_reauthorization_hook,
 };
@@ -9,7 +9,7 @@ use crate::infrastructure::support_state::{
 use crate::infrastructure::test_fixtures;
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 use unica_metadata::request::MetaInfoRequest;
 use unica_metadata::validation_subject::MetadataValidationResult;
 use unica_metadata::MetaValidationStatus;
@@ -68,32 +68,17 @@ impl Drop for TempWorkspace {
     }
 }
 
+/// Набор `main` с источниками ссылок для добавляемых объектов: справочник,
+/// документ-регистратор, план счетов, план видов расчёта, задача и общий
+/// модуль с экспортными обработчиками `Run` и `Handle`. Снимок однажды записан
+/// этим же `unica.meta.add` поверх пустой конфигурации 8.3.27; сами добавления
+/// этих видов проверяет `meta_add_apply_all_23_kinds_is_atomic_and_duplicate_is_byte_stable`.
 fn create_configuration_workspace(label: &str) -> TempWorkspace {
     let workspace = TempWorkspace::new(label);
-    test_fixtures::copy_empty_configuration(workspace.path());
-    for (kind, name) in [
-        ("Catalog", "MetaAddSource"),
-        ("Document", "MetaAddRegistrar"),
-        ("ChartOfAccounts", "MetaAddAccounts"),
-        ("ChartOfCalculationTypes", "MetaAddCalculationTypes"),
-        ("Task", "MetaAddTask"),
-        ("CommonModule", "MetaAddHandlers"),
-    ] {
-        let added = call_add(workspace.path(), kind, name, false);
-        assert!(added.ok, "{kind}.{name}: {:?}", added.errors);
-    }
-    std::fs::write(
-        workspace
-            .path()
-            .join("src/CommonModules/MetaAddHandlers/Ext/Module.bsl"),
-        concat!(
-            "Procedure Run() Export\n",
-            "EndProcedure\n\n",
-            "Procedure Handle(Source, Cancel) Export\n",
-            "EndProcedure\n",
-        ),
-    )
-    .unwrap();
+    test_fixtures::copy_tree(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/meta-add-sources"),
+        workspace.path(),
+    );
     workspace
 }
 
@@ -140,7 +125,7 @@ fn add_args(workspace: &Path, kind: &str, name: &str, dry_run: bool) -> Map<Stri
 
 fn call_add(workspace: &Path, kind: &str, name: &str, dry_run: bool) -> OperationResult {
     let _cwd = ProcessCwdGuard::enter(workspace).unwrap();
-    UnicaApplication::new()
+    crate::composition::testing::application()
         .call_tool("unica.meta.add", &add_args(workspace, kind, name, dry_run))
         .expect("internal meta.add call")
 }
@@ -183,7 +168,7 @@ fn call_add_with_args_result(
     args: &Map<String, Value>,
 ) -> Result<OperationResult, String> {
     let _cwd = ProcessCwdGuard::enter(workspace)?;
-    UnicaApplication::new().call_tool("unica.meta.add", args)
+    crate::composition::testing::application().call_tool("unica.meta.add", args)
 }
 
 fn call_edit(
@@ -193,7 +178,7 @@ fn call_edit(
     dry_run: bool,
 ) -> OperationResult {
     let _cwd = ProcessCwdGuard::enter(workspace).unwrap();
-    UnicaApplication::new()
+    crate::composition::testing::application()
         .call_tool(
             "unica.meta.edit",
             &Map::from_iter([
@@ -236,8 +221,7 @@ fn check_metadata(workspace: &Path, metadata_path: &str) -> MetadataValidationRe
     };
     let request = MetaInfoRequest {
         source_set: "main".to_string(),
-        metadata_path: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, metadata_path)
-            .unwrap(),
+        metadata_path: MetadataAddress::parse_logical(metadata_path).unwrap(),
         sections: Vec::new(),
         limit: 0,
     };
@@ -959,7 +943,7 @@ fn meta_add_apply_honors_prepublication_cancellation_without_writes() {
     let _cwd = ProcessCwdGuard::enter(workspace.path()).unwrap();
     let cancellation = CancellationToken::new();
     cancellation.cancel();
-    let result = UnicaApplication::new()
+    let result = crate::composition::testing::application()
         .call_tool_cancellable(
             "unica.meta.add",
             &add_args(workspace.path(), "Catalog", "Cancelled", false),
@@ -1288,7 +1272,7 @@ fn metadata_operations_address_the_workspace_through_cwd_from_outside() {
     let cwd = json!(workspace.path().display().to_string());
     let target = json!("Catalog.CwdAddressed");
 
-    let added = UnicaApplication::new()
+    let added = crate::composition::testing::application()
         .call_tool(
             "unica.meta.add",
             &Map::from_iter([
@@ -1306,7 +1290,7 @@ fn metadata_operations_address_the_workspace_through_cwd_from_outside() {
         .join("src/Catalogs/CwdAddressed.xml")
         .is_file());
 
-    let inspected = UnicaApplication::new()
+    let inspected = crate::composition::testing::application()
         .call_tool(
             "unica.meta.info",
             &Map::from_iter([
@@ -1318,7 +1302,7 @@ fn metadata_operations_address_the_workspace_through_cwd_from_outside() {
         .expect("typed meta.info call");
     assert!(inspected.ok, "{:?}", inspected.errors);
 
-    let edited = UnicaApplication::new()
+    let edited = crate::composition::testing::application()
         .call_tool(
             "unica.meta.edit",
             &Map::from_iter([

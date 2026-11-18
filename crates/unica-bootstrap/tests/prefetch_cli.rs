@@ -114,15 +114,15 @@ fn manifest_with_engine(
     let target = |name: &str| {
         serde_json::json!({
             "asset": {
-                "name": format!("rlm-tools-bsl-{name}.tar.gz"),
+                "name": format!("archive-tools-{name}.tar.gz"),
                 "url": format!(
-                    "https://github.com/IngvarConsulting/unica-toolchain/releases/download/rlm-tools-bsl-v1.33.0-build.3/rlm-tools-bsl-{name}.tar.gz"
+                    "https://github.com/IngvarConsulting/unica-toolchain/releases/download/archive-tools-v1.33.0-build.3/archive-tools-{name}.tar.gz"
                 ),
                 "mediaType": "application/gzip",
                 "sha256": engine_hash
             },
             "files": [{
-                "path": format!("bin/{name}/rlm-bsl-index"),
+                "path": format!("bin/{name}/archive-tool-index"),
                 "sha256": file_hash,
                 "executable": true
             }]
@@ -138,7 +138,7 @@ fn manifest_with_engine(
         }
     });
     manifest.artifacts.insert(
-        "rlm-tools-bsl".to_owned(),
+        "archive-tools".to_owned(),
         serde_json::from_value(engine).expect("engine fixture"),
     );
     manifest
@@ -186,6 +186,7 @@ impl Downloader for AssetDownloader {
     }
 }
 
+/// rule: INV.PKG.PREFETCH-EXIT-STATUS
 #[test]
 fn prefetch_cli_reports_success_and_artifact_disk_failures() {
     let host = HostTarget::current().expect("supported test host");
@@ -195,8 +196,8 @@ fn prefetch_cli_reports_success_and_artifact_disk_failures() {
         host.as_str(),
         std::env::consts::EXE_SUFFIX
     );
-    let engine = b"rlm-bsl-index";
-    let engine_path = format!("bin/{}/rlm-bsl-index", host.as_str());
+    let engine = b"archive-tool-index";
+    let engine_path = format!("bin/{}/archive-tool-index", host.as_str());
     let core_archive = tar_gz(&[(&core_path, core)]);
     let engine_archive = tar_gz(&[(&engine_path, engine)]);
     let mut manifest = manifest_with_engine(&core_archive, core, &engine_archive, engine);
@@ -215,7 +216,7 @@ fn prefetch_cli_reports_success_and_artifact_disk_failures() {
             .replace("/v0.7.0/", &format!("/{}/", manifest.release.tag));
     }
     let core_asset = format!("unica-runtime-{}.tar.gz", host.as_str());
-    let engine_asset = format!("rlm-tools-bsl-{}.tar.gz", host.as_str());
+    let engine_asset = format!("archive-tools-{}.tar.gz", host.as_str());
     let downloader = Arc::new(AssetDownloader::new(vec![
         (&core_asset, core_archive),
         (&engine_asset, engine_archive),

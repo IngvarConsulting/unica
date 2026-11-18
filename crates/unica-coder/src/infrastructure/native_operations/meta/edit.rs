@@ -12,10 +12,10 @@ pub(super) fn template_seed_emitters(
         content_xml: unica_templates_designer::descriptor::template_content_xml,
     }
 }
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_metadata_designer::edit::*;
 use unica_metadata_designer::resource_plan::TypedOperationPostImage;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_metadata_designer::resource_plan::{TypedChildObservation, TypedChildResourcePlan};
 
 use crate::application::ports::PreparedMetadataMutation;
@@ -26,14 +26,14 @@ use crate::infrastructure::platform_xml_source_targets::{
 use crate::infrastructure::support_guard::{
     evaluate_resolved_support_guard, ResolvedSupportGuardCheck,
 };
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use roxmltree::Document;
 use std::fs;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use std::path::{Path, PathBuf};
 use unica_address::source_target::{MetadataAddress, SourceTarget, TargetKind};
 use unica_metadata::MetaDiagnosticCode;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_metadata::{
     MetaDiagnostic, MetaElementDefinition, MetaFillValue, MetaPublicationAction, MetadataKind,
     MetadataType,
@@ -134,7 +134,9 @@ pub(crate) fn resolve_typed_metadata_object(
                 .with_metadata_path(metadata_path.clone()),
             )
         })?;
-    if descriptor.root_element().attribute("version") != Some(ACTIVE_FORMAT_PROFILE.export_format) {
+    if !unica_source_designer::format_profile::is_writable_root_version(
+        descriptor.root_element().attribute("version"),
+    ) {
         return Err(unica_metadata_designer::edit::typed_diagnostic(
             MetaDiagnosticCode::CapabilityUnavailable,
             format!(
@@ -198,6 +200,20 @@ pub(crate) fn prepare_typed_edit(
     context: &WorkspaceContext,
 ) -> Result<Box<dyn PreparedMetadataMutation>, unica_metadata::request::MetaFailure> {
     let target = request.metadata_path.clone();
+    if resolved.handle.source_set_kind() != unica_source_contract::SourceSetKind::Configuration
+        && request.operations.iter().any(|operation| {
+            matches!(operation, unica_metadata::MetaEditOperation::Update { elements, .. }
+                if elements.iter().any(|element| element.tool_tip.is_some()))
+        })
+    {
+        return Err(unica_metadata_designer::edit::typed_diagnostic(
+            MetaDiagnosticCode::InvalidArguments,
+            "toolTip requires a catalog tabular-section attribute in an ordinary configuration",
+            Some("toolTip"),
+        )
+        .with_metadata_path(target)
+        .into());
+    }
     let diagnostics = Vec::new();
     match evaluate_resolved_support_guard(
         &resolved.descriptor_path,
@@ -254,7 +270,7 @@ pub(crate) fn prepare_typed_edit(
     )
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(super) fn parse_typed_fill_value(
     properties_text: &str,
 ) -> Result<Option<MetaFillValue>, MetaDiagnostic> {
@@ -270,7 +286,7 @@ pub(super) fn parse_typed_fill_value(
     unica_metadata_designer::edit::parse_typed_fill_value_node(document.root_element())
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(super) fn parse_typed_metadata_type(
     properties_text: &str,
 ) -> Result<MetadataType, MetaDiagnostic> {
@@ -380,7 +396,7 @@ pub(crate) mod tests {
         )
     }
 
-    use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+    use unica_address::source_target::MetadataAddress;
     use unica_metadata::{
         DateFractions, MetaCollection, MetaEditOperation, MetaElementInput, MetaElementUpdateInput,
         MetaEventSource, MetaFillValue, MetaPosition, MetaPropertyChanges, MetaPropertyInput,
@@ -436,11 +452,7 @@ pub(crate) mod tests {
         for variant in [
             MetadataTypeVariant::Boolean,
             MetadataTypeVariant::Reference {
-                metadata_path: MetadataAddress::parse(
-                    PLATFORM_XML_8_3_27_FORMAT_2_20,
-                    "Catalog.Items",
-                )
-                .unwrap(),
+                metadata_path: MetadataAddress::parse_logical("Catalog.Items").unwrap(),
             },
         ] {
             let metadata_type = MetadataType::new(vec![variant]).unwrap();
@@ -631,7 +643,7 @@ pub(crate) mod tests {
 
     fn metadata_reference(path: &str) -> MetadataReference {
         MetadataReference {
-            metadata_path: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, path).unwrap(),
+            metadata_path: MetadataAddress::parse_logical(path).unwrap(),
         }
     }
 
@@ -715,10 +727,11 @@ pub(crate) mod tests {
         }
     }
 
-    /// #1385: the 8.3.27 export groups an owner's `ChildObjects` by kind in an
+    /// The 8.3.27 export groups an owner's `ChildObjects` by kind in an
     /// order of its own per owner kind (settled by load and export of
     /// reverse-ordered descriptors), so a new entry lands before the first
     /// entry of a later kind, else at the end.
+    /// rule: INV.SOURCE.CHILD-OBJECTS-PLATFORM-ORDER
     #[test]
     fn child_objects_insert_into_the_platform_slot_of_their_owner_kind() {
         fn owner_xml(kind: &str, children: &[(&str, &str)]) -> String {
@@ -974,6 +987,81 @@ pub(crate) mod tests {
         .is_err());
     }
 
+    /// #2163: `props.set` takes the synonym as one NStr string, the whole
+    /// value: the element then holds exactly the listed languages; text
+    /// without a language code is refused.
+    #[test]
+    fn synonym_takes_the_whole_value_in_nstr_form() {
+        use unica_metadata::MetadataKind::Catalog;
+        let (mut xml, _) =
+            unica_metadata_designer::template_catalog::minimal_metadata_xml_for_tests(
+                Catalog, "Evidence",
+            )
+            .unwrap();
+        let set = |xml: &mut String, value: &str| {
+            let changes = unica_metadata::request::parse_property_changes(
+                serde_json::json!({ "Synonym": value }).as_object().unwrap(),
+                Catalog,
+            )
+            .unwrap();
+            apply_typed_operations(xml, &[MetaEditOperation::SetProperties { values: changes }])
+                .unwrap();
+        };
+        let synonym = |xml: &str| {
+            let document = roxmltree::Document::parse(xml.trim_start_matches('\u{feff}')).unwrap();
+            let properties = document
+                .descendants()
+                .find(|node| node.has_tag_name("Properties"))
+                .unwrap();
+            let synonym = properties
+                .children()
+                .find(|node| node.has_tag_name("Synonym"))
+                .unwrap();
+            synonym
+                .descendants()
+                .filter(|node| node.tag_name().name() == "item")
+                .map(|item| {
+                    let text = |name: &str| {
+                        item.children()
+                            .find(|node| node.tag_name().name() == name)
+                            .and_then(|node| node.text())
+                            .unwrap_or_default()
+                            .to_string()
+                    };
+                    (text("lang"), text("content"))
+                })
+                .collect::<Vec<_>>()
+        };
+        set(&mut xml, "ru = 'Товары ''склада'''; en = 'Goods'");
+        assert_eq!(
+            synonym(&xml),
+            [
+                ("ru".into(), "Товары 'склада'".into()),
+                ("en".into(), "Goods".into())
+            ]
+        );
+        let before = xml.clone();
+        set(&mut xml, "ru = 'Товары ''склада'''; en = 'Goods'");
+        assert_eq!(xml, before, "the value read back is written without change");
+        set(&mut xml, "en = 'Items'");
+        assert_eq!(synonym(&xml), [("en".into(), "Items".into())]);
+        set(&mut xml, "");
+        assert!(synonym(&xml).is_empty());
+        for value in [
+            serde_json::json!("Товары"),
+            serde_json::json!("ru = 'А'; ru = 'Б'"),
+            serde_json::json!("ru = 'А"),
+            serde_json::json!(1),
+        ] {
+            let error = unica_metadata::request::parse_property_changes(
+                serde_json::json!({ "Synonym": value }).as_object().unwrap(),
+                Catalog,
+            )
+            .unwrap_err();
+            assert_eq!(error.field.as_deref(), Some("values.Synonym"), "{value}");
+        }
+    }
+
     #[test]
     fn typed_set_properties_and_relations_apply_without_legacy_dsl() {
         let mut xml = object_xml(
@@ -1037,7 +1125,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn retired_dsl_scalar_typed_properties_round_trip_through_template_writer_and_info() {
+    fn scalar_typed_properties_round_trip_through_template_writer_and_info() {
         use unica_metadata::MetadataKind::*;
 
         let cases: &[(
@@ -1443,7 +1531,9 @@ pub(crate) mod tests {
                 });
 
                 let expected_xml = match value {
-                    MetaPropertyValue::Type(_) => unreachable!("scalar property test matrix"),
+                    MetaPropertyValue::Type(_) | MetaPropertyValue::Localized(_) => {
+                        unreachable!("scalar property test matrix")
+                    }
                     MetaPropertyValue::String(value) => {
                         format!(
                             "<{xml_tag}>{}</{xml_tag}>",
@@ -1652,7 +1742,7 @@ pub(crate) mod tests {
         }
     }
 
-    /// #1385: the platform names a tabular section's generated types after
+    /// The platform names a tabular section's generated types after
     /// it and renames them with it; their ids stay. Every other byte of the
     /// platform descriptor survives the rename.
     #[test]
@@ -1704,7 +1794,7 @@ pub(crate) mod tests {
         );
     }
 
-    /// #1385: the 8.3.27 export writes `Use` before `LineNumberLength`; the
+    /// The 8.3.27 export writes `Use` before `LineNumberLength`; the
     /// sections of catalogs and characteristic-type charts carry both,
     /// documents only `LineNumberLength`, data processors neither.
     #[test]
@@ -1753,7 +1843,7 @@ pub(crate) mod tests {
         }
     }
 
-    /// #1385: an owner command carries the property set of the 8.3.27 export.
+    /// An owner command carries the property set of the 8.3.27 export.
     #[test]
     fn new_owner_command_has_the_platform_property_set() {
         let mut xml = object_xml("Catalog", "Owner", "");
@@ -1869,7 +1959,10 @@ pub(crate) mod tests {
                     MetaElementInput::named("СуммаЗакупокЗа30Дней"),
                     MetaElementInput {
                         name: "СуммаПродажЗа30Дней".into(),
-                        synonym: Some("Сумма продаж за месяц".into()),
+                        synonym: Some(vec![unica_metadata::LocalizedItem::new(
+                            "ru",
+                            "Сумма продаж за месяц",
+                        )]),
                         ..MetaElementInput::default()
                     },
                 ],
@@ -1888,7 +1981,7 @@ pub(crate) mod tests {
         );
     }
 
-    /// #323, first defect. A CRLF descriptor must not grow a literal `&#13;`
+    /// A CRLF descriptor must not grow a literal `&#13;`
     /// entity: the platform writes none — the 8.3.27 dump has zero occurrences
     /// across 31 009 structural XML files — so an inserted element carries the
     /// file's own EOL rather than an escaped carriage return in content.
@@ -1911,7 +2004,7 @@ pub(crate) mod tests {
         assert!(xml.contains("<Resource uuid="), "{xml}");
     }
 
-    /// #323, second defect. A new register field must not silently disagree
+    /// A new register field must not silently disagree
     /// with the fields already in the register. The corpus gives no single
     /// standard value — a 8.3.27 vendor dump has 2169 of 2490 information
     /// register resources on `Use/Use` and 42 registers mixed inside
@@ -1954,7 +2047,7 @@ pub(crate) mod tests {
         );
     }
 
-    /// Review of #444: the change covers three settings and two collections,
+    /// The change covers three settings and two collections,
     /// so the regression has to prove `Indexing` and the `Dimension` branch as
     /// well — otherwise either could break with the suite still green.
     #[test]
@@ -2036,32 +2129,6 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    /// #1119: a child tree past the former 64 MiB is read whole; its size is
-    /// no reason to refuse.
-    #[test]
-    fn typed_child_tree_reads_past_the_former_byte_cap() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-meta-edit-child-large-{}",
-            uuid::Uuid::new_v4()
-        ));
-        std::fs::create_dir_all(root.join("Ext")).unwrap();
-        std::fs::write(root.join("Ext/small.bin"), b"x").unwrap();
-        std::fs::File::create(root.join("large.bin"))
-            .unwrap()
-            .set_len(65 * 1024 * 1024)
-            .unwrap();
-
-        let (read, _) = read_typed_child_tree(&root).unwrap();
-
-        assert_eq!(read.len(), 2);
-        let large = read
-            .iter()
-            .find(|(path, _)| path == std::path::Path::new("large.bin"))
-            .unwrap();
-        assert_eq!(large.1.len(), 65 * 1024 * 1024);
-        let _ = std::fs::remove_dir_all(root);
-    }
-
     #[test]
     fn typed_operations_are_ordered_support_scoped_attributes_and_emit_structured_types() {
         let mut xml = object_xml("Document", "Order", "<RegisterRecords/>");
@@ -2130,7 +2197,7 @@ pub(crate) mod tests {
     fn tracked_platform_uuid_fixture_round_trips_through_the_typed_emitter() {
         let xml = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/unica_mcp_script_parity/",
+            "/tests/fixtures/",
             "meta-validate-subordinate-register/InformationRegisters/SubordinateRegister.xml"
         ));
         let document = Document::parse(xml).unwrap();
@@ -2458,17 +2525,14 @@ pub(crate) mod tests {
                 .iter()
                 .map(|path| {
                     MetaRelationTarget::EventSource(MetaEventSource::Object {
-                        metadata_path: MetadataAddress::parse(
-                            PLATFORM_XML_8_3_27_FORMAT_2_20,
-                            path,
-                        )
-                        .unwrap(),
+                        metadata_path: MetadataAddress::parse_logical(path).unwrap(),
                     })
                 })
                 .collect(),
         }
     }
 
+    /// rule: INV.SOURCE.EVENT-SUBSCRIPTION-SOURCE-LOCAL-CHANGE
     #[test]
     fn typed_event_source_add_remove_preserve_old_order_bytes_and_repeat_as_noop() {
         let first = "<v8:Type>cfg:CatalogObject.ПримерВ</v8:Type>";
@@ -2501,6 +2565,7 @@ pub(crate) mod tests {
         assert_ne!(xml, before);
     }
 
+    /// rule: INV.SOURCE.EVENT-SUBSCRIPTION-SOURCE-LOCAL-CHANGE
     #[test]
     fn typed_event_source_incremental_edits_keep_aliases_type_ids_and_distinct_manager_classes() {
         let retained = "<d:Type>c:ConstantManager.Setting</d:Type>";
@@ -2515,11 +2580,7 @@ pub(crate) mod tests {
             relation: MetaRelation::Source,
             mode: RelationEditMode::Remove,
             targets: vec![MetaRelationTarget::EventSource(MetaEventSource::Manager {
-                metadata_path: MetadataAddress::parse(
-                    PLATFORM_XML_8_3_27_FORMAT_2_20,
-                    "Constant.setting",
-                )
-                .unwrap(),
+                metadata_path: MetadataAddress::parse_logical("Constant.setting").unwrap(),
                 source_class: Some(unica_metadata::EventSourceClass::ConstantValueManager),
             })],
         };
@@ -2558,6 +2619,7 @@ pub(crate) mod tests {
         assert_eq!(xml, before.replace(family, &format!("{family}{appended}")));
     }
 
+    /// rule: INV.SOURCE.EVENT-SUBSCRIPTION-SOURCE-LOCAL-CHANGE
     #[test]
     fn typed_event_source_incremental_add_declares_namespaces_and_preserves_bom_eol() {
         for eol in ["\n", "\r\n", "\r"] {
@@ -2603,6 +2665,7 @@ pub(crate) mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.EVENT-SUBSCRIPTION-SOURCE-LOCAL-CHANGE
     #[test]
     fn typed_event_source_incremental_edits_refuse_invalid_and_empty_results_without_writes() {
         for source in [
@@ -2674,7 +2737,7 @@ pub(crate) mod tests {
     }
 
     /// Source расширения из штатной выгрузки 8.3.27: тип основной
-    /// конфигурации записан `v8:TypeId` (#1361). Его не трогают ни правка
+    /// конфигурации записан `v8:TypeId`. Его не трогают ни правка
     /// другого свойства, ни замена логических источников.
     #[test]
     fn typed_event_source_replace_keeps_extension_type_ids_verbatim() {
@@ -2702,11 +2765,7 @@ pub(crate) mod tests {
 
         // The visible logical members unchanged: an exact-byte no-op.
         let visible = source_replace(vec![MetaEventSource::Object {
-            metadata_path: MetadataAddress::parse(
-                PLATFORM_XML_8_3_27_FORMAT_2_20,
-                "Catalog.Settings",
-            )
-            .unwrap(),
+            metadata_path: MetadataAddress::parse_logical("Catalog.Settings").unwrap(),
         }]);
         let before = xml.clone();
         apply_typed_operations(&mut xml, std::slice::from_ref(&visible)).unwrap();
@@ -2722,6 +2781,7 @@ pub(crate) mod tests {
         assert!(!xml.contains("CatalogObject.Settings"), "{xml}");
     }
 
+    /// rule: INV.SOURCE.EVENT-SUBSCRIPTION-SOURCE-LOCAL-CHANGE
     #[test]
     fn typed_event_source_semantic_noop_is_order_insensitive_and_preserves_exact_bytes() {
         let source = concat!(
@@ -2734,18 +2794,10 @@ pub(crate) mod tests {
         let before = xml.clone();
         let operation = source_replace(vec![
             MetaEventSource::Object {
-                metadata_path: MetadataAddress::parse(
-                    PLATFORM_XML_8_3_27_FORMAT_2_20,
-                    "Document.Sale",
-                )
-                .unwrap(),
+                metadata_path: MetadataAddress::parse_logical("Document.Sale").unwrap(),
             },
             MetaEventSource::Object {
-                metadata_path: MetadataAddress::parse(
-                    PLATFORM_XML_8_3_27_FORMAT_2_20,
-                    "Catalog.Items",
-                )
-                .unwrap(),
+                metadata_path: MetadataAddress::parse_logical("Catalog.Items").unwrap(),
             },
         ]);
 
@@ -2765,8 +2817,7 @@ pub(crate) mod tests {
         let mut xml = event_subscription_alias_xml(source);
         let before = xml.clone();
         let object = MetaEventSource::Object {
-            metadata_path: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Items")
-                .unwrap(),
+            metadata_path: MetadataAddress::parse_logical("Catalog.Items").unwrap(),
         };
 
         apply_typed_operations(
@@ -2791,8 +2842,7 @@ pub(crate) mod tests {
             )
             .replace(r#" xmlns:s="http://www.w3.org/2001/XMLSchema""#, "");
         let target = MetaEventSource::Object {
-            metadata_path: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Items")
-                .unwrap(),
+            metadata_path: MetadataAddress::parse_logical("Catalog.Items").unwrap(),
         };
 
         apply_typed_operations(&mut xml, &[source_replace(vec![target])]).unwrap();
@@ -2820,8 +2870,7 @@ pub(crate) mod tests {
             .replacen(r#" xmlns:d="http://v8.1c.ru/8.1/data/core""#, "", 1)
             .replacen(r#" xmlns:s="http://www.w3.org/2001/XMLSchema""#, "", 1);
         let target = MetaEventSource::Object {
-            metadata_path: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Items")
-                .unwrap(),
+            metadata_path: MetadataAddress::parse_logical("Catalog.Items").unwrap(),
         };
 
         apply_typed_operations(&mut xml, &[source_replace(vec![target])]).unwrap();
@@ -2838,9 +2887,7 @@ pub(crate) mod tests {
         let mut preimage = b"\xef\xbb\xbf".to_vec();
         preimage.extend_from_slice(lf.replace('\n', "\r\n").as_bytes());
         let operation = source_replace(vec![catalog_family()]);
-        let target =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "EventSubscription.Events")
-                .unwrap();
+        let target = MetadataAddress::parse_logical("EventSubscription.Events").unwrap();
         let context = unica_source_contract::workspace::WorkspaceContext {
             cwd: std::path::PathBuf::from("/unused"),
             workspace_root: std::path::PathBuf::from("/unused"),
@@ -2897,9 +2944,7 @@ pub(crate) mod tests {
             .replace('\n', "\r")
             .into_bytes();
         let operation = source_replace(vec![catalog_family()]);
-        let target =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "EventSubscription.Events")
-                .unwrap();
+        let target = MetadataAddress::parse_logical("EventSubscription.Events").unwrap();
         let context = unica_source_contract::workspace::WorkspaceContext {
             cwd: std::path::PathBuf::from("/unused"),
             workspace_root: std::path::PathBuf::from("/unused"),
@@ -2937,9 +2982,7 @@ pub(crate) mod tests {
     fn typed_event_source_build_rejects_mixed_eol_before_source_only_serialization() {
         let mixed = event_subscription_xml("<Source/>").replacen('\n', "\r\n", 1);
         let operation = source_replace(vec![catalog_family()]);
-        let target =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "EventSubscription.Events")
-                .unwrap();
+        let target = MetadataAddress::parse_logical("EventSubscription.Events").unwrap();
         let context = unica_source_contract::workspace::WorkspaceContext {
             cwd: std::path::PathBuf::from("/unused"),
             workspace_root: std::path::PathBuf::from("/unused"),
@@ -2977,7 +3020,7 @@ pub(crate) mod tests {
         );
     }
 
-    /// #1325: регистрация, встроенная во владельца прежними версиями Unica,
+    /// Регистрация, встроенная во владельца прежними версиями Unica,
     /// узнаётся по имени метаданных без учёта регистра и остаётся встроенной;
     /// новая — сворачивается в ссылку по имени.
     #[test]
@@ -3239,7 +3282,10 @@ pub(crate) mod tests {
                 None,
                 vec![MetaElementUpdateInput {
                     name: "Missing".into(),
-                    synonym: Some("must not upsert".into()),
+                    synonym: Some(vec![unica_metadata::LocalizedItem::new(
+                        "ru",
+                        "must not upsert",
+                    )]),
                     ..MetaElementUpdateInput::default()
                 }],
             )
@@ -5180,7 +5226,7 @@ pub(crate) mod tests {
         std::fs::create_dir_all(form_content.parent().unwrap()).unwrap();
         std::fs::write(
             &form_content,
-            minimal_typed_form_content("Document", "Order").as_bytes(),
+            minimal_typed_form_content("Document", "Order", "2.20").as_bytes(),
         )
         .unwrap();
         let child_before = std::fs::read(&child_descriptor).unwrap();
@@ -5354,7 +5400,7 @@ pub(crate) mod tests {
         .collect()
     }
 
-    /// Regression for #360. A Designer dump registers a form in the owner's
+    /// A Designer dump registers a form in the owner's
     /// `ChildObjects` as a bare `<Form>Name</Form>` element and keeps the real
     /// descriptor in `Forms/Name.xml`. Reading such an object must succeed for
     /// every payload shape the platform actually writes.

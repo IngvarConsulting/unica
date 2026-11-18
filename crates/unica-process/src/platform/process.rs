@@ -1,6 +1,9 @@
 #[cfg(any(windows, test))]
 mod windows_job_exit;
 
+#[cfg(test)]
+mod interrupt_tests;
+
 #[cfg(any(test, feature = "test-support"))]
 use std::cell::Cell;
 use std::ffi::OsString;
@@ -17,8 +20,71 @@ use std::thread;
 use std::time::{Duration, Instant};
 use unica_work_control::cancellation::{cancelled_error, CancellationToken};
 
+// resource-limit: process.poll-interval
+// class: step
+// unit: ms
+// scope: process
+// value: 25
+// resource: Интервал опроса состояния дерева дочерних процессов.
+// status: unproven
+// origin: коммит 5a75ae9f1 (feat: add bounded managed child process)
+// problem: неизвестно
+// on-reach: после паузы состояние проверяется снова до срока
 const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(25);
+// resource-limit: process.termination-wait-limit
+// class: deadline
+// unit: ms
+// scope: process
+// value: 500
+// resource: Ожидание завершения дочернего процесса после сигнала остановки.
+// status: unproven
+// origin: коммит 5a75ae9f1 (feat: add bounded managed child process)
+// problem: неизвестно
+// on-reach: процесс остаётся неподобранным, вывод собирается со статусом «termination pending»
 const TERMINATION_WAIT_LIMIT: Duration = Duration::from_millis(500);
+// resource-limit: process.second-interrupt-after
+// class: deadline
+// unit: ms
+// scope: process
+// value: 30000
+// resource: Ожидание ответа процесса, прерванного отменой, до второго прерывания без повторной отмены.
+// status: unproven
+// origin: #2896 (рекомендация v8-runner #296)
+// problem: без человека, который отменит ещё раз, вызов ждал бы итога агента Конфигуратора без срока
+// on-reach: процесс прерывается второй раз и бросает ожидание итога агента
+const SECOND_INTERRUPT_AFTER: Duration = Duration::from_secs(30);
+// resource-limit: process.interrupt-gap
+// class: step
+// unit: ms
+// scope: process
+// value: 1000
+// resource: Наименьший промежуток между первым и вторым прерыванием процесса.
+// status: unproven
+// origin: #2896 (договор v8-runner #296: второй сигнал раньше 1 с раннер не различает)
+// problem: второе прерывание сразу за первым раннер принял бы за одно
+// on-reach: второе прерывание ждёт, пока промежуток не пройдёт
+const INTERRUPT_GAP: Duration = Duration::from_secs(1);
+// resource-limit: process.kill-after-interrupts
+// class: deadline
+// unit: ms
+// scope: process
+// value: 10000
+// resource: Ожидание ответа процесса после второго прерывания до принудительного завершения его дерева.
+// status: unproven
+// origin: #2896 (договор v8-runner #296)
+// problem: процесс, который не отвечает и на второе прерывание, держал бы вызов без срока
+// on-reach: дерево процесса завершается принудительно, как при отмене без прерывания
+const KILL_AFTER_INTERRUPTS: Duration = Duration::from_secs(10);
+// resource-limit: process.reader-wait-limit
+// class: deadline
+// unit: ms
+// scope: process
+// value: 500
+// resource: Ожидание потока чтения stdout или stderr после завершения процесса.
+// status: unproven
+// origin: коммит 5a75ae9f1 (feat: add bounded managed child process)
+// problem: неизвестно
+// on-reach: тихо: захват потока считается пустым; построчное чтение возвращает Pending
 const READER_WAIT_LIMIT: Duration = Duration::from_millis(500);
 pub const STREAM_LINE_TOO_LONG_ERROR: &str = "line exceeds configured byte limit";
 pub const STREAM_RECORD_UNTERMINATED_ERROR: &str = "output ends inside a record";
@@ -80,7 +146,10 @@ impl JobAttachGateForTest {
 
     pub fn release(&self) {
         let (state, ready) = &*self.signal;
-        state.lock().expect("job attach gate state").released = true;
+        state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .released = true;
         ready.notify_all();
     }
 }
@@ -113,7 +182,7 @@ impl Drop for JobAttachGateForTest {
         self.release();
         job_attach_gates()
             .lock()
-            .expect("job attach gate registry")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&self.program);
     }
 }
@@ -144,7 +213,27 @@ fn wait_at_job_attach_gate_for_test(process: &Command) {
         }
     }
 }
+// resource-limit: process.stdout-capture-bytes
+// class: retention
+// unit: bytes
+// scope: process
+// value: 1048576
+// resource: Объём захватываемого stdout дочернего процесса по умолчанию.
+// status: unproven
+// origin: коммит 2e4e3d7f1 (fix: bound managed process tree output)
+// problem: неизвестно
+// on-reach: сохраняется хвост, флаг stdout_truncated, вызов неуспешен с пометкой «stdout capture truncated; result is not parseable»
 pub const STDOUT_CAPTURE_LIMIT: usize = 1024 * 1024;
+// resource-limit: process.stderr-capture-bytes
+// class: retention
+// unit: bytes
+// scope: process
+// value: 262144
+// resource: Объём захватываемого stderr дочернего процесса по умолчанию.
+// status: unproven
+// origin: коммит 2e4e3d7f1 (fix: bound managed process tree output)
+// problem: неизвестно
+// on-reach: сохраняется хвост, флаг stderr_truncated и пометка «earlier stderr diagnostics omitted»
 pub const STDERR_CAPTURE_LIMIT: usize = 256 * 1024;
 
 #[derive(Debug)]
@@ -902,6 +991,37 @@ pub fn reap_runtime_authority_test_child(process_id: u32) {
     }
 }
 
+/// Whether a process of the managed tree may leave its group on its own.
+///
+/// `Contained`: every descendant stays in the group and ends with it.
+/// `AllowsBreakaway`: a descendant that itself asks to leave the group (on
+/// Windows, `CREATE_BREAKAWAY_FROM_JOB`) leaves it; the others end with the
+/// group as before. The pinned runner starts its live Designer agent so.
+/// On Unix a process leaves the group by opening its own session, which no
+/// group forbids: the policy changes nothing there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobPolicy {
+    Contained,
+    AllowsBreakaway,
+}
+
+/// What a cancel does to the managed process.
+///
+/// `Terminate`: the tree ends at once (on Unix after a short grace for
+/// SIGTERM). `Interrupt`: the process answers a cancel itself, as v8-runner
+/// does. The first cancel interrupts it (Unix: SIGTERM to its group; Windows:
+/// CTRL_BREAK to its console process group) and Unica waits for its answer.
+/// A repeated cancel, or [`SECOND_INTERRUPT_AFTER`] without one, interrupts it
+/// again, at least [`INTERRUPT_GAP`] after the first. [`KILL_AFTER_INTERRUPTS`]
+/// after the second interrupt without an exit the tree ends. A hard cancel
+/// ([`CancellationToken::cancel_now`]) ends it at once, and so does a cancel
+/// on Windows when this process has no console to send the interrupt through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CancelPolicy {
+    Terminate,
+    Interrupt,
+}
+
 #[derive(Debug, Clone)]
 pub struct ManagedCommand {
     pub program: PathBuf,
@@ -962,6 +1082,16 @@ pub enum ProcessLineReply {
     Stop,
 }
 
+// resource-limit: process.stdin-reply-bytes
+// class: format
+// unit: bytes
+// scope: line
+// value: 4096
+// resource: Размер одной строки ответа в stdin дочернего процесса.
+// status: unproven
+// origin: #1734
+// problem: неизвестно
+// on-reach: ответ отвергается: «process stdin reply must be one LF-terminated UTF-8 line of at most 4096 bytes»
 const STREAM_REPLY_LIMIT: usize = 4096;
 
 /// Only the pipe writer runs off-thread. ManagedChild remains the sole owner
@@ -1084,6 +1214,29 @@ pub struct ManagedChild {
     timeout: Option<Duration>,
     cancellation: CancellationToken,
     capture_limits: Option<(usize, usize)>,
+    /// `Some` for [`CancelPolicy::Interrupt`]: the interrupts sent so far.
+    interrupts: Option<Interrupts>,
+}
+
+/// The interrupts a cancel sent to a process that answers it itself.
+#[derive(Default)]
+struct Interrupts {
+    first: Option<Instant>,
+    second: Option<Instant>,
+    /// Held from the first interrupt until the process ends: the task of the
+    /// token shows that its cancel waits for the answer of the process.
+    waiting: Option<unica_work_control::cancellation::AwaitingInterruptedWork>,
+}
+
+/// What a cancel does to the process at this poll.
+#[derive(Debug, PartialEq, Eq)]
+enum CancelStep {
+    /// The process was interrupted and answers itself: wait for its exit.
+    Wait,
+    /// End the tree as a cancel without interrupts does.
+    Terminate,
+    /// The interrupts got no answer, or the cancel is hard: end the tree now.
+    Kill,
 }
 
 /// Where a run that hands its process tree over failed.
@@ -1347,6 +1500,15 @@ impl ManagedChild {
 
     /// [`ManagedChild::spawn`] that names where the start failed.
     pub fn spawn_staged(command: ManagedCommand) -> Result<Self, ManagedSpawnFailure> {
+        Self::spawn_staged_in(command, JobPolicy::Contained, CancelPolicy::Terminate)
+    }
+
+    /// [`ManagedChild::spawn_staged`] with the given group and cancel policies.
+    pub fn spawn_staged_in(
+        command: ManagedCommand,
+        policy: JobPolicy,
+        cancel: CancelPolicy,
+    ) -> Result<Self, ManagedSpawnFailure> {
         let mut process = Command::new(&command.program);
         process.args(&command.args).current_dir(&command.cwd);
         for name in command.env_remove {
@@ -1358,6 +1520,8 @@ impl ManagedChild {
             command.timeout,
             command.cancellation,
             command.capture_limits,
+            policy,
+            cancel,
         )
     }
 
@@ -1375,8 +1539,15 @@ impl ManagedChild {
         cancellation: CancellationToken,
         capture_limits: Option<(usize, usize)>,
     ) -> Result<Self, String> {
-        Self::spawn_process_staged(process, timeout, cancellation, capture_limits)
-            .map_err(ManagedSpawnFailure::into_message)
+        Self::spawn_process_staged(
+            process,
+            timeout,
+            cancellation,
+            capture_limits,
+            JobPolicy::Contained,
+            CancelPolicy::Terminate,
+        )
+        .map_err(ManagedSpawnFailure::into_message)
     }
 
     fn spawn_process_staged(
@@ -1384,6 +1555,8 @@ impl ManagedChild {
         timeout: Option<Duration>,
         cancellation: CancellationToken,
         capture_limits: Option<(usize, usize)>,
+        policy: JobPolicy,
+        cancel: CancelPolicy,
     ) -> Result<Self, ManagedSpawnFailure> {
         // A missing working directory fails the OS launch with the same error
         // as a missing program; name it before the program is tried.
@@ -1398,7 +1571,7 @@ impl ManagedChild {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let mut process_tree = ProcessTree::prepare(&mut process)
+        let mut process_tree = ProcessTree::prepare_in(&mut process, policy, cancel)
             .map_err(|error| ManagedSpawnFailure::Prepare(process_error(error)))?;
         // Cancellation and OS launch (including Windows Job attachment) are
         // serialized. A failed launch never claims the protected phase.
@@ -1432,6 +1605,7 @@ impl ManagedChild {
             timeout,
             cancellation,
             capture_limits,
+            interrupts: (cancel == CancelPolicy::Interrupt).then(Interrupts::default),
         })
     }
 
@@ -1458,7 +1632,18 @@ impl ManagedChild {
     pub fn run_pending_handoff_staged(
         command: ManagedCommand,
     ) -> Result<(ManagedOutput, PendingProcessHandoff), PendingRunFailure> {
-        let mut child = Self::spawn_staged(command).map_err(PendingRunFailure::Spawn)?;
+        Self::run_pending_handoff_staged_in(command, JobPolicy::Contained)
+    }
+
+    /// [`ManagedChild::run_pending_handoff_staged`] with the given group policy.
+    pub fn run_pending_handoff_staged_in(
+        command: ManagedCommand,
+        policy: JobPolicy,
+    ) -> Result<(ManagedOutput, PendingProcessHandoff), PendingRunFailure> {
+        // A launch hands its client over and answers no interrupt: a cancel
+        // ends its tree as before.
+        let mut child = Self::spawn_staged_in(command, policy, CancelPolicy::Terminate)
+            .map_err(PendingRunFailure::Spawn)?;
         let output = child
             .wait_for_pending_handoff_output()
             .map_err(PendingRunFailure::Run)?;
@@ -1583,16 +1768,35 @@ impl ManagedChild {
 
         loop {
             if self.cancellation.is_cancelled() {
-                self.terminate_gracefully()?;
-                return self.finish_after_termination(stdout, stderr, false, true);
+                match self.cancel_step(Instant::now()) {
+                    CancelStep::Wait => {}
+                    CancelStep::Terminate => {
+                        self.terminate_gracefully()?;
+                        return self.finish_after_termination(stdout, stderr, false, true);
+                    }
+                    CancelStep::Kill => {
+                        self.end_interrupt_wait();
+                        self.terminate()?;
+                        return self.finish_after_termination(stdout, stderr, false, true);
+                    }
+                }
             }
             if self.timeout.is_some_and(|limit| started.elapsed() >= limit) {
+                self.end_interrupt_wait();
                 self.terminate()?;
                 return self.finish_after_termination(stdout, stderr, true, false);
             }
             if let Some(status) = self.try_wait_owned_leader()? {
                 self.process_tree.cleanup_after_leader_exit(&mut self.child);
                 self.state = ChildState::Reaped;
+                // An interrupted process answered the cancel itself: its
+                // output and exit are its answer, and the run stays cancelled.
+                if self.end_interrupt_wait() {
+                    self.cancellation.note_interrupt_answered();
+                    let mut output = finish_output(status, stdout, stderr, false, false);
+                    output.cancelled = true;
+                    return Ok(output);
+                }
                 return Ok(finish_output(status, stdout, stderr, false, false));
             }
 
@@ -1992,6 +2196,66 @@ impl ManagedChild {
                 clock.sleep(PROCESS_POLL_INTERVAL);
             }
         }
+    }
+
+    /// The next move of a cancel ([`CancelPolicy`]): interrupt the process,
+    /// interrupt it again, wait for its answer or end its tree.
+    fn cancel_step(&mut self, now: Instant) -> CancelStep {
+        let hard = self.cancellation.is_cancelled_now();
+        let repeated = self.cancellation.cancel_requests() >= 2;
+        let Some(interrupts) = self.interrupts.as_mut() else {
+            return CancelStep::Terminate;
+        };
+        if hard {
+            return if interrupts.first.is_some() {
+                CancelStep::Kill
+            } else {
+                CancelStep::Terminate
+            };
+        }
+        match (interrupts.first, interrupts.second) {
+            (None, _) => match self.process_tree.interrupt(&mut self.child) {
+                Ok(true) => {
+                    interrupts.first = Some(now);
+                    interrupts.waiting = Some(self.cancellation.awaiting_interrupted_work());
+                    CancelStep::Wait
+                }
+                // No interrupt reaches it (it is gone, or there is no
+                // console): the cancel ends the tree as before.
+                Ok(false) | Err(_) => CancelStep::Terminate,
+            },
+            (Some(first), None) => {
+                let since = now.saturating_duration_since(first);
+                if since < INTERRUPT_GAP || !(repeated || since >= SECOND_INTERRUPT_AFTER) {
+                    return CancelStep::Wait;
+                }
+                match self.process_tree.interrupt(&mut self.child) {
+                    Ok(true) => {
+                        interrupts.second = Some(now);
+                        CancelStep::Wait
+                    }
+                    // It exited meanwhile: the next poll sees that.
+                    Ok(false) => CancelStep::Wait,
+                    Err(_) => CancelStep::Kill,
+                }
+            }
+            (_, Some(second)) => {
+                if now.saturating_duration_since(second) < KILL_AFTER_INTERRUPTS {
+                    CancelStep::Wait
+                } else {
+                    CancelStep::Kill
+                }
+            }
+        }
+    }
+
+    /// Ends the wait for the answer of an interrupted process; returns
+    /// whether the process was interrupted.
+    fn end_interrupt_wait(&mut self) -> bool {
+        self.interrupts.as_mut().is_some_and(|interrupts| {
+            interrupts.waiting = None;
+            interrupts.first.is_some()
+        })
     }
 
     pub fn terminate(&mut self) -> Result<(), String> {
@@ -2621,6 +2885,31 @@ pub fn assert_released_unix_group_never_signals_reused_identity_for_test() {
 
 #[cfg(unix)]
 impl ProcessTree {
+    /// No Unix group forbids a process to open its own session, and every
+    /// managed process leads its own group, which an interrupt reaches.
+    fn prepare_in(
+        command: &mut Command,
+        _policy: JobPolicy,
+        _cancel: CancelPolicy,
+    ) -> io::Result<Self> {
+        Self::prepare(command)
+    }
+
+    /// SIGTERM to the group of the process, while that group is still owned.
+    fn interrupt(&mut self, _child: &mut Child) -> io::Result<bool> {
+        let Some(authority) = self.signalable_authority()? else {
+            return Ok(false);
+        };
+        if self.kill_sent {
+            return Ok(false);
+        }
+        match authority.signal(libc::SIGTERM) {
+            Ok(()) => Ok(true),
+            Err(error) if error.raw_os_error() == Some(libc::ESRCH) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
     fn prepare(command: &mut Command) -> io::Result<Self> {
         use std::os::unix::process::CommandExt;
 
@@ -2957,10 +3246,50 @@ impl ProcessTree {
     }
 }
 
+/// The console of this process, through which CTRL_BREAK reaches a child that
+/// leads its own process group.
+#[cfg(windows)]
+mod windows_console {
+    use std::sync::Once;
+    use windows_sys::Win32::Foundation::BOOL;
+    use windows_sys::Win32::System::Console::{
+        GetConsoleCP, SetConsoleCtrlHandler, CTRL_BREAK_EVENT,
+    };
+
+    /// Whether this process has a console, with a window or without one.
+    pub(super) fn attached() -> bool {
+        // SAFETY: plain query; 0 means there is no console.
+        unsafe { GetConsoleCP() != 0 }
+    }
+
+    /// This process ignores CTRL_BREAK: an event meant for a child's group
+    /// must never end the process that sends it.
+    pub(super) fn ignore_break_here() {
+        static INSTALLED: Once = Once::new();
+        INSTALLED.call_once(|| {
+            // SAFETY: the handler is a plain function that lives as long as
+            // the process.
+            unsafe { SetConsoleCtrlHandler(Some(ignore_break), 1) };
+        });
+    }
+
+    unsafe extern "system" fn ignore_break(kind: u32) -> BOOL {
+        BOOL::from(kind == CTRL_BREAK_EVENT)
+    }
+}
+
 #[cfg(windows)]
 struct ProcessTree {
     job: windows_sys::Win32::Foundation::HANDLE,
     exit_census: Option<windows_job_exit::Census>,
+    /// The process leads its own process group of this process's console:
+    /// CTRL_BREAK reaches it and its console descendants only.
+    console_group: bool,
+    /// The group kills its processes on close only until the child runs: a
+    /// detached service outlives this process, but a child still suspended
+    /// when this process dies must die with the group handle instead of
+    /// waiting forever with every handle it inherited.
+    detaches_after_resume: bool,
 }
 
 // SAFETY: Windows kernel handles may be transferred and used from other threads.
@@ -2975,7 +3304,27 @@ unsafe impl Sync for ProcessTree {}
 #[cfg(windows)]
 impl ProcessTree {
     fn prepare(command: &mut Command) -> io::Result<Self> {
-        Self::prepare_with_policy(command, true)
+        Self::prepare_in(command, JobPolicy::Contained, CancelPolicy::Terminate)
+    }
+
+    /// An interrupted process gets its own process group of this process's
+    /// console, when there is one: without a console there is nothing to send
+    /// CTRL_BREAK through, and a cancel ends the tree at once.
+    fn prepare_in(
+        command: &mut Command,
+        policy: JobPolicy,
+        cancel: CancelPolicy,
+    ) -> io::Result<Self> {
+        let console_group = cancel == CancelPolicy::Interrupt && windows_console::attached();
+        if console_group {
+            windows_console::ignore_break_here();
+        }
+        Self::prepare_with_policy(
+            command,
+            true,
+            policy == JobPolicy::AllowsBreakaway,
+            console_group,
+        )
     }
 
     fn prepare_runtime(command: &mut Command) -> io::Result<Self> {
@@ -2984,20 +3333,34 @@ impl ProcessTree {
         Ok(tree)
     }
 
+    /// The startup group of a detached service: the service itself starts
+    /// processes that may leave their groups (the runner's live agent), and a
+    /// process leaves only when every group above it allows that.
     fn prepare_detachable(command: &mut Command) -> io::Result<Self> {
-        Self::prepare_with_policy(command, false)
+        let mut tree = Self::prepare_with_policy(command, true, true, false)?;
+        tree.detaches_after_resume = true;
+        Ok(tree)
     }
 
-    fn prepare_with_policy(command: &mut Command, kill_on_close: bool) -> io::Result<Self> {
-        use std::mem::{size_of, zeroed};
+    fn prepare_with_policy(
+        command: &mut Command,
+        kill_on_close: bool,
+        allows_breakaway: bool,
+        console_group: bool,
+    ) -> io::Result<Self> {
         use std::os::windows::process::CommandExt;
         use windows_sys::Win32::System::JobObjects::{
-            CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
-            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            CreateJobObjectW, JOB_OBJECT_LIMIT_BREAKAWAY_OK, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
         };
-        use windows_sys::Win32::System::Threading::CREATE_SUSPENDED;
+        use windows_sys::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED};
 
-        command.creation_flags(CREATE_SUSPENDED);
+        // One call: a later `creation_flags` replaces the flags, and without
+        // CREATE_SUSPENDED the process would run before it joins the Job.
+        command.creation_flags(if console_group {
+            CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP
+        } else {
+            CREATE_SUSPENDED
+        });
 
         // SAFETY: null security attributes and name request an unnamed job with defaults.
         let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
@@ -3005,21 +3368,15 @@ impl ProcessTree {
             return Err(io::Error::last_os_error());
         }
 
+        let mut flags = 0;
         if kill_on_close {
-            // SAFETY: this Windows POD structure is valid when zero-initialized.
-            let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };
-            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-            // SAFETY: `limits` points to the structure and size required by the information class.
-            let configured = unsafe {
-                SetInformationJobObject(
-                    job,
-                    JobObjectExtendedLimitInformation,
-                    &limits as *const _ as *const _,
-                    size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-                )
-            };
-            if configured == 0 {
-                let error = io::Error::last_os_error();
+            flags |= JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        }
+        if allows_breakaway {
+            flags |= JOB_OBJECT_LIMIT_BREAKAWAY_OK;
+        }
+        if flags != 0 {
+            if let Err(error) = set_job_limits(job, flags) {
                 // SAFETY: `job` is a live handle created above and is not used after closing.
                 unsafe {
                     windows_sys::Win32::Foundation::CloseHandle(job);
@@ -3031,7 +3388,29 @@ impl ProcessTree {
         Ok(Self {
             job,
             exit_census: None,
+            console_group,
+            detaches_after_resume: false,
         })
+    }
+
+    /// CTRL_BREAK to the process group the process leads, only while the
+    /// process still runs: an event for a group without any live member
+    /// reaches other processes of the console. The check and the event are
+    /// not atomic; the group lives at least as long as its leader, and a
+    /// leader that exits between them leaves its console children (if any)
+    /// as the group the event reaches.
+    fn interrupt(&mut self, child: &mut Child) -> io::Result<bool> {
+        use windows_sys::Win32::System::Console::{GenerateConsoleCtrlEvent, CTRL_BREAK_EVENT};
+
+        if !self.console_group || child.try_wait()?.is_some() {
+            return Ok(false);
+        }
+        // SAFETY: plain call; the group id is the id of the live leader, whose
+        // handle `child` holds, so the id is not reused meanwhile.
+        if unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, child.id()) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(true)
     }
 
     fn attach(&mut self, child: &mut Child) -> io::Result<Option<ExitStatus>> {
@@ -3056,6 +3435,10 @@ impl ProcessTree {
             return Err(io::Error::other(format!(
                 "unexpected primary thread suspend count: {previous_suspend_count}"
             )));
+        }
+        if self.detaches_after_resume {
+            use windows_sys::Win32::System::JobObjects::JOB_OBJECT_LIMIT_BREAKAWAY_OK;
+            set_job_limits(self.job, JOB_OBJECT_LIMIT_BREAKAWAY_OK)?;
         }
         Ok(None)
     }
@@ -3180,8 +3563,9 @@ impl ProcessTree {
         if self.job.is_null() {
             return Ok(());
         }
-        // The startup Job was created without KILL_ON_JOB_CLOSE; a verified
-        // client handoff clears it above. Closing releases either ready process.
+        // The startup Job dropped KILL_ON_JOB_CLOSE when its child resumed; a
+        // verified client handoff clears it above. Closing releases either
+        // ready process.
         // SAFETY: `self.job` is owned here and nulled only after a successful close.
         if unsafe { windows_sys::Win32::Foundation::CloseHandle(self.job) } == 0 {
             return Err(io::Error::last_os_error());
@@ -3210,6 +3594,32 @@ impl Drop for ScopedWindowsHandle {
             windows_sys::Win32::Foundation::CloseHandle(self.0);
         }
     }
+}
+
+#[cfg(windows)]
+fn set_job_limits(job: windows_sys::Win32::Foundation::HANDLE, flags: u32) -> io::Result<()> {
+    use std::mem::{size_of, zeroed};
+    use windows_sys::Win32::System::JobObjects::{
+        JobObjectExtendedLimitInformation, SetInformationJobObject,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    };
+
+    // SAFETY: this Windows POD structure is valid when zero-initialized.
+    let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };
+    limits.BasicLimitInformation.LimitFlags = flags;
+    // SAFETY: `limits` points to the structure and size required by the information class.
+    let configured = unsafe {
+        SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            &limits as *const _ as *const _,
+            size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        )
+    };
+    if configured == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -3270,6 +3680,18 @@ struct ProcessTree;
 
 #[cfg(not(any(unix, windows)))]
 impl ProcessTree {
+    fn prepare_in(
+        command: &mut Command,
+        _policy: JobPolicy,
+        _cancel: CancelPolicy,
+    ) -> io::Result<Self> {
+        Self::prepare(command)
+    }
+
+    fn interrupt(&mut self, _child: &mut Child) -> io::Result<bool> {
+        Ok(false)
+    }
+
     fn prepare(_command: &mut Command) -> io::Result<Self> {
         Ok(Self)
     }
@@ -3371,6 +3793,17 @@ enum StreamFraming {
 }
 
 /// One read of a byte stream: a step of the stream, not a bound of its size.
+// resource-limit: process.byte-stream-chunk-bytes
+// class: step
+// unit: bytes
+// scope: process
+// value: 65536
+// resource: Размер одного чтения потока байтов stdout, который отдаётся потребителю целиком, например сканеру EOL большого staged-блоба.
+// status: unproven
+// origin: #1119
+// problem: неизвестно
+// on-reach: кусок передаётся потребителю и читается следующий; общий объём потока не ограничивается
+// issue: #1119
 const BYTE_STREAM_CHUNK_BYTES: usize = 64 * 1024;
 
 fn start_chunk_reader<R>(pipe: Option<R>) -> Option<Receiver<LineMessage>>
@@ -3425,6 +3858,7 @@ where
                 let count = match pipe.read(&mut chunk) {
                     Ok(0) => break,
                     Ok(count) => count,
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                     Err(error) => {
                         let _ = sender.send(LineMessage::ReadError(line_number, error.to_string()));
                         return;
@@ -3824,7 +4258,7 @@ fn retain_tail(captured: &mut CapturedOutput, chunk: &[u8], limit: usize) {
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     #[cfg(windows)]
     use super::{assert_windows_runtime_process_tree_semantics_for_test, ProcessTree};
     use super::{
@@ -3973,9 +4407,10 @@ mod tests {
         }
     }
 
-    /// Ревью #549: незапуском программы называется только отказ ОС создать
+    /// Незапуском программы называется только отказ ОС создать
     /// процесс. Отсутствующий рабочий каталог программу не пробовал, хотя ОС
     /// ответила бы на него той же ошибкой, что на отсутствующий файл.
+    /// rule: INV.WIRE.MISSING-ENGINE-REFUSAL
     #[test]
     fn only_a_refused_launch_is_a_launch_failure() {
         let root = tempfile::tempdir().unwrap();
@@ -4029,7 +4464,7 @@ mod tests {
                 let mut child = Command::new(std::env::current_exe().unwrap())
                     .args([
                         "--exact",
-                        "platform::process::tests::managed_child_test_helper",
+                        "platform::process::medium_tests::managed_child_test_helper",
                         "--ignored",
                         "--nocapture",
                     ])
@@ -4187,7 +4622,7 @@ mod tests {
                 let mut child = Command::new(std::env::current_exe().unwrap())
                     .args([
                         "--exact",
-                        "platform::process::tests::managed_child_test_helper",
+                        "platform::process::medium_tests::managed_child_test_helper",
                         "--ignored",
                         "--nocapture",
                     ])
@@ -4213,7 +4648,7 @@ mod tests {
                 let child = Command::new(std::env::current_exe().unwrap())
                     .args([
                         "--exact",
-                        "platform::process::tests::managed_child_test_helper",
+                        "platform::process::medium_tests::managed_child_test_helper",
                         "--ignored",
                         "--nocapture",
                     ])
@@ -4245,7 +4680,7 @@ mod tests {
                     Command::new(std::env::current_exe().unwrap())
                         .args([
                             "--exact",
-                            "platform::process::tests::managed_child_test_helper",
+                            "platform::process::medium_tests::managed_child_test_helper",
                             "--ignored",
                             "--nocapture",
                         ])
@@ -4290,7 +4725,7 @@ mod tests {
                 let grandchild = Command::new(std::env::current_exe().unwrap())
                     .args([
                         "--exact",
-                        "platform::process::tests::managed_child_test_helper",
+                        "platform::process::medium_tests::managed_child_test_helper",
                         "--ignored",
                         "--nocapture",
                     ])
@@ -4310,7 +4745,7 @@ mod tests {
                 let grandchild = Command::new(std::env::current_exe().unwrap())
                     .args([
                         "--exact",
-                        "platform::process::tests::managed_child_test_helper",
+                        "platform::process::medium_tests::managed_child_test_helper",
                         "--ignored",
                         "--nocapture",
                     ])
@@ -4337,7 +4772,7 @@ mod tests {
                 command
                     .args([
                         "--exact",
-                        "platform::process::tests::managed_child_test_helper",
+                        "platform::process::medium_tests::managed_child_test_helper",
                         "--ignored",
                         "--nocapture",
                     ])
@@ -4383,7 +4818,7 @@ mod tests {
                 let child = Command::new(std::env::current_exe().unwrap())
                     .args([
                         "--exact",
-                        "platform::process::tests::managed_child_test_helper",
+                        "platform::process::medium_tests::managed_child_test_helper",
                         "--ignored",
                         "--nocapture",
                     ])
@@ -4629,7 +5064,7 @@ mod tests {
             program: std::env::current_exe().unwrap(),
             args: vec![
                 "--exact".into(),
-                "platform::process::tests::managed_child_test_helper".into(),
+                "platform::process::medium_tests::managed_child_test_helper".into(),
                 "--ignored".into(),
                 "--nocapture".into(),
             ],
@@ -4668,7 +5103,7 @@ mod tests {
             program: std::env::current_exe().map_err(|error| error.to_string())?,
             args: vec![
                 "--exact".into(),
-                "platform::process::tests::managed_child_test_helper".into(),
+                "platform::process::medium_tests::managed_child_test_helper".into(),
                 "--ignored".into(),
                 "--nocapture".into(),
             ],
@@ -4692,7 +5127,7 @@ mod tests {
                 program: std::env::current_exe().map_err(|error| error.to_string())?,
                 args: vec![
                     "--exact".into(),
-                    "platform::process::tests::managed_child_test_helper".into(),
+                    "platform::process::medium_tests::managed_child_test_helper".into(),
                     "--ignored".into(),
                     "--nocapture".into(),
                 ],
@@ -4737,7 +5172,7 @@ mod tests {
         command
             .args([
                 "--exact",
-                "platform::process::tests::managed_child_test_helper",
+                "platform::process::medium_tests::managed_child_test_helper",
                 "--ignored",
                 "--nocapture",
             ])
@@ -4941,7 +5376,7 @@ mod tests {
             let status = Command::new(std::env::current_exe().unwrap())
                 .args([
                     "--exact",
-                    "platform::process::tests::linux_runtime_descendant_probe_distinguishes_zombie_from_live_process",
+                    "platform::process::medium_tests::linux_runtime_descendant_probe_distinguishes_zombie_from_live_process",
                     "--nocapture",
                 ])
                 .env(HARNESS_ENV, "1")
@@ -5061,7 +5496,7 @@ mod tests {
         command
             .args([
                 "--exact",
-                "platform::process::tests::managed_child_test_helper",
+                "platform::process::medium_tests::managed_child_test_helper",
                 "--ignored",
                 "--nocapture",
             ])
@@ -5263,6 +5698,7 @@ mod tests {
         .unwrap();
     }
 
+    /// rule: INV.APP.RUNTIME-RESOURCE-TREE
     #[cfg(unix)]
     #[test]
     pub(super) fn runtime_sentinel_preserves_a_meaningful_inherited_fd198() {
@@ -5273,7 +5709,7 @@ mod tests {
             let status = Command::new(std::env::current_exe().unwrap())
                 .args([
                     "--exact",
-                    "platform::process::tests::runtime_sentinel_preserves_a_meaningful_inherited_fd198",
+                    "platform::process::medium_tests::runtime_sentinel_preserves_a_meaningful_inherited_fd198",
                     "--nocapture",
                 ])
                 .env(RUNTIME_SENTINEL_FD198_HARNESS_ENV, "1")
@@ -5332,7 +5768,7 @@ mod tests {
         command
             .args([
                 "--exact",
-                "platform::process::tests::runtime_preexisting_fd198_helper",
+                "platform::process::medium_tests::runtime_preexisting_fd198_helper",
                 "--ignored",
                 "--nocapture",
             ])
@@ -5514,7 +5950,7 @@ mod tests {
                 descendant
                     .args([
                         "--exact",
-                        "platform::process::tests::runtime_runner_style_sentinel_helper",
+                        "platform::process::medium_tests::runtime_runner_style_sentinel_helper",
                         "--ignored",
                         "--nocapture",
                     ])
@@ -5562,7 +5998,7 @@ mod tests {
         command
             .args([
                 "--exact",
-                "platform::process::tests::runtime_runner_style_sentinel_helper",
+                "platform::process::medium_tests::runtime_runner_style_sentinel_helper",
                 "--ignored",
                 "--nocapture",
             ])
@@ -5610,6 +6046,7 @@ mod tests {
         let _ = std::fs::remove_file(pid_file);
     }
 
+    /// rule: INV.APP.RUNTIME-RESOURCE-TREE
     #[cfg(windows)]
     #[test]
     fn windows_runtime_tree_proves_a_child_that_finished_before_first_poll() {
@@ -5628,7 +6065,7 @@ mod tests {
         command
             .args([
                 "--exact",
-                "platform::process::tests::managed_child_test_helper",
+                "platform::process::medium_tests::managed_child_test_helper",
                 "--ignored",
                 "--nocapture",
             ])
@@ -5676,6 +6113,7 @@ mod tests {
             .expect("release the completed runtime fixture");
     }
 
+    /// rule: INV.APP.RUNTIME-RESOURCE-TREE
     #[cfg(windows)]
     #[test]
     fn windows_runtime_terminal_waits_for_the_descendant_process_signal() {
@@ -5692,7 +6130,7 @@ mod tests {
             command
                 .args([
                     "--exact",
-                    "platform::process::tests::managed_child_test_helper",
+                    "platform::process::medium_tests::managed_child_test_helper",
                     "--ignored",
                     "--nocapture",
                 ])
@@ -5858,7 +6296,7 @@ mod tests {
         let mut child = Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "platform::process::tests::managed_child_test_helper",
+                "platform::process::medium_tests::managed_child_test_helper",
                 "--ignored",
                 "--nocapture",
             ])
@@ -5917,7 +6355,7 @@ mod tests {
             program: std::env::current_exe().unwrap(),
             args: vec![
                 "--exact".into(),
-                "platform::process::tests::managed_child_test_helper".into(),
+                "platform::process::medium_tests::managed_child_test_helper".into(),
                 "--ignored".into(),
                 "--nocapture".into(),
             ],
@@ -5942,7 +6380,7 @@ mod tests {
             program: std::env::current_exe().unwrap(),
             args: vec![
                 "--exact".into(),
-                "platform::process::tests::managed_child_test_helper".into(),
+                "platform::process::medium_tests::managed_child_test_helper".into(),
                 "--ignored".into(),
                 "--nocapture".into(),
             ],
@@ -6304,7 +6742,7 @@ mod tests {
             program: std::env::current_exe().unwrap(),
             args: vec![
                 "--exact".into(),
-                "platform::process::tests::managed_child_test_helper".into(),
+                "platform::process::medium_tests::managed_child_test_helper".into(),
                 "--ignored".into(),
                 "--nocapture".into(),
             ],
@@ -6342,7 +6780,7 @@ mod tests {
             program: std::env::current_exe().unwrap(),
             args: vec![
                 "--exact".into(),
-                "platform::process::tests::managed_child_test_helper".into(),
+                "platform::process::medium_tests::managed_child_test_helper".into(),
                 "--ignored".into(),
                 "--nocapture".into(),
             ],
@@ -6367,6 +6805,7 @@ mod tests {
         assert_eq!(managed.state, ChildState::Reaped);
     }
 
+    /// rule: INV.RUNTIME.RUNNER-MUTATION-CANCELLATION
     #[test]
     fn protected_process_finishes_after_cancellation_on_every_host() {
         let start = HelperStart::new();
@@ -6384,7 +6823,7 @@ mod tests {
             program: std::env::current_exe().unwrap(),
             args: vec![
                 "--exact".into(),
-                "platform::process::tests::managed_child_test_helper".into(),
+                "platform::process::medium_tests::managed_child_test_helper".into(),
                 "--ignored".into(),
                 "--nocapture".into(),
             ],
@@ -6413,7 +6852,7 @@ mod tests {
             program: std::env::current_exe().unwrap(),
             args: vec![
                 "--exact".into(),
-                "platform::process::tests::managed_child_test_helper".into(),
+                "platform::process::medium_tests::managed_child_test_helper".into(),
                 "--ignored".into(),
                 "--nocapture".into(),
             ],
@@ -6456,7 +6895,7 @@ mod tests {
             program: std::env::current_exe().unwrap(),
             args: vec![
                 "--exact".into(),
-                "platform::process::tests::managed_child_test_helper".into(),
+                "platform::process::medium_tests::managed_child_test_helper".into(),
                 "--ignored".into(),
                 "--nocapture".into(),
             ],
@@ -6515,7 +6954,7 @@ mod tests {
                 Command::new(std::env::current_exe().unwrap())
                     .args([
                         "--exact",
-                        "platform::process::tests::managed_child_test_helper",
+                        "platform::process::medium_tests::managed_child_test_helper",
                         "--ignored",
                         "--nocapture",
                     ])
@@ -6532,7 +6971,7 @@ mod tests {
                 program: std::env::current_exe().unwrap(),
                 args: vec![
                     "--exact".into(),
-                    "platform::process::tests::managed_child_test_helper".into(),
+                    "platform::process::medium_tests::managed_child_test_helper".into(),
                     "--ignored".into(),
                     "--nocapture".into(),
                 ],
@@ -6655,6 +7094,120 @@ mod tests {
         assert!(!output.timed_out && !output.cancelled && output.line_error.is_none());
         assert_eq!(output.stderr, "stderr-before\nstderr-after\n");
         assert_eq!(managed.state, ChildState::Reaped);
+    }
+
+    #[cfg(unix)]
+    struct InterruptedChildStdout {
+        pipe: std::process::ChildStdout,
+        delivery_gate: Option<std::sync::mpsc::Receiver<()>>,
+        bytes_before_interrupt: usize,
+        interrupted: bool,
+    }
+
+    #[cfg(unix)]
+    impl Read for InterruptedChildStdout {
+        fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+            if let Some(gate) = self.delivery_gate.take() {
+                gate.recv_timeout(Duration::from_secs(5))
+                    .expect("leader exit must release stdout delivery");
+            }
+            if !self.interrupted && self.bytes_before_interrupt == 0 {
+                self.interrupted = true;
+                return Err(std::io::Error::from(std::io::ErrorKind::Interrupted));
+            }
+            let limit = if self.interrupted {
+                bytes.len()
+            } else {
+                bytes.len().min(self.bytes_before_interrupt)
+            };
+            let count = self.pipe.read(&mut bytes[..limit])?;
+            if !self.interrupted {
+                self.bytes_before_interrupt -= count;
+            }
+            Ok(count)
+        }
+    }
+
+    #[cfg(unix)]
+    fn assert_interrupted_child_stdout_preserves_record(bytes_before_interrupt: usize) {
+        let record = concat!(
+            "CommonModules/Продажи/Ext/Module.bsl\0",
+            "1\0// ПолитикаУчетаСерий"
+        );
+        // The child produces actual NUL-delimited Git-shaped bytes in an OS
+        // pipe. The wrapper injects only the transient read failure, never a
+        // substitute record or captured process output.
+        let mut child = ChildCleanupGuard(Some(
+            Command::new("/bin/sh")
+                .args([
+                    "-c",
+                    "printf 'CommonModules/Продажи/Ext/Module.bsl\\0001\\000// ПолитикаУчетаСерий\\n'",
+                ])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        ));
+        let pipe = child.child_mut().stdout.take().unwrap();
+        let (release, delivery_gate) = std::sync::mpsc::channel();
+        let stdout = super::start_line_reader(
+            Some(InterruptedChildStdout {
+                pipe,
+                delivery_gate: Some(delivery_gate),
+                bytes_before_interrupt,
+                interrupted: false,
+            }),
+            super::StreamFraming::Lines { max_bytes: 1024 },
+        );
+        let stderr =
+            super::start_reader(child.child_mut().stderr.take(), super::STDERR_CAPTURE_LIMIT);
+        // No reader callback can run until the real child has exited. This
+        // exercises the completed-process drain independently of scheduling.
+        let status = child.child_mut().wait().unwrap();
+        assert!(status.success());
+        release.send(()).unwrap();
+        let mut records = Vec::new();
+        let mut first_error = None;
+        let output = super::finish_completed_line_output(
+            status,
+            &stdout,
+            stderr,
+            &mut |number, bytes: &[u8]| {
+                records.push((number, bytes.to_vec()));
+                StreamControl::Continue
+            },
+            &mut first_error,
+        );
+        assert!(output.status_success, "{output:?}");
+        assert!(!output.timed_out && !output.cancelled && !output.stopped_by_consumer);
+        assert!(output.stderr.is_empty(), "{output:?}");
+        assert!(
+            output.line_error.is_none(),
+            "{output:?}; records={records:?}"
+        );
+        assert_eq!(records, [(1, record.as_bytes().to_vec())], "{output:?}");
+    }
+
+    #[cfg_attr(
+        not(unix),
+        ignore = "host capability Unix shell: fixture writes stdout through /bin/sh"
+    )]
+    /// rule: INV.APP.CODE-SEARCH-RESULT-EVIDENCE
+    #[test]
+    fn interrupted_stdout_before_first_record_survives_leader_exit() {
+        #[cfg(unix)]
+        assert_interrupted_child_stdout_preserves_record(0);
+    }
+
+    #[cfg_attr(
+        not(unix),
+        ignore = "host capability Unix shell: fixture writes stdout through /bin/sh"
+    )]
+    /// rule: INV.APP.CODE-SEARCH-RESULT-EVIDENCE
+    #[test]
+    fn interrupted_stdout_between_fragments_survives_leader_exit() {
+        #[cfg(unix)]
+        assert_interrupted_child_stdout_preserves_record(7);
     }
 
     enum ControlledReaderFault {
@@ -7173,13 +7726,14 @@ mod tests {
         assert!(cancellation.protected_process_started());
     }
 
+    /// rule: INV.APP.CODE-SEARCH-RESULT-EVIDENCE
     #[test]
     fn completed_line_drain_keeps_stop_only_for_successful_children() {
         for (mode, expected_stop) in [("stream_then_exit", true), ("stream_then_fail", false)] {
             let mut child = Command::new(std::env::current_exe().unwrap())
                 .args([
                     "--exact",
-                    "platform::process::tests::managed_child_test_helper",
+                    "platform::process::medium_tests::managed_child_test_helper",
                     "--ignored",
                     "--nocapture",
                 ])
@@ -7229,7 +7783,7 @@ mod tests {
             program: std::env::current_exe().unwrap(),
             args: vec![
                 "--exact".into(),
-                "platform::process::tests::managed_child_test_helper".into(),
+                "platform::process::medium_tests::managed_child_test_helper".into(),
                 "--ignored".into(),
                 "--nocapture".into(),
             ],
@@ -7258,7 +7812,7 @@ mod tests {
             program: std::env::current_exe().unwrap(),
             args: vec![
                 "--exact".into(),
-                "platform::process::tests::managed_child_test_helper".into(),
+                "platform::process::medium_tests::managed_child_test_helper".into(),
                 "--ignored".into(),
                 "--nocapture".into(),
             ],
@@ -7281,6 +7835,17 @@ mod tests {
 
     #[test]
     fn managed_child_kills_descendants() {
+        use super::{CancelPolicy, JobPolicy};
+        managed_child_kills_descendants_in(JobPolicy::Contained, CancelPolicy::Terminate);
+        // A group that lets a process leave it on request ends every process
+        // that did not ask, as before (the runner's live agent asks).
+        managed_child_kills_descendants_in(JobPolicy::AllowsBreakaway, CancelPolicy::Terminate);
+        // A process that answers a cancel itself starts in its own group as
+        // well, only after it joined the group, and its tree ends with it.
+        managed_child_kills_descendants_in(JobPolicy::AllowsBreakaway, CancelPolicy::Interrupt);
+    }
+
+    fn managed_child_kills_descendants_in(policy: super::JobPolicy, cancel: super::CancelPolicy) {
         let pid_file = std::env::temp_dir().join(format!(
             "unica-managed-child-pids-{}-{}",
             std::process::id(),
@@ -7291,30 +7856,34 @@ mod tests {
         ));
         let _pid_file_cleanup = FileCleanupGuard(pid_file.clone());
         let cancellation = CancellationToken::new();
-        let managed = ManagedChild::spawn(ManagedCommand {
-            program: std::env::current_exe().unwrap(),
-            args: vec![
-                "--exact".into(),
-                "platform::process::tests::managed_child_test_helper".into(),
-                "--ignored".into(),
-                "--nocapture".into(),
-            ],
-            cwd: std::env::current_dir().unwrap(),
-            env: vec![
-                (
-                    OsString::from(HELPER_ENV),
-                    OsString::from("process_tree_immediate_parent"),
-                ),
-                (
-                    OsString::from(HELPER_PID_FILE_ENV),
-                    pid_file.clone().into_os_string(),
-                ),
-            ],
-            env_remove: Vec::new(),
-            capture_limits: None,
-            timeout: Some(Duration::from_secs(10)),
-            cancellation: cancellation.clone(),
-        })
+        let managed = ManagedChild::spawn_staged_in(
+            ManagedCommand {
+                program: std::env::current_exe().unwrap(),
+                args: vec![
+                    "--exact".into(),
+                    "platform::process::medium_tests::managed_child_test_helper".into(),
+                    "--ignored".into(),
+                    "--nocapture".into(),
+                ],
+                cwd: std::env::current_dir().unwrap(),
+                env: vec![
+                    (
+                        OsString::from(HELPER_ENV),
+                        OsString::from("process_tree_immediate_parent"),
+                    ),
+                    (
+                        OsString::from(HELPER_PID_FILE_ENV),
+                        pid_file.clone().into_os_string(),
+                    ),
+                ],
+                env_remove: Vec::new(),
+                capture_limits: None,
+                timeout: Some(Duration::from_secs(10)),
+                cancellation: cancellation.clone(),
+            },
+            policy,
+            cancel,
+        )
         .unwrap();
         let mut managed_cleanup = ManagedChildCleanupGuard::new(managed, cancellation.clone());
         let pids = read_helper_pids(&pid_file, Duration::from_secs(2));
@@ -7332,6 +7901,7 @@ mod tests {
         cleanup.disarm();
     }
 
+    /// rule: INV.WIRE.TERMINAL-RUN-HAS-NO-FENCE
     #[test]
     fn pending_launch_release_preserves_detached_descendant() {
         let directory = tempfile::tempdir().unwrap();
@@ -7359,6 +7929,7 @@ mod tests {
         assert_eq!(super::unix_signal_count_for_test(), 0);
     }
 
+    /// rule: INV.WIRE.TERMINAL-RUN-HAS-NO-FENCE
     #[test]
     fn pending_launch_rejection_drops_owned_descendant() {
         let directory = tempfile::tempdir().unwrap();
@@ -7402,7 +7973,7 @@ mod tests {
             Command::new(std::env::current_exe().unwrap())
                 .args([
                     "--exact",
-                    "platform::process::tests::managed_child_test_helper",
+                    "platform::process::medium_tests::managed_child_test_helper",
                     "--ignored",
                     "--nocapture",
                 ])
@@ -7558,6 +8129,7 @@ mod tests {
         cleanup.disarm();
     }
 
+    /// rule: INV.WIRE.TERMINAL-RUN-HAS-NO-FENCE
     #[cfg(unix)]
     #[test]
     fn pending_launch_complete_json_without_eof_remains_cancelable() {
@@ -7608,7 +8180,7 @@ mod tests {
             program: std::env::current_exe().unwrap(),
             args: vec![
                 "--exact".into(),
-                "platform::process::tests::managed_child_test_helper".into(),
+                "platform::process::medium_tests::managed_child_test_helper".into(),
                 "--ignored".into(),
                 "--nocapture".into(),
             ],
@@ -7662,7 +8234,7 @@ mod tests {
             program: std::env::current_exe().unwrap(),
             args: vec![
                 "--exact".into(),
-                "platform::process::tests::managed_child_test_helper".into(),
+                "platform::process::medium_tests::managed_child_test_helper".into(),
                 "--ignored".into(),
                 "--nocapture".into(),
             ],
@@ -7726,7 +8298,7 @@ mod tests {
         command
             .args([
                 "--exact",
-                "platform::process::tests::managed_child_test_helper",
+                "platform::process::medium_tests::managed_child_test_helper",
                 "--ignored",
                 "--nocapture",
             ])
@@ -7753,7 +8325,7 @@ mod tests {
         command
             .args([
                 "--exact",
-                "platform::process::tests::managed_child_test_helper",
+                "platform::process::medium_tests::managed_child_test_helper",
                 "--ignored",
                 "--nocapture",
             ])
@@ -7786,7 +8358,7 @@ mod tests {
         command
             .args([
                 "--exact",
-                "platform::process::tests::managed_child_test_helper",
+                "platform::process::medium_tests::managed_child_test_helper",
                 "--ignored",
                 "--nocapture",
             ])
@@ -7820,7 +8392,7 @@ mod tests {
         command
             .args([
                 "--exact",
-                "platform::process::tests::managed_child_test_helper",
+                "platform::process::medium_tests::managed_child_test_helper",
                 "--ignored",
                 "--nocapture",
             ])
@@ -7844,6 +8416,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.PLATFORM.PROCESS-TREE-LIFECYCLE
     #[test]
     fn managed_process_tree_lifecycle_is_bounded() {
         managed_child_timeout_returns_within_a_bounded_interval();
@@ -7885,7 +8458,7 @@ mod tests {
         command
             .args([
                 "--exact",
-                "platform::process::tests::managed_child_test_helper",
+                "platform::process::medium_tests::managed_child_test_helper",
                 "--ignored",
                 "--nocapture",
             ])
@@ -7912,7 +8485,7 @@ mod tests {
         command
             .args([
                 "--exact",
-                "platform::process::tests::managed_child_test_helper",
+                "platform::process::medium_tests::managed_child_test_helper",
                 "--ignored",
                 "--nocapture",
             ])
@@ -7959,7 +8532,7 @@ mod tests {
         command
             .args([
                 "--exact",
-                "platform::process::tests::managed_child_test_helper",
+                "platform::process::medium_tests::managed_child_test_helper",
                 "--ignored",
                 "--nocapture",
             ])
@@ -7984,6 +8557,74 @@ mod tests {
     }
 
     #[cfg(windows)]
+    fn sleeping_helper() -> Command {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "platform::process::medium_tests::managed_child_test_helper",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env(HELPER_ENV, "sleep")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        command
+    }
+
+    /// A detached service whose starter dies before resuming it must not
+    /// stay suspended forever, holding every handle it inherited (#2993).
+    /// rule: INV.PLATFORM.PROCESS-TREE-LIFECYCLE
+    #[cfg(windows)]
+    #[test]
+    fn detachable_child_still_suspended_dies_with_its_group_handle() {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
+
+        let mut command = sleeping_helper();
+        let process_tree = ProcessTree::prepare_detachable(&mut command).unwrap();
+        let mut child = ChildCleanupGuard(Some(command.spawn().unwrap()));
+        // The group is joined but the primary thread is never resumed: the
+        // starter is gone between the two steps.
+        // SAFETY: both handles are live for the duration of the call.
+        let assigned = unsafe {
+            AssignProcessToJobObject(process_tree.job, child.child_mut().as_raw_handle() as _)
+        };
+        assert_ne!(assigned, 0, "{}", std::io::Error::last_os_error());
+        drop(process_tree);
+
+        let started = Instant::now();
+        while child.child_mut().try_wait().unwrap().is_none() {
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "a suspended child outlived its starter's group handle"
+            );
+            thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    /// Once resumed, the detached service outlives the group handle of the
+    /// process that started it, as before.
+    /// rule: INV.PLATFORM.PROCESS-TREE-LIFECYCLE
+    #[cfg(windows)]
+    #[test]
+    fn detachable_child_once_resumed_outlives_its_group_handle() {
+        let mut command = sleeping_helper();
+        let mut process_tree = ProcessTree::prepare_detachable(&mut command).unwrap();
+        let mut child = ChildCleanupGuard(Some(command.spawn().unwrap()));
+        process_tree.attach(child.child_mut()).unwrap();
+        drop(process_tree);
+
+        thread::sleep(Duration::from_millis(250));
+        assert!(
+            child.child_mut().try_wait().unwrap().is_none(),
+            "a resumed detached child died with its starter's group handle"
+        );
+    }
+
+    /// rule: INV.RUNTIME.RUNNER-MUTATION-CANCELLATION
+    #[cfg(windows)]
     #[test]
     fn slow_job_attach_delays_cancel_without_starting_the_mutation_early() {
         use std::sync::mpsc;
@@ -8001,7 +8642,7 @@ mod tests {
         command
             .args([
                 "--exact",
-                "platform::process::tests::managed_child_test_helper",
+                "platform::process::medium_tests::managed_child_test_helper",
                 "--ignored",
                 "--nocapture",
             ])

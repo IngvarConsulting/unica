@@ -1,0 +1,29 @@
+{
+  "area": "Формы",
+  "task": "Добавить форму настроек регистру",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.АдминистративнаяИерархия",
+        "ops": [
+          {
+            "op": "form.add",
+            "args": {
+              "items": [
+                {
+                  "name": "ФормаНабораЗаписей",
+                  "type": "RecordSetForm"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S145"
+}

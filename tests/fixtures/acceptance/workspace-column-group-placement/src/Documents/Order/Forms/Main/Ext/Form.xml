@@ -1,0 +1,19 @@
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" version="2.20">
+ <AutoCommandBar name="FormCommandBar" id="-1"/>
+ <ChildItems>
+  <Table name="Rows" id="1">
+   <ContextMenu name="RowsMenu" id="5"/>
+   <AutoCommandBar name="RowsBar" id="6"/>
+   <SearchStringAddition name="RowsSearch" id="7"/>
+   <ViewStatusAddition name="RowsStatus" id="8"/>
+   <SearchControlAddition name="RowsControl" id="9"/>
+   <ChildItems>
+    <ColumnGroup name="Group" id="2">
+     <ChildItems><InputField name="Nested" id="3"><ContextMenu name="NestedMenu" id="10"/><ExtendedTooltip name="NestedTip" id="11"/><DataPath>Объект.Ref</DataPath></InputField></ChildItems>
+    </ColumnGroup>
+    <InputField name="Last" id="4"><ContextMenu name="LastMenu" id="12"/><ExtendedTooltip name="LastTip" id="13"/><DataPath>Объект.Ref</DataPath></InputField>
+   </ChildItems>
+  </Table>
+ </ChildItems>
+ <Attributes><Attribute name="Объект" id="1"><Type><v8:Type>cfg:DocumentObject.Order</v8:Type></Type><MainAttribute>true</MainAttribute></Attribute></Attributes>
+</Form>

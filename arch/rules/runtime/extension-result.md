@@ -1,9 +1,5 @@
 ---
 id: INV.RUNTIME.EXTENSION-RESULT
-check:
-  - crates/unica-coder/src/infrastructure/daemon/v13_extensions.rs::extension_contract_rejects_wrong_subject_action_and_false_execution_claims
-  - crates/unica-coder/src/infrastructure/daemon/v13_extensions.rs::all_extension_operations_preview_then_apply_with_a_provider_receipt
-  - crates/unica-coder/src/infrastructure/daemon/v13_extensions.rs::installed_prefix_keeps_known_value_empty_value_and_unknown_distinct
 ---
 
 # Ответ расширений подтверждает запрошенное действие

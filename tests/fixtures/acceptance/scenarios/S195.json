@@ -1,0 +1,25 @@
+{
+  "area": "СКД",
+  "task": "Изучить словарь операций схемы",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/can",
+          "contains": {
+            "op": "dataSet.add",
+            "args": "items"
+          }
+        }
+      ]
+    }
+  ],
+  "id": "S195"
+}

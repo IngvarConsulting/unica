@@ -4,11 +4,51 @@ import os
 import subprocess
 import unittest
 import uuid
+from tests.agent_evaluation import cli_host
+from tests.agent_evaluation.dcs_driver import allowed_help_command
 
 from tests.agent_evaluation.dcs_driver import REPO, audit_review, codex_command, disabled_skills, run_cli
 
 
 class CodexCliCompatibilityTests(unittest.TestCase):
+    def test_prepared_help_can_be_read_inside_the_native_read_only_sandbox(self):
+        proof = REPO / ".session-temp/acceptance-agent" / ("CodexHelp-" + uuid.uuid4().hex)
+        workspace = proof / "workspace"
+        workspace.mkdir(parents=True)
+        help_path = proof / "prepared help.md"
+        sentinel = uuid.uuid4().hex
+        help_path.write_text(sentinel, encoding="utf-8")
+        schema = proof / "output.schema.json"
+        schema.write_text(json.dumps({"type": "object", "properties": {"seen": {"type": "string"}},
+                                      "required": ["seen"], "additionalProperties": False}))
+        final = proof / "final.json"
+        command = codex_command(workspace, schema, final, disabled_skills())
+        prompt = ("Прочитай только подготовленную справку ровно одной shell-командой: "
+                  + cli_host.help_command(help_path)
+                  + '\nДругие инструменты и команды запрещены. Верни JSON {"seen":"прочитанный текст"}.')
+        (proof / "prompt.md").write_text(prompt, encoding="utf-8")
+        (proof / "manifest.json").write_text(json.dumps({
+            "codexVersion": subprocess.check_output(["codex", "--version"], text=True, timeout=10).strip(),
+            "command": command,
+        }, indent=2))
+        events, _, _ = run_cli(command, prompt, dict(os.environ), proof / "agent", timeout=120)
+        reads = []
+        for event in events:
+            self.assertIn(event["type"], {"thread.started", "turn.started", "turn.completed",
+                                         "item.started", "item.updated", "item.completed"})
+            item = event.get("item", {})
+            if not item:
+                continue
+            self.assertIn(item["type"], {"reasoning", "agent_message", "command_execution"})
+            if item["type"] == "command_execution":
+                self.assertTrue(allowed_help_command(item["command"], help_path), item)
+                if event["type"] == "item.completed":
+                    self.assertEqual((item["status"], item["exit_code"]), ("completed", 0))
+                    reads.append(item)
+        self.assertEqual(len(reads), 1)
+        self.assertEqual(json.loads(final.read_text()), {"seen": sentinel})
+        print(f"accepted native help-read proof: {proof}", flush=True)
+
     def test_prepared_command_completes_without_configuration_errors(self):
         """Проверяет общую команду на настоящем CLI и сохраняет протокол для разбора отказа."""
         proof = REPO / ".session-temp/acceptance-agent" / ("CodexCLI-" + uuid.uuid4().hex)

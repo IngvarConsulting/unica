@@ -3,6 +3,7 @@ use super::*;
 use std::sync::mpsc;
 use std::thread;
 
+/// rule: INV.APP.DAEMON-ACTOR-CAPACITY
 #[test]
 fn replaced_named_root_outweighs_unavailable_root_in_any_iteration_order() {
     for unavailable_first in [false, true] {
@@ -99,6 +100,7 @@ fn workspace_actor_allows_reads_to_overlap() {
     fixture.cleanup();
 }
 
+/// rule: INV.SOURCE.REVISION-READ-PROVENANCE
 #[test]
 fn retained_binding_rejects_a_root_replaced_by_another_source_set_link() {
     use crate::platform::testing::{
@@ -140,6 +142,7 @@ fn retained_binding_rejects_a_root_replaced_by_another_source_set_link() {
     fixture.cleanup();
 }
 
+/// rule: INV.SOURCE.REVISION-READ-PROVENANCE
 #[test]
 fn retained_binding_rejects_a_same_path_directory_replacement() {
     let fixture = actor_fixture("root-directory-replacement", &["A"]);
@@ -223,6 +226,7 @@ fn path_provider_discards_output_when_root_changes_mid_operation() {
     fixture.cleanup();
 }
 
+/// rule: INV.APP.ACTOR-AUTHENTICATED-SOURCE-CAPABILITIES
 #[test]
 pub(crate) fn duplicate_physical_root_names_are_rejected_as_ambiguous() {
     let root = temp_root("duplicate-physical-root");
@@ -243,6 +247,7 @@ pub(crate) fn duplicate_physical_root_names_are_rejected_as_ambiguous() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// rule: INV.APP.ACTOR-AUTHENTICATED-SOURCE-CAPABILITIES
 #[test]
 pub(crate) fn duplicate_source_set_names_with_distinct_roots_are_rejected() {
     let root = temp_root("duplicate-source-set-name");
@@ -284,6 +289,7 @@ fn workspace_actor_exposes_no_raw_generic_runtime_payload() {
     );
 }
 
+/// rule: INV.CACHE.ACTOR-AUTHENTICATED-STATE-SCOPE
 #[test]
 fn actor_state_scope_digest_is_fallible_and_bounded() {
     fn digest(identity: &WorkspaceIdentity) -> Result<String, String> {
@@ -331,6 +337,8 @@ fn actor_state_scope_distinguishes_native_non_unicode_paths() {
     );
 }
 
+/// rule: INV.APP.ACTOR-AUTHENTICATED-SOURCE-IDENTITY
+/// rule: INV.CACHE.ACTOR-AUTHENTICATED-STATE-SCOPE
 #[test]
 pub(crate) fn same_name_root_changed_kind_rotates_actor_and_state_scope() {
     let root = temp_root("typed-kind-identity");
@@ -369,6 +377,9 @@ pub(crate) fn same_name_root_changed_kind_rotates_actor_and_state_scope() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// rule: CTR.SOURCE.REVISION-ARTIFACT-PROFILE
+/// rule: INV.APP.ACTOR-AUTHENTICATED-SOURCE-IDENTITY
+/// rule: INV.CACHE.ACTOR-AUTHENTICATED-STATE-SCOPE
 #[test]
 pub(crate) fn same_name_root_changed_format_or_platform_profile_rotates_actor() {
     let root = temp_root("typed-format-profile-identity");
@@ -449,11 +460,13 @@ fn warm_registry_reuses_the_same_actor_across_sequential_admissions() {
     super::retention_contract_tests::warm_registry_reuses_the_same_actor_across_sequential_admissions();
 }
 
+/// rule: INV.RUNTIME.DAEMON-ACTIVE-OWNERS
 #[test]
 fn warm_actor_expires_after_the_idle_ttl_and_is_rebuilt() {
     super::retention_contract_tests::warm_actor_expires_after_the_idle_ttl_and_is_rebuilt();
 }
 
+/// rule: INV.RUNTIME.DAEMON-ACTIVE-OWNERS
 #[test]
 fn idle_listener_retains_unknown_registry_ownership() {
     for poison_warm in [false, true] {
@@ -476,6 +489,8 @@ fn idle_listener_retains_unknown_registry_ownership() {
     }
 }
 
+/// rule: INV.APP.DAEMON-ACTOR-CAPACITY
+/// rule: INV.RUNTIME.DAEMON-ACTIVE-OWNERS
 #[test]
 fn idle_cleanup_retains_unknown_actor_state_without_rejecting_other_profiles() {
     for poison_plans in [true, false] {
@@ -537,10 +552,17 @@ fn warm_actor_whose_named_root_was_replaced_is_rebuilt() {
 }
 
 #[test]
+fn a_held_actor_whose_named_root_was_replaced_is_temporarily_unavailable() {
+    super::retention_contract_tests::a_held_actor_whose_named_root_was_replaced_is_temporarily_unavailable();
+}
+
+#[test]
 fn warm_actors_do_not_block_a_distinct_identity() {
     super::retention_contract_tests::warm_actors_do_not_block_a_distinct_identity();
 }
 
+/// rule: INV.APP.ACTOR-AUTHENTICATED-SOURCE-IDENTITY
+/// rule: INV.CACHE.ACTOR-AUTHENTICATED-STATE-SCOPE
 #[test]
 pub(crate) fn workspace_actor_registry_keys_exact_identity_and_separates_worktrees_and_source_roots(
 ) {
@@ -633,6 +655,7 @@ pub(crate) fn workspace_actor_registry_keys_exact_identity_and_separates_worktre
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// rule: INV.CACHE.ACTOR-AUTHENTICATED-STATE-SCOPE
 #[test]
 fn two_frontends_reuse_the_actor_for_one_canonical_worktree() {
     let root = temp_root("frontend-reuse");
@@ -650,14 +673,14 @@ fn two_frontends_reuse_the_actor_for_one_canonical_worktree() {
         .get_or_create(
             &first_context,
             [source_input("main", &source)],
-            "legacy-bsl-rlm",
+            "legacy-bsl",
         )
         .unwrap();
     let second = registry
         .get_or_create(
             &second_context,
             [source_input("main", root.join("frontend/../src"))],
-            "legacy-bsl-rlm",
+            "legacy-bsl",
         )
         .unwrap();
 
@@ -727,6 +750,96 @@ fn an_open_editor_buffer_keeps_its_idle_actor() {
     drop(actor);
     registry.evict_idle_warm_actors().unwrap();
     assert!(weak.upgrade().is_none());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// Stores a finished plan the way an executed preview leaves it, at the
+/// retention clock's present.
+fn save_completed_plan(actor: &WorkspaceActor<(), ()>) -> String {
+    let token = uuid::Uuid::new_v4().to_string();
+    let mut plans = actor.saved_apply_plans.lock().unwrap();
+    plans.last_saved = Some(actor_retention_now());
+    plans.entries.insert(
+        token.clone(),
+        Arc::new(SavedApplyPlan {
+            diff_layout: std::sync::OnceLock::new(),
+            execution_lane: DeadlineLock::fail_closed("saved apply execution lane is poisoned"),
+            state: Mutex::new(SavedApplyState::Completed(SavedApplyOutcome {
+                result: DomainResult::success("applied"),
+                authority: FactualOutcomeAuthority::Cancellable,
+            })),
+        }),
+    );
+    token
+}
+
+/// rule: INV.RUNTIME.DAEMON-ACTIVE-OWNERS
+#[test]
+fn a_saved_plan_keeps_its_idle_actor_only_for_the_plan_term() {
+    let root = temp_root("saved-plan-term");
+    let source = root.join("src");
+    std::fs::create_dir_all(&source).unwrap();
+    let registry = idle_registry_for_test(Duration::ZERO);
+    let admit = |at: Instant| {
+        super::with_actor_retention_time_for_test(at, || {
+            registry
+                .get_or_create(&context(&root), [source_input("main", &source)], "p")
+                .unwrap()
+        })
+    };
+    let at = |at: Instant, check: &dyn Fn()| super::with_actor_retention_time_for_test(at, check);
+    let saved_at = Instant::now();
+    let actor = admit(saved_at);
+    let token = super::with_actor_retention_time_for_test(saved_at, || save_completed_plan(&actor));
+    let weak = Arc::downgrade(&actor);
+    drop(actor);
+
+    let last_moment = saved_at + SAVED_APPLY_PLAN_TERM - Duration::from_millis(1);
+    at(last_moment, &|| {
+        assert!(
+            registry.has_retained_work(),
+            "a plan within its term holds the listener"
+        );
+        registry.evict_idle_warm_actors().unwrap();
+    });
+    assert!(
+        weak.upgrade().is_some(),
+        "a plan within its term keeps its actor"
+    );
+
+    // A later admission of the workspace restarts the term.
+    let readmitted_at = saved_at + SAVED_APPLY_PLAN_TERM / 2;
+    drop(admit(readmitted_at));
+    at(last_moment + SAVED_APPLY_PLAN_TERM / 2, &|| {
+        assert!(
+            registry.has_retained_work(),
+            "the term runs from the latest admission"
+        );
+    });
+
+    let expired = readmitted_at + SAVED_APPLY_PLAN_TERM;
+    at(expired, &|| {
+        assert!(
+            !registry.has_retained_work(),
+            "a plan past its term must not hold the listener"
+        );
+        registry.evict_idle_warm_actors().unwrap();
+    });
+    assert!(
+        weak.upgrade().is_none(),
+        "a plan past its term leaves with its actor"
+    );
+    let fresh = admit(expired);
+    assert!(
+        !fresh
+            .saved_apply_plans
+            .lock()
+            .unwrap()
+            .entries
+            .contains_key(&token),
+        "the token of an expired plan must not reach a later actor"
+    );
+    drop(fresh);
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -846,6 +959,7 @@ fn multiroot_provider_keeps_identical_relative_paths_bound_to_the_requesting_roo
     fixture.cleanup();
 }
 
+/// rule: INV.CACHE.ACTOR-AUTHENTICATED-STATE-SCOPE
 #[test]
 pub(crate) fn active_platform_actor_cannot_select_the_legacy_state_scope() {
     let fixture = actor_fixture("active-actor-legacy-bypass", &["src"]);
@@ -872,4 +986,156 @@ pub(crate) fn apply_publication_result_exposes_the_effect_receipt_accessor() {
     let _total_effects_accessor: for<'a> fn(
         &'a super::ApplyPublicationResult,
     ) -> &'a ApplyEffectReceipt = super::ApplyPublicationResult::effects;
+}
+
+/// rule: INV.RUNTIME.SOURCE-SET-WRITE-EXCLUSION
+#[test]
+fn actors_of_one_workspace_root_share_the_lane_a_runtime_writer_takes_before_them() {
+    let root = temp_root("source-write-lane-shared");
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::create_dir_all(root.join("ext")).unwrap();
+    let other = temp_root("source-write-lane-other");
+    std::fs::create_dir_all(other.join("src")).unwrap();
+    let registry = WorkspaceActorRegistry::<()>::default();
+
+    // A runtime writer may take the lane before any actor of the root exists.
+    let writer = registry.source_write_lane(&root).unwrap();
+    let main = registry
+        .get_or_create(
+            &context(&root),
+            [source_input("main", root.join("src"))],
+            "p",
+        )
+        .unwrap();
+    let extension = registry
+        .get_or_create(
+            &context(&root),
+            [source_input("ext", root.join("ext"))],
+            "p",
+        )
+        .unwrap();
+    let foreign = registry
+        .get_or_create(
+            &context(&other),
+            [source_input("main", other.join("src"))],
+            "p",
+        )
+        .unwrap();
+
+    assert!(Arc::ptr_eq(&writer.lane, &main.mutation_lane));
+    assert!(Arc::ptr_eq(&writer.lane, &extension.mutation_lane));
+    assert!(!Arc::ptr_eq(&writer.lane, &foreign.mutation_lane));
+    assert!(writer.same_lane(&registry.source_write_lane(&root).unwrap()));
+    assert!(!writer.same_lane(&registry.source_write_lane(&other).unwrap()));
+
+    drop((main, extension, foreign));
+    let _ = std::fs::remove_dir_all(root);
+    let _ = std::fs::remove_dir_all(other);
+}
+
+/// rule: INV.RUNTIME.SOURCE-SET-WRITE-EXCLUSION
+#[test]
+fn a_runtime_writer_waits_for_an_actor_publication_and_reports_deadline_or_cancellation() {
+    let root = temp_root("source-write-lane-wait");
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    let registry = WorkspaceActorRegistry::<()>::default();
+    let actor = registry
+        .get_or_create(
+            &context(&root),
+            [source_input("main", root.join("src"))],
+            "p",
+        )
+        .unwrap();
+    let writer = registry.source_write_lane(&root).unwrap();
+
+    let publication = actor.hold_mutation_lane_for_test();
+    let ran = std::cell::Cell::new(false);
+    let deadline = writer
+        .hold(
+            ProviderDeadline::from_budget(Duration::from_millis(40)),
+            &CancellationToken::new(),
+            || ran.set(true),
+        )
+        .unwrap_err();
+    assert!(!deadline.is_cancelled());
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+    let cancelled = writer
+        .hold(ProviderDeadline::no_deadline(), &cancellation, || {
+            ran.set(true)
+        })
+        .unwrap_err();
+    assert!(cancelled.is_cancelled());
+    assert!(
+        !ran.get(),
+        "the writer ran while an actor publication held the lane"
+    );
+
+    let (released, waiting) = mpsc::channel();
+    let waiter = {
+        let writer = writer.clone();
+        thread::spawn(move || {
+            writer
+                .hold(
+                    ProviderDeadline::no_deadline(),
+                    &CancellationToken::new(),
+                    || released.send(()).unwrap(),
+                )
+                .unwrap()
+        })
+    };
+    assert!(waiting.recv_timeout(Duration::from_millis(100)).is_err());
+    drop(publication);
+    waiting.recv_timeout(Duration::from_secs(10)).unwrap();
+    waiter.join().unwrap();
+
+    // While the writer holds the lane, an actor publication cannot start.
+    writer
+        .hold(
+            ProviderDeadline::no_deadline(),
+            &CancellationToken::new(),
+            || {
+                assert!(actor.mutation_lane.is_held_for_test());
+            },
+        )
+        .unwrap();
+    drop(actor);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// rule: INV.RUNTIME.SOURCE-SET-WRITE-EXCLUSION
+#[test]
+fn a_panicking_runtime_writer_releases_the_lane_without_poisoning_the_actor() {
+    let root = temp_root("source-write-lane-panic");
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    let registry = WorkspaceActorRegistry::<()>::default();
+    let actor = registry
+        .get_or_create(
+            &context(&root),
+            [source_input("main", root.join("src"))],
+            "p",
+        )
+        .unwrap();
+    let writer = registry.source_write_lane(&root).unwrap();
+
+    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        writer.hold(
+            ProviderDeadline::no_deadline(),
+            &CancellationToken::new(),
+            || panic!("runner adapter failed"),
+        )
+    }));
+    assert!(panicked.is_err());
+
+    let _publication = actor
+        .mutation_lane
+        .acquire_before(
+            ProviderDeadline::from_budget(Duration::from_secs(5)),
+            &CancellationToken::new(),
+            "publication after a runtime writer panic",
+        )
+        .expect("the lane stays usable for actor publications");
+    drop(_publication);
+    drop(actor);
+    let _ = std::fs::remove_dir_all(root);
 }

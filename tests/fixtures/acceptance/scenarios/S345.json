@@ -1,0 +1,40 @@
+{
+  "id": "S345",
+  "name": "diagnostics-jsonl-invalid-event",
+  "issue": 1064,
+  "area": "Код BSL",
+  "task": "Повреждённый JSONL называет безопасную строку и причину без исходного payload",
+  "workspace": "tests/fixtures/acceptance/workspace-diagnostics",
+  "profile": "fault-injection",
+  "driver": "analyzer-jsonl-fault",
+  "evaluation": "invalid-event",
+  "wire": [
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:CommonModule.Пример"
+      },
+      "expect": [
+        "provider"
+      ],
+      "assertions": [
+        {
+          "pointer": "/ok",
+          "eq": false
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "provider_unavailable"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "eq": "BSL analysis did not complete, so the module is unproven: line 1: invalid JSON or event schema. Check compatibility between Unica and its bundled analyzer; if the problem persists, report this reason and line number."
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ]
+    }
+  ]
+}

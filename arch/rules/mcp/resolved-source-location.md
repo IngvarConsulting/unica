@@ -1,14 +1,5 @@
 ---
 id: INV.WIRE.RESOLVED-SOURCE-LOCATION
-check:
-  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::resolve_exact_bsl_nodes_across_module_roles
-  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::resolve_exact_method_spans_annotations_through_its_closing_line
-  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::resolve_exact_module_body_numbers_lines_like_view
-  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::resolve_exact_tree_children_use_their_containing_xml
-  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::resolve_exact_module_read_failures_are_never_successful_locations
-  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::resolve_exact_cancelled_read_never_claims_a_location
-  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::view_nested_regions_never_substitutes_the_final_name
-  - crates/unica-coder/src/application/v13/resolve.rs::absent_lines_are_named_rather_than_omitted
 ---
 
 # Resolve называет существующий ресурс и его действительный диапазон

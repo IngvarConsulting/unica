@@ -1,9 +1,5 @@
 ---
 id: INV.WIRE.SURFACE-RELEASE-ROUTING
-check:
-  - crates/unica-coder/src/interfaces/mcp.rs::production_mcp_surface_exposes_only_canonical_v13_tools_and_task_compatibility
-  - crates/unica-coder/src/interfaces/mcp.rs::a_name_outside_the_canonical_profile_is_refused_without_dispatch
-  - crates/unica-coder/src/application/v13/tool_catalog.rs::v13_catalog_locks_the_eight_domain_contracts_without_publishing_them
 ---
 
 # Публичный MCP направляет вызовы в канонический демон

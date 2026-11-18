@@ -1,0 +1,35 @@
+{
+  "family": "Subsystem",
+  "operations": [
+    {
+      "variant": "Create",
+      "operation": "subsystem.create",
+      "applicability": "Configuration",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "ContentAdd",
+      "operation": "content.add",
+      "applicability": "Subsystem",
+      "skeleton": "Items"
+    },
+    {
+      "variant": "ContentRemove",
+      "operation": "content.remove",
+      "applicability": "Subsystem",
+      "skeleton": "Items"
+    },
+    {
+      "variant": "ChildAdd",
+      "operation": "childSubsystem.add",
+      "applicability": "Subsystem",
+      "skeleton": "Items"
+    },
+    {
+      "variant": "ChildRemove",
+      "operation": "childSubsystem.remove",
+      "applicability": "NestedSubsystem",
+      "skeleton": "Target"
+    }
+  ]
+}

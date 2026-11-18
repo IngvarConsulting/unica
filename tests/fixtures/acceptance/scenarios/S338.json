@@ -1,0 +1,693 @@
+{
+  "id": "S338",
+  "name": "code-insert-refusal-and-method-body-replace",
+  "pr": 1292,
+  "area": "Код BSL",
+  "task": "Method без position, Method.Body insert, Body+selector и неполные position/selector отказывают без записи; замена Method.Body сохраняет подпись/BOM/CRLF/соседей и повтор",
+  "workspace": "tests/fixtures/acceptance/workspace-code",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.Пример",
+        "ops": [
+          {
+            "op": "code.insert",
+            "args": {
+              "at": "main:CommonModule.Пример.Method.ОбработатьПример",
+              "text": "// отказ"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: code.insert at a method needs `position`: before or after it",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.position"
+        }
+      ],
+      "captures": {
+        "unchanged1": {
+          "file": "src/cf/Catalogs/Пример.xml",
+          "kind": "sha256"
+        },
+        "unchanged2": {
+          "file": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+          "kind": "sha256"
+        },
+        "unchanged3": {
+          "file": "src/cf/CommonModules/Пример.xml",
+          "kind": "sha256"
+        },
+        "unchanged4": {
+          "file": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+          "kind": "sha256"
+        },
+        "unchanged5": {
+          "file": "src/cf/Configuration.xml",
+          "kind": "sha256"
+        },
+        "unchanged6": {
+          "file": "src/cf/Languages/Русский.xml",
+          "kind": "sha256"
+        },
+        "unchanged7": {
+          "file": "src/ext/CommonModules/ПР_Пример.xml",
+          "kind": "sha256"
+        },
+        "unchanged8": {
+          "file": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+          "kind": "sha256"
+        },
+        "unchanged9": {
+          "file": "src/ext/Configuration.xml",
+          "kind": "sha256"
+        },
+        "unchanged10": {
+          "file": "src/ext/Languages/Русский.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.Пример",
+        "ops": [
+          {
+            "op": "code.insert",
+            "args": {
+              "at": "main:CommonModule.Пример.Method.ОбработатьПример.Body",
+              "text": "// отказ"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: apply operation `code.insert` does not apply to Body `main:CommonModule.Пример.Method.ОбработатьПример.Body`; it applies at `main:CommonModule.Пример.Method.Обр",
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/cf/Catalogs/Пример.xml",
+          "eq": "$capture.unchanged1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+          "eq": "$capture.unchanged2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/cf/CommonModules/Пример.xml",
+          "eq": "$capture.unchanged3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+          "eq": "$capture.unchanged4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/cf/Configuration.xml",
+          "eq": "$capture.unchanged5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/cf/Languages/Русский.xml",
+          "eq": "$capture.unchanged6"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ext/CommonModules/ПР_Пример.xml",
+          "eq": "$capture.unchanged7"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+          "eq": "$capture.unchanged8"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ext/Configuration.xml",
+          "eq": "$capture.unchanged9"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ext/Languages/Русский.xml",
+          "eq": "$capture.unchanged10"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:CommonModule.Пример.Method.ОбработатьПример.Can.code.insert"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.Пример",
+        "ops": [
+          {
+            "op": "code.insert",
+            "args": {
+              "at": "main:CommonModule.Пример.Body",
+              "selector": {
+                "anchor": "// insertion point"
+              },
+              "position": "after",
+              "text": "// отказ"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: an addressed BSL node cannot also have a selector",
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/cf/Catalogs/Пример.xml",
+          "eq": "$capture.unchanged1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+          "eq": "$capture.unchanged2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/cf/CommonModules/Пример.xml",
+          "eq": "$capture.unchanged3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+          "eq": "$capture.unchanged4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/cf/Configuration.xml",
+          "eq": "$capture.unchanged5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/cf/Languages/Русский.xml",
+          "eq": "$capture.unchanged6"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ext/CommonModules/ПР_Пример.xml",
+          "eq": "$capture.unchanged7"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+          "eq": "$capture.unchanged8"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ext/Configuration.xml",
+          "eq": "$capture.unchanged9"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ext/Languages/Русский.xml",
+          "eq": "$capture.unchanged10"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.Пример",
+        "ops": [
+          {
+            "op": "code.insert",
+            "args": {
+              "at": "main:CommonModule.Пример",
+              "position": "before",
+              "text": "// отказ"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: position is unavailable without selector",
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/cf/Catalogs/Пример.xml",
+          "eq": "$capture.unchanged1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+          "eq": "$capture.unchanged2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/cf/CommonModules/Пример.xml",
+          "eq": "$capture.unchanged3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+          "eq": "$capture.unchanged4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/cf/Configuration.xml",
+          "eq": "$capture.unchanged5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/cf/Languages/Русский.xml",
+          "eq": "$capture.unchanged6"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ext/CommonModules/ПР_Пример.xml",
+          "eq": "$capture.unchanged7"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+          "eq": "$capture.unchanged8"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ext/Configuration.xml",
+          "eq": "$capture.unchanged9"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ext/Languages/Русский.xml",
+          "eq": "$capture.unchanged10"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.Пример",
+        "ops": [
+          {
+            "op": "code.insert",
+            "args": {
+              "at": "main:CommonModule.Пример",
+              "selector": {
+                "anchor": "// insertion point"
+              },
+              "text": "// отказ"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: position is required when selector is present",
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/cf/Catalogs/Пример.xml",
+          "eq": "$capture.unchanged1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+          "eq": "$capture.unchanged2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/cf/CommonModules/Пример.xml",
+          "eq": "$capture.unchanged3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+          "eq": "$capture.unchanged4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/cf/Configuration.xml",
+          "eq": "$capture.unchanged5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/cf/Languages/Русский.xml",
+          "eq": "$capture.unchanged6"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ext/CommonModules/ПР_Пример.xml",
+          "eq": "$capture.unchanged7"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+          "eq": "$capture.unchanged8"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ext/Configuration.xml",
+          "eq": "$capture.unchanged9"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ext/Languages/Русский.xml",
+          "eq": "$capture.unchanged10"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.Пример",
+        "ops": [
+          {
+            "op": "code.replace",
+            "args": {
+              "at": "main:CommonModule.Пример.Method.ОбработатьПример.Body",
+              "text": "    Возврат Ложь;"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/cf/Catalogs/Пример.xml",
+          "eq": "$capture.unchanged1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+          "eq": "$capture.unchanged2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/cf/CommonModules/Пример.xml",
+          "eq": "$capture.unchanged3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+          "eq": "$capture.unchanged4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/cf/Configuration.xml",
+          "eq": "$capture.unchanged5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/cf/Languages/Русский.xml",
+          "eq": "$capture.unchanged6"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ext/CommonModules/ПР_Пример.xml",
+          "eq": "$capture.unchanged7"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+          "eq": "$capture.unchanged8"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ext/Configuration.xml",
+          "eq": "$capture.unchanged9"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ext/Languages/Русский.xml",
+          "eq": "$capture.unchanged10"
+        }
+      ],
+      "captures": {
+        "replace": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.replace"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/cf/Catalogs/Пример.xml",
+          "eq": "$capture.unchanged1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+          "eq": "$capture.unchanged2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/cf/CommonModules/Пример.xml",
+          "eq": "$capture.unchanged3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+          "eq": "034873a782225cd90eac38dbca63022e807fc4b58dc6998145e9e8a4ac612a51"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/cf/Configuration.xml",
+          "eq": "$capture.unchanged5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/cf/Languages/Русский.xml",
+          "eq": "$capture.unchanged6"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ext/CommonModules/ПР_Пример.xml",
+          "eq": "$capture.unchanged7"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+          "eq": "$capture.unchanged8"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ext/Configuration.xml",
+          "eq": "$capture.unchanged9"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ext/Languages/Русский.xml",
+          "eq": "$capture.unchanged10"
+        }
+      ],
+      "captures": {
+        "unchanged11": {
+          "file": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.Пример",
+        "ops": [
+          {
+            "op": "code.replace",
+            "args": {
+              "at": "main:CommonModule.Пример.Method.ОбработатьПример.Body",
+              "text": "    Возврат Ложь;"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/cf/Catalogs/Пример.xml",
+          "eq": "$capture.unchanged1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+          "eq": "$capture.unchanged2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/cf/CommonModules/Пример.xml",
+          "eq": "$capture.unchanged3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+          "eq": "$capture.unchanged11"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/cf/Configuration.xml",
+          "eq": "$capture.unchanged5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/cf/Languages/Русский.xml",
+          "eq": "$capture.unchanged6"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ext/CommonModules/ПР_Пример.xml",
+          "eq": "$capture.unchanged7"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+          "eq": "$capture.unchanged8"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ext/Configuration.xml",
+          "eq": "$capture.unchanged9"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ext/Languages/Русский.xml",
+          "eq": "$capture.unchanged10"
+        }
+      ],
+      "captures": {
+        "replaceRepeat": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.replaceRepeat"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/cf/Catalogs/Пример.xml",
+          "eq": "$capture.unchanged1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+          "eq": "$capture.unchanged2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/cf/CommonModules/Пример.xml",
+          "eq": "$capture.unchanged3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+          "eq": "$capture.unchanged11"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/cf/Configuration.xml",
+          "eq": "$capture.unchanged5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/cf/Languages/Русский.xml",
+          "eq": "$capture.unchanged6"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ext/CommonModules/ПР_Пример.xml",
+          "eq": "$capture.unchanged7"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+          "eq": "$capture.unchanged8"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ext/Configuration.xml",
+          "eq": "$capture.unchanged9"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ext/Languages/Русский.xml",
+          "eq": "$capture.unchanged10"
+        }
+      ]
+    }
+  ]
+}

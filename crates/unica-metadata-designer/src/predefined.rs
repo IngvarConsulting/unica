@@ -1,10 +1,10 @@
+use crate::dialect::root_version;
 use roxmltree::{Document, Node};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
 use std::ops::Range;
 use unica_address::source_target::MetadataAddress;
 use unica_metadata::*;
-use unica_source_designer::format_profile::ACTIVE_FORMAT_PROFILE;
 use unica_source_designer::roots::{platform_xml_publication_policy, PlatformXmlPublicationPolicy};
 use unica_xml_format::text::{
     resolve_line_ending, EolPolicy, LineEndingProfile, SourceTextSnapshot,
@@ -251,25 +251,70 @@ pub fn predefined_post_image(
     original: Option<&[u8]>,
     operation: &MetaEditOperation,
 ) -> Result<Option<Vec<u8>>, unica_metadata::request::MetaFailure> {
-    predefined_post_image_inner(kind, owner, descriptor_text, original, operation).map_err(
-        |mut failure| {
-            for diagnostic in &mut failure.diagnostics {
-                if let Some(field) = diagnostic.field.as_mut() {
-                    if let Some(rest) = field.strip_prefix("operations[0].") {
-                        *field = rest.to_string();
-                    }
-                }
-            }
-            failure
-        },
-    )
+    predefined_post_image_inner(kind, owner, descriptor_text, original, operation)
+        .map_err(addressed_predefined_failure)
 }
+fn addressed_predefined_failure(
+    mut failure: unica_metadata::request::MetaFailure,
+) -> unica_metadata::request::MetaFailure {
+    for diagnostic in &mut failure.diagnostics {
+        if let Some(field) = diagnostic.field.as_mut() {
+            if let Some(rest) = field.strip_prefix("operations[0].") {
+                *field = rest.to_string();
+            }
+        }
+    }
+    failure
+}
+#[derive(Clone, Copy)]
+enum CodeTypePlanning {
+    Descriptor,
+    Final(PredefinedCodeType),
+}
+/// Render explicit fields for an already typed final owner intent. Whole-file
+/// compatibility belongs to the final staged descriptor/resource pair.
+pub(crate) fn predefined_post_image_for_final_code_type(
+    kind: MetadataKind,
+    owner: &MetadataAddress,
+    descriptor_text: &str,
+    original: Option<&[u8]>,
+    operation: &MetaEditOperation,
+    code_type: PredefinedCodeType,
+) -> Result<Option<Vec<u8>>, unica_metadata::request::MetaFailure> {
+    predefined_post_image_with_code_type(
+        kind,
+        owner,
+        descriptor_text,
+        original,
+        operation,
+        CodeTypePlanning::Final(code_type),
+    )
+    .map_err(addressed_predefined_failure)
+}
+
 pub fn predefined_post_image_inner(
     kind: MetadataKind,
     owner: &MetadataAddress,
     descriptor_text: &str,
     original: Option<&[u8]>,
     operation: &MetaEditOperation,
+) -> Result<Option<Vec<u8>>, unica_metadata::request::MetaFailure> {
+    predefined_post_image_with_code_type(
+        kind,
+        owner,
+        descriptor_text,
+        original,
+        operation,
+        CodeTypePlanning::Descriptor,
+    )
+}
+fn predefined_post_image_with_code_type(
+    kind: MetadataKind,
+    owner: &MetadataAddress,
+    descriptor_text: &str,
+    original: Option<&[u8]>,
+    operation: &MetaEditOperation,
+    planning: CodeTypePlanning,
 ) -> Result<Option<Vec<u8>>, unica_metadata::request::MetaFailure> {
     let invalid = |message: String| {
         failure(
@@ -280,17 +325,20 @@ pub fn predefined_post_image_inner(
             None,
         )
     };
-    let code_type = predefined_code_type(kind, descriptor_text)
-        .and_then(|code_type| code_type.ok_or_else(|| MISSING_PREDEFINED_CODE_TYPE.to_string()))
-        .map_err(|message| {
-            failure(
-                owner,
-                MetaDiagnosticCode::ValidationFailed,
-                message,
-                None,
-                Some("properties.CodeType".to_string()),
-            )
-        })?;
+    let code_type = match planning {
+        CodeTypePlanning::Final(code_type) => code_type,
+        CodeTypePlanning::Descriptor => predefined_code_type(kind, descriptor_text)
+            .and_then(|code_type| code_type.ok_or_else(|| MISSING_PREDEFINED_CODE_TYPE.to_string()))
+            .map_err(|message| {
+                failure(
+                    owner,
+                    MetaDiagnosticCode::ValidationFailed,
+                    message,
+                    None,
+                    Some("properties.CodeType".to_string()),
+                )
+            })?,
+    };
     let (mut text, has_bom) = match original {
         Some(bytes) => {
             let text = std::str::from_utf8(bytes).map_err(|_| {
@@ -308,7 +356,11 @@ pub fn predefined_post_image_inner(
             )
         }
         None => (
-            empty_document(kind, source_eol(descriptor_text).unwrap_or("\n")),
+            empty_document(
+                kind,
+                source_eol(descriptor_text).unwrap_or("\n"),
+                &root_version::of_set(descriptor_text),
+            ),
             true,
         ),
     };
@@ -331,7 +383,9 @@ pub fn predefined_post_image_inner(
         }
     }
     validate_predefined_text_allowing_self_closing_items(kind, &text).map_err(invalid)?;
-    validate_predefined_text_for_code_type(kind, code_type, &text).map_err(invalid)?;
+    if matches!(planning, CodeTypePlanning::Descriptor) {
+        validate_predefined_text_for_code_type(kind, code_type, &text).map_err(invalid)?;
+    }
     if !document_has_items(&text).map_err(invalid)? {
         return Ok(None);
     }
@@ -470,13 +524,13 @@ pub fn validate_predefined_text_with_checkpoint(
         || platform_xml_publication_policy(namespace, local_name)
             != Some(PlatformXmlPublicationPolicy::ExactRootVersion)
         || root.attribute((XSI_NS, "type")) != Some(root_type(kind)?)
-        || unica_source_designer::roots::root_version_literal(text, root).as_deref()
-            != Some(ACTIVE_FORMAT_PROFILE.export_format)
+        || !root_version::is_writable(
+            unica_source_designer::roots::root_version_literal(text, root).as_deref(),
+        )
     {
         return Err(format!(
-            "Predefined.xml does not match the exact {}/{} profile for {}",
-            ACTIVE_FORMAT_PROFILE.platform_line,
-            ACTIVE_FORMAT_PROFILE.export_format,
+            "Predefined.xml does not match a writable export format ({}) for {}",
+            root_version::writable_formats(),
             kind.as_str()
         ));
     }
@@ -2515,13 +2569,13 @@ pub fn root_type(kind: MetadataKind) -> Result<&'static str, String> {
         _ => Err(format!("{} does not own predefined data", kind.as_str())),
     }
 }
-pub fn empty_document(kind: MetadataKind, eol: &str) -> String {
+pub fn empty_document(kind: MetadataKind, eol: &str, version: &str) -> String {
     let root_type = root_type(kind).expect("domain capability validated predefined owner");
     // Новый companion наследует EOL описателя, рядом с которым живёт, и, как
     // платформенный экспорт, не несёт хвостового перевода строки.
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>{eol}<PredefinedData xmlns=\"{PREDEFINED_NS}\" xmlns:v8=\"{V8_NS}\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"{XSI_NS}\" xsi:type=\"{root_type}\" version=\"{}\">{eol}</PredefinedData>",
-        ACTIVE_FORMAT_PROFILE.export_format
+        version
     )
 }
 pub fn source_eol(text: &str) -> Result<&'static str, String> {
@@ -2696,7 +2750,11 @@ pub fn plan_predefined_resource_after_descriptor_edit<G>(
             )
         }
         None => (
-            empty_document(kind, source_eol(descriptor_post_image).unwrap_or("\n")),
+            empty_document(
+                kind,
+                source_eol(descriptor_post_image).unwrap_or("\n"),
+                &root_version::of_set(descriptor_post_image),
+            ),
             true,
         ),
     };

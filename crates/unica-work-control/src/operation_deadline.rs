@@ -45,6 +45,7 @@ mod tests {
     use super::OperationDeadline;
     use std::time::{Duration, Instant};
 
+    /// rule: INV.RUNTIME.TIMERS-PRESERVE-WORK
     #[test]
     fn absence_and_elapsed_finite_deadline_are_distinct() {
         let now = Instant::now();

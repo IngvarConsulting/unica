@@ -21,7 +21,6 @@
     "database",
     "mcp",
     "v8-runner",
-    "rlm",
     "code-analysis"
   ]
 }

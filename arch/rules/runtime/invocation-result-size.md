@@ -1,10 +1,5 @@
 ---
 id: INV.APP.DAEMON-RESULT-SIZE
-check:
-  - crates/unica-execution/src/receipt_ledger.rs::canonical_completed_terminal_rejects_result_over_eight_mib
-  - crates/unica-execution/src/receipt_ledger.rs::oversized_result_becomes_a_size_refusal_that_names_both_sizes
-  - crates/unica-coder/tests/daemon_receipt_ledger.rs::oversized_result_and_uncertain_store_commit_fail_closed
-  - crates/unica-coder/src/interfaces/mcp.rs::tasks_projection_bounds_near_limit_wire_and_rejects_over_limit
 gap: https://github.com/IngvarConsulting/unica/issues/985
 ---
 

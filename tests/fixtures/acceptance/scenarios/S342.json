@@ -1,0 +1,37 @@
+{
+  "id": "S342",
+  "name": "diagnostics-filter-diff-base",
+  "issue": 1291,
+  "area": "Код BSL",
+  "task": "Модульный diff-filter перекрывает diff_base без ложной неполноты",
+  "workspace": "tests/fixtures/acceptance/workspace-diagnostics",
+  "profile": "delivery",
+  "driver": "bsl-analyzer-diagnostics",
+  "evaluation": "diff-base",
+  "wire": [
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:CommonModule.Пример"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/ok",
+          "eq": true
+        },
+        {
+          "pointer": "/data/suppressed",
+          "absent": true
+        }
+      ],
+      "status": "passed",
+      "validators": [
+        "bsl"
+      ],
+      "diagnostic": "UnusedLocalVariable"
+    }
+  ]
+}

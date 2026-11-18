@@ -1,0 +1,59 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://schemas.xmlsoap.org/wsdl/"
+		xmlns:soap12bind="http://schemas.xmlsoap.org/wsdl/soap12/"
+		xmlns:soapbind="http://schemas.xmlsoap.org/wsdl/soap/"
+		xmlns:tns="urn:unica:1662"
+		xmlns:wsp="http://schemas.xmlsoap.org/ws/2004/09/policy"
+		xmlns:wsu="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd"
+		xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+		xmlns:xsd1="urn:unica:1662"
+		name="Probe"
+		targetNamespace="urn:unica:1662">
+	<types>
+		<xs:schema xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"
+				xmlns:xs="http://www.w3.org/2001/XMLSchema"
+				targetNamespace="urn:unica:1662">
+			<xs:element name="Ping"
+					type="xs:string"/>
+			<xs:element name="Pong"
+					type="xs:string"/>
+		</xs:schema>
+	</types>
+	<message name="Request">
+		<part name="parameters"
+				element="tns:Ping"/>
+	</message>
+	<message name="Response">
+		<part name="parameters"
+				element="tns:Pong"/>
+	</message>
+	<portType name="ProbePort">
+		<operation name="Ping">
+			<input name="PingRequest"
+					message="tns:Request"/>
+			<output name="PingResponse"
+					message="tns:Response"/>
+		</operation>
+	</portType>
+	<binding name="ProbeBinding"
+			type="tns:ProbePort">
+		<soapbind:binding style="document"
+				transport="http://schemas.xmlsoap.org/soap/http"/>
+		<operation name="Ping">
+			<soapbind:operation style="document"
+					soapAction="urn:unica:1662/Ping"/>
+			<input>
+				<soapbind:body use="literal"/>
+			</input>
+			<output>
+				<soapbind:body use="literal"/>
+			</output>
+		</operation>
+	</binding>
+	<service name="Probe">
+		<port name="ProbePort"
+				binding="tns:ProbeBinding">
+			<soapbind:address location="http://example.invalid/soap"/>
+		</port>
+	</service>
+</definitions>

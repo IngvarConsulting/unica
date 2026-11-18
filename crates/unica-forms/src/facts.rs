@@ -1,6 +1,7 @@
 //! Existing form read/edit/compile facts, independent of XML or filesystem implementations.
 use crate::events::*;
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::ops::Range;
 use unica_execution_contract::mutation::MutationData;
 use unica_metadata::support_state::ObjectSupportData as DomainObjectSupportData;
@@ -13,6 +14,8 @@ pub struct FormInfoData {
     pub name: String,
     /// The form title when it declares one; `null` otherwise.
     pub title: Option<String>,
+    #[serde(flatten)]
+    pub localized: FormLocalizedProperties,
     /// The metadata object the form belongs to; `null` for a standalone form.
     pub object_context: Option<String>,
     pub is_extension: bool,
@@ -113,8 +116,19 @@ pub struct FormInfoElement {
     pub name: String,
     /// The data path or command the element is bound to; `null` when unbound.
     pub binding: Option<FormInfoBinding>,
+    /// Direct XML facts may coexist on a common-command button. The legacy
+    /// `binding` above keeps its precedence for existing event consumers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command_name: Option<String>,
+    /// Damage to one binding does not hide the other or the element itself.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub binding_limits: Vec<String>,
     /// The element title when it differs from its name; `null` otherwise.
     pub title: Option<String>,
+    #[serde(flatten)]
+    pub localized: FormLocalizedProperties,
     pub visible: bool,
     pub enabled: bool,
     pub read_only: bool,
@@ -133,20 +147,56 @@ pub struct FormInfoBinding {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FormInfoAttribute {
+    #[serde(flatten)]
+    pub localized: FormLocalizedProperties,
     pub name: String,
     #[serde(rename = "type")]
     pub type_name: Option<String>,
     pub is_main: bool,
     /// `MainTable` of a dynamic list; `null` for every other type.
     pub main_table: Option<String>,
+    /// Observed settings, present only for DynamicList attributes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dynamic_list: Option<FormInfoDynamicList>,
     /// Columns of a value table or tree; empty for every other type.
     pub columns: Vec<FormInfoColumn>,
+}
+
+/// Full values of multilingual fields and property-specific read failures.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FormLocalizedProperties {
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub localized_properties: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub localized_limits: Vec<String>,
+}
+
+/// Design-time observations, with no inferred runtime defaults.
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FormInfoDynamicList {
+    pub main_table: Option<String>,
+    pub manual_query: Option<bool>,
+    /// XML-decoded direct text, including whitespace and line breaks.
+    pub query_text: Option<String>,
+    pub dynamic_data_read: Option<bool>,
+    pub key_type: Option<String>,
+    /// Repeated KeyField values in source order, including repeats.
+    pub key_fields: Option<Vec<String>>,
+    /// Whether MainTable permits use of KeyFields, not the effective runtime key.
+    pub key_fields_applicable: Option<bool>,
+    pub limits: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FormInfoColumn {
+    #[serde(flatten)]
+    pub localized: FormLocalizedProperties,
     pub name: String,
+    /// Strictly decoded type of the containing form attribute.
+    pub parent_type: Option<String>,
     #[serde(rename = "type")]
     pub type_name: Option<String>,
 }
@@ -167,6 +217,8 @@ pub struct FormInfoCommand {
     pub actions: Vec<FormInfoEvent>,
     /// The command title in its first language; `null` when it has none.
     pub title: Option<String>,
+    #[serde(flatten)]
+    pub localized: FormLocalizedProperties,
     /// The tooltip in its first language; `null` when the command has none.
     pub tooltip: Option<String>,
     /// The keyboard shortcut; `null` when the command declares none.
@@ -176,6 +228,14 @@ pub struct FormInfoCommand {
     pub picture: Option<String>,
     /// The command's DefaultRepresentation; `null` when it keeps the default.
     pub representation: Option<String>,
+    pub current_row_use: Option<String>,
+    pub modifies_saved_data: Option<bool>,
+    pub associated_table_element_id: Option<String>,
+    pub functional_options: Option<Vec<String>>,
+    /// An explicitly stored flag, independent of the picture reference.
+    pub picture_load_transparent: Option<bool>,
+    /// Damage to one command property does not discard the other facts.
+    pub property_limits: Vec<String>,
 }
 
 /// Minimal, provider-neutral form evidence consumed by the hidden event

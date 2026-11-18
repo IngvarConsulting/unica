@@ -1,9 +1,5 @@
 ---
 id: INV.SOURCE.AUTODETECT-CATALOG
-check:
-  - crates/unica-source-integration-tests/tests/project_sources.rs::autodetect_keeps_a_non_utf8_extension_name_from_hiding_its_siblings
-  - crates/unica-source-integration-tests/tests/project_sources.rs::autodetect_catalog_contract_is_closed_over_production_layouts
-  - crates/unica-source-integration-tests/tests/project_sources.rs::autodetect_skips_extension_directory_named_main
 ---
 
 # Без описания проекта исходники ищутся только в известных каталогах

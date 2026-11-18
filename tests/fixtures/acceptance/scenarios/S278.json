@@ -1,0 +1,26 @@
+{
+  "id": "S278",
+  "area": "Код BSL",
+  "task": "Вставить код в общий модуль выгрузки 2.23 — отказ по формату владельца",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "newer:CommonModule.GoogleПереводчик",
+        "ops": [
+          {
+            "op": "code.insert",
+            "args": {
+              "text": "// проба\n"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_source: Configuration.xml: export format 2.23 is newer than the newest writable format 2.22 for 1C 8.5.4; Unica does not edit this export yet"
+    }
+  ],
+  "workspace": "tests/fixtures/acceptance/workspace-format"
+}

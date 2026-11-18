@@ -1,0 +1,422 @@
+{
+  "id": "S353",
+  "name": "external-linked-payload-refusal",
+  "issue": 627,
+  "area": "Приёмочный корпус",
+  "task": "Ссылка на payload соседнего владельца отклоняется; собственная соседняя форма доступна",
+  "workspace": "tests/fixtures/acceptance/workspace-external-linked",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "epf:ExternalDataProcessor.Import.Form.Main"
+      },
+      "expect": [
+        "provider"
+      ],
+      "assertions": [
+        {
+          "pointer": "/ok",
+          "eq": false
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "provider_unavailable"
+        },
+        {
+          "pointer": "/diagnostics/0/detailCode",
+          "eq": "source_unreadable"
+        },
+        {
+          "pointer": "/diagnostics/0/outcome",
+          "eq": "fixSource"
+        },
+        {
+          "pointer": "/diagnostics/1",
+          "absent": true
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "notEq": "metadata descriptor identity does not match `ExternalDataProcessor.Import.Form.Foreign`"
+        }
+      ],
+      "captures": {
+        "unchanged1": {
+          "file": "epf/Import/Ext/ObjectModule.bsl",
+          "kind": "sha256"
+        },
+        "unchanged2": {
+          "file": "epf/Import/Forms/Foreign/Ext/Form/Module.bsl",
+          "kind": "sha256"
+        },
+        "unchanged3": {
+          "file": "epf/Import/Forms/Foreign/Ext/Form.xml",
+          "kind": "sha256"
+        },
+        "unchanged4": {
+          "file": "epf/Import/Forms/Foreign.xml",
+          "kind": "sha256"
+        },
+        "unchanged5": {
+          "file": "epf/Import/Forms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256"
+        },
+        "unchanged6": {
+          "file": "epf/Import/Forms/Main.xml",
+          "kind": "sha256"
+        },
+        "unchanged7": {
+          "file": "epf/Import/Forms/Orphan/Ext/Form.xml",
+          "kind": "sha256"
+        },
+        "unchanged8": {
+          "file": "epf/Import/Forms/Orphan.xml",
+          "kind": "sha256"
+        },
+        "unchanged9": {
+          "file": "epf/Import/Templates/Orphan/Ext/Template.xml",
+          "kind": "sha256"
+        },
+        "unchanged10": {
+          "file": "epf/Import/Templates/Orphan.xml",
+          "kind": "sha256"
+        },
+        "unchanged11": {
+          "file": "epf/Import/Templates/Print/Ext/Template.xml",
+          "kind": "sha256"
+        },
+        "unchanged12": {
+          "file": "epf/Import/Templates/Print.xml",
+          "kind": "sha256"
+        },
+        "unchanged13": {
+          "file": "epf/Import.xml",
+          "kind": "sha256"
+        },
+        "unchanged14": {
+          "file": "epf/Other/Ext/ObjectModule.bsl",
+          "kind": "sha256"
+        },
+        "unchanged15": {
+          "file": "epf/Other/Forms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256"
+        },
+        "unchanged16": {
+          "file": "epf/Other/Forms/Main/Ext/Form.xml",
+          "kind": "sha256"
+        },
+        "unchanged17": {
+          "file": "epf/Other/Forms/Main.xml",
+          "kind": "sha256"
+        },
+        "unchanged18": {
+          "file": "epf/Other.xml",
+          "kind": "sha256"
+        },
+        "unchanged19": {
+          "file": "erf/Sales/Ext/ObjectModule.bsl",
+          "kind": "sha256"
+        },
+        "unchanged20": {
+          "file": "erf/Sales/Forms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256"
+        },
+        "unchanged21": {
+          "file": "erf/Sales/Forms/Main/Ext/Form.xml",
+          "kind": "sha256"
+        },
+        "unchanged22": {
+          "file": "erf/Sales/Forms/Main.xml",
+          "kind": "sha256"
+        },
+        "unchanged23": {
+          "file": "erf/Sales.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "epf:ExternalDataProcessor.Import.Form.Foreign"
+      },
+      "expect": [
+        "provider"
+      ],
+      "assertions": [
+        {
+          "pointer": "/ok",
+          "eq": false
+        },
+        {
+          "pointer": "/diagnostics",
+          "eq": [
+            {
+              "code": "provider_unavailable",
+              "outcome": "fixSource",
+              "message": "metadata descriptor identity does not match `ExternalDataProcessor.Import.Form.Foreign`",
+              "detailCode": "source_unreadable"
+            }
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "epf/Import/Ext/ObjectModule.bsl",
+          "eq": "$capture.unchanged1"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/Import/Forms/Foreign/Ext/Form/Module.bsl",
+          "eq": "$capture.unchanged2"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/Import/Forms/Foreign/Ext/Form.xml",
+          "eq": "$capture.unchanged3"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/Import/Forms/Foreign.xml",
+          "eq": "$capture.unchanged4"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/Import/Forms/Main/Ext/Form/Module.bsl",
+          "eq": "$capture.unchanged5"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/Import/Forms/Main.xml",
+          "eq": "$capture.unchanged6"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/Import/Forms/Orphan/Ext/Form.xml",
+          "eq": "$capture.unchanged7"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/Import/Forms/Orphan.xml",
+          "eq": "$capture.unchanged8"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/Import/Templates/Orphan/Ext/Template.xml",
+          "eq": "$capture.unchanged9"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/Import/Templates/Orphan.xml",
+          "eq": "$capture.unchanged10"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/Import/Templates/Print/Ext/Template.xml",
+          "eq": "$capture.unchanged11"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/Import/Templates/Print.xml",
+          "eq": "$capture.unchanged12"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/Import.xml",
+          "eq": "$capture.unchanged13"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/Other/Ext/ObjectModule.bsl",
+          "eq": "$capture.unchanged14"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/Other/Forms/Main/Ext/Form/Module.bsl",
+          "eq": "$capture.unchanged15"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/Other/Forms/Main/Ext/Form.xml",
+          "eq": "$capture.unchanged16"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/Other/Forms/Main.xml",
+          "eq": "$capture.unchanged17"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/Other.xml",
+          "eq": "$capture.unchanged18"
+        },
+        {
+          "kind": "sha256",
+          "path": "erf/Sales/Ext/ObjectModule.bsl",
+          "eq": "$capture.unchanged19"
+        },
+        {
+          "kind": "sha256",
+          "path": "erf/Sales/Forms/Main/Ext/Form/Module.bsl",
+          "eq": "$capture.unchanged20"
+        },
+        {
+          "kind": "sha256",
+          "path": "erf/Sales/Forms/Main/Ext/Form.xml",
+          "eq": "$capture.unchanged21"
+        },
+        {
+          "kind": "sha256",
+          "path": "erf/Sales/Forms/Main.xml",
+          "eq": "$capture.unchanged22"
+        },
+        {
+          "kind": "sha256",
+          "path": "erf/Sales.xml",
+          "eq": "$capture.unchanged23"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "epf:ExternalDataProcessor.Other.Form.Main"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/ok",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/objectContext",
+          "eq": "ExternalDataProcessor.Other"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "epf/Import/Ext/ObjectModule.bsl",
+          "eq": "$capture.unchanged1"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/Import/Forms/Foreign/Ext/Form/Module.bsl",
+          "eq": "$capture.unchanged2"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/Import/Forms/Foreign/Ext/Form.xml",
+          "eq": "$capture.unchanged3"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/Import/Forms/Foreign.xml",
+          "eq": "$capture.unchanged4"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/Import/Forms/Main/Ext/Form/Module.bsl",
+          "eq": "$capture.unchanged5"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/Import/Forms/Main.xml",
+          "eq": "$capture.unchanged6"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/Import/Forms/Orphan/Ext/Form.xml",
+          "eq": "$capture.unchanged7"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/Import/Forms/Orphan.xml",
+          "eq": "$capture.unchanged8"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/Import/Templates/Orphan/Ext/Template.xml",
+          "eq": "$capture.unchanged9"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/Import/Templates/Orphan.xml",
+          "eq": "$capture.unchanged10"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/Import/Templates/Print/Ext/Template.xml",
+          "eq": "$capture.unchanged11"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/Import/Templates/Print.xml",
+          "eq": "$capture.unchanged12"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/Import.xml",
+          "eq": "$capture.unchanged13"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/Other/Ext/ObjectModule.bsl",
+          "eq": "$capture.unchanged14"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/Other/Forms/Main/Ext/Form/Module.bsl",
+          "eq": "$capture.unchanged15"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/Other/Forms/Main/Ext/Form.xml",
+          "eq": "$capture.unchanged16"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/Other/Forms/Main.xml",
+          "eq": "$capture.unchanged17"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/Other.xml",
+          "eq": "$capture.unchanged18"
+        },
+        {
+          "kind": "sha256",
+          "path": "erf/Sales/Ext/ObjectModule.bsl",
+          "eq": "$capture.unchanged19"
+        },
+        {
+          "kind": "sha256",
+          "path": "erf/Sales/Forms/Main/Ext/Form/Module.bsl",
+          "eq": "$capture.unchanged20"
+        },
+        {
+          "kind": "sha256",
+          "path": "erf/Sales/Forms/Main/Ext/Form.xml",
+          "eq": "$capture.unchanged21"
+        },
+        {
+          "kind": "sha256",
+          "path": "erf/Sales/Forms/Main.xml",
+          "eq": "$capture.unchanged22"
+        },
+        {
+          "kind": "sha256",
+          "path": "erf/Sales.xml",
+          "eq": "$capture.unchanged23"
+        }
+      ]
+    }
+  ]
+}

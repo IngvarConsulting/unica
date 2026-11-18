@@ -1,0 +1,21 @@
+{
+  "area": "XDTO и обмены",
+  "task": "Удалить неиспользуемый тип из пакета",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка",
+        "ops": [
+          {
+            "op": "type.remove"
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S217"
+}

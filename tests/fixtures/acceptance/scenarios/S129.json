@@ -1,0 +1,29 @@
+{
+  "area": "Формы",
+  "task": "Создать произвольную форму с нуля",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [
+          {
+            "op": "form.add",
+            "args": {
+              "items": [
+                {
+                  "name": "ФормаПодбора",
+                  "type": "ChoiceForm"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S129"
+}

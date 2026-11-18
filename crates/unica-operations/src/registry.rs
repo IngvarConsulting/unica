@@ -1,9 +1,5 @@
-use crate::recovery::{
-    no_member_lookup, retired_argument_redirect_in, ArgumentRedirect, BoundRetiredArgument,
-    MemberPathLookup, RetiredOperation,
-};
 use crate::{ObservationLookup, OperationDescriptor};
-use serde_json::{Map, Value};
+
 use unica_address::address::QualifiedAddress;
 use unica_operation_contract::OperationRef;
 use unica_source_contract::context::{OperationSite, RegistryContext};
@@ -11,18 +7,15 @@ use unica_source_contract::context::{OperationSite, RegistryContext};
 #[derive(Debug, Clone, Copy)]
 pub struct OperationRegistry {
     descriptors: &'static [OperationDescriptor],
-    retired: &'static [RetiredOperation],
     context: RegistryContext,
 }
 impl OperationRegistry {
     pub const fn new(
         descriptors: &'static [OperationDescriptor],
-        retired: &'static [RetiredOperation],
         context: RegistryContext,
     ) -> Self {
         Self {
             descriptors,
-            retired,
             context,
         }
     }
@@ -54,48 +47,6 @@ impl OperationRegistry {
         self.named(name)
             .find(|descriptor| descriptor.applies_at(site))
             .or_else(|| self.lookup(name))
-    }
-    pub fn retired(self, name: &str) -> Option<RetiredOperation> {
-        self.retired.iter().copied().find(|entry| entry.op == name)
-    }
-    pub fn retired_arguments(self) -> Vec<BoundRetiredArgument> {
-        self.descriptors
-            .iter()
-            .copied()
-            .flat_map(|descriptor| {
-                descriptor
-                    .retired_arguments()
-                    .iter()
-                    .copied()
-                    .filter(move |entry| entry.op == descriptor.name())
-                    .map(move |entry| entry.bind(descriptor))
-            })
-            .collect()
-    }
-    pub fn retired_argument_redirect(
-        self,
-        op: &str,
-        site: &OperationSite<'_>,
-        args: &Map<String, Value>,
-    ) -> Option<ArgumentRedirect> {
-        self.retired_argument_redirect_with(op, site, args, &no_member_lookup)
-    }
-    pub fn retired_argument_redirect_with(
-        self,
-        op: &str,
-        site: &OperationSite<'_>,
-        args: &Map<String, Value>,
-        members: MemberPathLookup<'_>,
-    ) -> Option<ArgumentRedirect> {
-        let descriptor = self.lookup_at(op, site)?;
-        retired_argument_redirect_in(
-            descriptor.retired_arguments(),
-            descriptor,
-            site,
-            self.context,
-            args,
-            members,
-        )
     }
     pub fn nearest_ancestor_with_observations(
         self,

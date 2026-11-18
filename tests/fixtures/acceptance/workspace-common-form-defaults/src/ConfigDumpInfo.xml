@@ -1,0 +1,30 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<ConfigDumpInfo xmlns="http://v8.1c.ru/8.3/xcf/dumpinfo" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" format="Hierarchical" version="2.20">
+	<ConfigVersions>
+		<Metadata name="CommonForm.ConstantsA" id="fea7e67d-3cea-50a6-8514-5357a2b5140f" configVersion="7b67e2da9387b0479e3269101add260200000000"/>
+		<Metadata name="CommonForm.ConstantsA.Form" id="fea7e67d-3cea-50a6-8514-5357a2b5140f.0" configVersion="ced47473bf91ee4fade2b561fb4e6cfa00000000"/>
+		<Metadata name="CommonForm.ConstantsB" id="f550dcc3-92de-579d-8826-7775eeec2416" configVersion="1709dd1bfd8ea849a50ae2272ccc3aae00000000"/>
+		<Metadata name="CommonForm.ConstantsB.Form" id="f550dcc3-92de-579d-8826-7775eeec2416.0" configVersion="521bfc4af5654241bff8ab50794e5d4400000000"/>
+		<Metadata name="CommonForm.ImplicitMain" id="80135ba0-a21c-5f08-85a8-519643fa4e58" configVersion="5d7612f793022d499f0174096ed817af00000000"/>
+		<Metadata name="CommonForm.ImplicitMain.Form" id="80135ba0-a21c-5f08-85a8-519643fa4e58.0" configVersion="57f1bbf98ae26140b9680761853f328a00000000"/>
+		<Metadata name="CommonForm.MainA" id="ef7a42ef-a412-5cc5-abc4-414373308f1c" configVersion="51379d371c9c6f47a3be21debd7065ee00000000"/>
+		<Metadata name="CommonForm.MainA.Form" id="ef7a42ef-a412-5cc5-abc4-414373308f1c.0" configVersion="acd5860862498b439fbeba33842c98e600000000"/>
+		<Metadata name="CommonForm.MainB" id="c9451dc9-d5e9-5699-a039-5b9837c43036" configVersion="c1a71901a3210c4abee3708e79319ea800000000"/>
+		<Metadata name="CommonForm.MainB.Form" id="c9451dc9-d5e9-5699-a039-5b9837c43036.0" configVersion="54e752803ee8bd40b7d8a8f2d569c7a100000000"/>
+		<Metadata name="CommonForm.SettingsA" id="e061ecbd-7355-570c-ad97-768fbdac6bb6" configVersion="6f86e3fc54ab0d46ab89743f0b0dd9f300000000"/>
+		<Metadata name="CommonForm.SettingsA.Form" id="e061ecbd-7355-570c-ad97-768fbdac6bb6.0" configVersion="a50c940481cae44eb6f4915ca2ff745100000000"/>
+		<Metadata name="CommonForm.SettingsB" id="d8a8ced2-bd90-5214-813a-99060e0079c5" configVersion="748c3abc32d7ea4f8ebefd340a042ac500000000"/>
+		<Metadata name="CommonForm.SettingsB.Form" id="d8a8ced2-bd90-5214-813a-99060e0079c5.0" configVersion="08495b164437a145b34e4c0d55cf9ac000000000"/>
+		<Metadata name="CommonForm.VariantA" id="b3ff62d0-c84e-5adb-91d3-eb504eef2195" configVersion="712024ba808d07439b59a12d24caf80900000000"/>
+		<Metadata name="CommonForm.VariantA.Form" id="b3ff62d0-c84e-5adb-91d3-eb504eef2195.0" configVersion="6da0937e483c554bb00a3be9768d537d00000000"/>
+		<Metadata name="CommonForm.VariantB" id="cd75526a-5177-555c-bb0d-9efa66a3f21b" configVersion="8ad2becf59534d478fed4ddc4104686200000000"/>
+		<Metadata name="CommonForm.VariantB.Form" id="cd75526a-5177-555c-bb0d-9efa66a3f21b.0" configVersion="86c1905d81c67a4aa4e82710fa40032300000000"/>
+		<Metadata name="Configuration.CorpusConfiguration" id="829019ad-9973-4df8-bd04-63ec82ad0830" configVersion="d285e2301ff98a4382c0fe893e25698900000000"/>
+		<Metadata name="Configuration.CorpusConfiguration.ClientApplicationInterface" id="00000000-0000-0000-0000-000000000002.b" configVersion="c45b2c206ff61548a8ab9572a74be6f100000000"/>
+		<Metadata name="Constant.MainCurrency" id="9c1e114a-3d27-43c0-b7cc-7df47c97f01f" configVersion="34a621860952ab4f855a85c41eb7440100000000"/>
+		<Metadata name="Language.Русский" id="00000000-0000-0000-0000-000000000001" configVersion="cd833b9417daf344aba1c1fe01005e4e00000000"/>
+		<Metadata name="Report.CorpusReport" id="6336047c-6b8b-4382-bb3a-29eb9c88daa1" configVersion="25b4d41c9c3f834f930c203e2034d41f00000000"/>
+		<Metadata name="Report.CorpusReport.Form.Own" id="84fe3770-4f87-5940-af0b-08ac419c374e" configVersion="7ac456d80495344b93a31a82c9f097f600000000"/>
+		<Metadata name="Report.CorpusReport.Form.Own.Form" id="84fe3770-4f87-5940-af0b-08ac419c374e.0" configVersion="961b08ce4cd600429ff58a42240ec22f00000000"/>
+	</ConfigVersions>
+</ConfigDumpInfo>

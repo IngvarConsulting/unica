@@ -22,3 +22,7 @@ uuid.workspace = true
 aes-siv.workspace = true
 getrandom.workspace = true
 zeroize.workspace = true
+
+[package.metadata.unica]
+component = "coordinator"
+file-io = "none"

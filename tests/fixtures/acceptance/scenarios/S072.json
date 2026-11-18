@@ -1,0 +1,40 @@
+{
+  "area": "Реквизиты и состав",
+  "task": "Добавить реквизит в существующую табличную часть документа по адресу части (превью)",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.АктОбУничтоженииПерсональныхДанных.TabularSection.КатегорииДанных",
+        "ops": [
+          {
+            "op": "attribute.add",
+            "args": {
+              "items": [
+                {
+                  "name": "Основание",
+                  "type": {
+                    "variants": [
+                      {
+                        "kind": "string",
+                        "length": 100,
+                        "allowedLength": "variable"
+                      }
+                    ]
+                  },
+                  "position": {
+                    "after": "Категория"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S072"
+}

@@ -1,0 +1,22 @@
+{
+  "id": "S267",
+  "area": "Проверки качества",
+  "task": "Проверить корень конфигурации в выгрузке формата 2.23 — проверка проходит и предупреждает, что формат прочитан по диалекту 2.22",
+  "wire": [
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "newer:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "diagnostic": "formatVersionUnverified",
+      "validators": [
+        "cf"
+      ]
+    }
+  ],
+  "workspace": "tests/fixtures/acceptance/workspace-format"
+}

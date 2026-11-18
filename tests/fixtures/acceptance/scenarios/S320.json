@@ -1,0 +1,63 @@
+{
+  "id": "S320",
+  "area": "Подсистемы и интерфейс",
+  "task": "Переставить важные команды Администрирования, забыв одну — перестановка проходит, неполный список отклоняется без записи",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Subsystem.Администрирование.Interface.Group.NavigationPanelImportant",
+        "ops": [
+          {
+            "op": "commandOrder.set",
+            "args": {
+              "values": {
+                "commands": [
+                  "Catalog.ГруппыДоступа.StandardCommand.OpenList",
+                  "Catalog.Пользователи.StandardCommand.OpenList",
+                  "Catalog.ВнешниеПользователи.StandardCommand.OpenList",
+                  "DataProcessor.ЖурналРегистрации.Command.ЖурналРегистрации",
+                  "DataProcessor.ЗащитаПерсональныхДанных.Command.ЗащитаПерсональныхДанных",
+                  "Catalog.ВариантыОтчетов.StandardCommand.OpenList",
+                  "Catalog.ДополнительныеОтчетыИОбработки.StandardCommand.OpenList",
+                  "Catalog.РассылкиОтчетов.StandardCommand.OpenList"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Subsystem.Администрирование.Interface.Group.NavigationPanelImportant",
+        "ops": [
+          {
+            "op": "commandOrder.set",
+            "args": {
+              "values": {
+                "commands": [
+                  "Catalog.ГруппыДоступа.StandardCommand.OpenList",
+                  "Catalog.Пользователи.StandardCommand.OpenList",
+                  "Catalog.ВнешниеПользователи.StandardCommand.OpenList",
+                  "DataProcessor.ЖурналРегистрации.Command.ЖурналРегистрации",
+                  "DataProcessor.ЗащитаПерсональныхДанных.Command.ЗащитаПерсональныхДанных",
+                  "Catalog.ВариантыОтчетов.StandardCommand.OpenList",
+                  "Catalog.ДополнительныеОтчетыИОбработки.StandardCommand.OpenList"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: not a permutation of the stored commands of group `NavigationPanelImportant`: missing `Catalog.РассылкиОтчетов.StandardCommand.OpenList`"
+    }
+  ]
+}

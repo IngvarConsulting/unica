@@ -1,0 +1,44 @@
+<definitions xmlns="http://schemas.xmlsoap.org/wsdl/"
+ xmlns:xs="http://www.w3.org/2001/XMLSchema"
+ xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"
+ xmlns:tns="urn:local-api" xmlns:a="urn:payload-a" xmlns:b="urn:payload-b"
+ name="LocalService" targetNamespace="urn:local-api">
+  <types>
+    <xs:schema targetNamespace="urn:payload-a" elementFormDefault="qualified" attributeFormDefault="unqualified">
+      <xs:element name="Request" type=" a:Payload "/>
+      <xs:complexType name="Payload" mixed="false">
+        <xs:sequence>
+          <xs:element name="Value" type="xs:string" minOccurs="0" maxOccurs="unbounded" nillable="false" form="unqualified"/>
+          <xs:element name="Nested">
+            <xs:complexType><xs:sequence><xs:element name="Value" type="xs:boolean"/></xs:sequence></xs:complexType>
+          </xs:element>
+        </xs:sequence>
+        <xs:attribute name="id" type="xs:int" use="required"/>
+      </xs:complexType>
+    </xs:schema>
+    <xs:schema targetNamespace="urn:payload-b">
+      <xs:element xmlns="urn:payload-b" name="Reply" type="Payload"/>
+      <xs:complexType name="Payload"><xs:sequence><xs:element name="Value" type="xs:string"/></xs:sequence></xs:complexType>
+    </xs:schema>
+  </types>
+  <message name="Request"><part name="body" element="a:Request"/></message>
+  <message name="Reply"><part name="body" element="b:Reply"/></message>
+  <message name="Problem"><part name="body" type="xs:string"/></message>
+  <portType name="Api">
+    <operation name="Submit" parameterOrder="body">
+      <input name="SubmitInput" message="tns:Request"/>
+      <output name="SubmitOutput" message="tns:Reply"/>
+      <fault name="Failed" message="tns:Problem"/>
+    </operation>
+  </portType>
+  <binding name="ApiSoap" type="tns:Api">
+    <soap:binding style="document" transport="http://schemas.xmlsoap.org/soap/http"/>
+    <operation name="Submit">
+      <soap:operation style="document"/>
+      <input name="SubmitInput"><soap:body use="literal" parts="body"/></input>
+      <output name="SubmitOutput"><soap:body use="literal"/></output>
+      <fault name="Failed"><soap:fault name="Failed" use="literal"/></fault>
+    </operation>
+  </binding>
+  <service name="LocalService"><port name="Http" binding="tns:ApiSoap"><soap:address location="https://example.invalid/soap"/></port></service>
+</definitions>

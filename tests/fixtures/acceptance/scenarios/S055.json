@@ -1,0 +1,45 @@
+{
+  "area": "Свойства объектов",
+  "task": "Прочитать свойство перед правкой и сравнить после превью (диффом)",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Enum.LanguageAware"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Enum.LanguageAware",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "до записи"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.diff",
+      "args": {
+        "left": "main:Enum.LanguageAware",
+        "right": "main:Enum.LanguageAware"
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S055"
+}

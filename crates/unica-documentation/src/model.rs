@@ -20,6 +20,7 @@ impl std::fmt::Display for DocumentationProviderId {
 pub enum SourceKind {
     PlatformHelp,
     DevelopmentStandard,
+    DiagnosticRule,
     ConfigurationDocumentation,
 }
 
@@ -28,6 +29,7 @@ impl SourceKind {
         match self {
             SourceKind::PlatformHelp => "platform-help",
             SourceKind::DevelopmentStandard => "development-standard",
+            SourceKind::DiagnosticRule => "diagnostic-rule",
             SourceKind::ConfigurationDocumentation => "configuration-documentation",
         }
     }
@@ -40,6 +42,7 @@ impl SourceKind {
         match value {
             "platform-help" => Some(SourceKind::PlatformHelp),
             "development-standard" => Some(SourceKind::DevelopmentStandard),
+            "diagnostic-rule" => Some(SourceKind::DiagnosticRule),
             "configuration-documentation" => Some(SourceKind::ConfigurationDocumentation),
             _ => None,
         }
@@ -107,8 +110,16 @@ pub struct DocumentationHit {
     pub document_id: String,
     pub title: String,
     pub signature: Option<String>,
+    /// Одна строка о находке: первое предложение описания. Не кусок текста
+    /// документа: находка называет, что открыть, а не пересказывает его.
     pub snippet: String,
     pub applicable_version: String,
+    /// Вид статьи, если источник его различает: `method`, `property`,
+    /// `type`, `event`, `constructor`, `concept`.
+    pub kind: Option<String>,
+    /// Владелец члена, как его называет источник: тип, которому
+    /// принадлежит метод или свойство.
+    pub owner: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -170,6 +181,10 @@ pub struct DocumentationDocument {
     pub signature: Option<String>,
     pub applicable_version: String,
     pub text: String,
+    /// Статья полями, когда поставщик её разобрал. Сырой `text` остаётся
+    /// рядом и при разобранной статье: разбор не отменяет доступа
+    /// к исходному тексту.
+    pub article: Option<HelpArticle>,
 }
 
 #[derive(Debug, Clone)]
@@ -425,4 +440,189 @@ mod tests {
         assert_eq!(UnavailableReason::PolicyDenied.as_str(), "policy-denied");
         assert_eq!(UnavailableReason::Timeout.as_str(), "timeout");
     }
+}
+
+/// Вид статьи справки: что она описывает. Вид задаёт, какие поля статьи
+/// вообще бывают: у статьи стандарта разработки не бывает параметров,
+/// и ключа параметров в её ответе нет.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArticleKind {
+    Type,
+    Method,
+    Property,
+    Event,
+    Constructor,
+    Concept,
+}
+
+impl ArticleKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ArticleKind::Type => "type",
+            ArticleKind::Method => "method",
+            ArticleKind::Property => "property",
+            ArticleKind::Event => "event",
+            ArticleKind::Constructor => "constructor",
+            ArticleKind::Concept => "concept",
+        }
+    }
+}
+
+/// Поле статьи в одном из трёх состояний.
+///
+/// `Empty` — понятие у этого вида статьи есть, значений нет: у метода нет
+/// параметров, у свойства нет примера. `Parsed` — значение разобрано.
+/// `Unparsed` — раздел в статье есть, но Unica его не разобрала: причина
+/// и сырой текст раздела, чтобы потребитель показал исходное вместо
+/// выдуманного. Четвёртое состояние, «такого понятия у этого вида статьи
+/// не бывает», выражается отсутствием ключа и следует из [`ArticleKind`].
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum ArticleField<T> {
+    #[default]
+    Empty,
+    Parsed(T),
+    Unparsed {
+        reason: String,
+        text: String,
+    },
+}
+
+/// Имя статьи русским и английским: справка пишет их рядом.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalizedName {
+    pub ru: String,
+    pub en: Option<String>,
+}
+
+/// Тип, названный статьёй: как он написан и какой документ его описывает.
+/// Тип без своей страницы (`Произвольный`) несёт только текст.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeMention {
+    pub text: String,
+    pub document_id: Option<String>,
+}
+
+/// Ссылка статьи на другую статью: по `document_id` она открывается.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArticleLink {
+    pub label: String,
+    pub document_id: String,
+}
+
+/// One source row of the See also section.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SeeAlsoEntry {
+    Document(ArticleLink),
+    Member {
+        owner: String,
+        kind: ArticleKind,
+        link: ArticleLink,
+    },
+    Unparsed {
+        text: String,
+        links: Vec<ArticleLink>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArticleParameter {
+    pub name: String,
+    pub optional: bool,
+    pub types: Vec<TypeMention>,
+    /// Типы, как их пишет справка: «Строка; Число».
+    pub type_text: String,
+    pub default: Option<String>,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArticleReturn {
+    pub types: Vec<TypeMention>,
+    pub type_text: String,
+    pub description: String,
+}
+
+/// Вариант синтаксиса: у методов платформы их бывает несколько, у каждого
+/// свои параметры.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArticleVariant {
+    pub name: Option<String>,
+    pub call: ArticleField<String>,
+    pub parameters: ArticleField<Vec<ArticleParameter>>,
+    pub description: ArticleField<String>,
+    pub returns: ArticleField<ArticleReturn>,
+}
+
+/// Список членов на странице типа: «Свойства», «Методы», «Конструкторы».
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArticleMemberList {
+    pub title: String,
+    pub members: Vec<ArticleLink>,
+}
+
+/// Статья справки полями. Рядом с ней в ответе остаётся сырой текст
+/// документа: разбор не отменяет доступа к исходному.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HelpArticle {
+    pub kind: ArticleKind,
+    pub name: LocalizedName,
+    pub owner: Option<LocalizedName>,
+    pub owner_document_id: Option<String>,
+    pub variants: ArticleField<Vec<ArticleVariant>>,
+    pub value_types: ArticleField<Vec<TypeMention>>,
+    pub value_type_text: String,
+    pub read_only: ArticleField<bool>,
+    /// Места исполнения значениями, а не текстом.
+    pub availability: ArticleField<Vec<String>>,
+    /// Весь текст «Доступности»: у типа там же сериализация и тип XDTO.
+    pub availability_text: String,
+    pub since_version: ArticleField<String>,
+    pub description: ArticleField<String>,
+    pub note: ArticleField<String>,
+    pub example: ArticleField<String>,
+    pub collection_element: ArticleField<Vec<TypeMention>>,
+    pub member_lists: Vec<ArticleMemberList>,
+    /// Ссылки статьи на другие статьи в порядке появления.
+    pub links: Vec<ArticleLink>,
+    pub see_also: Vec<SeeAlsoEntry>,
+    /// Разделы, которым разбор не знает места: заголовок и текст.
+    pub other_sections: Vec<(String, String)>,
+}
+
+/// Параметр метода конфигурации, как его описывает документирующий
+/// комментарий. Типы названы текстом: что текст означает, решает
+/// прикладная модель конфигурации, а не справка по коду.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MethodDocParameter {
+    pub name: String,
+    pub types: Vec<String>,
+    pub type_text: String,
+    pub description: String,
+    /// Ключи коллекции, описанные в комментарии звёздочками.
+    pub keys: Vec<MethodDocParameter>,
+}
+
+/// Возвращаемое значение метода конфигурации по его комментарию.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MethodDocReturn {
+    pub types: Vec<String>,
+    pub type_text: String,
+    pub description: String,
+    pub keys: Vec<MethodDocParameter>,
+}
+
+/// Документирующий комментарий метода конфигурации полями. Сырой текст
+/// комментария остаётся рядом: нестандартный комментарий доходит до
+/// потребителя без потерь, даже когда полей из него не вышло.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MethodDoc {
+    pub text: String,
+    pub description: ArticleField<String>,
+    pub parameters: ArticleField<Vec<MethodDocParameter>>,
+    pub returns: ArticleField<MethodDocReturn>,
+    pub example: ArticleField<String>,
+    pub call_options: ArticleField<Vec<String>>,
+    pub see_also: ArticleField<Vec<String>>,
+    /// Разделы, которых стандарт не называет: заголовок и текст.
+    pub other_sections: Vec<(String, String)>,
 }

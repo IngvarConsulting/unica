@@ -1,6 +1,5 @@
 ---
 id: INV.RUNTIME.RUNNER-EXECUTION-POLICY
-check: []
 gap: https://github.com/IngvarConsulting/unica/issues/974
 ---
 

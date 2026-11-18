@@ -96,32 +96,43 @@ impl NetworkError {
         ))
     }
 
-    /// Разобрать отказ `ureq`. `host` и `route` называют, куда и как шли.
+    pub(crate) fn timed_out(host: &str, route: &str) -> Self {
+        Self::new(
+            NetworkFailure::Transport,
+            format!("request to {host} timed out ({route})"),
+        )
+    }
+
+    /// Use the backend's typed cause without exposing diagnostic URL or headers.
     pub(crate) fn from_transport(
-        error: ureq::Error,
+        error: &reqwest::Error,
         host: &str,
         route: &str,
         trust: super::TrustSource,
     ) -> Self {
-        match error {
-            ureq::Error::Status(code, response) => Self::new(
-                NetworkFailure::Status(code),
-                format!(
-                    "{} answered HTTP {code} {} ({route})",
-                    response.get_url(),
-                    response.status_text()
-                ),
-            ),
-            error => match find_tls_error(&error) {
-                Some(rustls::Error::InvalidCertificate(reason)) => {
-                    certificate_refusal(reason, &error.to_string(), host, route, trust)
-                }
-                _ => Self::new(
-                    NetworkFailure::Transport,
-                    format!("request to {host} failed ({route}): {error}"),
-                ),
-            },
+        if let Some(rustls::Error::InvalidCertificate(reason)) = find_tls_error(error) {
+            return certificate_refusal(
+                reason,
+                "certificate verification failed",
+                host,
+                route,
+                trust,
+            );
         }
+        if error.is_timeout() {
+            return Self::timed_out(host, route);
+        }
+        let reason = if error.is_connect() {
+            "could not connect"
+        } else if error.is_body() || error.is_decode() {
+            "response body could not be read completely"
+        } else {
+            "HTTP transport failed"
+        };
+        Self::new(
+            NetworkFailure::Transport,
+            format!("request to {host} failed ({route}): {reason}"),
+        )
     }
 }
 
@@ -215,26 +226,20 @@ fn apple_reason(reason: &CertificateError) -> Option<&'static CertificateError> 
     }
 }
 
-/// Найти ошибку rustls в цепочке источников. `ureq` заворачивает её в
+/// Найти ошибку rustls в цепочке источников. Транспорт заворачивает её в
 /// `io::Error`, а `io::Error::source` отдаёт не сам вложенный объект, а его
 /// источник, поэтому вложенный объект достаём через `get_ref`.
 fn find_tls_error<'a>(error: &'a (dyn StdError + 'static)) -> Option<&'a rustls::Error> {
-    let mut current = Some(error);
-    while let Some(item) = current {
-        if let Some(tls) = item.downcast_ref::<rustls::Error>() {
-            return Some(tls);
-        }
-        if let Some(io) = item.downcast_ref::<std::io::Error>() {
-            if let Some(tls) = io
-                .get_ref()
-                .and_then(|inner| inner.downcast_ref::<rustls::Error>())
-            {
-                return Some(tls);
-            }
-        }
-        current = item.source();
+    if let Some(tls) = error.downcast_ref::<rustls::Error>() {
+        return Some(tls);
     }
-    None
+    if let Some(inner) = error
+        .downcast_ref::<std::io::Error>()
+        .and_then(|io| io.get_ref())
+    {
+        return find_tls_error(inner);
+    }
+    error.source().and_then(find_tls_error)
 }
 
 impl fmt::Display for NetworkError {
@@ -265,7 +270,7 @@ mod tests {
 
     #[test]
     fn the_tls_error_is_found_inside_the_io_error_ureq_wraps_it_in() {
-        // Так `ureq` отдаёт сбой рукопожатия: `io::Error` с ошибкой rustls внутри.
+        // Транспорт отдаёт сбой рукопожатия как: `io::Error` с ошибкой rustls внутри.
         let io = std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             rustls::Error::InvalidCertificate(CertificateError::UnknownIssuer),
@@ -297,6 +302,7 @@ mod tests {
         assert_eq!(error.failure(), NetworkFailure::UntrustedCertificate);
     }
 
+    /// rule: INV.PKG.NETWORK-TRUST-AND-PROXY
     #[test]
     fn an_expired_certificate_points_at_the_clock_not_the_antivirus() {
         let error = classify(CertificateError::Expired);
@@ -312,6 +318,7 @@ mod tests {
         )))
     }
 
+    /// rule: INV.PKG.NETWORK-TRUST-AND-PROXY
     #[test]
     fn macos_codes_for_expiry_and_purpose_are_not_read_as_interception() {
         // Так верификатор macOS отдаёт коды, которые не сводит к своим вариантам.
@@ -324,6 +331,7 @@ mod tests {
         assert_eq!(untrusted.failure(), NetworkFailure::UntrustedCertificate);
     }
 
+    /// rule: INV.PKG.NETWORK-TRUST-AND-PROXY
     #[test]
     fn with_bundled_roots_an_unknown_issuer_names_the_empty_os_store() {
         let error = certificate_refusal(

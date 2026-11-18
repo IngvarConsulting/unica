@@ -1,7 +1,5 @@
 ---
 id: INV.SOURCE.COMMAND-INTERFACE-ORDERS
-check:
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::the_command_interface_shows_every_order_it_holds
 ---
 
 # Чтение командного интерфейса сохраняет объявленный порядок

@@ -24,6 +24,34 @@ const BSL_ANALYZER_CAPABILITIES: &[ProviderCapability] = &[
 /// Метод на каждый инструмент отличался бы от соседа одним литералом, а шов
 /// для подмены в проверках нужен один — иначе запрос графа не перехватить, не
 /// поднимая движок.
+/// Бюджет вывода `search_code`. Страницы ответа нарезает сама Unica, поэтому
+/// анализатор не должен резать окно раньше своего предела в 50 попаданий.
+// resource-limit: bsl-analyzer.search-output-budget-tokens
+// class: step
+// unit: count
+// scope: request
+// value: 50000
+// resource: Бюджет вывода одного запроса search_code к анализатору
+// status: unproven
+// origin: умолчание анализатора 6000 токенов срезало окно до 9–10 попаданий на настоящей конфигурации
+// problem: без явного бюджета анализатор обрезал результат раньше своего предела в 50 попаданий
+// on-reach: секция сообщает limitReached и нижнюю оценку, причина остаётся в диагностике
+// review: 50 попаданий на Бухгалтерии для Казахстана заняли 25 КБ текста; предел проверен на одной конфигурации
+const BSL_ANALYZER_SEARCH_OUTPUT_BUDGET: u64 = 50_000;
+/// Предел длины причины из stderr анализатора в символах.
+// resource-limit: bsl-analyzer.stderr-reason-chars
+// class: step
+// unit: chars
+// scope: request
+// value: 300
+// resource: Длина причины из stderr анализатора в ответе поиска
+// status: unproven
+// origin: журнал сборки индекса занимал страницу ответа и вытеснял попадания
+// problem: журнал процесса растёт вместе с процессом, а в ответ нужна короткая причина
+// on-reach: строка обрезается; журнал в ответ не попадает
+// review: предел одной строки причины; журнал отсекается независимо от него
+const BSL_ANALYZER_STDERR_REASON_MAX_CHARS: usize = 300;
+
 pub trait BslToolClient: Send + Sync {
     fn call(
         &self,
@@ -47,6 +75,16 @@ pub trait BslToolClient: Send + Sync {
     ) -> Result<McpToolOutput, String> {
         self.call(tool, context, arguments, timeout, cancellation)
     }
+    /// A caller-owned cutoff, including absence, over the prepared service route.
+    fn call_before(
+        &self,
+        tool: &'static str,
+        context: &CodeIntelligenceContext,
+        arguments: Value,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+        yields: bool,
+    ) -> Result<McpToolOutput, String>;
 }
 
 pub struct WorkspaceBslToolClient {
@@ -84,6 +122,27 @@ impl BslToolClient for WorkspaceBslToolClient {
             &context.source_root.path,
             WorkspaceServiceBslCall::new(tool, arguments, timeout, timeout).yielding(),
             cancellation,
+        )
+    }
+    fn call_before(
+        &self,
+        tool: &'static str,
+        context: &CodeIntelligenceContext,
+        arguments: Value,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+        yields: bool,
+    ) -> Result<McpToolOutput, String> {
+        WorkspaceServiceManager::new((self.environment)()).call_bsl_mcp_before(
+            &context.workspace,
+            &context.source_root.path,
+            unica_analysis_services::protocol::PreparedBslCall {
+                tool_name: tool.to_owned(),
+                tool_args: arguments,
+                yields,
+            },
+            cancellation,
+            deadline,
         )
     }
 }
@@ -306,6 +365,7 @@ impl CodeIntelligenceProvider for BslAnalyzerProvider<'_> {
             "action": "search_code",
             "query": request.query,
             "limit": request.limit,
+            "max_output_tokens": BSL_ANALYZER_SEARCH_OUTPUT_BUDGET,
         });
         match self
             .client
@@ -328,15 +388,14 @@ impl CodeIntelligenceProvider for BslAnalyzerProvider<'_> {
                 ) {
                     section.index_freshness = Some("unknown".to_string());
                 }
-                // Keep stderr wherever the section is the provider's own
-                // account of why it cannot serve — that includes waiting on
-                // the index, whose stderr names the dependency. A plain
-                // deadline timeout stays quiet: its stderr is a truncated
-                // stream, not an explanation.
-                let retain_stderr = match section.status {
+                // Журнал процесса в ответ не попадает: он растёт вместе с процессом и
+                // занимал бы страницу. Причину даёт только сам отказ поставщика или
+                // ожидание индекса; истечение срока и неполный результат её не несут.
+                let names_a_cause = match section.status {
                     ProviderSectionStatus::Ok
                     | ProviderSectionStatus::Empty
-                    | ProviderSectionStatus::LimitReached => false,
+                    | ProviderSectionStatus::LimitReached
+                    | ProviderSectionStatus::Partial => false,
                     ProviderSectionStatus::TimedOut => section
                         .termination
                         .as_ref()
@@ -344,14 +403,14 @@ impl CodeIntelligenceProvider for BslAnalyzerProvider<'_> {
                             termination.code
                                 == unica_code_intelligence::model::SearchTerminationCode::DependencyPending
                         }),
-                    ProviderSectionStatus::Partial
-                    | ProviderSectionStatus::Unavailable
-                    | ProviderSectionStatus::Failed => true,
+                    ProviderSectionStatus::Unavailable | ProviderSectionStatus::Failed => true,
                 };
-                if retain_stderr && !output.stderr.trim().is_empty() {
-                    section
-                        .diagnostics
-                        .push(format!("bsl-analyzer stderr: {}", output.stderr.trim()));
+                if names_a_cause {
+                    if let Some(reason) = stderr_reason(&output.stderr) {
+                        section
+                            .diagnostics
+                            .push(format!("bsl-analyzer stderr: {reason}"));
+                    }
                 }
                 section
             }
@@ -361,6 +420,38 @@ impl CodeIntelligenceProvider for BslAnalyzerProvider<'_> {
             Err(error) => failed_section(ProviderId::BslAnalyzer, error),
         }
     }
+}
+
+/// Служебные строки обычного текстового ответа: легенда меток и готовый индекс.
+fn is_search_listing_frame(line: &str) -> bool {
+    line.starts_with("Modality tag per hit:")
+        || matches!(
+            line,
+            "Indexing lexical: ready" | "Indexing semantic: ready" | "Indexing semantic: disabled"
+        )
+}
+
+/// Последняя строка stderr, которая не является строкой журнала процесса.
+fn stderr_reason(stderr: &str) -> Option<String> {
+    stderr
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !is_process_log_line(line))
+        .map(|line| {
+            line.chars()
+                .take(BSL_ANALYZER_STDERR_REASON_MAX_CHARS)
+                .collect()
+        })
+}
+
+/// Журнал анализатора пишется как `<время> <уровень> <сообщение>`; ошибка остаётся причиной.
+fn is_process_log_line(line: &str) -> bool {
+    let mut words = line.split_whitespace();
+    let stamped = words.next().is_some_and(|stamp| {
+        stamp.len() >= 19 && stamp.as_bytes()[4] == b'-' && stamp.as_bytes()[10] == b'T'
+    });
+    stamped && matches!(words.next(), Some("TRACE" | "DEBUG" | "INFO" | "WARN"))
 }
 
 /// The pending reason of a no-hits answer whose footer names exactly the
@@ -448,6 +539,16 @@ pub fn parse_bsl_analyzer_search(
     bindings: SearchSourceBindings,
 ) -> ProviderSearchSection {
     // The pinned bsl-analyzer clamps search_code's requested limit to 50.
+    // resource-limit: bsl-analyzer.search-limit
+    // class: step
+    // unit: count
+    // scope: request
+    // value: 50
+    // resource: Число результатов search_code, которое отдаёт закреплённая версия bsl-analyzer за запрос.
+    // status: external
+    // origin: #1041; закреплённый bsl-analyzer сам ограничивает limit search_code значением 50
+    // problem: скрытый предел апстрима должен быть виден, а не выдан за полный ответ
+    // on-reach: запрошенный limit урезается до 50, превышение сообщается как предел поставщика
     const BSL_ANALYZER_SEARCH_MAX_LIMIT: usize = 50;
     let effective_limit = requested_limit.min(BSL_ANALYZER_SEARCH_MAX_LIMIT);
     let trimmed = text.trim();
@@ -530,6 +631,11 @@ pub fn parse_bsl_analyzer_search(
             )
             .expect("dependency-pending bsl-analyzer section is valid");
         }
+        if let Some(raw_hits) = envelope.get("hits").and_then(Value::as_array) {
+            let mut locations =
+                SearchLocationProjector::with_resolver(context, cancellation, bindings.resolver);
+            return parse_bsl_analyzer_search_envelope(&envelope, raw_hits, &mut locations);
+        }
         return failed_section(
             ProviderId::BslAnalyzer,
             format!("unexpected bsl-analyzer search envelope: {trimmed}"),
@@ -590,7 +696,7 @@ pub fn parse_bsl_analyzer_search(
             if let Some(hit) = current.take() {
                 hits.push(hit);
             }
-        } else {
+        } else if !is_search_listing_frame(line) {
             diagnostics.push(format!("unparsed bsl-analyzer search output: {line}"));
         }
     }
@@ -612,10 +718,10 @@ pub fn parse_bsl_analyzer_search(
         );
     }
     let provider_limit_reached = returned_headers >= effective_limit;
-    if (discarded_result || output_budget_truncated) && provider_limit_reached {
+    if discarded_result && (provider_limit_reached || output_budget_truncated) {
         diagnostics.push("bsl-analyzer result limit was also reached".to_string());
     }
-    let section = if discarded_result || output_budget_truncated {
+    let section = if discarded_result {
         ProviderSearchSection::partial(
             ProviderId::BslAnalyzer.identity(),
             SearchRanking::Provider,
@@ -623,7 +729,7 @@ pub fn parse_bsl_analyzer_search(
             hits,
             diagnostics,
         )
-    } else if provider_limit_reached {
+    } else if provider_limit_reached || output_budget_truncated {
         ProviderSearchSection::limit_reached(
             ProviderId::BslAnalyzer.identity(),
             SearchRanking::Provider,
@@ -642,6 +748,119 @@ pub fn parse_bsl_analyzer_search(
     };
     section.unwrap_or_else(|error| {
         ProviderSearchSection::failed(ProviderId::BslAnalyzer.identity(), error)
+    })
+}
+
+/// Ответ анализатора, упёршийся в свой бюджет вывода: вместо текста приходит
+/// JSON с теми же попаданиями, а лишние отбрасываются (`shown` меньше `total`).
+/// Это достигнутый предел поставщика, а не сбой и не потерянное попадание.
+fn parse_bsl_analyzer_search_envelope(
+    envelope: &Value,
+    raw_hits: &[Value],
+    locations: &mut SearchLocationProjector<'_>,
+) -> ProviderSearchSection {
+    let mut diagnostics: Vec<String> = envelope
+        .pointer("/freshness/completeness/reasons")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|reason| reason.get("detail").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect();
+    let mut hits = Vec::new();
+    let mut discarded_result = false;
+    for raw in raw_hits {
+        match parse_bsl_analyzer_envelope_hit(raw, locations) {
+            Ok(hit) => hits.push(hit),
+            Err(error) if error.starts_with(CANCELLED_PREFIX) => {
+                return failed_section(ProviderId::BslAnalyzer, error);
+            }
+            Err(error) => {
+                discarded_result = true;
+                diagnostics.push(format!(
+                    "ignored malformed bsl-analyzer search hit: {error}"
+                ));
+            }
+        }
+    }
+    if hits.is_empty() {
+        diagnostics.insert(
+            0,
+            "bsl-analyzer returned an envelope without any valid search hits".to_string(),
+        );
+        return ProviderSearchSection::failed(
+            ProviderId::BslAnalyzer.identity(),
+            diagnostics.join("; "),
+        );
+    }
+    for (index, hit) in hits.iter_mut().enumerate() {
+        hit.rank = Some(index + 1);
+    }
+    let budget_exhausted = envelope.get("budget_exhausted").and_then(Value::as_bool) == Some(true);
+    let section = if discarded_result {
+        ProviderSearchSection::partial(
+            ProviderId::BslAnalyzer.identity(),
+            SearchRanking::Provider,
+            SearchOrdering::Provider,
+            hits,
+            diagnostics,
+        )
+    } else if budget_exhausted {
+        ProviderSearchSection::limit_reached(
+            ProviderId::BslAnalyzer.identity(),
+            SearchRanking::Provider,
+            SearchOrdering::Provider,
+            hits,
+            diagnostics,
+        )
+    } else {
+        ProviderSearchSection::complete(
+            ProviderId::BslAnalyzer.identity(),
+            SearchRanking::Provider,
+            SearchOrdering::Provider,
+            hits,
+            diagnostics,
+        )
+    };
+    section.unwrap_or_else(|error| {
+        ProviderSearchSection::failed(ProviderId::BslAnalyzer.identity(), error)
+    })
+}
+
+fn parse_bsl_analyzer_envelope_hit(
+    raw: &Value,
+    locations: &mut SearchLocationProjector<'_>,
+) -> Result<ProviderSearchHit, String> {
+    let text = |field: &str| raw.get(field).and_then(Value::as_str);
+    let path = raw
+        .pointer("/location/path")
+        .and_then(Value::as_str)
+        .or_else(|| text("path"))
+        .ok_or_else(|| "path is missing".to_string())?;
+    let line = raw
+        .get("line_start")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "line start is missing".to_string())? as usize;
+    let mut attributes = Map::new();
+    if let Some(modality) = text("modality") {
+        attributes.insert("modality".to_string(), json!(modality));
+    }
+    if let Some(graph_id) = text("graph_id") {
+        attributes.insert("graphId".to_string(), json!(graph_id));
+    }
+    Ok(ProviderSearchHit {
+        rank: None,
+        provider_score: None,
+        location: locations.project(Path::new(path))?,
+        line,
+        end_line: raw
+            .get("line_end")
+            .and_then(Value::as_u64)
+            .map(|line| line as usize),
+        symbol: text("symbol").map(str::to_string),
+        kind: text("kind").map(str::to_string),
+        snippet: text("snippet").unwrap_or_default().to_string(),
+        attributes,
     })
 }
 

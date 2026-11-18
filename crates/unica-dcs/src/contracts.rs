@@ -176,6 +176,21 @@ impl DcsContractExt for OperationContract {
     }
 }
 
+const DCS_TEXT_FORMAT: &str = "dcs-caption";
+pub(crate) const DCS_FORMAT_VALIDATORS: &[unica_operation_contract::FormatValidator] =
+    &[unica_operation_contract::FormatValidator {
+        name: DCS_TEXT_FORMAT,
+        validate: |value| {
+            if value.get("valueType").and_then(Value::as_str) == Some("xs:string")
+                && value.get("value").is_some_and(Value::is_string)
+            {
+                return Ok(());
+            }
+            unica_metadata::parse_nstr(value.as_str().ok_or(unica_metadata::LOCALIZED_VALUE_FORM)?)
+                .map(|_| ())
+        },
+    }];
+
 pub fn dcs(op: Primitive) -> OperationContract {
     let schema_target = "The DCS Template itself. Read the template props and its DataSet/Setting branches before choosing selectors.";
     let data_target =
@@ -189,12 +204,25 @@ pub fn dcs(op: Primitive) -> OperationContract {
     let total_target = "Existing DCS Template.Total.<dataPath>; the address names the total. A dataPath dot is escaped: Total.A\\.B.";
     let field_target = "Existing DCS field Template.DataSet.<name>.Field.<dataPath>; repeat DataSet.<name> for a nested Union member. The address names the field; there is no field argument. A composite dataPath escapes its dot: Field.Owner\\.Code.";
     let parameter_target = "Existing DCS Template.Parameter.<name>; the address names the parameter. A missing parameter is refused; create it with parameter.add on the template.";
-    let title = json!({"anyOf":[{"type":"string"},{"type":"object","additionalProperties":{"type":"string"}}]});
+    let plain_caption = object(
+        &[
+            ("valueType", json!({"type": "string", "const": "xs:string"})),
+            ("value", text(false)),
+        ],
+        &["valueType", "value"],
+    );
+    let legacy_setting_presentation = json!({"anyOf": [text(false), plain_caption.clone()]});
+    let title = json!({
+        "format": DCS_TEXT_FORMAT,
+        "anyOf": [
+            unica_metadata::localized_value_schema(),
+            plain_caption,
+        ],
+        "description": "A localized title is NStr. A scalar title uses the explicit xs:string type and value."
+    });
     let scalar =
         json!({"anyOf":[{"type":"string"},{"type":"number"},{"type":"boolean"},{"type":"null"}]});
-    let localized_value =
-        json!({"type":"object","minProperties":1,"additionalProperties":{"type":"string"}});
-    let typed_value = json!({"anyOf":[scalar.clone(),localized_value.clone(),object(&[("variant",text(true)),("startDate",text(true)),("endDate",text(true))],&["variant"])]});
+    let typed_value = json!({"anyOf":[scalar.clone(),object(&[("variant",text(true)),("startDate",text(true)),("endDate",text(true))],&["variant"])]});
     let appearance_value = json!({"anyOf":[typed_value.clone(),object(&[("valueType",text(true)),("value",typed_value.clone())],&["valueType","value"])]});
     let strings = items(text(true));
     let comparison = json!({"type":"string","default":FilterComparison::Equal.as_str(),"enum":FilterComparison::VALUES});
@@ -220,7 +248,10 @@ pub fn dcs(op: Primitive) -> OperationContract {
                         ("use", json!({"type":"boolean"})),
                         ("viewMode", json!({"type":"string","enum":ViewMode::VALUES})),
                         ("userSettingID", text(true)),
-                        ("userSettingPresentation", text(false)),
+                        (
+                            "userSettingPresentation",
+                            legacy_setting_presentation.clone(),
+                        ),
                     ],
                     &[],
                 ),
@@ -302,12 +333,12 @@ pub fn dcs(op: Primitive) -> OperationContract {
             let mut inner=field_head(&["dataPath","name"],&[]);inner["properties"]["title"]=title.clone();inner["properties"]["field"]=text(true);
             for key in ["useRestriction","attributeUseRestriction"]{inner["properties"][key]=restriction.clone();}
             inner["properties"]["presentationExpression"]=text(false);
-            ("items",inner,data_target,"Add dataset fields. Existing dataPath is unchanged. Query fields derive their type from the query and refuse type; describe Object field types explicitly. Selection is a separate operation.",json!({"items":[{"dataPath":"Added","title":"Added [шт]"}]}))
+            ("items",inner,data_target,"Add dataset fields. Existing dataPath is unchanged. Query fields derive their type from the query and refuse type; describe Object field types explicitly. Selection is a separate operation.",json!({"items":[{"dataPath":"Added","title":"en = 'Added [шт]'"}]}))
         }
         Primitive::FieldSet => {
-            let mut inner=object(&[("type",text(false)),("title",title.clone()),("useRestriction",restriction.clone()),("attributeUseRestriction",restriction.clone()),("presentationExpression",text(false)),("sourceField",text(true))],&[]);
+            let mut inner=object(&[("type",text(false)),("title",title.clone()),("useRestriction",restriction.clone()),("attributeUseRestriction",restriction.clone()),("presentationExpression",text(false)),("field",text(true))],&[]);
             inner["minProperties"]=json!(1);
-            ("values",inner,field_target,"Update only supplied field mapping/title/type/restrictions/presentation expression. Query fields derive their type from query and refuse type. Other field patches remove stale valueType on the addressed Query field. Other field data remains.",json!({"values":{"title":{"ru":"Сумма","en":"Amount"}}}))
+            ("values",inner,field_target,"Update only supplied field mapping/title/type/restrictions/presentation expression. Query fields derive their type from query and refuse type. Other field patches remove stale valueType on the addressed Query field. Other field data remains.",json!({"values":{"title":"ru = 'Сумма'; en = 'Amount'"}}))
         }
         Primitive::FieldRemove | Primitive::ParameterRemove => ("",json!({}),if op==Primitive::FieldRemove{field_target}else{parameter_target},"Remove only the named terminal Field or Parameter. References and selections are separate operations.",json!({})),
         Primitive::FieldRoleSet => {
@@ -320,7 +351,7 @@ pub fn dcs(op: Primitive) -> OperationContract {
             inner["properties"].as_object_mut().expect("parameter properties").remove("name");
             inner["required"]=json!([]);
             inner["minProperties"]=json!(1);
-            ("values",inner,parameter_target,"Patch only supplied properties of the addressed schema parameter.",json!({"values":{"title":"Period"}}))
+            ("values",inner,parameter_target,"Patch only supplied properties of the addressed schema parameter.",json!({"values":{"title":"en = 'Period'"}}))
         }
         Primitive::ParameterRename => ("values",object(&[("newName",text(true))],&["newName"]),parameter_target,"Rename the addressed parameter declaration only. References are explicit query/expression operations in the same batch.",json!({"values":{"newName":"ReportPeriod"}})),
         Primitive::ParameterReorder => ("items",object(&[("name",text(true))],&["name"]),schema_target,"Reorder all schema parameter elements by the supplied complete unique list. Comments and all other nodes stay in their original slots.",json!({"items":[{"name":"Period"}]})),
@@ -332,8 +363,8 @@ pub fn dcs(op: Primitive) -> OperationContract {
         Primitive::TotalAdd => ("items",aliases(object(&[("field",text(true)),("dataPath",text(true)),("expression",text(false)),("group",json!({"anyOf":[text(true),strings.clone()]}))],&[]),&["field","dataPath"]),schema_target,"Add a total with explicit expression/group. Omitted expression is Сумма(field). Change it later at Template.Total.<dataPath>.",json!({"items":[{"field":"Amount","expression":"Сумма(Amount)"}]})),
         Primitive::CalculatedFieldRemove => ("",json!({}),calculated_target,"Remove the addressed calculated field only; references to it are separate operations.",json!({})),
         Primitive::TotalRemove => ("",json!({}),total_target,"Remove the addressed total only.",json!({})),
-        Primitive::VariantAdd => ("items",optional_aliases(object(&[("name",text(true)),("title",title.clone()),("presentation",title.clone())],&["name"]),&["title","presentation"]),schema_target,"Create an empty settings variant. Configure selection and structure separately.",json!({"items":[{"name":"Additional","title":"Additional"}]})),
-        Primitive::VariantSet => ("values",optional_aliases(object(&[("title",title.clone()),("presentation",title.clone())],&[]),&["title","presentation"]),setting_target,"Change the presentation of the addressed settings variant. A missing variant is refused; create it with variant.add on the template.",json!({"values":{"title":"Report"}})),
+        Primitive::VariantAdd => ("items",optional_aliases(object(&[("name",text(true)),("title",title.clone()),("presentation",title.clone())],&["name"]),&["title","presentation"]),schema_target,"Create an empty settings variant. Configure selection and structure separately.",json!({"items":[{"name":"Additional","title":"en = 'Additional'"}]})),
+        Primitive::VariantSet => ("values",optional_aliases(object(&[("title",title.clone()),("presentation",title.clone())],&[]),&["title","presentation"]),setting_target,"Change the presentation of the addressed settings variant. A missing variant is refused; create it with variant.add on the template.",json!({"values":{"title":"en = 'Report'"}})),
         Primitive::VariantRemove => ("",json!({}),setting_target,"Remove the addressed variant.",json!({})),
         Primitive::QuerySet => ("values",aliases(object(&[("query",text(true)),("text",text(true))],&[]),&["query","text"]),query_target,"Replace query text. Supply literal text, not @file.",json!({"values":{"query":"ВЫБРАТЬ 1 КАК Amount"}})),
         Primitive::QueryPatch => ("values",object(&[("find",text(true)),("replace",json!({"type":"string","default":""})),("once",json!({"type":"boolean","default":false}))],&["find"]),query_target,"Patch decoded query text. No matches fail; once=true requires exactly one. Comments/PI are preserved; a marker within replaced text anchors to replacement start.",json!({"values":{"find":"1 КАК Amount","replace":"2 КАК Amount","once":true}})),
@@ -349,7 +380,7 @@ pub fn dcs(op: Primitive) -> OperationContract {
         Primitive::ConditionalAppearanceAdd => {
             let mut condition = filter();
             condition["properties"]["comparison"]["default"] = json!("Equal");
-            ("items",object(&[("fields",strings.clone()),("filter",json!({"type":"array","items":condition})),("use",json!({"type":"boolean"})),("appearance",json!({"type":"object","minProperties":1,"additionalProperties":appearance_value.clone()}))],&["fields","appearance"]),container_target,"Add conditional appearance with explicit use, comparisons and typed value atoms. Formatting does not change field values.",json!({"items":[{"fields":["Amount"],"use":false,"appearance":{"Формат":{"valueType":"v8:LocalStringType","value":{"ru":"ЧДЦ=2"}}}}]}))
+            ("items",object(&[("fields",strings.clone()),("filter",json!({"type":"array","items":condition})),("use",json!({"type":"boolean"})),("appearance",json!({"type":"object","minProperties":1,"additionalProperties":appearance_value.clone()}))],&["fields","appearance"]),container_target,"Add conditional appearance with explicit use, comparisons and typed value atoms. Formatting does not change field values.",json!({"items":[{"fields":["Amount"],"use":false,"appearance":{"Формат":{"valueType":"v8:LocalStringType","value":"ru = 'ЧДЦ=2'"}}}]}))
         }
         Primitive::StructureAdd => ("items",structure(),container_target,"Add one named group/table/chart into the addressed variant or structure item; axis selects the row/column/point/series of an addressed table/chart. The name must be new in the variant. groupBy belongs to group; table/chart grouping is added through its axes. Add each child with a separate operation at its parent's address.",json!({"items":[{"name":"ByAmount","kind":"group","groupBy":["Amount"]}]})),
         Primitive::StructureSet => ("values",object(&[("name",text(true)),("groupBy",json!({"type":"array","items":text(true),"default":[]})),("details",json!({"type":"boolean","default":true}))],&[]),setting_target,"Replace the variant structure with one group and optional nested details. groupBy=[] is a details group; use structure.add for tables/charts and nested composition.",json!({"values":{"name":"ByAmount","groupBy":["Amount"],"details":true}})),
@@ -366,7 +397,7 @@ pub fn dcs(op: Primitive) -> OperationContract {
             ("values",inner,total_target,"Patch supplied expression or grouping list of the addressed total.",json!({"values":{"expression":"Максимум(Amount)"}}))
         }
         Primitive::SelectionSet | Primitive::OrderSet => {
-            let mut inner=object(&[("field",text(true)),("index",index()),("use",json!({"type":"boolean"})),("viewMode",json!({"type":"string","enum":ViewMode::VALUES})),("userSettingID",text(true)),("userSettingPresentation",text(false))],&[]);
+            let mut inner=object(&[("field",text(true)),("index",index()),("use",json!({"type":"boolean"})),("viewMode",json!({"type":"string","enum":ViewMode::VALUES})),("userSettingID",text(true)),("userSettingPresentation",legacy_setting_presentation.clone())],&[]);
             if op==Primitive::OrderSet{inner["properties"]["direction"]=json!({"type":"string","enum":OrderDirection::VALUES});}
             ("values",inner,container_target,"Patch one uniquely selected field item, preserving unspecified settings.",json!({"values":{"field":"Amount","use":false}}))
         }
@@ -459,7 +490,7 @@ pub fn dcs(op: Primitive) -> OperationContract {
         notes,
         example_args,
         help: REPORTS_HELP,
-        format_validators: &[],
+        format_validators: DCS_FORMAT_VALIDATORS,
     }
 }
 

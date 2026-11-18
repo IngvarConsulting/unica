@@ -1,7 +1,5 @@
 ---
 id: INV.CACHE.WORKSPACE-EPOCH
-check:
-  - crates/unica-coder/src/infrastructure/workspace.rs::workspace_epoch_tracks_head_inside_a_linked_worktree
 ---
 
 # Смена ветки учитывается и в связанной рабочей копии Git

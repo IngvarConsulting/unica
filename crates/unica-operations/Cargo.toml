@@ -14,3 +14,7 @@ unica-address = { path = "../unica-address" }
 unica-operation-contract = { path = "../unica-operation-contract" }
 serde.workspace = true
 serde_json.workspace = true
+
+[package.metadata.unica]
+component = "coordinator"
+file-io = "none"

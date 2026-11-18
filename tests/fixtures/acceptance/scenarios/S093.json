@@ -1,0 +1,32 @@
+{
+  "area": "Реквизиты и состав",
+  "task": "Узнать словарь операций реквизита",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.Attribute.Наценка"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/can",
+          "contains": {
+            "op": "attribute.set",
+            "args": "values"
+          }
+        },
+        {
+          "pointer": "/data/can",
+          "contains": {
+            "op": "attribute.remove",
+            "args": "at"
+          }
+        }
+      ]
+    }
+  ],
+  "id": "S093"
+}

@@ -1,0 +1,576 @@
+{
+  "id": "S364",
+  "name": "dcs-structure-table-chart-group-composition",
+  "issue": 1310,
+  "area": "СКД",
+  "task": "Составить table/chart с осями и именованными вложенными группами; локальная настройка и patch сохраняют остальные элементы; заменить и удалить структуру явно",
+  "workspace": "tests/fixtures/acceptance/workspace-dcs",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report",
+        "ops": [
+          {
+            "op": "template.add",
+            "args": {
+              "items": [
+                {
+                  "name": "PrimitiveStructure",
+                  "templateType": "DataCompositionSchema"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveStructure/Ext/Template.xml",
+          "kind": "exists",
+          "eq": false
+        }
+      ],
+      "captures": {
+        "createToken": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.createToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveStructure/Ext/Template.xml",
+          "kind": "exists",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveStructure.Setting.Основной"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "phase2Before": {
+          "file": "src/cf/Reports/F05Report/Templates/PrimitiveStructure/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveStructure.Setting.Основной",
+        "ops": [
+          {
+            "op": "structure.add",
+            "args": {
+              "items": [
+                {
+                  "name": "Table",
+                  "kind": "table"
+                },
+                {
+                  "name": "Chart",
+                  "kind": "chart"
+                },
+                {
+                  "name": "Standalone",
+                  "kind": "group",
+                  "groupBy": [
+                    "Category"
+                  ],
+                  "viewMode": "Normal"
+                }
+              ]
+            }
+          },
+          {
+            "op": "structure.add",
+            "args": {
+              "at": "cf:Report.F05Report.Template.PrimitiveStructure.Setting.Основной.Item.Table",
+              "items": [
+                {
+                  "name": "Rows",
+                  "axis": "row",
+                  "groupBy": [
+                    "Category"
+                  ]
+                },
+                {
+                  "name": "Columns",
+                  "axis": "column",
+                  "groupBy": [
+                    "Amount"
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "op": "structure.add",
+            "args": {
+              "at": "cf:Report.F05Report.Template.PrimitiveStructure.Setting.Основной.Item.Chart",
+              "items": [
+                {
+                  "name": "Points",
+                  "axis": "point",
+                  "groupBy": [
+                    "Category"
+                  ]
+                },
+                {
+                  "name": "Series",
+                  "axis": "series",
+                  "groupBy": [
+                    "Amount"
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "op": "structure.add",
+            "args": {
+              "at": "cf:Report.F05Report.Template.PrimitiveStructure.Setting.Основной.Item.Standalone",
+              "items": [
+                {
+                  "name": "Child",
+                  "groupBy": [
+                    "Amount"
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveStructure/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.phase2Before"
+        }
+      ],
+      "captures": {
+        "phase2Token": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.phase2Token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveStructure/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}row/{http://v8.1c.ru/8.1/data-composition-system/settings}name",
+          "eq": [
+            "Rows"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveStructure/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}column/{http://v8.1c.ru/8.1/data-composition-system/settings}name",
+          "eq": [
+            "Columns"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveStructure/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}point/{http://v8.1c.ru/8.1/data-composition-system/settings}name",
+          "eq": [
+            "Points"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveStructure/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}series/{http://v8.1c.ru/8.1/data-composition-system/settings}name",
+          "eq": [
+            "Series"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveStructure.Setting.Основной"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "phase4Before": {
+          "file": "src/cf/Reports/F05Report/Templates/PrimitiveStructure/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveStructure.Setting.Основной",
+        "ops": [
+          {
+            "op": "structure.patch",
+            "args": {
+              "at": "cf:Report.F05Report.Template.PrimitiveStructure.Setting.Основной.Item.Standalone",
+              "values": {
+                "groupBy": [
+                  "Amount"
+                ]
+              }
+            }
+          },
+          {
+            "op": "selection.add",
+            "args": {
+              "at": "cf:Report.F05Report.Template.PrimitiveStructure.Setting.Основной.Item.Standalone.Item.Child",
+              "items": [
+                {
+                  "field": "Amount"
+                }
+              ]
+            }
+          },
+          {
+            "op": "filter.add",
+            "args": {
+              "at": "cf:Report.F05Report.Template.PrimitiveStructure.Setting.Основной.Item.Standalone.Item.Child",
+              "items": [
+                {
+                  "field": "Amount",
+                  "comparison": "Greater",
+                  "value": 0
+                }
+              ]
+            }
+          },
+          {
+            "op": "order.add",
+            "args": {
+              "at": "cf:Report.F05Report.Template.PrimitiveStructure.Setting.Основной.Item.Standalone.Item.Child",
+              "items": [
+                {
+                  "field": "Amount",
+                  "direction": "Asc"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveStructure/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.phase4Before"
+        }
+      ],
+      "captures": {
+        "phase4Token": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.phase4Token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveStructure/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}item[{http://v8.1c.ru/8.1/data-composition-system/settings}name='Standalone']/{http://v8.1c.ru/8.1/data-composition-system/settings}groupItems/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}field",
+          "eq": [
+            "Amount"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveStructure/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}item[{http://v8.1c.ru/8.1/data-composition-system/settings}name='Standalone']/{http://v8.1c.ru/8.1/data-composition-system/settings}viewMode",
+          "eq": [
+            "Normal"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveStructure/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}item[{http://v8.1c.ru/8.1/data-composition-system/settings}name='Child']/{http://v8.1c.ru/8.1/data-composition-system/settings}selection/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}field",
+          "eq": [
+            "Amount"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveStructure/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}row/{http://v8.1c.ru/8.1/data-composition-system/settings}name",
+          "eq": [
+            "Rows"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveStructure.Setting.Основной.Item"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveStructure.Setting.Основной"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "phase6Before": {
+          "file": "src/cf/Reports/F05Report/Templates/PrimitiveStructure/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveStructure.Setting.Основной",
+        "ops": [
+          {
+            "op": "structure.remove",
+            "args": {
+              "at": "cf:Report.F05Report.Template.PrimitiveStructure.Setting.Основной.Item.Chart"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveStructure/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.phase6Before"
+        }
+      ],
+      "captures": {
+        "phase6Token": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.phase6Token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveStructure/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}point",
+          "eq": []
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveStructure/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}row/{http://v8.1c.ru/8.1/data-composition-system/settings}name",
+          "eq": [
+            "Rows"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveStructure.Setting.Основной"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "phase8Before": {
+          "file": "src/cf/Reports/F05Report/Templates/PrimitiveStructure/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveStructure.Setting.Основной",
+        "ops": [
+          {
+            "op": "structure.set",
+            "args": {
+              "values": {
+                "name": "Replacement",
+                "groupBy": [
+                  "Amount"
+                ],
+                "details": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveStructure/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.phase8Before"
+        }
+      ],
+      "captures": {
+        "phase8Token": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.phase8Token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveStructure/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}name",
+          "eq": [
+            "Replacement"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveStructure/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}row",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveStructure"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "validators": [
+        "dcs"
+      ]
+    }
+  ]
+}

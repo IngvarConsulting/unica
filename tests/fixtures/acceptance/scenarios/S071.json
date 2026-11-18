@@ -1,0 +1,39 @@
+{
+  "area": "Реквизиты и состав",
+  "task": "Удалить реквизит, сверившись со словарём операций",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.АктОбУничтоженииПерсональныхДанных"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/can",
+          "contains": {
+            "op": "attribute.add",
+            "args": "items"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.АктОбУничтоженииПерсональныхДанных.Attribute.ЮридическийАдресОрганизации",
+        "ops": [
+          {
+            "op": "attribute.remove"
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S071"
+}

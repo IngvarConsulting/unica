@@ -880,6 +880,7 @@ mod tests {
         assert_eq!(serde_json::to_value(record).unwrap(), expected);
     }
 
+    /// rule: INV.APP.DAEMON-TASK-PERSISTENCE
     #[test]
     fn v5_safe_failure_reason_is_closed_and_converts_every_legacy_reason() {
         let expected = [
@@ -954,6 +955,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.APP.DAEMON-TASK-PERSISTENCE
     #[test]
     fn all_five_task_statuses_round_trip_with_the_exact_selected_fields() {
         let record = serde_json::from_str::<V5StoredInvocationRecord>(QUEUED).unwrap();
@@ -984,6 +986,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.APP.DAEMON-TASK-PERSISTENCE
     #[test]
     fn record_rejects_wrong_schema_unknown_duplicate_and_every_missing_root_field() {
         let mut wrong_schema = queued_record_value();
@@ -1038,6 +1041,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.APP.DAEMON-TASK-PERSISTENCE
     #[test]
     fn every_task_status_rejects_unknown_missing_wrong_case_and_cross_variant_fields() {
         let valid_tasks = [

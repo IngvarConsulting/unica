@@ -95,11 +95,14 @@ class ParserRevisionTests(unittest.TestCase):
         return "b" * 40 if current == "a" * 40 else "a" * 40
 
     def test_repository_parser_and_analyzer_sources_are_aligned(self) -> None:
+        """rule: INV.ANALYSIS.PARSER-ANALYZER-REVISION"""
         self.assertEqual(revision_errors(self.cargo, self.lock, self.tools, self.consumer), [])
 
     def test_only_the_parser_component_consumes_the_upstream_packages(self) -> None:
-        manifests = [tomllib.loads((REPO_ROOT / member / "Cargo.toml").read_text(encoding="utf-8"))
-                     for member in self.cargo["workspace"]["members"]]
+        manifests = [tomllib.loads((directory / "Cargo.toml").read_text(encoding="utf-8"))
+                     for pattern in self.cargo["workspace"]["members"]
+                     for directory in REPO_ROOT.glob(pattern)]
+        self.assertTrue(manifests)
         self.assertEqual(parser_owner_errors(self.cargo["workspace"]["dependencies"], manifests), [])
 
     def test_a_consumer_cannot_bypass_the_owner_through_a_renamed_target_dependency(self) -> None:

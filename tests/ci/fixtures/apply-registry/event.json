@@ -1,0 +1,11 @@
+{
+  "family": "Event",
+  "operations": [
+    {
+      "variant": "Implement",
+      "operation": "event.implement",
+      "applicability": "Event",
+      "skeleton": "Target"
+    }
+  ]
+}

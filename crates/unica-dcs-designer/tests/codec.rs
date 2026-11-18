@@ -82,8 +82,9 @@ fn dcs_info_overview_does_not_duplicate_structured_support() {
     );
 }
 
+/// rule: INV.SOURCE.DCS-READ-FACTS
 #[test]
-fn dcs_info_data_carries_every_fact_the_retired_modes_printed() {
+fn dcs_info_data_carries_sources_datasets_totals_parameters_and_variants() {
     // The owner's support state is an input of the read, so the fixture passes
     // one no codec could produce by default.
     let support = ObjectSupportData {
@@ -92,7 +93,7 @@ fn dcs_info_data_carries_every_fact_the_retired_modes_printed() {
     };
     let data = DesignerDcsCodec.read(COMPLETE_SCHEMA, support).unwrap();
 
-    // `overview` printed the owner's support state and the data sources.
+    // The owner's support state and the data sources.
     assert_eq!(
         (data.support.state, data.support.direct_edit_safe),
         (ObjectSupportState::Locked, Some(false)),
@@ -107,8 +108,8 @@ fn dcs_info_data_carries_every_fact_the_retired_modes_printed() {
         "{data:?}"
     );
 
-    // `overview` distinguished an Object dataset by its objectName, and
-    // every dataset named the source it reads.
+    // An Object dataset is distinguished by its objectName, and every
+    // dataset names the source it reads.
     let object_set = data
         .data_sets
         .iter()
@@ -120,8 +121,8 @@ fn dcs_info_data_carries_every_fact_the_retired_modes_printed() {
         Some("ИсточникДанных1")
     );
 
-    // `resources` printed the grouping a total belongs to; without it an
-    // overall total and a per-group total look identical.
+    // A total names the grouping it belongs to; without it an overall
+    // total and a per-group total look identical.
     assert_eq!(
         data.total_fields
             .iter()
@@ -131,26 +132,29 @@ fn dcs_info_data_carries_every_fact_the_retired_modes_printed() {
         "{data:?}"
     );
 
-    // `calculated -Name` printed which uses a field is barred from; the
-    // element is structured, so a boolean cannot carry that answer.
+    // A calculated field lists the uses it is barred from; the element is
+    // structured, so a boolean cannot carry that answer.
     assert_eq!(
         data.calculated_fields[0].restrictions.as_deref(),
         Some(&["condition".to_string(), "order".to_string()][..]),
         "{data:?}"
     );
 
-    // `params` marked a parameter that cannot be used as a field.
+    // A parameter that cannot be used as a field is marked.
     assert_eq!(
         data.parameters[0].available_as_field,
         Some(false),
         "{data:?}"
     );
 
-    // `variant` printed the name, presentation, selection, filters and the
-    // structure with its grouping fields.
+    // A variant carries its name, presentation, selection, filters, order
+    // and the structure with its grouping fields.
     let variant = &data.variants[0];
     assert_eq!(variant.name, "Основной");
-    assert_eq!(variant.presentation.as_deref(), Some("Основной вариант"));
+    assert_eq!(
+        variant.presentation,
+        Some(serde_json::json!({"valueType":"xs:string","value":"Основной вариант"}))
+    );
     assert_eq!(variant.selection, vec!["Товар".to_string()]);
     assert_eq!(variant.filters, 1);
     assert_eq!(
@@ -221,7 +225,7 @@ fn dcs_info_structure_items_preserve_names_unnamed_parents_duplicates_and_axes()
     assert!(rows.iter().all(|row| row.get("at").is_none()));
 }
 
-/// #311. A `SettingsParameterValue` with an empty `<dcscor:parameter>` is
+/// A `SettingsParameterValue` with an empty `<dcscor:parameter>` is
 /// well-formed XML that names no parameter, so the variant carries no value
 /// for it. Validation reported `Validation OK` on exactly that shape.
 #[test]
@@ -250,4 +254,72 @@ fn native_dcs_validate_rejects_ref_type_bound_to_unexpected_namespace() {
         stdout.contains("uses prefix 'bad' bound to unexpected namespace 'http://example.com'"),
         "{stdout}"
     );
+}
+
+// rule: INV.SOURCE.LOCALIZED-STRING-NSTR
+#[test]
+fn dcs_localized_values_keep_all_languages_in_source_order() {
+    let source = r#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema"
+        xmlns:sets="http://v8.1c.ru/8.1/data-composition-system/settings"
+        xmlns:formats="http://v8.1c.ru/8.1/data-composition-system/core"
+        xmlns:v="http://v8.1c.ru/8.1/data/core"
+        xmlns:i="http://www.w3.org/2001/XMLSchema-instance"
+        xmlns:x="http://www.w3.org/2001/XMLSchema">
+        <parameter><name>Label</name><value i:type=" v:LocalStringType ">
+          <v:item><v:lang>en</v:lang><v:content>Don't&#13;trim</v:content></v:item>
+          <v:item><v:lang>ru</v:lang><v:content/></v:item>
+        </value></parameter>
+        <parameter><name>Empty</name><value i:type="x:string"/></parameter>
+        <parameter><name>Null</name><value i:type="x:string" i:nil="true"/></parameter>
+        <settingsVariant><sets:name>Variant</sets:name>
+          <sets:presentation i:type="v:LocalStringType">
+            <v:item><v:lang>en</v:lang><v:content>Revenue</v:content></v:item>
+            <v:item><v:lang>ru</v:lang><v:content>Выручка</v:content></v:item>
+          </sets:presentation>
+          <sets:settings><sets:outputParameters>
+            <formats:item><formats:parameter>Label</formats:parameter>
+              <formats:value i:type="v:LocalStringType">
+                <v:item><v:lang>en</v:lang><v:content>Revenue</v:content></v:item>
+                <v:item><v:lang>ru</v:lang><v:content>Выручка</v:content></v:item>
+              </formats:value>
+            </formats:item>
+          </sets:outputParameters></sets:settings>
+        </settingsVariant>
+    </DataCompositionSchema>"#;
+    let facts = read(source);
+    let parameter = &facts.parameters[0];
+    assert_eq!(parameter.value_type, Some("v8:LocalStringType"));
+    assert_eq!(
+        parameter.value.as_ref().and_then(serde_json::Value::as_str),
+        Some("en = 'Don''t\rtrim'; ru = ''")
+    );
+    assert_eq!(facts.parameters[1].value_type, Some("xs:string"));
+    assert_eq!(facts.parameters[1].value, Some(json!("")));
+    assert_eq!(facts.parameters[2].value_type, Some("xs:string"));
+    assert_eq!(facts.parameters[2].value, Some(serde_json::Value::Null));
+    let variant = &facts.variants[0];
+    let expected = "en = 'Revenue'; ru = 'Выручка'";
+    assert_eq!(
+        variant
+            .presentation
+            .as_ref()
+            .and_then(serde_json::Value::as_str),
+        Some(expected)
+    );
+    let setting = &variant.setting_items[0];
+    assert_eq!(setting["valueType"], "v8:LocalStringType");
+    assert_eq!(setting["value"], expected);
+
+    for invalid in [
+        "<v:item><v:content>Missing language</v:content></v:item>",
+        "<v:item><v:lang>en</v:lang><v:content>Duplicate</v:content></v:item>",
+        "<v:item><v:lang>de</v:lang></v:item>",
+        "<sets:item/>",
+    ] {
+        let malformed = source.replace(
+            "</sets:presentation>",
+            &format!("{invalid}</sets:presentation>"),
+        );
+        assert_eq!(read(&malformed).variants[0].presentation, None);
+    }
 }

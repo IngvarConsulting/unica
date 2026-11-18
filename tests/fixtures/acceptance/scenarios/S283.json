@@ -1,0 +1,30 @@
+{
+  "id": "S283",
+  "area": "Поддержка поставщика",
+  "task": "Добавить форму объекту поставщика на замке — отказ стража поддержки",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Enum.НастройкиПоставщика",
+        "ops": [
+          {
+            "op": "form.add",
+            "args": {
+              "items": [
+                {
+                  "name": "ФормаСписка",
+                  "type": "ListForm"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_state: `main:Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edit"
+    }
+  ]
+}

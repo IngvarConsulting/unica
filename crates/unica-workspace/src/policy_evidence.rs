@@ -11,7 +11,31 @@ use unica_work_control::cancellation::CancellationToken;
 use unica_work_control::provider_deadline::ProviderDeadline;
 
 const POLICY_NAME: &str = ".v8-project.json";
+// resource-limit: workspace.support-policy-bytes
+// class: format
+// unit: bytes
+// scope: file
+// value: 33554432
+// resource: Размер файла политики поддержки .v8-project.json, читаемого актором.
+// status: unproven
+// origin: коммит 991a18ae8 (retain actor support policy evidence)
+// problem: неизвестно
+// on-reach: политика сверх предела не разрешает warn/off: проверка поддержки идёт как deny
+// decision: закреплено правилом
+// decision-source: arch/rules/workspace/support-policy-read-bounds.md
 const MAX_SUPPORT_POLICY_BYTES: usize = 32 * 1024 * 1024;
+// resource-limit: workspace.support-policy-read-chunk-bytes
+// class: step
+// unit: bytes
+// scope: file
+// value: 65536
+// resource: Размер одной порции чтения политики поддержки .v8-project.json между проверками отмены и срока.
+// status: unproven
+// origin: коммит f7a85752f (fix(apply): checkpoint retained policy read chunks)
+// problem: неизвестно
+// on-reach: файл читается следующей порцией после проверки отмены и срока
+// decision: закреплено правилом INV.APP.SUPPORT-POLICY-READ-BOUNDS
+// decision-source: arch/rules/workspace/support-policy-read-bounds.md
 const SUPPORT_POLICY_READ_CHUNK_BYTES: usize = 64 * 1024;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -171,6 +195,19 @@ fn run_support_policy_read_chunk_hook(chunk_count: usize) {
 }
 
 pub(crate) use unica_source_contract::proposal::SupportPolicyMode;
+
+/// The project support policy as `apply` admission reads it, with the same
+/// bounds, but not retained: what `view` names next to a node's
+/// editability. A policy that cannot be read is `deny`, as for `apply`.
+pub fn observe_support_policy_mode(
+    workspace_root: &Path,
+    source_root: &Path,
+    deadline: ProviderDeadline,
+    cancellation: &CancellationToken,
+) -> SupportPolicyMode {
+    RetainedSupportPolicyEvidence::capture(workspace_root, source_root, deadline, cancellation)
+        .map_or(SupportPolicyMode::Deny, |evidence| evidence.mode())
+}
 
 pub fn v8_project_candidates_for_directory(start: &Path) -> Vec<PathBuf> {
     let mut current = start.to_path_buf();
@@ -753,6 +790,7 @@ pub(crate) mod tests {
 
     /// Ослабляют запрет только точные `warn` и `off`; пропущенное поле,
     /// иное значение или нечитаемый файл оставляют `deny`.
+    /// rule: INV.SAFETY.SUPPORT-POLICY-DOWNGRADE
     #[test]
     fn support_policy_downgrade_comes_only_from_exact_warn_or_off() {
         let temporary = tempfile::tempdir().unwrap();
@@ -796,6 +834,7 @@ pub(crate) mod tests {
         }
     }
 
+    /// rule: INV.SAFETY.SUPPORT-POLICY-DOWNGRADE
     #[test]
     pub(crate) fn support_policy_database_paths_distinguish_nested_sources_from_prefix_siblings() {
         let temporary = tempfile::tempdir().unwrap();
@@ -837,6 +876,7 @@ pub(crate) mod tests {
         );
     }
 
+    /// rule: INV.SAFETY.SUPPORT-POLICY-DOWNGRADE
     #[test]
     pub(crate) fn support_policy_candidate_search_stops_at_exact_twentieth_candidate() {
         let temporary = tempfile::tempdir().unwrap();
@@ -857,6 +897,7 @@ pub(crate) mod tests {
         assert!(!candidates.contains(&start.ancestors().nth(20).unwrap().join(POLICY_NAME)));
     }
 
+    /// rule: INV.SAFETY.SUPPORT-POLICY-DOWNGRADE
     #[test]
     pub(crate) fn support_policy_overlapping_chains_keep_first_occurrence_order_without_duplicates()
     {
@@ -895,6 +936,7 @@ pub(crate) mod tests {
         assert_eq!(actual, expected);
     }
 
+    /// rule: INV.APP.RETAINED-APPLY-SUPPORT-POLICY-EVIDENCE
     #[test]
     pub(crate) fn retained_support_policy_candidate_parent_replacement_is_rejected() {
         if !crate::platform::testing::can_swap_named_child_behind_retained_handle_for_test() {
@@ -934,6 +976,7 @@ pub(crate) mod tests {
         );
     }
 
+    /// rule: INV.APP.RETAINED-APPLY-SUPPORT-POLICY-EVIDENCE
     #[test]
     pub(crate) fn retained_support_policy_exact_and_oversized_reject_name_replacement_after_pre_read_identity(
     ) {
@@ -988,6 +1031,7 @@ pub(crate) mod tests {
         assert_eq!(rejected, [true, true]);
     }
 
+    /// rule: INV.APP.RETAINED-APPLY-SUPPORT-POLICY-EVIDENCE
     #[test]
     pub(crate) fn retained_support_policy_exact_rejects_name_replacement_after_retained_read_before_acceptance(
     ) {
@@ -1269,6 +1313,7 @@ pub(crate) mod tests {
         );
     }
 
+    /// rule: INV.APP.SUPPORT-POLICY-READ-BOUNDS
     #[test]
     pub(crate) fn retained_support_policy_second_pass_reuses_terminal_state_between_chunks() {
         let _test_state = SupportPolicyTestStateGuard::new(reset_support_policy_test_now);
@@ -1345,6 +1390,7 @@ pub(crate) mod tests {
         );
     }
 
+    /// rule: INV.APP.SUPPORT-POLICY-READ-BOUNDS
     #[test]
     pub(crate) fn retained_support_policy_reader_preserves_limit_plus_one_in_64_kib_chunks() {
         let _test_state = SupportPolicyTestStateGuard::new(reset_support_policy_test_now);
@@ -1381,6 +1427,7 @@ pub(crate) mod tests {
         assert_eq!(chunks.load(Ordering::SeqCst), 2);
     }
 
+    /// rule: INV.APP.SUPPORT-POLICY-READ-BOUNDS
     #[test]
     pub(crate) fn retained_support_policy_reader_retries_interrupted_after_partial_read() {
         let _test_state = SupportPolicyTestStateGuard::new(reset_support_policy_test_now);
@@ -1416,6 +1463,7 @@ pub(crate) mod tests {
         assert_eq!(chunks.load(Ordering::SeqCst), 2);
     }
 
+    /// rule: INV.APP.SUPPORT-POLICY-READ-BOUNDS
     #[test]
     pub(crate) fn retained_support_policy_reader_stops_repeated_interrupts_at_terminal_state() {
         let _test_state = SupportPolicyTestStateGuard::new(reset_support_policy_test_now);
@@ -1472,6 +1520,7 @@ pub(crate) mod tests {
         );
     }
 
+    /// rule: INV.APP.SUPPORT-POLICY-READ-BOUNDS
     #[test]
     pub(crate) fn retained_support_policy_reader_preserves_limit_plus_one_after_interrupt() {
         let _test_state = SupportPolicyTestStateGuard::new(reset_support_policy_test_now);

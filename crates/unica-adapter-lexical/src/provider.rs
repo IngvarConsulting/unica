@@ -133,6 +133,19 @@ impl<'a> GitGrepProvider<'a> {
             };
         let output = match self
             .runner
+            // resource-limit: lexical.grep-line-bytes
+            // class: format
+            // unit: bytes
+            // scope: line
+            // value: 1048576
+            // literal: run_streaming(&command, 1024 * 1024
+            // count: 1
+            // expr: 1024 * 1024
+            // resource: Байты одной строки вывода git grep, читаемой потоком.
+            // status: unproven
+            // origin: f06737f56
+            // problem: неизвестно
+            // on-reach: строка длиннее предела прерывает поток лексического поиска ошибкой
             .run_streaming(&command, 1024 * 1024, &mut consume)
         {
             Ok(output) => output,

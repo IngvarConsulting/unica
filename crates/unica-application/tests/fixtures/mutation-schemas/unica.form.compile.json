@@ -1,0 +1,391 @@
+{
+  "inputSchema": {
+    "additionalProperties": false,
+    "properties": {
+      "BodyLimit": {
+        "type": "string"
+      },
+      "BorrowMainAttribute": {
+        "type": "string"
+      },
+      "CIPath": {
+        "type": "string"
+      },
+      "Capability": {
+        "type": "string"
+      },
+      "CompatibilityMode": {
+        "type": "string"
+      },
+      "ConfigDir": {
+        "type": "string"
+      },
+      "ConfigPath": {
+        "type": "string"
+      },
+      "Context": {
+        "type": "string"
+      },
+      "CreateIfMissing": {
+        "type": "boolean"
+      },
+      "DefinitionFile": {
+        "type": "string"
+      },
+      "Detailed": {
+        "type": "boolean"
+      },
+      "EmitDsl": {
+        "type": "string"
+      },
+      "Expand": {
+        "type": "string"
+      },
+      "ExtensionPath": {
+        "type": "string"
+      },
+      "Force": {
+        "type": "boolean"
+      },
+      "FormName": {
+        "type": "string"
+      },
+      "FormPath": {
+        "type": "string"
+      },
+      "Format": {
+        "type": "string"
+      },
+      "FromObject": {
+        "type": "boolean"
+      },
+      "InterceptorType": {
+        "type": "string"
+      },
+      "IsFunction": {
+        "type": "boolean"
+      },
+      "JsonPath": {
+        "type": "string"
+      },
+      "Kind": {
+        "type": "string"
+      },
+      "Lang": {
+        "type": "string"
+      },
+      "Language": {
+        "type": "string"
+      },
+      "Limit": {
+        "type": "string"
+      },
+      "MaxErrors": {
+        "type": "string"
+      },
+      "MetadataPath": {
+        "type": "string"
+      },
+      "MethodName": {
+        "type": "string"
+      },
+      "Mode": {
+        "type": "string"
+      },
+      "ModulePath": {
+        "type": "string"
+      },
+      "Name": {
+        "type": "string"
+      },
+      "NamePrefix": {
+        "type": "string"
+      },
+      "NoRole": {
+        "type": "boolean"
+      },
+      "NoValidate": {
+        "type": "boolean"
+      },
+      "Object": {
+        "type": "string"
+      },
+      "ObjectName": {
+        "type": "string"
+      },
+      "ObjectPath": {
+        "type": "string"
+      },
+      "Offset": {
+        "type": "integer"
+      },
+      "Operation": {
+        "type": "string"
+      },
+      "OutputDir": {
+        "type": "string"
+      },
+      "OutputPath": {
+        "type": "string"
+      },
+      "Parent": {
+        "type": "string"
+      },
+      "ProcessorName": {
+        "type": "string"
+      },
+      "Purpose": {
+        "type": "string"
+      },
+      "Raw": {
+        "type": "boolean"
+      },
+      "RightsPath": {
+        "type": "string"
+      },
+      "Section": {
+        "type": "string"
+      },
+      "Set": {
+        "type": "string"
+      },
+      "SetDefault": {
+        "type": "boolean"
+      },
+      "SetMainSKD": {
+        "type": "boolean"
+      },
+      "ShowDenied": {
+        "type": "string"
+      },
+      "SrcDir": {
+        "type": "string"
+      },
+      "SubsystemPath": {
+        "type": "string"
+      },
+      "Synonym": {
+        "type": "string"
+      },
+      "TargetPath": {
+        "type": "string"
+      },
+      "TemplateName": {
+        "type": "string"
+      },
+      "TemplatePath": {
+        "type": "string"
+      },
+      "TemplateType": {
+        "type": "string"
+      },
+      "Value": {
+        "type": "string"
+      },
+      "Vendor": {
+        "type": "string"
+      },
+      "Version": {
+        "type": "string"
+      },
+      "WithText": {
+        "type": "boolean"
+      },
+      "bodyLimit": {
+        "type": "string"
+      },
+      "borrowMainAttribute": {
+        "type": "string"
+      },
+      "capability": {
+        "type": "string"
+      },
+      "ciPath": {
+        "type": "string"
+      },
+      "compatibilityMode": {
+        "type": "string"
+      },
+      "configDir": {
+        "type": "string"
+      },
+      "configPath": {
+        "type": "string"
+      },
+      "confirm": {
+        "type": "boolean"
+      },
+      "context": {
+        "type": "string"
+      },
+      "createIfMissing": {
+        "type": "boolean"
+      },
+      "cwd": {
+        "type": "string"
+      },
+      "definitionFile": {
+        "type": "string"
+      },
+      "detailed": {
+        "type": "boolean"
+      },
+      "dryRun": {
+        "default": true,
+        "type": "boolean"
+      },
+      "emitDsl": {
+        "type": "string"
+      },
+      "expand": {
+        "type": "string"
+      },
+      "extensionPath": {
+        "type": "string"
+      },
+      "force": {
+        "type": "boolean"
+      },
+      "formName": {
+        "type": "string"
+      },
+      "formPath": {
+        "type": "string"
+      },
+      "format": {
+        "type": "string"
+      },
+      "fromObject": {
+        "type": "boolean"
+      },
+      "interceptorType": {
+        "type": "string"
+      },
+      "isFunction": {
+        "type": "boolean"
+      },
+      "kind": {
+        "type": "string"
+      },
+      "lang": {
+        "type": "string"
+      },
+      "language": {
+        "type": "string"
+      },
+      "limit": {
+        "type": "integer"
+      },
+      "maxErrors": {
+        "type": "string"
+      },
+      "metadataPath": {
+        "type": "string"
+      },
+      "methodName": {
+        "type": "string"
+      },
+      "mode": {
+        "type": "string"
+      },
+      "modulePath": {
+        "type": "string"
+      },
+      "name": {
+        "type": "string"
+      },
+      "namePrefix": {
+        "type": "string"
+      },
+      "noRole": {
+        "type": "boolean"
+      },
+      "noValidate": {
+        "type": "boolean"
+      },
+      "object": {
+        "type": "string"
+      },
+      "objectName": {
+        "type": "string"
+      },
+      "offset": {
+        "type": "integer"
+      },
+      "operation": {
+        "type": "string"
+      },
+      "outputDir": {
+        "type": "string"
+      },
+      "parent": {
+        "type": "string"
+      },
+      "processorName": {
+        "type": "string"
+      },
+      "purpose": {
+        "type": "string"
+      },
+      "raw": {
+        "type": "boolean"
+      },
+      "rightsPath": {
+        "type": "string"
+      },
+      "section": {
+        "type": "string"
+      },
+      "set": {
+        "type": "string"
+      },
+      "setDefault": {
+        "type": "boolean"
+      },
+      "setMainSKD": {
+        "type": "boolean"
+      },
+      "showDenied": {
+        "type": "string"
+      },
+      "srcDir": {
+        "type": "string"
+      },
+      "subsystemPath": {
+        "type": "string"
+      },
+      "synonym": {
+        "type": "string"
+      },
+      "targetPath": {
+        "type": "string"
+      },
+      "templateName": {
+        "type": "string"
+      },
+      "templatePath": {
+        "type": "string"
+      },
+      "templateType": {
+        "type": "string"
+      },
+      "value": {
+        "type": "string"
+      },
+      "vendor": {
+        "type": "string"
+      },
+      "version": {
+        "type": "string"
+      },
+      "withText": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "OutputPath"
+    ],
+    "type": "object"
+  },
+  "operation": "form-compile"
+}

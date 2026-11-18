@@ -1,0 +1,263 @@
+{
+  "id": "S417",
+  "name": "role-rights-entry-is-addressed-and-created-by-right-add",
+  "issue": 1354,
+  "area": "Роли и права",
+  "task": "right.set на роли отказывает без записи: операция не относится к роли, next ведёт к её словарю; right.set правит существующую запись по её адресу, опечатка в адресе отвечает not_found с next к роли и ничего не создаёт; новую запись создаёт right.add на роли, а повторное right.add на существующей отказывает; контракт right.add читается по адресу операции",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Role.SalesReader"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/can",
+          "contains": {
+            "op": "right.add",
+            "args": "items"
+          }
+        }
+      ],
+      "captures": {
+        "rights": {
+          "kind": "sha256",
+          "file": "src/Roles/SalesReader/Ext/Rights.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Role.SalesReader",
+        "ops": [
+          {
+            "op": "right.set",
+            "args": {
+              "values": {
+                "object": "Catalog.Валюты",
+                "right": "Update",
+                "value": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: apply operation `right.set` does not apply to Role `main:Role.SalesReader`; it addresses `Role.Name.Right.<Kind>_<Name>`",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].at"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:Role.SalesReader"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Roles/SalesReader/Ext/Rights.xml",
+          "eq": "$capture.rights"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Role.SalesReader.Right.Catalog_Валюты"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/can",
+          "contains": {
+            "op": "right.set",
+            "args": "values"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Role.SalesReader.Right.Catalog_Валюты",
+        "ops": [
+          {
+            "op": "right.set",
+            "args": {
+              "values": {
+                "right": "Update",
+                "value": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Roles/SalesReader/Ext/Rights.xml",
+          "eq": "$capture.rights"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Role.SalesReader.Right.Catalog_Валютыы",
+        "ops": [
+          {
+            "op": "right.set",
+            "args": {
+              "values": {
+                "right": "Update",
+                "value": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: the role has no rights entry for `Catalog.Валютыы`; create it with right.add at `main:Role.SalesReader`",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.at"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:Role.SalesReader"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Roles/SalesReader/Ext/Rights.xml",
+          "eq": "$capture.rights"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Role.SalesReader",
+        "ops": [
+          {
+            "op": "right.add",
+            "args": {
+              "items": [
+                {
+                  "object": "Report.АнализВерсийОбъектов",
+                  "rights": {
+                    "Use": true,
+                    "View": true
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Roles/SalesReader/Ext/Rights.xml",
+          "eq": "$capture.rights"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Role.SalesReader",
+        "ops": [
+          {
+            "op": "right.add",
+            "args": {
+              "items": [
+                {
+                  "object": "Catalog.Валюты",
+                  "rights": {
+                    "Update": true
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: the role already has a rights entry for `Catalog.Валюты`; change it with right.set at `main:Role.SalesReader.Right.Catalog_Валюты`",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.items[0].object"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Roles/SalesReader/Ext/Rights.xml",
+          "eq": "$capture.rights"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Role.SalesReader.Can.right.add"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/items/items/required",
+          "eq": [
+            "object",
+            "rights"
+          ]
+        }
+      ]
+    }
+  ]
+}

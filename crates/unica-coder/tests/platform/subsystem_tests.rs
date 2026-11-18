@@ -85,10 +85,10 @@ fn subsystem_fixture_xml(name: &str) -> String {
 #[test]
 fn subsystem_native_text_observations_keep_empty_absent_and_invalid_distinct() {
     for (comment_xml, explanation_xml, comment, explanation, errors) in [
-        ("<Comment/>", "<Explanation/>", Some(""), Some(""), 0),
+        ("<Comment/>", "<Explanation/>", Some(""), None, 0),
         ("", "", None, None, 0),
-        ("<Comment>точный текст</Comment>", "<Explanation><v8:item><v8:lang>en</v8:lang><v8:content>fallback</v8:content></v8:item></Explanation>", Some("точный текст"), Some("fallback"), 0),
-        ("<Comment>а<![CDATA[б]]>в</Comment>", "<Explanation><v8:item><v8:lang>ru</v8:lang><v8:content>а<![CDATA[б]]>в</v8:content></v8:item></Explanation>", Some("абв"), Some("абв"), 0),
+        ("<Comment>точный текст</Comment>", "<Explanation><v8:item><v8:lang>en</v8:lang><v8:content>fallback</v8:content></v8:item></Explanation>", Some("точный текст"), Some("en = 'fallback'"), 0),
+        ("<Comment>а<![CDATA[б]]>в</Comment>", "<Explanation><v8:item><v8:lang>ru</v8:lang><v8:content>а<![CDATA[б]]>в</v8:content></v8:item></Explanation>", Some("абв"), Some("ru = 'абв'"), 0),
         ("<Comment><Bad/></Comment>", "<Explanation>text</Explanation>", None, None, 2),
         ("<Comment/><Comment/>", "<Explanation/><Explanation/>", None, None, 2),
     ] {
@@ -291,7 +291,7 @@ fn subsystem_edit_rejects_newer_direct_command_interface_without_mutation() {
     let context = temp_context("edit-newer-direct-ci");
     let subsystem = create_edit_fixture(&context, "Editable");
     let subsystem_before = fs::read(&subsystem).unwrap();
-    let command_interface = write_command_interface(&subsystem, "2.21");
+    let command_interface = write_command_interface(&subsystem, "2.23");
     let command_interface_before = fs::read(&command_interface).unwrap();
     let args = edit_definition_args(
         &context,
@@ -312,7 +312,7 @@ fn subsystem_edit_rejects_newer_direct_command_interface_without_mutation() {
         outcome
             .errors
             .join("\n")
-            .contains("newer than supported 2.20"),
+            .contains("newer than the newest supported 2.22"),
         "{outcome:?}"
     );
     assert_eq!(fs::read(&subsystem).unwrap(), subsystem_before);
@@ -337,7 +337,7 @@ fn subsystem_edit_ignores_newer_command_interface_of_unrelated_neighbor() {
         )),
     )
     .unwrap();
-    let neighbor_command_interface = write_command_interface(&neighbor, "2.21");
+    let neighbor_command_interface = write_command_interface(&neighbor, "2.23");
     let neighbor_before = fs::read(&neighbor).unwrap();
     let neighbor_command_interface_before = fs::read(&neighbor_command_interface).unwrap();
     let args = edit_definition_args(

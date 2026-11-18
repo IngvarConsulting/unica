@@ -1,0 +1,898 @@
+{
+  "id": "S-1623-wsreference-local-wsdl",
+  "issue": 1623,
+  "area": "Метаданные",
+  "task": "От обнаруженного WSReference прочитать все локальные WSDL/SOAP/XSD декларации, QName, родителей и порядок через страницы, повторить курсор, разрешить файл и проверить отказ записи без изменения исходников.",
+  "workspace": "tests/fixtures/acceptance/workspace-wsreference-definition",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "root": {
+          "pointer": "/next/0/args/at"
+        },
+        "h0": {
+          "file": "v8project.yaml",
+          "kind": "sha256"
+        },
+        "h1": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "h2": {
+          "file": "src/WSReferences/Client.xml",
+          "kind": "sha256"
+        },
+        "h3": {
+          "file": "src/WSReferences/Client/Ext/WSDefinition.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.root"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "wsrefs": {
+          "pointer": "/data/branches/22/at"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/branches/22/at",
+          "eq": "main:WSReference"
+        },
+        {
+          "pointer": "/data/branches/22/count",
+          "eq": 1
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.wsrefs"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "owner": {
+          "pointer": "/data/items/0/at"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:WSReference.Client"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "definition": {
+          "pointer": "/data/branches/0/at"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/branches/0/count",
+          "eq": 41
+        },
+        {
+          "pointer": "/data/branches/0/at",
+          "eq": "main:WSReference.Client.Definition"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.definition",
+        "limit": 7
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "sourceOrder": 1,
+              "parentOrder": null,
+              "kind": "definitions",
+              "name": "LocalService",
+              "targetNamespace": "urn:local-api"
+            },
+            {
+              "sourceOrder": 2,
+              "parentOrder": 1,
+              "kind": "types"
+            },
+            {
+              "sourceOrder": 3,
+              "parentOrder": 2,
+              "kind": "schema",
+              "targetNamespace": "urn:payload-a",
+              "elementFormDefault": "qualified",
+              "attributeFormDefault": "unqualified"
+            },
+            {
+              "sourceOrder": 4,
+              "parentOrder": 3,
+              "kind": "element",
+              "name": "Request",
+              "ref": null,
+              "type": {
+                "namespace": "urn:payload-a",
+                "localName": "Payload"
+              },
+              "minOccurs": null,
+              "maxOccurs": null,
+              "nillable": null,
+              "form": null
+            },
+            {
+              "sourceOrder": 5,
+              "parentOrder": 3,
+              "kind": "complexType",
+              "name": "Payload",
+              "mixed": false,
+              "abstract": null
+            },
+            {
+              "sourceOrder": 6,
+              "parentOrder": 5,
+              "kind": "sequence",
+              "minOccurs": null,
+              "maxOccurs": null
+            },
+            {
+              "sourceOrder": 7,
+              "parentOrder": 6,
+              "kind": "element",
+              "name": "Value",
+              "ref": null,
+              "type": {
+                "namespace": "http://www.w3.org/2001/XMLSchema",
+                "localName": "string"
+              },
+              "minOccurs": "0",
+              "maxOccurs": "unbounded",
+              "nillable": false,
+              "form": "unqualified"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/can",
+          "eq": []
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "limit"
+        }
+      ],
+      "captures": {
+        "c0": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.definition",
+        "limit": 7,
+        "cursor": "$capture.c0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "sourceOrder": 8,
+              "parentOrder": 6,
+              "kind": "element",
+              "name": "Nested",
+              "ref": null,
+              "type": null,
+              "minOccurs": null,
+              "maxOccurs": null,
+              "nillable": null,
+              "form": null
+            },
+            {
+              "sourceOrder": 9,
+              "parentOrder": 8,
+              "kind": "complexType",
+              "name": null,
+              "mixed": null,
+              "abstract": null
+            },
+            {
+              "sourceOrder": 10,
+              "parentOrder": 9,
+              "kind": "sequence",
+              "minOccurs": null,
+              "maxOccurs": null
+            },
+            {
+              "sourceOrder": 11,
+              "parentOrder": 10,
+              "kind": "element",
+              "name": "Value",
+              "ref": null,
+              "type": {
+                "namespace": "http://www.w3.org/2001/XMLSchema",
+                "localName": "boolean"
+              },
+              "minOccurs": null,
+              "maxOccurs": null,
+              "nillable": null,
+              "form": null
+            },
+            {
+              "sourceOrder": 12,
+              "parentOrder": 5,
+              "kind": "attribute",
+              "name": "id",
+              "ref": null,
+              "type": {
+                "namespace": "http://www.w3.org/2001/XMLSchema",
+                "localName": "int"
+              },
+              "use": "required",
+              "form": null
+            },
+            {
+              "sourceOrder": 13,
+              "parentOrder": 2,
+              "kind": "schema",
+              "targetNamespace": "urn:payload-b",
+              "elementFormDefault": null,
+              "attributeFormDefault": null
+            },
+            {
+              "sourceOrder": 14,
+              "parentOrder": 13,
+              "kind": "element",
+              "name": "Reply",
+              "ref": null,
+              "type": {
+                "namespace": "urn:payload-b",
+                "localName": "Payload"
+              },
+              "minOccurs": null,
+              "maxOccurs": null,
+              "nillable": null,
+              "form": null
+            }
+          ]
+        },
+        {
+          "pointer": "/data/can",
+          "eq": []
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "limit"
+        }
+      ],
+      "captures": {
+        "c1": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.definition",
+        "limit": 7,
+        "cursor": "$capture.c1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "sourceOrder": 15,
+              "parentOrder": 13,
+              "kind": "complexType",
+              "name": "Payload",
+              "mixed": null,
+              "abstract": null
+            },
+            {
+              "sourceOrder": 16,
+              "parentOrder": 15,
+              "kind": "sequence",
+              "minOccurs": null,
+              "maxOccurs": null
+            },
+            {
+              "sourceOrder": 17,
+              "parentOrder": 16,
+              "kind": "element",
+              "name": "Value",
+              "ref": null,
+              "type": {
+                "namespace": "http://www.w3.org/2001/XMLSchema",
+                "localName": "string"
+              },
+              "minOccurs": null,
+              "maxOccurs": null,
+              "nillable": null,
+              "form": null
+            },
+            {
+              "sourceOrder": 18,
+              "parentOrder": 1,
+              "kind": "message",
+              "name": "Request",
+              "namespace": "urn:local-api"
+            },
+            {
+              "sourceOrder": 19,
+              "parentOrder": 18,
+              "kind": "part",
+              "name": "body",
+              "element": {
+                "namespace": "urn:payload-a",
+                "localName": "Request"
+              },
+              "type": null
+            },
+            {
+              "sourceOrder": 20,
+              "parentOrder": 1,
+              "kind": "message",
+              "name": "Reply",
+              "namespace": "urn:local-api"
+            },
+            {
+              "sourceOrder": 21,
+              "parentOrder": 20,
+              "kind": "part",
+              "name": "body",
+              "element": {
+                "namespace": "urn:payload-b",
+                "localName": "Reply"
+              },
+              "type": null
+            }
+          ]
+        },
+        {
+          "pointer": "/data/can",
+          "eq": []
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "limit"
+        }
+      ],
+      "captures": {
+        "c2": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.definition",
+        "limit": 7,
+        "cursor": "$capture.c2"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "sourceOrder": 22,
+              "parentOrder": 1,
+              "kind": "message",
+              "name": "Problem",
+              "namespace": "urn:local-api"
+            },
+            {
+              "sourceOrder": 23,
+              "parentOrder": 22,
+              "kind": "part",
+              "name": "body",
+              "element": null,
+              "type": {
+                "namespace": "http://www.w3.org/2001/XMLSchema",
+                "localName": "string"
+              }
+            },
+            {
+              "sourceOrder": 24,
+              "parentOrder": 1,
+              "kind": "portType",
+              "name": "Api",
+              "namespace": "urn:local-api"
+            },
+            {
+              "sourceOrder": 25,
+              "parentOrder": 24,
+              "kind": "operation",
+              "name": "Submit",
+              "parameterOrder": "body"
+            },
+            {
+              "sourceOrder": 26,
+              "parentOrder": 25,
+              "kind": "input",
+              "name": "SubmitInput",
+              "message": {
+                "namespace": "urn:local-api",
+                "localName": "Request"
+              }
+            },
+            {
+              "sourceOrder": 27,
+              "parentOrder": 25,
+              "kind": "output",
+              "name": "SubmitOutput",
+              "message": {
+                "namespace": "urn:local-api",
+                "localName": "Reply"
+              }
+            },
+            {
+              "sourceOrder": 28,
+              "parentOrder": 25,
+              "kind": "fault",
+              "name": "Failed",
+              "message": {
+                "namespace": "urn:local-api",
+                "localName": "Problem"
+              }
+            }
+          ]
+        },
+        {
+          "pointer": "/data/can",
+          "eq": []
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "limit"
+        }
+      ],
+      "captures": {
+        "c3": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.definition",
+        "limit": 7,
+        "cursor": "$capture.c3"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "sourceOrder": 29,
+              "parentOrder": 1,
+              "kind": "binding",
+              "name": "ApiSoap",
+              "type": {
+                "namespace": "urn:local-api",
+                "localName": "Api"
+              },
+              "namespace": "urn:local-api"
+            },
+            {
+              "sourceOrder": 30,
+              "parentOrder": 29,
+              "kind": "soapBinding",
+              "style": "document",
+              "transport": "http://schemas.xmlsoap.org/soap/http"
+            },
+            {
+              "sourceOrder": 31,
+              "parentOrder": 29,
+              "kind": "operation",
+              "name": "Submit",
+              "parameterOrder": null
+            },
+            {
+              "sourceOrder": 32,
+              "parentOrder": 31,
+              "kind": "soapOperation",
+              "soapAction": null,
+              "style": "document"
+            },
+            {
+              "sourceOrder": 33,
+              "parentOrder": 31,
+              "kind": "input",
+              "name": "SubmitInput",
+              "message": null
+            },
+            {
+              "sourceOrder": 34,
+              "parentOrder": 33,
+              "kind": "soapBody",
+              "use": "literal",
+              "namespace": null,
+              "encodingStyle": null,
+              "parts": "body"
+            },
+            {
+              "sourceOrder": 35,
+              "parentOrder": 31,
+              "kind": "output",
+              "name": "SubmitOutput",
+              "message": null
+            }
+          ]
+        },
+        {
+          "pointer": "/data/can",
+          "eq": []
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "limit"
+        }
+      ],
+      "captures": {
+        "c4": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.definition",
+        "limit": 7,
+        "cursor": "$capture.c4"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "sourceOrder": 36,
+              "parentOrder": 35,
+              "kind": "soapBody",
+              "use": "literal",
+              "namespace": null,
+              "encodingStyle": null,
+              "parts": null
+            },
+            {
+              "sourceOrder": 37,
+              "parentOrder": 31,
+              "kind": "fault",
+              "name": "Failed",
+              "message": null
+            },
+            {
+              "sourceOrder": 38,
+              "parentOrder": 37,
+              "kind": "soapFault",
+              "name": "Failed",
+              "use": "literal",
+              "namespace": null,
+              "encodingStyle": null
+            },
+            {
+              "sourceOrder": 39,
+              "parentOrder": 1,
+              "kind": "service",
+              "name": "LocalService",
+              "namespace": "urn:local-api"
+            },
+            {
+              "sourceOrder": 40,
+              "parentOrder": 39,
+              "kind": "port",
+              "name": "Http",
+              "binding": {
+                "namespace": "urn:local-api",
+                "localName": "ApiSoap"
+              }
+            },
+            {
+              "sourceOrder": 41,
+              "parentOrder": 40,
+              "kind": "soapAddress",
+              "location": "https://example.invalid/soap"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/can",
+          "eq": []
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "complete"
+        },
+        {
+          "pointer": "/cursor",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.definition",
+        "limit": 7,
+        "cursor": "$capture.c0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "sourceOrder": 8,
+              "parentOrder": 6,
+              "kind": "element",
+              "name": "Nested",
+              "ref": null,
+              "type": null,
+              "minOccurs": null,
+              "maxOccurs": null,
+              "nillable": null,
+              "form": null
+            },
+            {
+              "sourceOrder": 9,
+              "parentOrder": 8,
+              "kind": "complexType",
+              "name": null,
+              "mixed": null,
+              "abstract": null
+            },
+            {
+              "sourceOrder": 10,
+              "parentOrder": 9,
+              "kind": "sequence",
+              "minOccurs": null,
+              "maxOccurs": null
+            },
+            {
+              "sourceOrder": 11,
+              "parentOrder": 10,
+              "kind": "element",
+              "name": "Value",
+              "ref": null,
+              "type": {
+                "namespace": "http://www.w3.org/2001/XMLSchema",
+                "localName": "boolean"
+              },
+              "minOccurs": null,
+              "maxOccurs": null,
+              "nillable": null,
+              "form": null
+            },
+            {
+              "sourceOrder": 12,
+              "parentOrder": 5,
+              "kind": "attribute",
+              "name": "id",
+              "ref": null,
+              "type": {
+                "namespace": "http://www.w3.org/2001/XMLSchema",
+                "localName": "int"
+              },
+              "use": "required",
+              "form": null
+            },
+            {
+              "sourceOrder": 13,
+              "parentOrder": 2,
+              "kind": "schema",
+              "targetNamespace": "urn:payload-b",
+              "elementFormDefault": null,
+              "attributeFormDefault": null
+            },
+            {
+              "sourceOrder": 14,
+              "parentOrder": 13,
+              "kind": "element",
+              "name": "Reply",
+              "ref": null,
+              "type": {
+                "namespace": "urn:payload-b",
+                "localName": "Payload"
+              },
+              "minOccurs": null,
+              "maxOccurs": null,
+              "nillable": null,
+              "form": null
+            }
+          ]
+        },
+        {
+          "pointer": "/cursor",
+          "eq": "$capture.c1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:WSReference.Client.Definition.Can.supportRule.set"
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "refusal": "bad_value: operation `supportRule.set` does not apply to Definition"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.definition",
+        "ops": [
+          {
+            "op": "supportRule.set"
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "refusal": "bad_value: apply operation `supportRule.set` does not apply to Definition `main:WSReference.Client.Definition`; it applies at `main:WSReference.Client`"
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "at": "$capture.definition"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "file": {
+          "pointer": "/data/path"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/path",
+          "eq": "WSReferences/Client/Ext/WSDefinition.xml"
+        },
+        {
+          "pointer": "/data/lines/state",
+          "eq": "notLineBased"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "$capture.file"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "$capture.definition"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "$capture.h0"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.h1"
+        },
+        {
+          "path": "src/WSReferences/Client.xml",
+          "kind": "sha256",
+          "eq": "$capture.h2"
+        },
+        {
+          "path": "src/WSReferences/Client/Ext/WSDefinition.xml",
+          "kind": "sha256",
+          "eq": "$capture.h3"
+        }
+      ]
+    }
+  ]
+}

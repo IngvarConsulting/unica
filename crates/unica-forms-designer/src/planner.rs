@@ -1,7 +1,8 @@
 //! Form operation parsing and planning over an existing source proposal.
 use serde_json::{Map, Value};
 use unica_address::address::{NodeKind, QualifiedAddress};
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
+use unica_forms::default_forms::FormSlotTarget;
 use unica_forms::facts::FormInfoElement;
 use unica_forms::operations::FormOperation;
 use unica_forms::FormItemRole;
@@ -17,6 +18,18 @@ const UTF8_BOM: &[u8] = b"\xef\xbb\xbf";
 #[derive(Debug, Clone)]
 pub enum FormEditStep {
     Definition(Value),
+    RemoveAttribute {
+        name: String,
+    },
+    AddColumns {
+        attribute: String,
+        columns: Vec<crate::column_add::ColumnAddition>,
+    },
+    ColumnType {
+        attribute: String,
+        column: String,
+        type_name: String,
+    },
     Move {
         request: crate::form_move::FormItemMove,
         location: String,
@@ -27,6 +40,10 @@ pub enum FormEditStep {
 /// записи: отсутствующий даёт `not_found`, а не правку другого узла.
 #[derive(Debug, Clone)]
 pub enum FormEditSubject {
+    /// The column writer checks this data attribute before publishing.
+    DataAttribute,
+    /// A data column checked by the column type writer before publication.
+    AttributeColumn,
     /// Форма или элемент, на который пишется событие или реквизит.
     Node(Vec<String>),
     /// Форма или элемент-контейнер, куда добавляются элементы.
@@ -37,6 +54,8 @@ pub enum FormEditSubject {
 impl FormEditSubject {
     fn items(&self) -> &[String] {
         match self {
+            Self::DataAttribute => &[],
+            Self::AttributeColumn => &[],
             Self::Node(items) | Self::Container(items) | Self::Removed(items) => items,
         }
     }
@@ -49,6 +68,8 @@ pub struct FormTarget {
     items: Vec<String>,
     /// Событие формы или последнего элемента цепочки.
     event: Option<String>,
+    attribute: Option<String>,
+    column: Option<(String, String)>,
 }
 /// Элемент формы по цепочке имён от корня, как её адресует `view`.
 pub fn form_item_at<'a>(
@@ -63,38 +84,11 @@ pub fn form_item_at<'a>(
         form_item_at(&item.children, rest)
     }
 }
-/// Путь элемента с именем `name` от корня формы: один, ни одного или
-/// несколько элементов с этим именем.
-pub fn form_item_path(
-    elements: &[FormInfoElement],
-    name: &str,
-) -> unica_operations::recovery::NamedLookup {
-    fn collect(
-        elements: &[FormInfoElement],
-        name: &str,
-        prefix: &mut Vec<String>,
-        found: &mut Vec<Vec<String>>,
-    ) {
-        for element in elements {
-            prefix.push(element.name.clone());
-            if element.name == name {
-                found.push(prefix.clone());
-            }
-            collect(&element.children, name, prefix, found);
-            prefix.pop();
-        }
-    }
-    let mut found = Vec::new();
-    collect(elements, name, &mut Vec::new(), &mut found);
-    match found.len() {
-        0 => unica_operations::recovery::NamedLookup::Missing,
-        1 => unica_operations::recovery::NamedLookup::Found(found.remove(0)),
-        _ => unica_operations::recovery::NamedLookup::Ambiguous(found),
-    }
-}
 /// Дерево элементов формы, как его читает `view`.
+/// Дерево элементов формы от линии не зависит: оно читается из самого XML,
+/// а каталог возможных событий здесь не спрашивают.
 pub fn form_items_of(text: &str) -> Result<Vec<FormInfoElement>, String> {
-    crate::codec::parse_form_event_evidence_xml(text).map(|evidence| evidence.elements)
+    crate::codec::parse_form_event_evidence_xml(text, None).map(|evidence| evidence.elements)
 }
 /// Узел правки есть в форме и подходит операции; сосед `after` нового
 /// элемента лежит в том же контейнере.
@@ -104,6 +98,12 @@ pub fn check_form_edit_subject(
     definitions: &[FormEditStep],
     op_index: usize,
 ) -> Result<(), ApplyPlanError> {
+    if matches!(
+        subject,
+        FormEditSubject::DataAttribute | FormEditSubject::AttributeColumn
+    ) {
+        return Ok(());
+    }
     let at_path = format!("ops[{op_index}].args.at");
     let elements = form_items_of(xml_text).map_err(|error| {
         ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, error).at_path(at_path.clone())
@@ -195,19 +195,41 @@ pub fn form_target(
     let owner_name = owner
         .name()
         .ok_or_else(|| bad(op_index, "at", "the form owner must be named"))?;
-    let address = MetadataAddress::parse(
-        PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &format!("{}.{owner_name}", owner.kind().as_str()),
-    )
-    .map_err(|error| bad(op_index, "at", error.to_string()))?;
+    let address =
+        MetadataAddress::parse_logical(&format!("{}.{owner_name}", owner.kind().as_str()))
+            .map_err(|error| bad(op_index, "at", error.to_string()))?;
     let named = |segment: &unica_address::address::AddressSegment, what: &str| {
         segment
             .name()
             .map(str::to_string)
             .ok_or_else(|| bad(op_index, "at", format!("the {what} must be named")))
     };
-    let (form, items, event) = match rest {
-        [] => (None, Vec::new(), None),
+    let (form, items, event, attribute, column) = match rest {
+        [] => (None, Vec::new(), None, None, None),
+        [form, attribute, column]
+            if form.kind() == NodeKind::Form
+                && attribute.kind() == NodeKind::Attribute
+                && column.kind() == NodeKind::Column =>
+        {
+            (
+                Some(named(form, "form")?),
+                Vec::new(),
+                None,
+                None,
+                Some((named(attribute, "attribute")?, named(column, "column")?)),
+            )
+        }
+        [form, attribute]
+            if form.kind() == NodeKind::Form && attribute.kind() == NodeKind::Attribute =>
+        {
+            (
+                Some(named(form, "form")?),
+                Vec::new(),
+                None,
+                Some(named(attribute, "attribute")?),
+                None,
+            )
+        }
         [form, tail @ ..] if form.kind() == NodeKind::Form => {
             let (items, event) = match tail {
                 [items @ .., last] if last.kind() == NodeKind::Event => {
@@ -225,7 +247,7 @@ pub fn form_target(
                     }
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            (Some(named(form, "form")?), items, event)
+            (Some(named(form, "form")?), items, event, None, None)
         }
         _ => return Err(bad(op_index, "at", FORM_ADDRESS_SHAPE)),
     };
@@ -234,6 +256,8 @@ pub fn form_target(
         form,
         items,
         event,
+        attribute,
+        column,
     })
 }
 pub fn form_purpose(
@@ -262,6 +286,105 @@ pub fn form_purpose(
         }
     })
 }
+/// `form.set` at the configuration root: its default forms, and from 8.5.1
+/// its auxiliary ones, name common forms of the set.
+fn parse_root_form_set(
+    args: &Map<String, Value>,
+    op_index: usize,
+    source_set_name: &str,
+    source_line: Option<unica_source_contract::format_identity::PlatformLine>,
+) -> Result<FormPlan, ApplyPlanError> {
+    const ROOT: &str = "Configuration";
+    // An argument the contract does not name is an error of the call and is
+    // refused at its own key before any slot is looked at
+    // (INV.WIRE.V13-CAN-DICTIONARY).
+    if let Some(key) = args
+        .keys()
+        .find(|key| !matches!(key.as_str(), "at" | "values"))
+    {
+        return Err(bad(op_index, key, "unknown argument"));
+    }
+    let values = args
+        .get("values")
+        .and_then(Value::as_object)
+        .ok_or_else(|| bad(op_index, "values", "`values` must be an object"))?;
+    let slots = unica_forms::contracts::form_slots_in(ROOT, source_line).unwrap_or_default();
+    let mut defaults = Vec::new();
+    for (key, value) in values {
+        let path = format!("values.{key}");
+        // A slot a later line adds is refused with the reason `can` marks it
+        // with (INV.SOURCE.PROFILE-CAPABILITIES).
+        if let Some((_, property, since)) =
+            unica_forms::contracts::later_form_slots(ROOT, source_line)
+                .into_iter()
+                .find(|(slot, _, _)| slot == key)
+        {
+            return Err(bad(
+                op_index,
+                &path,
+                unica_metadata::descriptor_operations::later_line_reason(
+                    &format!("Property `{property}`"),
+                    since,
+                    source_set_name,
+                    source_line,
+                ),
+            ));
+        }
+        let property = default_form_property(key)
+            .filter(|_| slots.contains(&key.as_str()))
+            .ok_or_else(|| {
+                bad(
+                    op_index,
+                    &path,
+                    format!(
+                        "unknown form slot `{key}` for this owner; use {}",
+                        slots.join(", ")
+                    ),
+                )
+            })?;
+        let raw = value.as_str().ok_or_else(|| {
+            bad(
+                op_index,
+                &path,
+                "the form slot takes a common form name, or an empty string to clear it",
+            )
+        })?;
+        let form = root_common_form(raw.trim(), source_set_name)
+            .map_err(|message| bad(op_index, &path, message))?;
+        defaults.push((property.to_string(), form));
+    }
+    if defaults.is_empty() {
+        return Err(bad(
+            op_index,
+            "values",
+            "form.set needs at least one form slot",
+        ));
+    }
+    Ok(FormPlan::RootFormSet { defaults })
+}
+
+/// The common form a slot of the configuration root names: `Name`,
+/// `CommonForm.Name` or `<set>:CommonForm.Name`; `None` clears the slot.
+fn root_common_form(raw: &str, source_set_name: &str) -> Result<Option<String>, String> {
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    let local = raw
+        .strip_prefix(source_set_name)
+        .and_then(|rest| rest.strip_prefix(':'))
+        .unwrap_or(raw);
+    let name = match local.split('.').collect::<Vec<_>>().as_slice() {
+        [name] | ["CommonForm", name] => *name,
+        _ => "",
+    };
+    if name.is_empty() || name.contains(':') {
+        return Err(format!(
+            "`{raw}` is not a common form of source set `{source_set_name}`; name it `CommonForm.Name` or `Name`"
+        ));
+    }
+    Ok(Some(name.to_string()))
+}
+
 pub fn default_form_property(key: &str) -> Option<&'static str> {
     unica_forms::contracts::FORM_SLOTS
         .iter()
@@ -533,30 +656,64 @@ pub fn parse_form_operation(
     args: &Map<String, Value>,
     op_index: usize,
     source_set_name: &str,
+    source_line: Option<unica_source_contract::format_identity::PlatformLine>,
 ) -> Result<FormPlan, ApplyPlanError> {
     let operation_name = operation.name();
     let address =
         unica_source_contract::proposal::input::qualified_target(args, op_index, source_set_name)?;
+    if operation == FormOperation::Set
+        && matches!(address.segments(), [root] if root.kind() == NodeKind::Configuration)
+    {
+        return parse_root_form_set(args, op_index, source_set_name, source_line);
+    }
     let target = form_target(&address, op_index)?;
+    if target.attribute.is_some()
+        && !unica_forms::applicability::is_form_attribute(address.segments())
+    {
+        return Err(bad(
+            op_index,
+            "at",
+            "a data attribute requires an owner with managed forms",
+        ));
+    }
+    if target.column.is_some() && !unica_forms::applicability::is_form_column(address.segments()) {
+        return Err(bad(
+            op_index,
+            "at",
+            "a data column requires an owner with managed forms",
+        ));
+    }
+    let attribute = (operation == FormOperation::AttributeRemove)
+        .then(|| target.attribute.clone())
+        .flatten();
     // Узел, на котором исполняется операция, — ровно её `at`: элемент и
     // событие задаются адресом, а операция другого узла отказывает, а не
     // пишет молча в форму, элемент или владельца (#1351, #1355).
-    let placed = match operation {
-        FormOperation::Add | FormOperation::Set => target.form.is_none(),
-        FormOperation::ItemAdd => target.form.is_some() && target.event.is_none(),
-        FormOperation::ItemRemove | FormOperation::ItemMove => {
-            !target.items.is_empty() && target.event.is_none()
-        }
-        FormOperation::EventBind => target.event.is_some(),
-        FormOperation::Remove
-        | FormOperation::AttributeAdd
-        | FormOperation::CommandAdd
-        | FormOperation::PropsSet => {
-            target.form.is_some() && target.items.is_empty() && target.event.is_none()
-        }
-    };
+    let placed = (target.attribute.is_none()
+        || matches!(
+            operation,
+            FormOperation::ColumnAdd | FormOperation::AttributeRemove
+        ))
+        && (target.column.is_none() || operation == FormOperation::PropsSet)
+        && match operation {
+            FormOperation::AttributeRemove => attribute.is_some(),
+            FormOperation::ColumnAdd => target.attribute.is_some(),
+            FormOperation::Add | FormOperation::Set => target.form.is_none(),
+            FormOperation::ItemAdd => target.form.is_some() && target.event.is_none(),
+            FormOperation::ItemRemove | FormOperation::ItemMove => {
+                !target.items.is_empty() && target.event.is_none()
+            }
+            FormOperation::EventBind => target.event.is_some(),
+            FormOperation::Remove
+            | FormOperation::AttributeAdd
+            | FormOperation::CommandAdd
+            | FormOperation::PropsSet => {
+                target.form.is_some() && target.items.is_empty() && target.event.is_none()
+            }
+        };
     if !placed {
         let shape = match operation {
+            FormOperation::ColumnAdd => "the existing ValueTable attribute `Owner.Name.Form.F.Attribute.A`",
             FormOperation::Add | FormOperation::Set => "the form owner `Owner.Name`, not a form",
             FormOperation::ItemAdd => {
                 "the form `Owner.Name.Form.F` or its item `….Item.A[.Item.B…]` that receives the elements"
@@ -564,6 +721,7 @@ pub fn parse_form_operation(
             FormOperation::ItemRemove | FormOperation::ItemMove => {
                 "the existing item `Owner.Name.Form.F.Item.A[.Item.B…]`"
             }
+            FormOperation::AttributeRemove => "the existing attribute `Owner.Name.Form.F.Attribute.A`",
             FormOperation::EventBind => "the event `Owner.Name.Form.F[.Item.A…].Event.E`",
             FormOperation::Remove
             | FormOperation::AttributeAdd
@@ -578,7 +736,7 @@ pub fn parse_form_operation(
     }
     // Свойство-ссылку корня формы операция знает, но не пишет: отказ
     // называет причину, а не «неизвестный аргумент».
-    if operation == FormOperation::PropsSet {
+    if operation == FormOperation::PropsSet && target.column.is_none() {
         if let Some(values) = args.get("values").and_then(Value::as_object) {
             for name in values.keys() {
                 if unica_forms::root_properties::root_property(name).is_some_and(|(_, property)| {
@@ -610,7 +768,7 @@ pub fn parse_form_operation(
     // Опубликованный контракт и разбор планировщиком принимают одну форму
     // аргументов: ключ, которого писатель не пишет, отказывает до записи,
     // а не теряется молча (#1447).
-    let contract = operation.contract();
+    let contract = operation.contract_for_address(&address);
     {
         let mut checked = args.clone();
         // `at` операции уже разобран в адрес; контракт сверяет остальное.
@@ -645,6 +803,34 @@ pub fn parse_form_operation(
         })
     };
     match operation {
+        FormOperation::ColumnAdd => {
+            let form = form_of(&target)?;
+            let attribute = target.attribute.expect("placement proved an attribute");
+            let columns = args["items"]
+                .as_array()
+                .expect("column contract proved items")
+                .iter()
+                .map(|item| crate::column_add::ColumnAddition {
+                    name: item["name"]
+                        .as_str()
+                        .expect("column contract proved name")
+                        .to_string(),
+                    type_name: form_attribute_type(
+                        item["type"].as_str().expect("column contract proved type"),
+                    ),
+                    title: item
+                        .get("title")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                })
+                .collect();
+            Ok(FormPlan::FormEdit {
+                owner: target.owner,
+                form,
+                subject: FormEditSubject::DataAttribute,
+                definitions: vec![FormEditStep::AddColumns { attribute, columns }],
+            })
+        }
         FormOperation::AttributeAdd => parse_form_root_addition(
             target,
             args,
@@ -661,6 +847,24 @@ pub fn parse_form_operation(
         ),
         FormOperation::PropsSet => {
             let form = form_of(&target)?;
+            if let Some((attribute, column)) = target.column {
+                let type_name = args["values"]["type"]
+                    .as_str()
+                    .expect("column contract validated the type");
+                let type_name = form_attribute_type(type_name);
+                crate::column_type::validate_type(&type_name)
+                    .map_err(|error| column_type_error(error, op_index))?;
+                return Ok(FormPlan::FormEdit {
+                    owner: target.owner,
+                    form,
+                    subject: FormEditSubject::AttributeColumn,
+                    definitions: vec![FormEditStep::ColumnType {
+                        attribute,
+                        column,
+                        type_name,
+                    }],
+                });
+            }
             let values = args
                 .get("values")
                 .cloned()
@@ -729,12 +933,35 @@ pub fn parse_form_operation(
                 .ok_or_else(|| bad(op_index, "values", "`values` must be an object"))?;
             let mut defaults = Vec::new();
             let owner_kind = target.owner.segments().next();
-            let kind_slots = owner_kind.and_then(unica_forms::contracts::form_slots_of);
+            let kind_slots = owner_kind
+                .and_then(|kind| unica_forms::contracts::form_slots_in(kind, source_line));
             for (key, value) in values {
+                // A slot a later line adds is refused with the reason `can`
+                // marks it with (INV.SOURCE.PROFILE-CAPABILITIES).
+                if let Some((_, property, since)) = owner_kind
+                    .into_iter()
+                    .flat_map(|kind| unica_forms::contracts::later_form_slots(kind, source_line))
+                    .find(|(slot, _, _)| slot == key)
+                {
+                    return Err(bad(
+                        op_index,
+                        &format!("values.{key}"),
+                        unica_metadata::descriptor_operations::later_line_reason(
+                            &format!("Property `{property}`"),
+                            since,
+                            source_set_name,
+                            source_line,
+                        ),
+                    ));
+                }
                 let property = default_form_property(key)
-                    .filter(|_| kind_slots.is_none_or(|slots| slots.contains(&key.as_str())))
+                    .filter(|_| {
+                        kind_slots
+                            .as_ref()
+                            .is_none_or(|slots| slots.contains(&key.as_str()))
+                    })
                     .ok_or_else(|| {
-                        let slots = kind_slots.map_or_else(
+                        let slots = kind_slots.as_ref().map_or_else(
                             || {
                                 unica_forms::contracts::FORM_SLOTS
                                     .iter()
@@ -760,17 +987,9 @@ pub fn parse_form_operation(
                     )
                 };
                 let raw = value.as_str().ok_or_else(slot_value)?;
-                let form_name = if raw.is_empty() {
-                    String::new()
-                } else {
-                    let trimmed = raw.trim();
-                    let name = trimmed.rsplit(".Form.").next().unwrap_or(trimmed);
-                    if name.is_empty() {
-                        return Err(slot_value());
-                    }
-                    name.to_string()
-                };
-                defaults.push((property.to_string(), form_name));
+                let target = FormSlotTarget::parse(raw, &target.owner, source_set_name, property)
+                    .map_err(|message| bad(op_index, &format!("values.{key}"), message))?;
+                defaults.push((property.to_string(), target));
             }
             if defaults.is_empty() {
                 return Err(bad(
@@ -873,6 +1092,14 @@ pub fn parse_form_operation(
                 }],
             })
         }
+        FormOperation::AttributeRemove => Ok(FormPlan::FormEdit {
+            owner: target.owner,
+            form: target.form.expect("attribute.remove has a form"),
+            subject: FormEditSubject::Node(Vec::new()),
+            definitions: vec![FormEditStep::RemoveAttribute {
+                name: attribute.expect("attribute.remove has an attribute"),
+            }],
+        }),
         FormOperation::ItemRemove => {
             let form = form_of(&target)?;
             // Элемент назван адресом: список в аргументах называл бы другие
@@ -1216,7 +1443,8 @@ pub fn stage_form_add(
     provisional: &mut Vec<ProvisionalApplyEffect>,
 ) -> Result<(), ApplyPlanError> {
     use crate::codec::{
-        form_add_content_xml, form_add_metadata_xml, form_add_module_bsl, form_default_property,
+        form_add_content_xml_with_variant, form_add_metadata_xml, form_add_module_bsl_with_variant,
+        form_default_property,
     };
     let at_path = format!("ops[{op_index}].args.at");
     let owner_relative = owner_descriptor_relative(owner, authority, op_index)?;
@@ -1226,11 +1454,24 @@ pub fn stage_form_add(
         "the form owner descriptor",
         &at_path,
     )?;
+    if unica_source_designer::extension_mode::descriptor_is_borrowed(&owner_preimage) {
+        unica_source_designer::extension_mode::admit_extension_operation(
+            staged,
+            authority.source_kind(),
+            unica_source_contract::compatibility::ExtensionOperation::AddChildToBorrowed,
+            &at_path,
+        )?;
+    }
     let owner_source = utf8_body(&owner_preimage, "the form owner descriptor", &at_path)?;
     let (object_type, object_name) =
         crate::codec::detect_form_add_object(&owner_source).map_err(|message| {
             ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(at_path.clone())
         })?;
+    let script_variant = unica_source_designer::language::staged_script_variant(
+        staged,
+        authority.source_kind(),
+        &at_path,
+    )?;
     let mut owner_text = owner_source.clone();
     let format_version = authority.expected_format();
     let forms_dir = owner_relative.with_extension("").join("Forms");
@@ -1273,8 +1514,14 @@ pub fn stage_form_add(
             &uuid,
             &lang,
         );
-        let content = form_add_content_xml(&object_type, &object_name, purpose, format_version)
-            .map_err(|message| bad(op_index, &format!("items[{index}].type"), message))?;
+        let content = form_add_content_xml_with_variant(
+            &object_type,
+            &object_name,
+            purpose,
+            format_version,
+            script_variant,
+        )
+        .map_err(|message| bad(op_index, &format!("items[{index}].type"), message))?;
         let descriptor_relative = forms_dir.join(format!("{form_name}.xml"));
         let content_relative = forms_dir.join(form_name).join("Ext/Form.xml");
         let module_relative = forms_dir.join(form_name).join("Ext/Form/Module.bsl");
@@ -1293,7 +1540,7 @@ pub fn stage_form_add(
         unica_source_designer::registration::stage_new_file(
             staged,
             &module_relative,
-            form_add_module_bsl().as_bytes(),
+            form_add_module_bsl_with_variant(script_variant).as_bytes(),
             &name_path,
         )?;
         touched.push(descriptor_relative);
@@ -1322,7 +1569,7 @@ pub fn stage_form_set(
     staged: &mut ApplyProposal<'_>,
     authority: &dyn ApplySourceAuthority,
     owner: &MetadataAddress,
-    defaults: &[(String, String)],
+    defaults: &[(String, FormSlotTarget)],
     op_index: usize,
     provisional: &mut Vec<ProvisionalApplyEffect>,
 ) -> Result<(), ApplyPlanError> {
@@ -1336,8 +1583,8 @@ pub fn stage_form_set(
     )?;
     let owner_source = utf8_body(&owner_preimage, "the form owner descriptor", &at_path)?;
     let mut owner_text = owner_source.clone();
-    for (property, form_name) in defaults {
-        if form_name.is_empty() {
+    for (property, target) in defaults {
+        if matches!(target, FormSlotTarget::Clear) {
             if !owner_text.contains(&format!("<{property}>"))
                 && !owner_text.contains(&format!("<{property}/>"))
             {
@@ -1350,13 +1597,35 @@ pub fn stage_form_set(
             owner_text = clear_form_default_property(&owner_text, property);
             continue;
         }
-        if !owner_text.contains(&format!("<Form>{form_name}</Form>")) {
-            return Err(ApplyPlanError::new(
-                ApplyPlanErrorKind::NotFound,
-                format!("form `{form_name}` is not a form of `{}`", owner.as_str()),
-            )
-            .at_path(format!("ops[{op_index}].args.values")));
-        }
+        let reference = match target {
+            FormSlotTarget::Owned(form_name) => {
+                if !owner_text.contains(&format!("<Form>{form_name}</Form>")) {
+                    return Err(ApplyPlanError::new(
+                        ApplyPlanErrorKind::NotFound,
+                        format!("form `{form_name}` is not a form of `{}`", owner.as_str()),
+                    )
+                    .at_path(format!("ops[{op_index}].args.values")));
+                }
+                format!("{}.Form.{form_name}", owner.as_str())
+            }
+            FormSlotTarget::Common(at) => {
+                let reference = crate::default_forms::common_form_reference(
+                    staged, authority, owner, property, at, op_index,
+                )?;
+                owner_text = crate::default_forms::set_common_form_slot(
+                    &owner_text,
+                    owner,
+                    property,
+                    &reference,
+                )
+                .map_err(|message| {
+                    ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                        .at_path(format!("ops[{op_index}].args.values"))
+                })?;
+                continue;
+            }
+            FormSlotTarget::Clear => unreachable!("handled above"),
+        };
         if !owner_text.contains(&format!("<{property}>"))
             && !owner_text.contains(&format!("<{property}/>"))
         {
@@ -1366,19 +1635,14 @@ pub fn stage_form_set(
                 format!("`{}` has no `{property}` slot", owner.as_str()),
             ));
         }
-        let (updated, _) = crate::codec::replace_form_default_property(
-            &owner_text,
-            property,
-            &format!("{}.Form.{form_name}", owner.as_str()),
-            true,
-        );
+        let (updated, _) =
+            crate::codec::replace_form_default_property(&owner_text, property, &reference, true);
         owner_text = updated;
     }
-    let owner_postimage = with_bom(
-        &unica_xml_format::text::lxml_tree_serialized_text_like_source_preserving_final_newline(
-            &owner_text,
-            &owner_source,
-        ),
+    let owner_postimage = unica_source_designer::registration::preserve_descriptor_image(
+        &owner_preimage,
+        &owner_source,
+        &owner_text,
     );
     if owner_postimage == owner_preimage {
         return Ok(());
@@ -1393,6 +1657,65 @@ pub fn stage_form_set(
     ));
     Ok(())
 }
+/// Writes the form slots of the configuration root; each named common form
+/// must be registered in it.
+pub fn stage_root_form_set(
+    staged: &mut ApplyProposal<'_>,
+    defaults: &[(String, Option<String>)],
+    op_index: usize,
+    provisional: &mut Vec<ProvisionalApplyEffect>,
+) -> Result<(), ApplyPlanError> {
+    let at_path = format!("ops[{op_index}].args.at");
+    let relative = std::path::PathBuf::from("Configuration.xml");
+    let preimage = read_required(staged, &relative, "the configuration root", &at_path)?;
+    let source = utf8_body(&preimage, "the configuration root", &at_path)?;
+    let mut text = source.clone();
+    for (property, form) in defaults {
+        if !text.contains(&format!("<{property}>")) && !text.contains(&format!("<{property}/>")) {
+            return Err(bad(
+                op_index,
+                "values",
+                format!("`Configuration` has no `{property}` slot"),
+            ));
+        }
+        let Some(form) = form else {
+            text = clear_form_default_property(&text, property);
+            continue;
+        };
+        if !text.contains(&format!("<CommonForm>{form}</CommonForm>")) {
+            return Err(ApplyPlanError::new(
+                ApplyPlanErrorKind::NotFound,
+                format!("common form `{form}` is not registered in the configuration"),
+            )
+            .at_path(format!("ops[{op_index}].args.values")));
+        }
+        let (updated, _) = crate::codec::replace_form_default_property(
+            &text,
+            property,
+            &format!("CommonForm.{form}"),
+            true,
+        );
+        text = updated;
+    }
+    let postimage =
+        unica_source_designer::registration::preserve_descriptor_image(&preimage, &source, &text);
+    if postimage == preimage {
+        return Ok(());
+    }
+    staged
+        .replace(&relative, &preimage, postimage)
+        .map_err(|error| ApplyPlanError::staging(error, at_path))?;
+    provisional.push(ProvisionalApplyEffect::single(
+        relative,
+        DomainEvent::new(
+            DomainEventKind::ConfigXmlChanged,
+            "Configuration".to_string(),
+        ),
+        op_index,
+    ));
+    Ok(())
+}
+
 pub fn stage_form_remove(
     staged: &mut ApplyProposal<'_>,
     authority: &dyn ApplySourceAuthority,
@@ -1476,6 +1799,22 @@ pub fn stage_form_remove(
     ));
     Ok(())
 }
+fn column_type_error(
+    error: crate::column_type::ColumnTypeError,
+    op_index: usize,
+) -> ApplyPlanError {
+    match error {
+        crate::column_type::ColumnTypeError::Missing(message) => {
+            ApplyPlanError::new(ApplyPlanErrorKind::NotFound, message)
+                .at_path(format!("ops[{op_index}].args.at"))
+        }
+        crate::column_type::ColumnTypeError::Invalid(message) => {
+            ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message)
+                .at_path(format!("ops[{op_index}].args.values.type"))
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn stage_form_edit(
     staged: &mut ApplyProposal<'_>,
@@ -1518,10 +1857,51 @@ pub fn stage_form_edit(
     // default language of the source set (#1257). It is read only when a
     // definition writes such text: the definition is first applied without a
     // language and, if it needs one, applied again from the same image.
+    let script_variant = if definitions.iter().any(
+        |step| matches!(step, FormEditStep::Definition(value) if value.get("elements").is_some()),
+    ) {
+        unica_source_designer::language::staged_script_variant(
+            staged,
+            authority.source_kind(),
+            &at_path,
+        )?
+    } else {
+        unica_source_contract::ScriptVariant::Russian
+    };
     let mut lang: Option<String> = None;
     for step in definitions {
         let definition = match step {
             FormEditStep::Definition(definition) => definition,
+            FormEditStep::RemoveAttribute { name } => {
+                xml_text =
+                    crate::codec::attribute_remove::remove(&xml_text, name).map_err(|error| {
+                        ApplyPlanError::new(error.kind, error.message).at_path(at_path.clone())
+                    })?;
+                continue;
+            }
+            FormEditStep::ColumnType {
+                attribute,
+                column,
+                type_name,
+            } => {
+                crate::column_type::apply(&mut xml_text, attribute, column, type_name)
+                    .map_err(|error| column_type_error(error, op_index))?;
+                continue;
+            }
+            FormEditStep::AddColumns { attribute, columns } => {
+                crate::column_add::apply(&mut xml_text, attribute, columns).map_err(|error| {
+                    let (kind, message) = match error {
+                        crate::column_add::ColumnAddError::Missing(message) => {
+                            (ApplyPlanErrorKind::NotFound, message)
+                        }
+                        crate::column_add::ColumnAddError::Invalid(message) => {
+                            (ApplyPlanErrorKind::BadValue, message)
+                        }
+                    };
+                    ApplyPlanError::new(kind, message).at_path(args_path.clone())
+                })?;
+                continue;
+            }
             FormEditStep::Move { request, location } => {
                 xml_text = crate::form_move::move_item(&xml_text, request).map_err(|error| {
                     ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.message).at_path(
@@ -1536,8 +1916,15 @@ pub fn stage_form_edit(
             }
         };
         let apply = |xml_text: &mut String, lang: Option<&str>| {
-            crate::codec::form_edit_apply_definition(
-                xml_text, definition, &absolute, root_start, lang,
+            crate::codec::form_edit_apply_definition_with_variant(
+                xml_text,
+                definition,
+                &absolute,
+                root_start,
+                crate::codec::FormTextMode::NStr(lang),
+                script_variant,
+                // Линия набора известна праву правки: она и выбирает каталог.
+                authority.source_profile().semantic_line(),
             )
         };
         let before = xml_text.clone();
@@ -1559,17 +1946,39 @@ pub fn stage_form_edit(
             ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(args_path.clone())
         })?;
     }
+    // An unchanged root-property edit also preserves whether the source had a BOM.
+    if definitions.iter().all(|step| {
+        matches!(step, FormEditStep::Definition(value) if value.get("rootProperties").is_some())
+    }) && xml_text.as_bytes() == preimage.strip_prefix(UTF8_BOM).unwrap_or(&preimage)
+    {
+        return Ok(());
+    }
     // Перенос сохраняет исходное состояние BOM. Остальные определения
     // используют прежнюю нормализацию писателя формы.
     let is_move = definitions
         .iter()
         .any(|step| matches!(step, FormEditStep::Move { .. }));
-    let postimage = if is_move && !preimage.starts_with(UTF8_BOM) {
+    let preserves_bytes = is_move
+        || definitions.iter().any(|step| {
+            matches!(
+                step,
+                FormEditStep::ColumnType { .. }
+                    | FormEditStep::AddColumns { .. }
+                    | FormEditStep::RemoveAttribute { .. }
+            )
+        });
+    let postimage = if preserves_bytes && !preimage.starts_with(UTF8_BOM) {
         xml_text.as_bytes().to_vec()
     } else {
         with_bom(&xml_text)
     };
-    if !is_move && postimage == preimage {
+    if !definitions.iter().any(|step| {
+        matches!(
+            step,
+            FormEditStep::Move { .. } | FormEditStep::RemoveAttribute { .. }
+        )
+    }) && postimage == preimage
+    {
         return Ok(());
     }
     let validation = crate::codec::validate_form_image(
@@ -1578,6 +1987,7 @@ pub fn stage_form_edit(
         &absolute,
         &xml_text,
         crate::codec::HandlerSignatures::Check,
+        authority.source_profile().semantic_line(),
     );
     crate::codec::form_validation_require_valid(validation).map_err(|message| {
         ApplyPlanError::new(ApplyPlanErrorKind::Postcondition, message).at_path(args_path)
@@ -1605,10 +2015,15 @@ pub enum FormPlan {
         owner: MetadataAddress,
         forms: Vec<(String, String)>,
     },
+    /// `form.set` at the configuration root: its slots and the common form
+    /// each names, `None` to clear it.
+    RootFormSet {
+        defaults: Vec<(String, Option<String>)>,
+    },
     /// `form.set`: default-form slots of the owner.
     FormSet {
         owner: MetadataAddress,
-        defaults: Vec<(String, String)>,
+        defaults: Vec<(String, FormSlotTarget)>,
     },
     FormRemove {
         owner: MetadataAddress,
@@ -1637,6 +2052,9 @@ pub fn stage_form_plan(
         }
         FormPlan::FormSet { owner, defaults } => {
             stage_form_set(staged, authority, owner, defaults, op_index, provisional)?;
+        }
+        FormPlan::RootFormSet { defaults } => {
+            stage_root_form_set(staged, defaults, op_index, provisional)?;
         }
         FormPlan::FormRemove { owner, form } => {
             stage_form_remove(staged, authority, owner, form, op_index, provisional)?;
@@ -1668,14 +2086,51 @@ const FORM_ADDRESS_SHAPE: &str =
 
 const FORM_OWNER_MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 
-pub fn minimal_typed_form_content(_object_kind: &str, _object_name: &str) -> String {
-    concat!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
-        "<Form xmlns=\"http://v8.1c.ru/8.3/xcf/logform\" version=\"2.20\">\n",
-        "\t<AutoCommandBar name=\"ФормаКоманднаяПанель\" id=\"-1\"/>\n",
-        "</Form>"
+/// The initial `Form.xml` of a new form in the export format `version` of
+/// its owner's set. The root declares the namespaces of that format, as
+/// every form the platform writes does.
+pub fn minimal_typed_form_content(_object_kind: &str, _object_name: &str, version: &str) -> String {
+    format!(
+        concat!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+            "<Form {} version=\"{}\">\n",
+            "\t<AutoCommandBar name=\"ФормаКоманднаяПанель\" id=\"-1\"/>\n",
+            "</Form>"
+        ),
+        crate::codec::form_root_namespaces(version),
+        unica_xml_format::text::escape_xml(version)
     )
-    .to_string()
+}
+
+#[cfg(test)]
+mod minimal_form_root_tests {
+    /// The start tag of the `Form` root, as written.
+    fn root(xml: &str) -> &str {
+        let start = xml.find("<Form ").unwrap();
+        &xml[start..start + xml[start..].find('>').unwrap()]
+    }
+
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
+    #[test]
+    fn a_new_typed_form_declares_the_namespaces_of_its_set_format() {
+        for (version, corpus) in [
+            (
+                "2.20",
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml"),
+            ),
+            (
+                "2.21",
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml"),
+            ),
+            (
+                "2.22",
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml"),
+            ),
+        ] {
+            let seed = super::minimal_typed_form_content("Catalog", "Валюты", version);
+            assert_eq!(root(&seed), root(corpus), "{version}");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1689,30 +2144,22 @@ mod form_slot_kind_tests {
     #[test]
     fn form_slots_of_each_kind_match_an_8_3_27_export() {
         // The exports are compiled in: this component reads no files itself.
-        macro_rules! export {
-            ($path:literal) => {
-                (
-                    $path,
-                    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../", $path)),
-                )
-            };
-        }
-        for (kind, (fixture, text)) in [
-            ("Catalog", export!("crates/unica-forms-designer/tests/platform/dump_parity/Catalog.before.xml")),
-            ("Document", export!("crates/unica-metadata-designer/tests/platform/dump_parity/Document.before.xml")),
-            ("ChartOfAccounts", export!("crates/unica-metadata-designer/tests/platform/dump_parity/ChartsOfAccounts.before.xml")),
-            ("ChartOfCalculationTypes", export!("crates/unica-metadata-designer/tests/platform/dump_parity/ChartsOfCalculationTypes.before.xml")),
-            ("ChartOfCharacteristicTypes", export!("crates/unica-metadata-designer/tests/platform/dump_parity/ChartsOfCharacteristicTypes.before.xml")),
-            ("Constant", export!("tests/fixtures/platform_8_3_27/meta_info_surface/constant/Constants/MainCurrency.xml")),
-            ("Enum", export!("tests/fixtures/platform_8_3_27/meta_info_surface/enum/Enums/PresentationEnum.xml")),
-            ("InformationRegister", export!("tests/fixtures/platform_8_3_27/meta_info_surface/register/InformationRegisters/CommandInterfaceRegister.xml")),
-            ("Report", export!("tests/fixtures/platform_8_3_27/template-new-xml/seed/Reports/CorpusReport.xml")),
-            ("ExternalDataProcessor", export!("tests/fixtures/platform_8_3_27/external_artifacts/epf/SyntheticProcessor.xml")),
-            ("ExternalReport", export!("tests/fixtures/platform_8_3_27/external_artifacts/erf/SyntheticReport.xml")),
+        for (kind, text) in [
+            ("Catalog", include_str!("../tests/platform/dump_parity/Catalog.before.xml")),
+            ("Document", include_str!("../../unica-metadata-designer/tests/platform/dump_parity/Document.before.xml")),
+            ("ChartOfAccounts", include_str!("../../unica-metadata-designer/tests/platform/dump_parity/ChartsOfAccounts.before.xml")),
+            ("ChartOfCalculationTypes", include_str!("../../unica-metadata-designer/tests/platform/dump_parity/ChartsOfCalculationTypes.before.xml")),
+            ("ChartOfCharacteristicTypes", include_str!("../../unica-metadata-designer/tests/platform/dump_parity/ChartsOfCharacteristicTypes.before.xml")),
+            ("Constant", include_str!("../../../tests/fixtures/formats/platform_xml/2.20/meta_info_surface/constant/Constants/MainCurrency.xml")),
+            ("Enum", include_str!("../../../tests/fixtures/formats/platform_xml/2.20/meta_info_surface/enum/Enums/PresentationEnum.xml")),
+            ("InformationRegister", include_str!("../../../tests/fixtures/formats/platform_xml/2.20/meta_info_surface/register/InformationRegisters/CommandInterfaceRegister.xml")),
+            ("Report", include_str!("../../../tests/fixtures/formats/platform_xml/2.20/template-new-xml/seed/Reports/CorpusReport.xml")),
+            ("ExternalDataProcessor", include_str!("../../../tests/fixtures/formats/platform_xml/2.20/external_artifacts/epf/SyntheticProcessor.xml")),
+            ("ExternalReport", include_str!("../../../tests/fixtures/formats/platform_xml/2.20/external_artifacts/erf/SyntheticReport.xml")),
         ] {
             let document = roxmltree::Document::parse(text.trim_start_matches('\u{feff}')).unwrap();
             let owner = document.root_element().first_element_child().unwrap();
-            assert_eq!(owner.tag_name().name(), kind, "{fixture}");
+            assert_eq!(owner.tag_name().name(), kind);
             let properties = owner
                 .children()
                 .find(|node| node.has_tag_name((super::FORM_OWNER_MD_NS, "Properties")))
@@ -1758,5 +2205,153 @@ mod attribute_type_tests {
         ] {
             assert_eq!(form_attribute_type(input), expected, "{input}");
         }
+    }
+}
+
+#[cfg(test)]
+mod column_type_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn column_type_properties_address_an_existing_column() {
+        let args = json!({"at":"main:Catalog.Items.Form.Main.Attribute.Rows.Column.Value", "values":{"type":"DefinedType.Existing | CatalogRef.Additional"}});
+        let result = parse_form_operation(
+            FormOperation::PropsSet,
+            args.as_object().unwrap(),
+            0,
+            "main",
+            None,
+        );
+        assert!(result.is_ok(), "{result:?}");
+    }
+    #[test]
+    fn column_type_rejects_other_operations_and_extra_values() {
+        let at = "main:Catalog.Items.Form.Main.Attribute.Rows.Column.Value";
+        for values in [
+            json!({}),
+            json!({"type":true}),
+            json!({"type":"Boolean", "Title":"lost"}),
+            json!({"type":""}),
+            json!({"type":"Boolean | Boolean"}),
+        ] {
+            let args = json!({"at":at,"values":values});
+            assert!(
+                parse_form_operation(
+                    FormOperation::PropsSet,
+                    args.as_object().unwrap(),
+                    0,
+                    "main",
+                    None
+                )
+                .is_err(),
+                "{args}"
+            );
+        }
+        for op in [
+            FormOperation::Remove,
+            FormOperation::ItemAdd,
+            FormOperation::AttributeAdd,
+            FormOperation::EventBind,
+        ] {
+            let args = json!({"at":at,"values":{"type":"Boolean"}});
+            assert!(parse_form_operation(op, args.as_object().unwrap(), 0, "main", None).is_err());
+        }
+        let invalid_owner = json!({"at":"main:DefinedType.Existing.Form.Main.Attribute.Rows.Column.Value","values":{"Title":"wrong profile"}});
+        assert!(parse_form_operation(
+            FormOperation::PropsSet,
+            invalid_owner.as_object().unwrap(),
+            0,
+            "main",
+            None
+        )
+        .is_err());
+        for at in [
+            "main:Catalog.Items.Form.Main.Attribute.Rows",
+            "main:Catalog.Items.Form.Main.Attribute.Rows.Column",
+            "main:Catalog.Items.Form.Main.Item.Value",
+        ] {
+            let args = json!({"at":at,"values":{"type":"Boolean"}});
+            assert!(parse_form_operation(
+                FormOperation::PropsSet,
+                args.as_object().unwrap(),
+                0,
+                "main",
+                None
+            )
+            .is_err());
+        }
+    }
+}
+
+#[cfg(test)]
+mod column_add_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn column_add_targets_only_an_existing_form_data_attribute() {
+        let at = "main:Catalog.Items.Form.Main.Attribute.Rows";
+        let args =
+            json!({"at":at,"items":[{"name":"Added","type":"Boolean","title":"en = 'New'"}]});
+        let plan = parse_form_operation(
+            FormOperation::ColumnAdd,
+            args.as_object().unwrap(),
+            0,
+            "main",
+            None,
+        )
+        .unwrap();
+        let FormPlan::FormEdit {
+            subject: FormEditSubject::DataAttribute,
+            definitions,
+            ..
+        } = plan
+        else {
+            panic!("expected data attribute plan");
+        };
+        let [FormEditStep::AddColumns { attribute, columns }] = definitions.as_slice() else {
+            panic!("expected column addition");
+        };
+        assert_eq!(attribute, "Rows");
+        assert_eq!(columns[0].name, "Added");
+        assert_eq!(columns[0].title.as_deref(), Some("en = 'New'"));
+        for at in [
+            "main:Catalog.Items.Form.Main",
+            "main:Catalog.Items.Form.Main.Attribute.Rows.Column",
+            "main:Catalog.Items.Form.Main.Item.Rows",
+            "main:DefinedType.Existing.Form.Main.Attribute.Rows",
+        ] {
+            let args = json!({"at":at,"items":[{"name":"Added","type":"Boolean"}]});
+            assert!(
+                parse_form_operation(
+                    FormOperation::ColumnAdd,
+                    args.as_object().unwrap(),
+                    0,
+                    "main",
+                    None
+                )
+                .is_err(),
+                "{at}"
+            );
+        }
+        let args = json!({"at":at,"values":{"Width":20}});
+        assert!(parse_form_operation(
+            FormOperation::PropsSet,
+            args.as_object().unwrap(),
+            0,
+            "main",
+            None
+        )
+        .is_err());
+        let args = json!({"at":at,"items":[{"name":"Added","type":"Boolean","id":42}]});
+        assert!(parse_form_operation(
+            FormOperation::ColumnAdd,
+            args.as_object().unwrap(),
+            0,
+            "main",
+            None
+        )
+        .is_err());
     }
 }

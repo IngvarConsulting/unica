@@ -23,6 +23,9 @@ pub struct CodeInsertArgs {
     pub position: Option<CodePosition>,
 }
 
+pub(crate) const MODULE_TEXT_REVISION_HEX_LEN: usize = 64;
+pub(crate) const MODULE_TEXT_REVISION_PATTERN: &str = r"^[0-9a-f]{64}$";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodeReplaceArgs {
     pub at: unica_address::address::QualifiedAddress,
@@ -30,6 +33,7 @@ pub struct CodeReplaceArgs {
     /// Текстовый якорь внутри модуля. Метод целиком задаётся адресом
     /// `…Method.M`, а не селектором (#1353).
     pub anchor: Option<String>,
+    pub if_rev: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,7 +54,7 @@ pub fn parse_code_plan_operation(
         .ok_or_else(|| bad_code_arg(&base, "code operation args must be an object"))?;
     let allowed = match operation {
         "code.insert" => &["at", "text", "selector", "position"][..],
-        "code.replace" => &["at", "text", "selector"][..],
+        "code.replace" => &["at", "text", "selector", "ifRev"][..],
         _ => {
             return Err(bad_code_arg(
                 &base,
@@ -105,21 +109,12 @@ pub fn parse_code_plan_operation(
                 }
             };
             let addressed_method = method.is_some();
-            let selector = match object
+            let selector = object
                 .get("selector")
-                .map(|value| parse_code_selector(value, &format!("{base}.selector")))
+                .map(|value| parse_code_anchor(value, &format!("{base}.selector")))
                 .transpose()?
-            {
-                Some(CodeSelector::Method(name)) => {
-                    return Err(bad_code_arg(
-                        format!("{base}.selector.method"),
-                        format!(
-                            "code.insert addresses a method: `{at}.Method.{name}` with `position`"
-                        ),
-                    ))
-                }
-                selector => selector.or(method),
-            };
+                .map(CodeSelector::Anchor)
+                .or(method);
             let position_path = format!("{base}.position");
             let position = match (selector.is_some(), object.get("position")) {
                 (true, Some(value)) => Some(parse_code_position(value, &position_path)?),
@@ -152,27 +147,39 @@ pub fn parse_code_plan_operation(
         }
         "code.replace" => {
             let selector_path = format!("{base}.selector");
-            let anchor = match object
+            let anchor = object
                 .get("selector")
-                .map(|value| parse_code_selector(value, &selector_path))
-                .transpose()?
-            {
-                Some(CodeSelector::Method(name)) => {
-                    return Err(bad_code_arg(
-                        format!("{selector_path}.method"),
-                        format!("code.replace addresses a whole method: `{at}.Method.{name}`"),
-                    ))
-                }
-                Some(CodeSelector::Anchor(anchor)) => Some(anchor),
-                None => None,
-            };
+                .map(|value| parse_code_anchor(value, &selector_path))
+                .transpose()?;
             if anchor.is_none() && addressed.is_none() {
                 return Err(bad_code_arg(&selector_path, "selector.anchor is required for a module address; address its Body or a Method instead"));
             }
+            let if_rev = object
+                .get("ifRev")
+                .map(|value| {
+                    let path = format!("{base}.ifRev");
+                    value
+                        .as_str()
+                        .filter(|value| {
+                            value.len() == MODULE_TEXT_REVISION_HEX_LEN
+                                && value.bytes().all(|byte| {
+                                    byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
+                                })
+                        })
+                        .map(str::to_owned)
+                        .ok_or_else(|| {
+                            bad_code_arg(
+                                path,
+                                "ifRev must be a module text revision returned by a read",
+                            )
+                        })
+                })
+                .transpose()?;
             Ok(CodePlanOperation::Replace(CodeReplaceArgs {
                 at,
                 text,
                 anchor,
+                if_rev,
             }))
         }
         _ => unreachable!("closed operation checked above"),
@@ -228,7 +235,9 @@ pub fn non_empty_code_string<'a>(
         .ok_or_else(|| bad_code_arg(path, format!("{name} must be a non-empty string")))
 }
 
-pub fn parse_code_selector(value: &Value, path: &str) -> Result<CodeSelector, ApplyPlanError> {
+/// Якорь `selector.anchor`: единственный ключ селектора, который публикует
+/// контракт; метод адресуется `…Method.<Имя>`.
+pub fn parse_code_anchor(value: &Value, path: &str) -> Result<String, ApplyPlanError> {
     let object = value
         .as_object()
         .ok_or_else(|| bad_code_arg(path, "selector must be an object"))?;
@@ -240,18 +249,17 @@ pub fn parse_code_selector(value: &Value, path: &str) -> Result<CodeSelector, Ap
     }
     let (name, value) = object.iter().next().expect("one selector field");
     let field_path = format!("{path}.{name}");
-    let value = value
+    if name != "anchor" {
+        return Err(bad_code_arg(
+            field_path,
+            "unknown argument; selector accepts only anchor",
+        ));
+    }
+    value
         .as_str()
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| bad_code_arg(&field_path, "selector value must be a non-empty string"))?;
-    match name.as_str() {
-        "method" => Ok(CodeSelector::Method(value.to_string())),
-        "anchor" => Ok(CodeSelector::Anchor(canonicalize_eol(value))),
-        _ => Err(bad_code_arg(
-            field_path,
-            "selector accepts only anchor; address a method by `…Method.<Name>`",
-        )),
-    }
+        .map(canonicalize_eol)
+        .ok_or_else(|| bad_code_arg(&field_path, "selector value must be a non-empty string"))
 }
 
 pub fn parse_code_position(value: &Value, path: &str) -> Result<CodePosition, ApplyPlanError> {

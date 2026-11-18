@@ -2,7 +2,7 @@ use roxmltree::Document;
 use serde_json::{Map as JsonMap, Value};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 use unica_metadata::*;
 use unica_xml_format::text::{resolve_observed_line_ending, LineEnding, SourceTextSnapshot};
 
@@ -132,8 +132,18 @@ pub fn emit_meta_simple_child<F>(
 }
 pub fn meta_edit_property_child_indent(properties: &str) -> String {
     for tag in ["Name", "Synonym", "Comment", "Type"] {
-        let needle = format!("<{tag}");
-        if let Some(pos) = properties.find(&needle) {
+        // The owner may spell its elements with a prefix, as `<md:Name>`.
+        let found = properties
+            .match_indices('<')
+            .map(|(pos, _)| pos)
+            .find(|pos| {
+                let name = properties[pos + 1..]
+                    .split(|ch: char| ch.is_whitespace() || ch == '/' || ch == '>')
+                    .next()
+                    .unwrap_or("");
+                name.rsplit(':').next() == Some(tag)
+            });
+        if let Some(pos) = found {
             let line_start = properties[..pos]
                 .rfind('\n')
                 .map(|idx| idx + 1)
@@ -146,19 +156,58 @@ pub fn meta_edit_property_child_indent(properties: &str) -> String {
     }
     "\t\t\t\t\t".to_string()
 }
+/// The start of a scalar property element as the source spells it: `<`, the
+/// qualified name and the element's own namespace declarations, without `>`.
+/// Other attributes are not part of a scalar value and are not carried over.
+fn scalar_element_shell(raw: &str) -> (String, &str) {
+    let name_end = raw[1..]
+        .find(|ch: char| ch.is_whitespace() || ch == '/' || ch == '>')
+        .map_or(raw.len(), |end| end + 1);
+    let qname = &raw[1..name_end];
+    let mut opening = format!("<{qname}");
+    let mut rest = &raw[name_end..];
+    // Attributes up to the end of the start tag; values may hold `>` or `/`.
+    loop {
+        let trimmed = rest.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with('>') || trimmed.starts_with('/') {
+            break;
+        }
+        let Some(eq) = trimmed.find('=') else { break };
+        let name = trimmed[..eq].trim_end();
+        let after = trimmed[eq + 1..].trim_start();
+        let Some(quote) = after.chars().next().filter(|ch| matches!(ch, '"' | '\'')) else {
+            break;
+        };
+        let Some(close) = after[1..].find(quote) else {
+            break;
+        };
+        let value_end = close + 2;
+        if name == "xmlns" || name.starts_with("xmlns:") {
+            opening.push(' ');
+            opening.push_str(name);
+            opening.push('=');
+            opening.push_str(&after[..value_end]);
+        }
+        rest = &after[value_end..];
+    }
+    (opening, qname)
+}
+
 pub fn meta_edit_replace_or_insert_property(
     properties: &mut String,
     tag: &str,
     replacement: &str,
     child_indent: &str,
 ) -> Result<(), String> {
+    let prefix = properties_prefix(properties).to_string();
+    let replacement = qualify_property_element(replacement, tag, &prefix);
     if let Some(range) = meta_edit_xml_element_range(properties, tag)? {
         properties.replace_range(range, replacement.trim_start());
         return Ok(());
     }
 
-    let Some(close_pos) = properties.rfind("</Properties>") else {
-        return Err("No closing </Properties> found".to_string());
+    let Some(close_pos) = properties.rfind(&format!("</{prefix}Properties>")) else {
+        return Err(format!("No closing </{prefix}Properties> found"));
     };
     properties.insert_str(close_pos, &format!("{replacement}\n{child_indent}"));
     Ok(())
@@ -183,12 +232,120 @@ pub fn meta_edit_set_mltext_property(
     emit_meta_mltext(&mut lines, child_indent, tag, lang, value);
     meta_edit_replace_or_insert_property(properties, tag, &lines.join("\n"), child_indent)
 }
+/// The namespace prefix of a `<Properties>` container text, with its colon:
+/// `md:` for `<md:Properties>`, empty for the default namespace or any other
+/// text. Its child properties are spelled with the same prefix.
+fn properties_prefix(text: &str) -> &str {
+    let Some(start) = text.trim_start().strip_prefix('<') else {
+        return "";
+    };
+    let name = start
+        .split(|ch: char| ch.is_whitespace() || ch == '/' || ch == '>')
+        .next()
+        .unwrap_or("");
+    match name.rsplit_once(':') {
+        Some((prefix, "Properties")) if !prefix.is_empty() => &start[..prefix.len() + 1],
+        _ => "",
+    }
+}
+
+/// `replacement` with its outer element renamed to `prefix` + `tag`; other
+/// elements keep their spelling.
+fn qualify_property_element(replacement: &str, tag: &str, prefix: &str) -> String {
+    if prefix.is_empty() {
+        return replacement.to_string();
+    }
+    let open = format!("<{tag}");
+    let close = format!("</{tag}>");
+    let mut text = replacement.to_string();
+    if let Some(at) = text.find(&open).filter(|at| {
+        text[at + open.len()..]
+            .chars()
+            .next()
+            .is_none_or(|ch| ch == '>' || ch == '/' || ch.is_whitespace())
+    }) {
+        text.insert_str(at + 1, prefix);
+    }
+    if let Some(at) = text.rfind(&close) {
+        text.insert_str(at + 2, prefix);
+    }
+    text
+}
+
+/// Writes all translations using the namespace bindings of the owner.
+fn meta_edit_set_mltext_values(
+    properties: &mut String,
+    tag: &str,
+    indent: &str,
+    items: &[unica_metadata::LocalizedItem],
+    namespaces: &str,
+) -> Result<(), String> {
+    let opening = format!("<w{namespaces}>");
+    let render = |properties: &str| -> Result<Option<(std::ops::Range<usize>, String)>, String> {
+        let wrapped = format!("{opening}{properties}</w>");
+        let document = Document::parse(&wrapped).map_err(|error| error.to_string())?;
+        let owner = document
+            .root_element()
+            .children()
+            .find(roxmltree::Node::is_element)
+            .ok_or_else(|| "metadata element has no Properties".to_string())?;
+        let Some(property) =
+            crate::info_projection::direct_meta_info_property(owner, "metadata element", tag)
+                .map_err(|error| error.message)?
+        else {
+            return Ok(None);
+        };
+        let range = property.range();
+        let values = items
+            .iter()
+            .map(|item| (item.language.clone(), item.content.clone()))
+            .collect::<Vec<_>>();
+        let replacement = unica_xml_format::localized::replace_language_values(
+            &wrapped, property, indent, &values,
+        );
+        Ok(Some((
+            range.start - opening.len()..range.end - opening.len(),
+            replacement,
+        )))
+    };
+    let (range, replacement) = match render(properties)? {
+        Some(edit) => edit,
+        None if items.is_empty() => return Ok(()),
+        None => {
+            meta_edit_replace_or_insert_property(
+                properties,
+                tag,
+                &format!("{indent}<{tag}/>"),
+                indent,
+            )?;
+            render(properties)?
+                .ok_or_else(|| format!("multilingual property `{tag}` is missing"))?
+        }
+    };
+    properties.replace_range(range, &replacement);
+    Ok(())
+}
+
+fn synonym_update_error(message: String) -> MetaDiagnostic {
+    localized_update_error("synonym", message)
+}
+
+fn localized_update_error(field: &str, message: String) -> MetaDiagnostic {
+    typed_diagnostic(
+        MetaDiagnosticCode::ProviderUnavailable,
+        message,
+        Some(field),
+    )
+}
+
 pub fn meta_edit_xml_element_range(
     text: &str,
     tag: &str,
 ) -> Result<Option<std::ops::Range<usize>>, String> {
-    let needle = format!("<{tag}");
-    let close = format!("</{tag}>");
+    // Child properties of a prefixed container share its prefix.
+    let prefix = properties_prefix(text);
+    let needle = format!("<{prefix}{tag}");
+    let close = format!("</{prefix}{tag}>");
     let mut search_start = 0usize;
 
     while let Some(relative_start) = text[search_start..].find(&needle) {
@@ -592,14 +749,15 @@ const TYPED_COMMAND_STORAGE_PROFILE: TypedChildStorageProfile = TypedChildStorag
 /// template always carries a synonym.
 pub fn typed_operations_write_multilingual_text(operations: &[MetaEditOperation]) -> bool {
     operations.iter().any(|operation| match operation {
-        MetaEditOperation::SetProperties { values } => values
-            .entries()
-            .iter()
-            .any(|(key, _)| *key == MetaPropertyKey::Synonym),
-        MetaEditOperation::Add { .. } => true,
-        MetaEditOperation::Update { elements, .. } => {
-            elements.iter().any(|element| element.synonym.is_some())
+        // Every language of a full multilingual value is named by the caller.
+        MetaEditOperation::SetProperties { values } => {
+            values.entries().iter().any(|(key, value)| {
+                *key == MetaPropertyKey::Synonym && matches!(value, MetaPropertyValue::String(_))
+            })
         }
+        MetaEditOperation::Add { .. } => true,
+        // A listed synonym names all its languages itself.
+        MetaEditOperation::Update { .. } => false,
         // A copy carries the source's own translations, never new text.
         MetaEditOperation::Remove { .. }
         | MetaEditOperation::Copy { .. }
@@ -642,7 +800,16 @@ pub fn apply_typed_operations_with_uuid<F>(
 where
     F: FnMut() -> String,
 {
-    let mut working = xml_text.clone();
+    // Writers spell MDClasses elements in the default namespace; a prefixed
+    // descriptor is written in that form and gets its prefix back below.
+    let (mut working, form) = unica_xml_format::prefix_form::PrefixForm::normalize(xml_text)
+        .map_err(|message| {
+            unica_metadata::request::MetaFailure::from(typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                message,
+                None,
+            ))
+        })?;
     let mut counts = MetaEditCounts::default();
     for (operation_index, operation) in operations.iter().enumerate() {
         if matches!(
@@ -692,7 +859,7 @@ where
                 .with_operation_index(operation_index),
             )
         })?;
-        validate_metadata_8_3_27_boolean_contract(&working, "meta.edit").map_err(|_| {
+        validate_metadata_boolean_contract(&working, "meta.edit").map_err(|_| {
             unica_metadata::request::MetaFailure::from(
                 typed_diagnostic(
                     MetaDiagnosticCode::ValidationFailed,
@@ -702,7 +869,7 @@ where
                 .with_operation_index(operation_index),
             )
         })?;
-        validate_metadata_8_3_27_enum_contract(&working, "meta.edit").map_err(|_| {
+        validate_metadata_enum_contract(&working, "meta.edit").map_err(|_| {
             unica_metadata::request::MetaFailure::from(
                 typed_diagnostic(
                     MetaDiagnosticCode::ValidationFailed,
@@ -732,7 +899,13 @@ where
         });
     }
     validate_typed_event_source_final_state(&working, operations)?;
-    *xml_text = working;
+    *xml_text = form.restore(&working).map_err(|message| {
+        unica_metadata::request::MetaFailure::from(typed_diagnostic(
+            MetaDiagnosticCode::ValidationFailed,
+            message,
+            None,
+        ))
+    })?;
     Ok(counts)
 }
 pub fn validate_typed_event_source_final_state(
@@ -866,17 +1039,14 @@ pub fn typed_operation_effect_value(
             None,
         )
     })?;
-    let target = MetadataAddress::parse(
-        PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &format!("{kind_name}.{object_name}"),
-    )
-    .map_err(|_| {
-        typed_diagnostic(
-            MetaDiagnosticCode::ProviderUnavailable,
-            "metadata descriptor address is unavailable for semantic effect",
-            None,
-        )
-    })?;
+    let target =
+        MetadataAddress::parse_logical(&format!("{kind_name}.{object_name}")).map_err(|_| {
+            typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "metadata descriptor address is unavailable for semantic effect",
+                None,
+            )
+        })?;
     let document = Document::parse(xml.trim_start_matches('\u{feff}')).map_err(|_| {
         typed_diagnostic(
             MetaDiagnosticCode::ProviderUnavailable,
@@ -930,6 +1100,20 @@ pub fn typed_operation_effect_value(
                     );
                     continue;
                 }
+                if *key == MetaPropertyKey::Synonym {
+                    let properties = properties.ok_or_else(|| {
+                        synonym_update_error("metadata Synonym has no Properties".to_string())
+                    })?;
+                    let value = super::info_projection::localized_property_as_nstr(
+                        properties,
+                        kind.as_str(),
+                        "Synonym",
+                    )
+                    .map_err(synonym_update_error)?
+                    .unwrap_or_default();
+                    selected.insert(public_key, Value::String(value));
+                    continue;
+                }
                 let property = observed
                     .iter()
                     .find(|property| property.key == public_key)
@@ -964,25 +1148,52 @@ pub fn typed_operation_effect_value(
             scope.as_ref(),
             elements.iter().map(|element| element.name.as_str()),
             &target,
+            false,
         )?,
         MetaEditOperation::Update {
             collection,
             scope,
             elements,
-        } => typed_collection_effect_value(
-            xml,
-            object,
-            *collection,
-            scope.as_ref(),
-            elements.iter().map(|element| {
-                if after {
-                    element.new_name.as_deref().unwrap_or(&element.name)
-                } else {
-                    &element.name
-                }
-            }),
-            &target,
-        )?,
+        } => {
+            let value = typed_collection_effect_value(
+                xml,
+                object,
+                *collection,
+                scope.as_ref(),
+                elements.iter().map(|element| {
+                    if after {
+                        element.new_name.as_deref().unwrap_or(&element.name)
+                    } else {
+                        &element.name
+                    }
+                }),
+                &target,
+                elements.iter().any(|element| element.tool_tip.is_some()),
+            )?;
+            if elements
+                .iter()
+                .any(|element| element.type_reduction_mode.is_some())
+            {
+                crate::dimension_reduction::effect(
+                    xml,
+                    object,
+                    value,
+                    &elements
+                        .iter()
+                        .filter(|element| element.type_reduction_mode.is_some())
+                        .map(|element| {
+                            if after {
+                                element.new_name.as_deref().unwrap_or(&element.name)
+                            } else {
+                                &element.name
+                            }
+                        })
+                        .collect::<Vec<_>>(),
+                )?
+            } else {
+                value
+            }
+        }
         MetaEditOperation::Remove {
             collection,
             scope,
@@ -994,6 +1205,7 @@ pub fn typed_operation_effect_value(
             scope.as_ref(),
             names.iter().map(String::as_str),
             &target,
+            false,
         )?,
         MetaEditOperation::Copy {
             collection,
@@ -1007,6 +1219,7 @@ pub fn typed_operation_effect_value(
             scope.as_ref(),
             std::iter::once(new_name.as_str()),
             &target,
+            false,
         )?,
         MetaEditOperation::EditRelations { relation, .. } => {
             let mut diagnostics = Vec::new();
@@ -1054,6 +1267,7 @@ pub fn typed_collection_effect_value<'a>(
     scope: Option<&unica_metadata::MetaScope>,
     names: impl Iterator<Item = &'a str>,
     target: &MetadataAddress,
+    include_tool_tip: bool,
 ) -> Result<Value, MetaDiagnostic> {
     let top = unica_xml_format::read::child_element(object, "ChildObjects");
     let parent = if let Some(scope) = scope {
@@ -1108,13 +1322,45 @@ pub fn typed_collection_effect_value<'a>(
             Some("elements"),
         ));
     }
-    serde_json::to_value(selected).map_err(|_| {
+    let tool_tips = if include_tool_tip {
+        selected
+            .iter()
+            .map(|element| {
+                let properties = parent
+                    .into_iter()
+                    .flat_map(|node| unica_xml_format::read::child_elements(node, "Attribute"))
+                    .find(|node| {
+                        meta_edit_child_object_name(*node)
+                            .is_some_and(|name| metadata_name_eq(&name, &element.name))
+                    })
+                    .and_then(|node| unica_xml_format::read::child_element(node, "Properties"))
+                    .ok_or_else(|| {
+                        localized_update_error("toolTip", "attribute has no Properties".into())
+                    })?;
+                crate::info_projection::localized_property_as_nstr(
+                    properties,
+                    "Attribute",
+                    "ToolTip",
+                )
+                .map_err(|message| localized_update_error("toolTip", message))
+            })
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        Vec::new()
+    };
+    let mut effect = serde_json::to_value(selected).map_err(|_| {
         typed_diagnostic(
             MetaDiagnosticCode::ProviderUnavailable,
             "metadata elements cannot be normalized",
             Some("elements"),
         )
-    })
+    })?;
+    if let Some(rows) = effect.as_array_mut() {
+        for (row, value) in rows.iter_mut().zip(tool_tips) {
+            row["toolTip"] = serde_json::json!(value.unwrap_or_default());
+        }
+    }
+    Ok(effect)
 }
 pub fn apply_typed_operation<F>(
     xml_text: &mut String,
@@ -1140,17 +1386,14 @@ where
             None,
         )
     })?;
-    let owner = MetadataAddress::parse(
-        PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &format!("{object_kind}.{object_name}"),
-    )
-    .map_err(|_| {
-        typed_diagnostic(
-            MetaDiagnosticCode::ProviderUnavailable,
-            "metadata descriptor identity is not a canonical logical address",
-            None,
-        )
-    })?;
+    let owner =
+        MetadataAddress::parse_logical(&format!("{object_kind}.{object_name}")).map_err(|_| {
+            typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "metadata descriptor identity is not a canonical logical address",
+                None,
+            )
+        })?;
     validate_metadata_operation_capabilities(owner_kind, &owner, operation)?;
     match operation {
         // ADR-0072: справка живёт рядом с дескриптором, сам текст дескриптора
@@ -1202,7 +1445,6 @@ where
                     *collection,
                     scope.as_ref().map(|scope| scope.tabular_section.as_str()),
                     element,
-                    lang,
                 )
                 .map_err(|diagnostic| qualify_element_diagnostic(diagnostic, index))?;
                 counts.modified += 1;
@@ -1338,14 +1580,21 @@ pub fn apply_typed_properties(
             None,
         )
     })?;
-    let properties =
+    let changes_key = changes
+        .entries()
+        .iter()
+        .any(|(key, _)| *key == MetaPropertyKey::Key);
+    let properties = if changes_key {
+        super::scheduled_job_key::properties(object)?
+    } else {
         unica_xml_format::read::child_element(object, "Properties").ok_or_else(|| {
             typed_diagnostic(
                 MetaDiagnosticCode::ProviderUnavailable,
                 "metadata descriptor has no Properties",
                 None,
             )
-        })?;
+        })?
+    };
     let kind = MetadataKind::parse(object.tag_name().name()).map_err(|_| {
         typed_diagnostic(
             MetaDiagnosticCode::ProviderUnavailable,
@@ -1358,9 +1607,24 @@ pub fn apply_typed_properties(
         .iter()
         .any(|(key, _)| *key == MetaPropertyKey::Type)
     {
-        Some(super::info_projection::parse_observed_metadata_type_node(
-            properties,
-        )?)
+        let observed = super::info_projection::parse_observed_metadata_type_node(properties)?;
+        // Recognition of object/record-set types must not introduce a new write
+        // capability. Legacy Characteristic/TypeId can still be explicitly
+        // replaced by a complete supported type without narrowing the old one.
+        if observed.variants.iter().any(|variant| {
+            matches!(
+                variant,
+                ObservedMetadataTypeVariant::Object { .. }
+                    | ObservedMetadataTypeVariant::RecordSet { .. }
+            )
+        }) {
+            return Err(typed_diagnostic(
+                MetaDiagnosticCode::InvalidArguments,
+                "existing metadata type is outside the public mutation algebra",
+                Some("values.Type"),
+            ));
+        }
+        Some(observed)
     } else {
         None
     };
@@ -1369,10 +1633,9 @@ pub fn apply_typed_properties(
     let indent = meta_edit_property_child_indent(&text);
     let mut replacements = Vec::new();
     for (key, value) in changes.entries() {
-        let tag = METADATA_PROPERTY_SPECS
+        let spec = METADATA_PROPERTY_SPECS
             .iter()
             .find(|spec| spec.key == *key && spec.allowed_kinds.contains(&kind))
-            .map(|spec| spec.xml_name)
             .ok_or_else(|| {
                 typed_diagnostic(
                     MetaDiagnosticCode::ProviderUnavailable,
@@ -1380,14 +1643,207 @@ pub fn apply_typed_properties(
                     Some("values"),
                 )
             })?;
-        let property = unica_xml_format::read::child_element(properties, tag).ok_or_else(|| {
-            typed_diagnostic(
-                MetaDiagnosticCode::InvalidArguments,
-                format!("property `{tag}` is not present on this metadata object"),
-                Some("values"),
-            )
-        })?;
+        if *key == MetaPropertyKey::EditType {
+            let (field, observed) =
+                crate::edit_type::existing(object, kind).map_err(|message| {
+                    typed_diagnostic(
+                        MetaDiagnosticCode::ProviderUnavailable,
+                        message,
+                        Some("values.EditType"),
+                    )
+                })?;
+            let MetaPropertyValue::String(value) = value else {
+                unreachable!("the EditType profile proved a string enumeration")
+            };
+            if observed == *value {
+                continue;
+            }
+            let replacement =
+                crate::edit_type::replacement(parsed_body, field, value).map_err(|message| {
+                    typed_diagnostic(
+                        MetaDiagnosticCode::ProviderUnavailable,
+                        message,
+                        Some("values.EditType"),
+                    )
+                })?;
+            let field_range = field.range();
+            replacements.push((
+                field_range.start - range.start..field_range.end - range.start,
+                replacement,
+            ));
+            continue;
+        }
+        let tag = spec.xml_name;
+        let property = if *key == MetaPropertyKey::Key {
+            let (node, previous) = super::scheduled_job_key::leaf(properties)?;
+            if matches!(value, MetaPropertyValue::String(next) if next == &previous) {
+                continue;
+            }
+            node
+        } else {
+            unica_xml_format::read::child_element(properties, tag).ok_or_else(|| {
+                typed_diagnostic(
+                    MetaDiagnosticCode::InvalidArguments,
+                    format!("property `{tag}` is not present on this metadata object"),
+                    Some("values"),
+                )
+            })?
+        };
+        if *key == MetaPropertyKey::DataHistory {
+            let same_name_count = properties
+                .children()
+                .filter(|node| node.is_element() && node.tag_name().name() == tag)
+                .count();
+            let observed: String = property
+                .children()
+                .filter(|node| node.is_text())
+                .filter_map(|node| node.text())
+                .collect();
+            if same_name_count != 1
+                || property.tag_name().namespace() != Some("http://v8.1c.ru/8.3/MDClasses")
+                || property.attributes().len() != 0
+                || property.children().any(|node| node.is_element())
+                || !spec.enum_values.contains(&observed.as_str())
+            {
+                return Err(typed_diagnostic(
+                    MetaDiagnosticCode::InvalidArguments,
+                    "existing DataHistory is damaged; restore a confirmed valid source before changing it",
+                    Some("values.DataHistory"),
+                ));
+            }
+        }
+        let history_value = match (key, value) {
+            (MetaPropertyKey::DataHistory, MetaPropertyValue::String(value)) => Some(value.clone()),
+            (
+                MetaPropertyKey::UpdateDataHistoryImmediatelyAfterWrite
+                | MetaPropertyKey::ExecuteAfterWriteDataHistoryVersionProcessing,
+                MetaPropertyValue::Boolean(value),
+            ) => Some(value.to_string()),
+            _ => None,
+        };
+        if let Some(value) = history_value {
+            let observed: String = property
+                .children()
+                .filter(|node| node.is_text())
+                .filter_map(|node| node.text())
+                .collect();
+            if *key != MetaPropertyKey::DataHistory
+                && (properties
+                    .children()
+                    .filter(|node| node.is_element() && node.tag_name().name() == tag)
+                    .count()
+                    != 1
+                    || property.tag_name().namespace() != Some("http://v8.1c.ru/8.3/MDClasses")
+                    || property.attributes().len() != 0
+                    || property.children().any(|node| node.is_element())
+                    || !matches!(observed.as_str(), "true" | "false"))
+            {
+                return Err(typed_diagnostic(
+                    MetaDiagnosticCode::InvalidArguments,
+                    format!("existing {tag} is damaged; restore a confirmed valid source before changing it"),
+                    Some(&format!("values.{tag}")),
+                ));
+            }
+            if observed != value {
+                // Preserve the qualified history element and its namespace bindings.
+                let raw = &parsed_body[property.range()];
+                let mut quote = None;
+                let content_start = raw
+                    .bytes()
+                    .enumerate()
+                    .find_map(|(index, byte)| {
+                        if let Some(delimiter) = quote {
+                            if byte == delimiter {
+                                quote = None;
+                            }
+                        } else if matches!(byte, b'\'' | b'"') {
+                            quote = Some(byte);
+                        } else if byte == b'>' {
+                            return Some(index + 1);
+                        }
+                        None
+                    })
+                    .expect("parsed opening tag");
+                let content_end = raw
+                    .rfind("</")
+                    .expect("nonempty history scalar closing tag");
+                let replacement =
+                    format!("{}{}{}", &raw[..content_start], value, &raw[content_end..]);
+                let property_range = property.range();
+                replacements.push((
+                    property_range.start - range.start..property_range.end - range.start,
+                    replacement,
+                ));
+            }
+            continue;
+        }
+        if spec.in_place(kind) {
+            let same_name_count = properties
+                .children()
+                .filter(|node| node.is_element() && node.tag_name().name() == tag)
+                .count();
+            let observed: String = property
+                .children()
+                .filter(|node| node.is_text())
+                .filter_map(|node| node.text())
+                .collect();
+            if same_name_count != 1
+                || property.tag_name().namespace() != Some("http://v8.1c.ru/8.3/MDClasses")
+                || property.attributes().len() != 0
+                || property.children().any(|node| node.is_element())
+                || !spec.enum_values.contains(&observed.as_str())
+            {
+                return Err(typed_diagnostic(MetaDiagnosticCode::InvalidArguments, format!("existing {tag} is damaged; restore a confirmed valid source before changing it"), Some(&format!("values.{tag}"))));
+            }
+            if let MetaPropertyValue::String(value) = value {
+                if observed != *value {
+                    // Keep the original qualified element and its namespace
+                    // declarations; only the confirmed scalar content changes.
+                    let raw = &parsed_body[property.range()];
+                    let mut quote = None;
+                    let content_start = raw
+                        .bytes()
+                        .enumerate()
+                        .find_map(|(index, byte)| {
+                            if let Some(delimiter) = quote {
+                                if byte == delimiter {
+                                    quote = None;
+                                }
+                            } else if matches!(byte, b'\'' | b'"') {
+                                quote = Some(byte);
+                            } else if byte == b'>' {
+                                return Some(index + 1);
+                            }
+                            None
+                        })
+                        .expect("parsed opening tag");
+                    let content_end = raw.rfind("</").expect("nonempty enum closing tag");
+                    let replacement =
+                        format!("{}{}{}", &raw[..content_start], value, &raw[content_end..]);
+                    let property_range = property.range();
+                    replacements.push((
+                        property_range.start - range.start..property_range.end - range.start,
+                        replacement,
+                    ));
+                }
+                continue;
+            }
+        }
+        // The written element keeps the owner's qualified name and its own
+        // namespace declarations, so a prefixed descriptor stays in MDClasses.
+        let (opening, qname) = scalar_element_shell(&parsed_body[property.range()]);
         let replacement = match (key, value) {
+            (MetaPropertyKey::CodeType, MetaPropertyValue::String(value))
+                if kind == MetadataKind::ChartOfCalculationTypes
+                    && matches!(
+                        super::info_projection::observe_meta_info_property(properties, kind, tag),
+                        Ok(Some(MetaInfoPropertyValue::String(current))) if current == *value
+                    ) =>
+            {
+                // An equivalent mode preserves its lexical bytes and does not
+                // turn a no-op into a change requiring companion validation.
+                continue;
+            }
             (MetaPropertyKey::Type, MetaPropertyValue::Type(metadata_type)) => {
                 if previous_type
                     .as_ref()
@@ -1422,20 +1878,48 @@ pub fn apply_typed_properties(
                     value,
                 )
             }
+            (MetaPropertyKey::Key, MetaPropertyValue::String(value)) => {
+                // XML readers normalize literal CR; references preserve the requested value.
+                let escaped = unica_xml_format::text::escape_xml(value).replace('\r', "&#13;");
+                if value.is_empty() {
+                    format!("{indent}{opening}/>")
+                } else {
+                    format!("{indent}{opening}>{escaped}</{qname}>")
+                }
+            }
+            (MetaPropertyKey::Synonym, MetaPropertyValue::Localized(items)) => {
+                let values = items
+                    .iter()
+                    .map(|item| (item.language.clone(), item.content.clone()))
+                    .collect::<Vec<_>>();
+                unica_xml_format::localized::replace_language_values(
+                    parsed_body,
+                    property,
+                    &indent,
+                    &values,
+                )
+            }
+            (_, MetaPropertyValue::Localized(_)) => {
+                return Err(typed_diagnostic(
+                    MetaDiagnosticCode::InvalidArguments,
+                    format!("property `{tag}` takes a single text value"),
+                    Some("values"),
+                ))
+            }
             (MetaPropertyKey::Comment, MetaPropertyValue::String(value)) if value.is_empty() => {
-                format!("{indent}<{tag}/>")
+                format!("{indent}{opening}/>")
             }
             (_, MetaPropertyValue::String(value)) => {
                 format!(
-                    "{indent}<{tag}>{}</{tag}>",
+                    "{indent}{opening}>{}</{qname}>",
                     unica_xml_format::text::escape_xml(value)
                 )
             }
             (_, MetaPropertyValue::Boolean(value)) => {
-                format!("{indent}<{tag}>{value}</{tag}>")
+                format!("{indent}{opening}>{value}</{qname}>")
             }
             (_, MetaPropertyValue::UnsignedInteger(value)) => {
-                format!("{indent}<{tag}>{value}</{tag}>")
+                format!("{indent}{opening}>{value}</{qname}>")
             }
         };
         let property_range = property.range();
@@ -1454,6 +1938,21 @@ pub fn apply_typed_properties(
     xml_text.replace_range(range.start + prefix_len..range.end + prefix_len, &text);
     Ok(())
 }
+/// Closes the `Properties` of a new `tag` child with the properties the
+/// export format of its object adds (INV.SOURCE.WRITABLE-PROFILE).
+fn append_format_child_properties(object_xml: &str, tag: &str, lines: &mut Vec<String>) {
+    let version = crate::dialect::root_version::of_set(object_xml);
+    let added = (crate::dialect::for_version(Some(&version)).added_child_properties)(tag);
+    let Some(close) = lines.iter().position(|line| line.trim() == "</Properties>") else {
+        return;
+    };
+    let line = &lines[close];
+    let indent = format!("{}\t", &line[..line.len() - line.trim_start().len()]);
+    for (offset, property) in added.iter().enumerate() {
+        lines.insert(close + offset, format!("{indent}{property}"));
+    }
+}
+
 pub fn collection_tag(collection: MetaCollection) -> &'static str {
     match collection {
         MetaCollection::Attributes => "Attribute",
@@ -1509,6 +2008,7 @@ where
     ) {
         inherit_register_field_settings(xml_text, tag, &mut lines);
     }
+    append_format_child_properties(xml_text, tag, &mut lines);
     let lines = lines;
     let result = match scope {
         Some(section) => meta_edit_insert_tabular_child_object_with_position(
@@ -1550,16 +2050,15 @@ pub fn ensure_typed_name_free(
         None => meta_edit_ensure_top_child_name_free(xml_text, tag, name),
     };
     result.map_err(|message| {
-        let code = if message.contains("already exists") {
-            MetaDiagnosticCode::AlreadyExists
+        if message.contains("already exists") {
+            typed_diagnostic(MetaDiagnosticCode::AlreadyExists, message, Some("name"))
         } else {
-            MetaDiagnosticCode::TargetNotFound
-        };
-        typed_diagnostic(
-            code,
-            "metadata element identity is not available",
-            Some("name"),
-        )
+            typed_diagnostic(
+                MetaDiagnosticCode::TargetNotFound,
+                "metadata element identity is not available",
+                Some("name"),
+            )
+        }
     })
 }
 /// Settings a new register field takes from the fields already in the register.
@@ -1633,10 +2132,8 @@ where
     let mut lines = Vec::new();
     let attr = || MetadataAttributeTemplate {
         name: element.name.clone(),
-        synonym: element
-            .synonym
-            .clone()
-            .unwrap_or_else(|| split_meta_camel_case(&element.name)),
+        // A listed synonym replaces this one with all its languages below.
+        synonym: split_meta_camel_case(&element.name),
         required: element.required.unwrap_or(false),
     };
     match collection {
@@ -1664,10 +2161,8 @@ where
                 .iter()
                 .map(|attribute| MetadataAttributeTemplate {
                     name: attribute.name.clone(),
-                    synonym: attribute
-                        .synonym
-                        .clone()
-                        .unwrap_or_else(|| split_meta_camel_case(&attribute.name)),
+                    // A listed synonym replaces this one with all its languages below.
+                    synonym: split_meta_camel_case(&attribute.name),
                     required: attribute.required.unwrap_or(false),
                 })
                 .collect();
@@ -1684,8 +2179,8 @@ where
                 next_uuid,
             );
             let mut rendered = lines.join("\n");
-            apply_typed_element_fields(&mut rendered, element, lang);
-            apply_typed_nested_attribute_fields(&mut rendered, &ordered_attributes, lang)?;
+            apply_typed_element_fields(&mut rendered, element)?;
+            apply_typed_nested_attribute_fields(&mut rendered, &ordered_attributes)?;
             return Ok(rendered.lines().map(ToOwned::to_owned).collect());
         }
         MetaCollection::Dimensions | MetaCollection::Resources => emit_meta_register_field(
@@ -1702,10 +2197,8 @@ where
             "\t\t\t",
             &MetadataEnumValueTemplate {
                 name: element.name.clone(),
-                synonym: element
-                    .synonym
-                    .clone()
-                    .unwrap_or_else(|| split_meta_camel_case(&element.name)),
+                // A listed synonym replaces this one with all its languages below.
+                synonym: split_meta_camel_case(&element.name),
                 comment: element.comment.clone().unwrap_or_default(),
             },
             lang,
@@ -1748,7 +2241,7 @@ where
                 ),
             );
     }
-    apply_typed_element_fields(&mut rendered, element, lang);
+    apply_typed_element_fields(&mut rendered, element)?;
     Ok(rendered.lines().map(ToOwned::to_owned).collect())
 }
 pub fn order_typed_nested_attributes(
@@ -1789,7 +2282,6 @@ pub fn order_typed_nested_attributes(
 pub fn apply_typed_nested_attribute_fields(
     xml: &mut String,
     attributes: &[MetaElementDefinition],
-    lang: &str,
 ) -> Result<(), MetaDiagnostic> {
     const WRAPPER: &str = "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">";
     for attribute in attributes {
@@ -1818,19 +2310,28 @@ pub fn apply_typed_nested_attribute_fields(
             })?;
         drop(document);
         let mut attribute_xml = xml[range.clone()].to_string();
-        apply_typed_element_fields(&mut attribute_xml, attribute, lang);
+        apply_typed_element_fields(&mut attribute_xml, attribute)?;
         xml.replace_range(range, &attribute_xml);
     }
     Ok(())
 }
-pub fn apply_typed_element_fields(xml: &mut String, element: &MetaElementDefinition, lang: &str) {
-    let Some(range) = typed_properties_text_range(xml) else {
-        return;
-    };
+fn apply_typed_element_fields(
+    xml: &mut String,
+    element: &MetaElementDefinition,
+) -> Result<(), MetaDiagnostic> {
+    let range = typed_properties_text_range(xml).ok_or_else(|| {
+        synonym_update_error("the rendered element has no Properties".to_string())
+    })?;
     let mut text = xml[range.clone()].to_string();
     let indent = meta_edit_property_child_indent(&text);
     if let Some(synonym) = &element.synonym {
-        let _ = meta_edit_set_mltext_property(&mut text, "Synonym", &indent, lang, synonym);
+        const TEMPLATE_NAMESPACES: &str = concat!(
+            " xmlns=\"http://v8.1c.ru/8.3/MDClasses\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\"",
+            " xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"",
+            " xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\""
+        );
+        meta_edit_set_mltext_values(&mut text, "Synonym", &indent, synonym, TEMPLATE_NAMESPACES)
+            .map_err(synonym_update_error)?;
     }
     if let Some(comment) = &element.comment {
         let replacement = if comment.is_empty() {
@@ -1873,12 +2374,37 @@ pub fn apply_typed_element_fields(xml: &mut String, element: &MetaElementDefinit
         );
         let _ = meta_edit_replace_or_insert_property(&mut text, "Indexing", &replacement, &indent);
     }
+    for (tag, value) in [
+        ("Master", element.master),
+        ("MainFilter", element.main_filter),
+        ("DenyIncompleteValues", element.deny_incomplete_values),
+    ] {
+        if let Some(value) = value {
+            // These defaults are emitted by the proven register template.
+            text = text.replace(
+                &format!("<{tag}>false</{tag}>"),
+                &format!("<{tag}>{value}</{tag}>"),
+            );
+        }
+    }
     xml.replace_range(range, &text);
+    Ok(())
 }
+/// The first `<Properties>` container of `text`, also when it is spelled with a
+/// namespace prefix such as `<md:Properties>`.
 pub fn typed_properties_text_range(text: &str) -> Option<std::ops::Range<usize>> {
-    let start = text.find("<Properties>")?;
-    let close = "</Properties>";
-    let relative_end = text[start..].find(close)?;
+    let (start, prefix) = text.match_indices('<').find_map(|(at, _)| {
+        let name = text[at + 1..].split('>').next()?;
+        let prefix = name.strip_suffix("Properties")?;
+        (prefix.is_empty()
+            || (prefix.ends_with(':')
+                && prefix[..prefix.len() - 1]
+                    .chars()
+                    .all(|ch| ch.is_alphanumeric() || matches!(ch, '_' | '-' | '.'))))
+        .then_some((at, prefix))
+    })?;
+    let close = format!("</{prefix}Properties>");
+    let relative_end = text[start..].find(&close)?;
     Some(start..start + relative_end + close.len())
 }
 pub fn find_typed_element_range(
@@ -1942,12 +2468,147 @@ pub fn find_typed_element_identity(
             )
         })
 }
+// The caller has parsed the whole document and proved a boolean text leaf.
+// Keep lexical whitespace (including character references) outside the value.
+fn dimension_boolean_text_range(
+    xml: &str,
+    range: std::ops::Range<usize>,
+    decode_references: bool,
+) -> Option<std::ops::Range<usize>> {
+    let mut cursor = range.start;
+    let mut first = None;
+    let mut last = range.start;
+    while cursor < range.end {
+        let raw = &xml[cursor..range.end];
+        let (value, length) = if decode_references && raw.starts_with("&#") {
+            let end = raw.find(';')?;
+            let number = &raw[2..end];
+            let code = if let Some(hex) = number.strip_prefix('x') {
+                u32::from_str_radix(hex, 16).ok()?
+            } else {
+                number.parse().ok()?
+            };
+            (char::from_u32(code)?, end + 1)
+        } else {
+            let value = raw.chars().next()?;
+            (value, value.len_utf8())
+        };
+        if !crate::info::dimension_boolean_xml_space(value) {
+            first.get_or_insert(cursor);
+            last = cursor + length;
+        }
+        cursor += length;
+    }
+    first.map(|start| start..last)
+}
+
+// roxmltree merges adjacent Text/CDATA nodes without extending their source
+// range. Scan the already validated leaf instead, retaining its markup.
+fn dimension_boolean_text_edits(
+    xml: &str,
+    flag: roxmltree::Node<'_, '_>,
+    replacement: &'static str,
+) -> Option<Vec<(std::ops::Range<usize>, &'static str)>> {
+    let range = flag.range();
+    let end = range.start + xml[range.clone()].rfind("</")?;
+    let mut cursor = flag.first_child()?.range().start;
+    let mut edits = Vec::new();
+    while cursor < end {
+        let rest = &xml[cursor..end];
+        if rest.starts_with("<!--") {
+            cursor += rest.find("-->")? + 3;
+            continue;
+        }
+        if rest.starts_with("<?") {
+            cursor += rest.find("?>")? + 2;
+            continue;
+        }
+        let (text, decode_references) = if rest.starts_with("<![CDATA[") {
+            let start = cursor + 9;
+            let close = start + xml[start..end].find("]]>")?;
+            cursor = close + 3;
+            (start..close, false)
+        } else {
+            let start = cursor;
+            cursor += rest.find('<').unwrap_or(rest.len());
+            if cursor == start {
+                return None;
+            }
+            (start..cursor, true)
+        };
+        if let Some(range) = dimension_boolean_text_range(xml, text, decode_references) {
+            edits.push((range, if edits.is_empty() { replacement } else { "" }));
+        }
+    }
+    (!edits.is_empty()).then_some(edits)
+}
+
+struct DimensionBooleanEdit {
+    properties_range: std::ops::Range<usize>,
+    replacements: Vec<(std::ops::Range<usize>, &'static str)>,
+}
+
+// Read the original document so inherited namespace bindings remain authoritative.
+// Replace only the boolean text; markup and unrelated bytes stay unchanged.
+fn dimension_boolean_edit(
+    xml: &str,
+    element_range: std::ops::Range<usize>,
+    tag: &str,
+    field: &str,
+    value: bool,
+) -> Result<DimensionBooleanEdit, MetaDiagnostic> {
+    const MD: &str = "http://v8.1c.ru/8.3/MDClasses";
+    let refused =
+        || {
+            typed_diagnostic(
+        MetaDiagnosticCode::InvalidArguments,
+        format!("the dimension's {tag} must be one metadata element containing only true or false"),
+        Some(field),
+    )
+        };
+    let document = Document::parse(xml).map_err(|_| refused())?;
+    let element = document
+        .descendants()
+        .find(|node| node.is_element() && node.range() == element_range)
+        .ok_or_else(refused)?;
+    let properties = element
+        .children()
+        .filter(|node| node.is_element() && node.tag_name().name() == "Properties")
+        .collect::<Vec<_>>();
+    let [properties] = properties.as_slice() else {
+        return Err(refused());
+    };
+    if properties.tag_name().namespace() != Some(MD) {
+        return Err(refused());
+    }
+    let flags = properties
+        .children()
+        .filter(|node| node.is_element() && node.tag_name().name() == tag)
+        .collect::<Vec<_>>();
+    let [flag] = flags.as_slice() else {
+        return Err(refused());
+    };
+    if flag.tag_name().namespace() != Some(MD) || flag.attributes().len() != 0 {
+        return Err(refused());
+    }
+    let current = crate::info::dimension_boolean_value(*flag).ok_or_else(refused)?;
+    let replacements = if current == value {
+        Vec::new()
+    } else {
+        let replacement = if value { "true" } else { "false" };
+        dimension_boolean_text_edits(xml, *flag, replacement).ok_or_else(refused)?
+    };
+    Ok(DimensionBooleanEdit {
+        properties_range: properties.range(),
+        replacements,
+    })
+}
+
 pub fn update_typed_element(
     xml_text: &mut String,
     collection: MetaCollection,
     scope: Option<&str>,
     update: &MetaElementUpdate,
-    lang: &str,
 ) -> Result<(), MetaDiagnostic> {
     let tag = collection_tag(collection);
     let range = find_typed_element_range(xml_text, tag, scope, &update.name)?;
@@ -1959,14 +2620,80 @@ pub fn update_typed_element(
         ensure_typed_name_free(xml_text, tag, scope, new_name)?;
     }
     let node_xml = xml_text[range.clone()].to_string();
-    let properties_range = typed_properties_text_range(&node_xml).ok_or_else(|| {
-        typed_diagnostic(
-            MetaDiagnosticCode::ProviderUnavailable,
-            "metadata element has no Properties",
-            None,
-        )
-    })?;
+    let mut flag_properties_range = None;
+    let mut flag_edits = Vec::new();
+    for (tag, field, value) in [
+        ("Master", "master", update.master),
+        ("MainFilter", "mainFilter", update.main_filter),
+        (
+            "DenyIncompleteValues",
+            "denyIncompleteValues",
+            update.deny_incomplete_values,
+        ),
+    ] {
+        if let Some(value) = value {
+            let edit = dimension_boolean_edit(xml_text, range.clone(), tag, field, value)?;
+            flag_properties_range.get_or_insert(edit.properties_range);
+            flag_edits.extend(
+                edit.replacements
+                    .into_iter()
+                    .map(|(range, value)| (range, value.to_owned())),
+            );
+        }
+    }
+    let properties_range = flag_properties_range
+        .map(|properties| properties.start - range.start..properties.end - range.start)
+        .or_else(|| typed_properties_text_range(&node_xml))
+        .ok_or_else(|| {
+            typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "metadata element has no Properties",
+                None,
+            )
+        })?;
     let mut properties_text = node_xml[properties_range.clone()].to_string();
+    if let Some(value) = &update.type_reduction_mode {
+        if let Some(edit) = crate::dimension_reduction::edit(xml_text, range.clone(), value)? {
+            flag_edits.push(edit);
+        }
+    }
+    let properties_start = range.start + properties_range.start;
+    if let Some(color) = &update.color {
+        // The value of a set whose line has the color: its export carries it.
+        let open = properties_text.find("<Color>").ok_or_else(|| {
+            typed_diagnostic(
+                MetaDiagnosticCode::InvalidArguments,
+                "the enumeration value has no Color property to set",
+                Some("color"),
+            )
+        })?;
+        let value_start = open + "<Color>".len();
+        let value_end = value_start
+            + properties_text[value_start..]
+                .find("</Color>")
+                .ok_or_else(|| {
+                    typed_diagnostic(
+                        MetaDiagnosticCode::ProviderUnavailable,
+                        "the enumeration value has a malformed Color property",
+                        Some("color"),
+                    )
+                })?;
+        flag_edits.push((
+            properties_start + value_start..properties_start + value_end,
+            // The platform writes a color as its public text: `#RRGGBB` in
+            // upper case.
+            unica_metadata::style_color::StyleItemColor::parse_argument(color)
+                .map_or_else(|| color.clone(), |color| color.public_text()),
+        ));
+    }
+    flag_edits.sort_by_key(|(range, _)| std::cmp::Reverse(range.start));
+    for (range, value) in flag_edits {
+        properties_text.replace_range(
+            range.start - properties_start..range.end - properties_start,
+            &value,
+        );
+    }
+
     if let Some(metadata_type) = &update.r#type {
         let fill_value = match &update.fill_value {
             Some(fill_value) => Some(fill_value.clone()),
@@ -2006,15 +2733,39 @@ pub fn update_typed_element(
             )
         })?;
     }
-    if let Some(synonym) = &update.synonym {
-        meta_edit_set_mltext_property(&mut properties_text, "Synonym", &indent, lang, synonym)
-            .map_err(|_| {
-                typed_diagnostic(
-                    MetaDiagnosticCode::ProviderUnavailable,
-                    "metadata synonym could not be updated",
-                    Some("synonym"),
-                )
+    if update.synonym.is_some() || update.tool_tip.is_some() {
+        let field = if update.synonym.is_some() {
+            "synonym"
+        } else {
+            "toolTip"
+        };
+        let document = Document::parse(xml_text)
+            .map_err(|error| localized_update_error(field, error.to_string()))?;
+        let properties = document
+            .descendants()
+            .find(|node| node.is_element() && node.range().start == properties_start)
+            .ok_or_else(|| {
+                localized_update_error(field, "metadata element has no Properties".to_string())
             })?;
+        let mut namespaces = String::new();
+        for namespace in properties.namespaces() {
+            let prefix = namespace
+                .name()
+                .map_or(String::new(), |name| format!(":{name}"));
+            namespaces.push_str(&format!(
+                " xmlns{prefix}=\"{}\"",
+                unica_xml_format::text::escape_xml(namespace.uri())
+            ));
+        }
+        for (field, tag, items) in [
+            ("synonym", "Synonym", update.synonym.as_ref()),
+            ("toolTip", "ToolTip", update.tool_tip.as_ref()),
+        ] {
+            if let Some(items) = items {
+                meta_edit_set_mltext_values(&mut properties_text, tag, &indent, items, &namespaces)
+                    .map_err(|message| localized_update_error(field, message))?;
+            }
+        }
     }
     if let Some(comment) = &update.comment {
         let replacement = if comment.is_empty() {
@@ -2110,43 +2861,6 @@ pub fn update_typed_element(
                 Some("indexing"),
             )
         })?;
-    }
-    if let Some(deny) = update.deny_incomplete_values {
-        // 8.3.27 writes the flag on every dimension of these registers as
-        // `<DenyIncompleteValues>true|false</…>`; any other shape or value
-        // has no proven meaning to keep, so it is refused, not overwritten.
-        let refused = |message: &str| {
-            typed_diagnostic(
-                MetaDiagnosticCode::InvalidArguments,
-                message,
-                Some("denyIncompleteValues"),
-            )
-        };
-        let open = "<DenyIncompleteValues>";
-        let close = "</DenyIncompleteValues>";
-        let start = match properties_text.find(open) {
-            Some(start) => start + open.len(),
-            None if properties_text.contains("<DenyIncompleteValues") => {
-                return Err(refused(
-                    "the dimension's DenyIncompleteValues has a form other than an element with a boolean value",
-                ))
-            }
-            None => return Err(refused("the dimension has no DenyIncompleteValues to change")),
-        };
-        let end = start
-            + properties_text[start..]
-                .find(close)
-                .ok_or_else(|| refused("the dimension's DenyIncompleteValues is not closed"))?;
-        let current = properties_text[start..end].trim();
-        if !matches!(current, "true" | "false") {
-            return Err(refused(
-                "the dimension's DenyIncompleteValues holds a value other than true or false",
-            ));
-        }
-        let value = if deny { "true" } else { "false" };
-        if current != value {
-            properties_text.replace_range(start..end, value);
-        }
     }
     let mut updated_node = node_xml;
     updated_node.replace_range(properties_range, &properties_text);
@@ -2376,11 +3090,8 @@ pub fn parse_typed_fill_value_node(
                         Some("fillValue"),
                     ));
                 }
-                let metadata_path = MetadataAddress::parse(
-                    PLATFORM_XML_8_3_27_FORMAT_2_20,
-                    &format!("Enum.{}", parts[1]),
-                )
-                .map_err(|error| {
+                let metadata_path = MetadataAddress::parse_logical(&format!("Enum.{}", parts[1]))
+                    .map_err(|error| {
                     typed_diagnostic(
                         MetaDiagnosticCode::ValidationFailed,
                         error.to_string(),
@@ -2392,9 +3103,7 @@ pub fn parse_typed_fill_value_node(
                     item: format!("EnumValue.{}", parts[3]),
                 }));
             }
-            if let Ok(metadata_path) =
-                MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &value)
-            {
+            if let Ok(metadata_path) = MetadataAddress::parse_logical(&value) {
                 return Ok(Some(MetaFillValue::Reference(
                     unica_metadata::MetadataReference { metadata_path },
                 )));
@@ -2406,14 +3115,13 @@ pub fn parse_typed_fill_value_node(
                     Some("fillValue"),
                 ));
             };
-            let metadata_path = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, prefix)
-                .map_err(|_| {
-                    typed_diagnostic(
-                        MetaDiagnosticCode::ValidationFailed,
-                        "existing reference fill value is not a metadata address",
-                        Some("fillValue"),
-                    )
-                })?;
+            let metadata_path = MetadataAddress::parse_logical(prefix).map_err(|_| {
+                typed_diagnostic(
+                    MetaDiagnosticCode::ValidationFailed,
+                    "existing reference fill value is not a metadata address",
+                    Some("fillValue"),
+                )
+            })?;
             if item.is_empty() {
                 return Err(typed_diagnostic(
                     MetaDiagnosticCode::ValidationFailed,
@@ -3319,14 +4027,17 @@ pub fn typed_child_descriptor_image(
     tag: &str,
     name: &str,
 ) -> Result<Vec<u8>, unica_metadata::request::MetaFailure> {
+    let version = crate::dialect::root_version::of_set(owner_xml);
     typed_child_element_xml(owner_xml, tag, name)
-        .map(|child_xml| wrap_standalone_descriptor(&child_xml))
+        .map(|child_xml| wrap_standalone_descriptor(&child_xml, &version))
 }
 
-pub fn wrap_standalone_descriptor(child_xml: &str) -> Vec<u8> {
+/// A standalone descriptor of one child in the format `version` of its set.
+pub fn wrap_standalone_descriptor(child_xml: &str, version: &str) -> Vec<u8> {
     format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<MetaDataObject {} version=\"2.20\">\n{}\n</MetaDataObject>",
-        crate::template_catalog::meta_xmlns_decl(),
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<MetaDataObject {} version=\"{}\">\n{}\n</MetaDataObject>",
+        crate::template_catalog::meta_xmlns_decl(version),
+        version,
         child_xml
     )
     .into_bytes()
@@ -3616,7 +4327,7 @@ mod legacy_inline_collapse_tests {
 
     /// An inline form or template with a standalone descriptor becomes the
     /// by-name reference in the owner's own namespace prefix; one without a
-    /// descriptor, a by-name reference and an inline command stay (#1370).
+    /// descriptor, a by-name reference and an inline command stay.
     #[test]
     fn only_described_inline_forms_and_templates_are_collapsed() {
         let owner = concat!(
@@ -3670,3 +4381,557 @@ mod dimension_deny_tests;
 #[cfg(test)]
 #[path = "../tests/platform/edit_attribute_copy.rs"]
 mod attribute_copy_tests;
+
+#[cfg(test)]
+#[path = "../tests/platform/edit_catalog_code_series.rs"]
+mod catalog_code_series_tests;
+
+#[cfg(test)]
+mod observed_type_property_tests {
+    use super::*;
+
+    fn descriptor(type_body: &str) -> String {
+        format!("\u{feff}<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:cfg=\"http://v8.1c.ru/8.1/data/enterprise/current-config\" version=\"2.20\"><Constant uuid=\"22222222-2222-4222-8222-222222222222\"><Properties><Name>Objects</Name>\r\n<Comment>before</Comment><Type>{type_body}</Type></Properties></Constant></MetaDataObject>")
+    }
+
+    fn changes(include_type: bool) -> MetaPropertyChanges {
+        let mut values = vec![MetaPropertyInput::new(
+            "Comment",
+            MetaPropertyValue::String("after".into()),
+        )];
+        if include_type {
+            values.push(MetaPropertyInput::new(
+                "Type",
+                MetaPropertyValue::Type(
+                    MetadataType::new(vec![MetadataTypeVariant::Boolean]).unwrap(),
+                ),
+            ));
+        }
+        MetaPropertyChanges::convert(MetadataKind::Constant, values).unwrap()
+    }
+
+    const READONLY_TYPES: &[&str] = &[
+        "<v8:TypeId>cc442f88-d708-4a83-af58-60c85a5d28a8</v8:TypeId>",
+        "<v8:TypeSet>cfg:Characteristic.Properties</v8:TypeSet>",
+        "<v8:Type>cfg:CatalogObject.Items</v8:Type>",
+        "<v8:Type>cfg:InformationRegisterRecordSet.Facts</v8:Type>",
+    ];
+
+    #[test]
+    fn object_and_record_set_replacement_refuses_before_any_property_is_written() {
+        for body in &READONLY_TYPES[2..] {
+            let before = descriptor(body);
+            let mut after = before.clone();
+            let error = apply_typed_properties(&mut after, &changes(true), "ru").unwrap_err();
+            assert_eq!(error.field.as_deref(), Some("values.Type"));
+            assert_eq!(before, after);
+        }
+    }
+
+    #[test]
+    fn independent_property_keeps_readonly_type_bytes() {
+        for body in READONLY_TYPES {
+            let before = descriptor(body);
+            let mut after = before.clone();
+            apply_typed_properties(&mut after, &changes(false), "ru").unwrap();
+            assert_eq!(
+                after,
+                before.replace("<Comment>before</Comment>", "<Comment>after</Comment>")
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_readonly_types_can_be_explicitly_replaced() {
+        for body in &READONLY_TYPES[..2] {
+            let mut after = descriptor(body);
+            apply_typed_properties(&mut after, &changes(true), "ru").unwrap();
+            assert!(after.contains("xs:boolean"));
+            assert!(after.contains("<Comment>after</Comment>"));
+            assert!(!after.contains(body));
+        }
+    }
+
+    #[test]
+    fn editable_reference_type_can_still_be_replaced() {
+        let before = descriptor("<v8:Type>cfg:CatalogRef.Items</v8:Type>");
+        let mut after = before;
+        apply_typed_properties(&mut after, &changes(true), "ru").unwrap();
+        assert!(after.contains("xs:boolean"));
+        assert!(after.contains("<Comment>after</Comment>"));
+        assert!(!after.contains("cfg:CatalogRef.Items"));
+    }
+}
+
+#[cfg(test)]
+mod prefixed_property_writer_tests {
+    use super::apply_typed_properties;
+    use unica_metadata::{
+        MetaPropertyChanges, MetaPropertyInput, MetaPropertyValue, MetaPropertyValueKind,
+        MetadataKind, MetadataType, MetadataTypeVariant, METADATA_PROPERTY_SPECS,
+    };
+
+    const MD: &str = "http://v8.1c.ru/8.3/MDClasses";
+
+    /// The same descriptor with every MDClasses element under the `md:`
+    /// prefix and no default namespace.
+    fn prefixed(source: &str) -> String {
+        let doc = roxmltree::Document::parse(source.trim_start_matches('\u{feff}')).unwrap();
+        let offset = source.len() - source.trim_start_matches('\u{feff}').len();
+        let mut inserts = Vec::new();
+        for node in doc
+            .descendants()
+            .filter(|node| node.is_element() && node.tag_name().namespace() == Some(MD))
+        {
+            let range = node.range();
+            inserts.push(offset + range.start + 1);
+            if let Some(close) = source[offset + range.start..offset + range.end].rfind("</") {
+                inserts.push(offset + range.start + close + 2);
+            }
+        }
+        inserts.sort_unstable_by(|a, b| b.cmp(a));
+        let mut text = source.to_string();
+        for at in inserts {
+            text.insert_str(at, "md:");
+        }
+        text.replacen(&format!("xmlns=\"{MD}\""), &format!("xmlns:md=\"{MD}\""), 1)
+    }
+
+    fn unprefixed(source: &str) -> String {
+        source.replace("<md:", "<").replace("</md:", "</").replacen(
+            &format!("xmlns:md=\"{MD}\""),
+            &format!("xmlns=\"{MD}\""),
+            1,
+        )
+    }
+
+    /// A value different from the current one, accepted by the registry.
+    fn changed_value(
+        kind: MetadataKind,
+        spec: &unica_metadata::MetadataPropertySpec,
+        current: &str,
+    ) -> Option<MetaPropertyChanges> {
+        let candidates: Vec<MetaPropertyValue> = match spec.value_kind {
+            MetaPropertyValueKind::Type => vec![MetaPropertyValue::Type(
+                MetadataType::new(vec![MetadataTypeVariant::Boolean]).unwrap(),
+            )],
+            MetaPropertyValueKind::Boolean => {
+                vec![MetaPropertyValue::Boolean(current.trim() != "true")]
+            }
+            MetaPropertyValueKind::UnsignedInteger => {
+                let value = current.trim().parse::<u32>().unwrap_or(0);
+                vec![MetaPropertyValue::UnsignedInteger(value + 1)]
+            }
+            MetaPropertyValueKind::String if !spec.enum_values.is_empty() => spec
+                .enum_values
+                .iter()
+                .filter(|value| **value != current.trim())
+                .map(|value| MetaPropertyValue::String((*value).to_string()))
+                .collect(),
+            MetaPropertyValueKind::String => [
+                "Changed",
+                "9",
+                "A9",
+                "Constant.Probe",
+                "CommonModule.Probe.Handle",
+            ]
+            .into_iter()
+            .filter(|value| *value != current.trim())
+            .map(|value| MetaPropertyValue::String(value.to_string()))
+            .collect(),
+        };
+        candidates.into_iter().find_map(|value| {
+            MetaPropertyChanges::convert(
+                kind,
+                vec![MetaPropertyInput::new(spec.public_name, value)],
+            )
+            .ok()
+        })
+    }
+
+    fn current_text(source: &str, tag: &str) -> Option<String> {
+        let doc = roxmltree::Document::parse(source.trim_start_matches('\u{feff}')).ok()?;
+        let properties = doc
+            .root_element()
+            .children()
+            .find(|node| node.is_element())?
+            .children()
+            .find(|node| node.is_element() && node.tag_name().name() == "Properties")?;
+        let property = properties
+            .children()
+            .find(|node| node.is_element() && node.tag_name().name() == tag)?;
+        Some(property.text().unwrap_or("").to_string())
+    }
+
+    fn elements(source: &str) -> Vec<(Option<String>, String)> {
+        let doc = roxmltree::Document::parse(source.trim_start_matches('\u{feff}')).unwrap();
+        doc.descendants()
+            .filter(|node| node.is_element())
+            .map(|node| {
+                (
+                    node.tag_name().namespace().map(str::to_string),
+                    node.tag_name().name().to_string(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn scalar_shell_keeps_the_qualified_name_and_only_namespace_declarations() {
+        use super::scalar_element_shell;
+        assert_eq!(
+            scalar_element_shell(
+                r#"<md:Comment xmlns:note="urn:a>b/c" note:x='1>2'>v</md:Comment>"#
+            ),
+            (
+                r#"<md:Comment xmlns:note="urn:a>b/c""#.to_string(),
+                "md:Comment"
+            )
+        );
+        assert_eq!(
+            scalar_element_shell("<md:Comment />"),
+            ("<md:Comment".to_string(), "md:Comment")
+        );
+        assert_eq!(
+            scalar_element_shell(r#"<Comment xmlns = "http://v8.1c.ru/8.3/MDClasses">v</Comment>"#),
+            (
+                r#"<Comment xmlns="http://v8.1c.ru/8.3/MDClasses""#.to_string(),
+                "Comment"
+            )
+        );
+        assert_eq!(
+            scalar_element_shell("<Comment>v</Comment>"),
+            ("<Comment".to_string(), "Comment")
+        );
+    }
+
+    /// rule: INV.SOURCE.LOCALIZED-STRING-NSTR
+    #[test]
+    fn member_synonym_keeps_inherited_namespaces_and_carriage_return() {
+        let namespaces = r#" xmlns:md="http://v8.1c.ru/8.3/MDClasses" xmlns:other="http://v8.1c.ru/8.3/MDClasses" xmlns:core="http://v8.1c.ru/8.1/data/core""#;
+        let original = "<md:Properties><other:Synonym><core:item><core:lang>en</core:lang><core:content>Same</core:content></core:item></other:Synonym></md:Properties>";
+        let items = unica_metadata::parse_nstr("en = 'New\rline'").unwrap();
+        let mut edited = original.to_string();
+        super::meta_edit_set_mltext_values(&mut edited, "Synonym", "\t", &items, namespaces)
+            .unwrap();
+        assert_eq!(edited, original.replace("Same", "New&#13;line"));
+        let saved = edited.clone();
+        super::meta_edit_set_mltext_values(&mut edited, "Synonym", "\t", &items, namespaces)
+            .unwrap();
+        assert_eq!(edited, saved);
+    }
+
+    /// Every typed property writes the same change into a prefixed descriptor
+    /// as into its default-namespace form: the element keeps the owner's
+    /// prefix and stays in MDClasses, and a repeat is a no-op.
+    #[test]
+    fn every_typed_property_keeps_the_owner_prefix_and_namespace() {
+        let mut missing = Vec::new();
+        let mut failures = Vec::new();
+        for spec in METADATA_PROPERTY_SPECS {
+            let mut covered = false;
+            for kind in spec.allowed_kinds {
+                let Ok((plain, _)) =
+                    crate::template_catalog::minimal_metadata_xml_for_tests(*kind, "Probe")
+                else {
+                    continue;
+                };
+                let Some(current) = current_text(&plain, spec.xml_name) else {
+                    continue;
+                };
+                let Some(changes) = changed_value(*kind, spec, &current) else {
+                    continue;
+                };
+                let mut plain_after = plain.clone();
+                if apply_typed_properties(&mut plain_after, &changes, "ru").is_err()
+                    || plain_after == plain
+                {
+                    continue;
+                }
+                covered = true;
+                let source = prefixed(&plain);
+                let mut after = source.clone();
+                if let Err(error) = apply_typed_properties(&mut after, &changes, "ru") {
+                    failures.push(format!(
+                        "{} of {}: {error:?}",
+                        spec.public_name,
+                        kind.as_str()
+                    ));
+                    break;
+                }
+                let label = format!("{} of {}", spec.public_name, kind.as_str());
+                if unprefixed(&after) != plain_after {
+                    failures.push(format!(
+                        "{label}: prefixed result differs from the default-namespace result"
+                    ));
+                } else if elements(&after) != elements(&plain_after) {
+                    failures.push(format!("{label}: element namespaces changed"));
+                } else {
+                    let mut repeat = after.clone();
+                    apply_typed_properties(&mut repeat, &changes, "ru").unwrap();
+                    if repeat != after {
+                        failures.push(format!("{label}: repeat changed the prefixed descriptor"));
+                    }
+                }
+                break;
+            }
+            if !covered {
+                missing.push(spec.public_name);
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+        assert!(
+            missing.is_empty(),
+            "no owner template exercises {missing:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod export_format_tests {
+    use unica_metadata::{MetaCollection, MetaElementDefinition, MetadataKind};
+
+    const MD: &str = "http://v8.1c.ru/8.3/MDClasses";
+
+    fn document(xml: &str) -> roxmltree::Document<'_> {
+        roxmltree::Document::parse(xml.trim_start_matches('\u{feff}')).unwrap()
+    }
+
+    /// The property names of every enumeration value, in document order.
+    fn enum_value_properties(xml: &str) -> Vec<Vec<String>> {
+        document(xml)
+            .descendants()
+            .filter(|node| node.has_tag_name((MD, "EnumValue")))
+            .map(|value| {
+                let properties = value
+                    .children()
+                    .find(|node| node.has_tag_name((MD, "Properties")))
+                    .unwrap();
+                properties
+                    .children()
+                    .filter(|node| node.is_element())
+                    .map(|node| node.tag_name().name().to_owned())
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn add_enum_value(enum_xml: &str) -> String {
+        let mut xml = enum_xml.trim_start_matches('\u{feff}').to_owned();
+        let element = MetaElementDefinition {
+            name: "Новое".into(),
+            synonym: None,
+            comment: None,
+            r#type: None,
+            required: None,
+            fill_value: None,
+            attributes: vec![],
+            position: None,
+            template_type: None,
+            indexing: None,
+            master: None,
+            main_filter: None,
+            deny_incomplete_values: None,
+        };
+        let mut next_uuid = || "00000000-0000-4000-8000-000000000001".to_owned();
+        super::add_typed_element(
+            &mut xml,
+            "Enum",
+            "СпособыУстановкиКурсаВалюты",
+            MetaCollection::EnumValues,
+            None,
+            &element,
+            "ru",
+            &mut next_uuid,
+        )
+        .unwrap();
+        xml
+    }
+
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
+    #[test]
+    fn a_new_enumeration_value_has_the_properties_of_its_set_format() {
+        for corpus in [
+            include_str!("../../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/Enums/СпособыУстановкиКурсаВалюты.xml"),
+            include_str!("../../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/Enums/СпособыУстановкиКурсаВалюты.xml"),
+            include_str!("../../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src/Enums/СпособыУстановкиКурсаВалюты.xml"),
+        ] {
+            let values = enum_value_properties(&add_enum_value(corpus));
+            let (new, existing) = values.split_last().unwrap();
+            assert_eq!(new, &existing[0], "{values:?}");
+        }
+        let written = add_enum_value(include_str!("../../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/Enums/СпособыУстановкиКурсаВалюты.xml"));
+        assert!(written.contains(
+            "\t\t\t\t\t<Comment/>\r\n\t\t\t\t\t<Color>auto</Color>\r\n\t\t\t\t</Properties>"
+        ));
+    }
+
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
+    #[test]
+    fn a_new_object_declares_the_namespaces_of_its_set_format() {
+        for (version, corpus) in [
+            ("2.20", include_str!("../../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/Catalogs/Валюты.xml")),
+            ("2.21", include_str!("../../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/Catalogs/Валюты.xml")),
+            ("2.22", include_str!("../../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src/Catalogs/Валюты.xml")),
+        ] {
+            let context = crate::template_catalog::MinimalTemplateContext::<()> {
+                chart_of_accounts: None,
+                chart_of_calculation_types: None,
+                task: None,
+                registered_documents: Vec::new(),
+                method_name: None,
+                event_source: None,
+                event_handler: None,
+                dependencies: Vec::new(),
+                language: "ru".to_owned(),
+            };
+            let (catalog, _) = crate::template_catalog::minimal_metadata_xml(
+                MetadataKind::Catalog,
+                "New",
+                version,
+                &context,
+                || "00000000-0000-4000-8000-000000000002".to_owned(),
+            )
+            .unwrap();
+            assert_eq!(
+                root_start_tag(&catalog),
+                root_start_tag(corpus),
+                "{version}"
+            );
+            let wrapped =
+                String::from_utf8(super::wrap_standalone_descriptor("<Template/>", version))
+                    .unwrap();
+            assert_eq!(
+                root_start_tag(&wrapped),
+                root_start_tag(corpus),
+                "{version}"
+            );
+        }
+    }
+
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
+    #[test]
+    fn a_new_report_has_the_properties_of_its_set_format() {
+        // all_kinds 2.22 (Reports/АнализВерсийОбъектов.xml) writes the
+        // analytics schema right after the data composition schema.
+        // all_kinds 2.21 adds the auxiliary variant form right after the
+        // default variant form.
+        for (version, analytics, variant) in [
+            ("2.20", false, false),
+            ("2.21", false, true),
+            ("2.22", true, true),
+        ] {
+            let context = crate::template_catalog::MinimalTemplateContext::<()> {
+                chart_of_accounts: None,
+                chart_of_calculation_types: None,
+                task: None,
+                registered_documents: Vec::new(),
+                method_name: None,
+                event_source: None,
+                event_handler: None,
+                dependencies: Vec::new(),
+                language: "ru".to_owned(),
+            };
+            let (report, _) = crate::template_catalog::minimal_metadata_xml(
+                MetadataKind::Report,
+                "New",
+                version,
+                &context,
+                || "00000000-0000-4000-8000-000000000005".to_owned(),
+            )
+            .unwrap();
+            assert_eq!(
+                report.contains(
+                    "<MainDataCompositionSchema/>\r\n\t\t\t<MainAnalyticsSystemSchema/>\r\n"
+                ),
+                analytics,
+                "{version}: {report}"
+            );
+            assert_eq!(
+                report.matches("MainAnalyticsSystemSchema").count(),
+                usize::from(analytics)
+            );
+            assert_eq!(
+                report.contains("<DefaultVariantForm/>\r\n\t\t\t<AuxiliaryVariantForm/>\r\n"),
+                variant,
+                "{version}: {report}"
+            );
+            assert_eq!(
+                report.matches("AuxiliaryVariantForm").count(),
+                usize::from(variant)
+            );
+        }
+    }
+
+    /// The start tag of the root as written, declarations in their order.
+    fn root_start_tag(xml: &str) -> &str {
+        let start = xml.find("<MetaDataObject").unwrap();
+        &xml[start..start + xml[start..].find('>').unwrap()]
+    }
+
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
+    #[test]
+    fn a_form_added_to_an_object_has_the_properties_of_its_set_format() {
+        for (corpus, mode) in [
+            (include_str!("../../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/Catalogs/Валюты.xml"), None),
+            (include_str!("../../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/Catalogs/Валюты.xml"), Some("Any")),
+            (include_str!("../../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src/Catalogs/Валюты.xml"), Some("Any")),
+        ] {
+            let mut xml = corpus.trim_start_matches('\u{feff}').to_owned();
+            let element = MetaElementDefinition {
+                name: "НоваяФорма".into(),
+                synonym: None,
+                comment: None,
+                r#type: None,
+                required: None,
+                fill_value: None,
+                attributes: vec![],
+                position: None,
+                template_type: None,
+                indexing: None,
+                master: None,
+                main_filter: None,
+                deny_incomplete_values: None,
+            };
+            let mut next_uuid = || "00000000-0000-4000-8000-000000000004".to_owned();
+            super::add_typed_element(
+                &mut xml,
+                "Catalog",
+                "Валюты",
+                MetaCollection::Forms,
+                None,
+                &element,
+                "ru",
+                &mut next_uuid,
+            )
+            .unwrap();
+            let document = document(&xml);
+            let form = document
+                .descendants()
+                .find(|node| {
+                    node.has_tag_name((MD, "Form"))
+                        && node.descendants().any(|name| {
+                            name.has_tag_name((MD, "Name")) && name.text() == Some("НоваяФорма")
+                        })
+                })
+                .unwrap();
+            let properties: Vec<_> = form
+                .descendants()
+                .find(|node| node.has_tag_name((MD, "Properties")))
+                .unwrap()
+                .children()
+                .filter(|node| node.is_element())
+                .collect();
+            let last = properties.last().unwrap();
+            match mode {
+                Some(mode) => {
+                    assert_eq!(last.tag_name().name(), "UseInInterfaceCompatibilityMode");
+                    assert_eq!(last.text(), Some(mode));
+                    let before = properties[properties.len() - 2].tag_name().name();
+                    assert_eq!(before, "UsePurposes");
+                }
+                None => assert_eq!(last.tag_name().name(), "UsePurposes"),
+            }
+        }
+    }
+}

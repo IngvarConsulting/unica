@@ -33,6 +33,16 @@ pub fn shared_http_client() -> std::sync::Arc<dyn HttpClient + Send + Sync> {
 }
 
 impl StandardsAdapter {
+    // resource-limit: docs.v8std-http-timeout
+    // class: deadline
+    // unit: ms
+    // scope: connection
+    // value: 30000
+    // resource: Срок HTTP-запроса к сервису стандартов v8std.
+    // status: unproven
+    // origin: коммит aff5640a7 (v10)
+    // problem: неизвестно
+    // on-reach: запрос прерывается, поиск по стандартам возвращает сетевую ошибку
     const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
     pub fn outcome_from_http_body(
@@ -72,7 +82,10 @@ impl StandardsAdapter {
                     "unica.standards.{operation} completed through internal v8std MCP proxy"
                 ),
                 errors: Vec::new(),
-                artifacts: vec![endpoint.to_string(), remote_method.to_string()],
+                artifacts: vec![
+                    unica_network::diagnostic_endpoint(endpoint),
+                    remote_method.to_string(),
+                ],
                 data: object.remove("result"),
             },
             Ok(_) => StandardsOutcome::failure(
@@ -108,7 +121,10 @@ impl StandardsOutcome {
             ok: false,
             summary,
             errors: vec![error],
-            artifacts: vec![endpoint.to_string(), remote_method.to_string()],
+            artifacts: vec![
+                unica_network::diagnostic_endpoint(endpoint),
+                remote_method.to_string(),
+            ],
             data: None,
         }
     }

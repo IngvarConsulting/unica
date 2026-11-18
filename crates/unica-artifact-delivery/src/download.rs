@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::error::{BootstrapError, Failure, Result};
-use unica_network::{NetworkClient, NetworkError, NetworkFailure};
+use unica_network::{diagnostic_url, NetworkClient, NetworkError, NetworkFailure};
 
 pub trait Downloader: Send + Sync {
     fn download(
@@ -32,6 +32,16 @@ impl DownloadObserver for SilentDownload {
 }
 
 /// Шаг чтения.
+// resource-limit: delivery.download-chunk-bytes
+// class: step
+// unit: bytes
+// scope: request
+// value: 65536
+// resource: Размер одного чтения тела ответа при загрузке артефакта.
+// status: unproven
+// origin: #604
+// problem: неизвестно
+// on-reach: тело читается следующей порцией до конца ответа
 const CHUNK: usize = 64 * 1024;
 
 /// HTTP-загрузчик поверх общего клиента процесса ([`NetworkClient`]):
@@ -120,7 +130,8 @@ impl HttpDownloader {
                 BootstrapError::of(
                     Failure::Network,
                     format!(
-                        "failed to read runtime asset {url} after {} bytes: {error}",
+                        "failed to read runtime asset {} after {} bytes: {error}",
+                        diagnostic_url(url),
                         start + moved
                     ),
                 )
@@ -158,7 +169,8 @@ fn download_failure(url: &str, error: NetworkError) -> BootstrapError {
     let refusal = BootstrapError::of(
         failure,
         format!(
-            "failed to download runtime asset {url}: {}",
+            "failed to download runtime asset {}: {}",
+            diagnostic_url(url),
             error.message()
         ),
     )
@@ -179,7 +191,10 @@ impl Downloader for HttpDownloader {
         if !url.starts_with("https://") {
             return Err(BootstrapError::of(
                 Failure::Configuration,
-                format!("runtime download URL must use HTTPS: {url}"),
+                format!(
+                    "runtime download URL must use HTTPS: {}",
+                    diagnostic_url(url)
+                ),
             ));
         }
         self.transfer(url, destination, observer)
@@ -187,7 +202,7 @@ impl Downloader for HttpDownloader {
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::*;
 
     use std::io::{BufRead, BufReader, Write};
@@ -245,7 +260,10 @@ mod tests {
                     if line.trim().is_empty() {
                         break;
                     }
-                    if let Some(value) = line.strip_prefix("Range: ") {
+                    if let Some((_, value)) = line
+                        .split_once(':')
+                        .filter(|(name, _)| name.eq_ignore_ascii_case("Range"))
+                    {
                         range = Some(value.trim().to_owned());
                     }
                 }
@@ -314,6 +332,7 @@ mod tests {
         (0..size).map(|index| (index % 251) as u8).collect()
     }
 
+    /// rule: INV.PKG.RESUMABLE-DOWNLOAD
     #[test]
     fn a_resumed_download_asks_only_for_the_missing_tail() {
         let bytes = payload(4096);
@@ -333,6 +352,7 @@ mod tests {
         assert_eq!(fs::read(&destination).expect("resumed file"), bytes);
     }
 
+    /// rule: INV.PKG.RESUMABLE-DOWNLOAD
     #[test]
     fn a_server_that_forgets_the_range_still_leaves_the_whole_file() {
         // Зеркала и прокси отвечают `200` на запрос с диапазоном. Дописать
@@ -436,6 +456,7 @@ mod tests {
         assert!(!destination.exists());
     }
 
+    /// rule: INV.PKG.NETWORK-TRUST-AND-PROXY
     #[test]
     fn a_root_the_os_does_not_trust_is_refused_with_the_interception_cure() {
         // Корень стенда не стоит в хранилище ОС: так выглядит подмена
@@ -461,6 +482,7 @@ mod tests {
         assert!(stand.requests().is_empty(), "до HTTP дело не дошло");
     }
 
+    /// rule: INV.PKG.NETWORK-PROXY-ROUTING
     #[test]
     fn https_proxy_carries_the_download_to_the_proxy() {
         let root = TestRoot::generate("Unica proxy test root");
@@ -482,6 +504,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.PKG.NETWORK-PROXY-ROUTING
     #[test]
     fn no_proxy_sends_the_download_past_the_proxy() {
         let root = TestRoot::generate("Unica no-proxy test root");
@@ -498,6 +521,7 @@ mod tests {
         assert!(error.to_string().contains("direct connection"), "{error}");
     }
 
+    /// rule: INV.PKG.NETWORK-PROXY-ROUTING
     #[test]
     fn an_unsupported_proxy_is_a_configuration_refusal_without_the_password() {
         let error = downloader_with(&[("HTTPS_PROXY", "socks5://alice:s3cret@127.0.0.1:9")])

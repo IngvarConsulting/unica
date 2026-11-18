@@ -138,6 +138,7 @@ mod tests {
         .is_err());
     }
 
+    /// rule: INV.SOURCE.DEFAULT-SET-SELECTION
     #[test]
     fn main_source_set_wins_without_io() {
         let source_sets = vec![

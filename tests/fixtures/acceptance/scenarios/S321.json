@@ -1,0 +1,35 @@
+{
+  "id": "S321",
+  "area": "Подсистемы и интерфейс",
+  "task": "Задать порядок подсистем на интерфейсе подсистемы — порядок подсистем живёт в корне, отказ до планирования",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Subsystem.Администрирование.Interface",
+        "ops": [
+          {
+            "op": "subsystemOrder.set",
+            "args": {
+              "values": {
+                "subsystems": [
+                  "Subsystem.КонтрольРаботыПользователей"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: apply operation `subsystemOrder.set` does not apply to Interface `main:Subsystem.Администрирование.Interface`; it applies at `main:Configuration`",
+      "assertions": [
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:Configuration.Can.subsystemOrder.set"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,215 @@
+{
+  "id": "S357",
+  "issue": 895,
+  "area": "Код BSL",
+  "task": "Выделить три helper-метода одной заменой метода по его адресу: одна запись, опубликованный повтор пустой, повторно объявленный helper отказывает; селектор метода отказывает без записи, next ведёт к контракту code.replace на модуле",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.GoogleПереводчик",
+        "ops": [
+          {
+            "op": "code.replace",
+            "args": {
+              "selector": {
+                "method": "МаксимальныйРазмерПорции"
+              },
+              "text": "Функция МаксимальныйРазмерПорции() Экспорт\n\tВозврат CorpusOne() + CorpusTwo() + CorpusThree();\nКонецФункции\n\nФункция CorpusOne()\n\tВозврат 1;\nКонецФункции\n\nФункция CorpusTwo()\n\tВозврат 2;\nКонецФункции\n\nФункция CorpusThree()\n\tВозврат 3;\nКонецФункции"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.selector.method"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:CommonModule.GoogleПереводчик.Can.code.replace"
+        }
+      ],
+      "refusal": "bad_value: unknown argument; selector accepts only anchor",
+      "captures": {
+        "unchanged1": {
+          "file": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.GoogleПереводчик",
+        "ops": [
+          {
+            "op": "code.replace",
+            "args": {
+              "at": "main:CommonModule.GoogleПереводчик.Method.МаксимальныйРазмерПорции",
+              "text": "Функция МаксимальныйРазмерПорции() Экспорт\n\tВозврат CorpusOne() + CorpusTwo() + CorpusThree();\nКонецФункции\n\nФункция CorpusOne()\n\tВозврат 1;\nКонецФункции\n\nФункция CorpusTwo()\n\tВозврат 2;\nКонецФункции\n\nФункция CorpusThree()\n\tВозврат 3;\nКонецФункции"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+          "eq": "$capture.unchanged1"
+        }
+      ],
+      "captures": {
+        "extract": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.extract"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+          "eq": "5fa4abf059a9bd998e6a362090a135e27290e0aaa4ec5861dbcdc9f1ff9aade9"
+        }
+      ],
+      "captures": {
+        "unchanged2": {
+          "file": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.GoogleПереводчик",
+        "ops": [
+          {
+            "op": "code.replace",
+            "args": {
+              "at": "main:CommonModule.GoogleПереводчик.Method.МаксимальныйРазмерПорции",
+              "text": "Функция МаксимальныйРазмерПорции() Экспорт\n\tВозврат CorpusOne() + CorpusTwo() + CorpusThree();\nКонецФункции\n\nФункция CorpusOne()\n\tВозврат 1;\nКонецФункции\n\nФункция CorpusTwo()\n\tВозврат 2;\nКонецФункции\n\nФункция CorpusThree()\n\tВозврат 3;\nКонецФункции"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+          "eq": "$capture.unchanged2"
+        }
+      ],
+      "captures": {
+        "repeat": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.repeat"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+          "eq": "$capture.unchanged2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.GoogleПереводчик",
+        "ops": [
+          {
+            "op": "code.replace",
+            "args": {
+              "at": "main:CommonModule.GoogleПереводчик.Method.ДоступныеЯзыки",
+              "text": "Функция ДоступныеЯзыки() Экспорт\n\tВозврат CorpusOne();\nКонецФункции\n\nФункция CorpusOne()\n\tВозврат 1;\nКонецФункции"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: replacement declares method `CorpusOne` that the module already defines elsewhere",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.text"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+          "eq": "$capture.unchanged2"
+        }
+      ]
+    }
+  ]
+}

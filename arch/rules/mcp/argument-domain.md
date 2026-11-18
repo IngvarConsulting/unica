@@ -1,6 +1,5 @@
 ---
 id: INV.WIRE.ARGUMENT-DOMAIN-REFUSAL
-check: []
 gap: https://github.com/IngvarConsulting/unica/issues/970
 ---
 

@@ -2,76 +2,10 @@ use super::{MetaDiagnostic, MetaDiagnosticCode, MetadataKind, MetadataType};
 use serde::Serialize;
 use std::collections::HashSet;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
-#[serde(rename_all = "PascalCase")]
-pub enum MetaPropertyKey {
-    Type,
-    Synonym,
-    Comment,
-    ActionPeriod,
-    ActionPeriodUse,
-    AutoOrderByCode,
-    BasePeriod,
-    ChoiceMode,
-    ClientManagedApplication,
-    ClientOrdinaryApplication,
-    CodeAllowedLength,
-    CodeMask,
-    CodeType,
-    Correspondence,
-    DefaultPresentation,
-    DependenceOnCalculationTypes,
-    Description,
-    Event,
-    DistributedInfoBase,
-    EnableTotalsSplitting,
-    ExternalConnection,
-    FoldersOnTop,
-    Global,
-    Handler,
-    HierarchyType,
-    LevelCount,
-    LimitLevelCount,
-    MainFilterOnPeriod,
-    MaxExtDimensionCount,
-    Namespace,
-    NumberAllowedLength,
-    NumberLength,
-    NumberPeriodicity,
-    NumberType,
-    OrderLength,
-    PeriodAdjustmentLength,
-    Periodicity,
-    PostInPrivilegedMode,
-    Posting,
-    Predefined,
-    Privileged,
-    QuickChoice,
-    RealTimePosting,
-    RegisterRecordsDeletion,
-    RegisterRecordsWritingOnPost,
-    RestartCountOnFailure,
-    RestartIntervalOnFailure,
-    ReturnValuesReuse,
-    ReuseSessions,
-    #[serde(rename = "RootURL")]
-    RootUrl,
-    Server,
-    ServerCall,
-    SessionMaxAge,
-    SubordinationUse,
-    UnpostInPrivilegedMode,
-    Use,
-    WriteMode,
-    CheckUnique,
-    CodeLength,
-    DescriptionLength,
-    Hierarchical,
-    Autonumbering,
-    UseStandardCommands,
-    IncludeHelpInContents,
-    RegisterType,
-}
+// Each property lives in `properties/<key>.rs`; build.rs declares those
+// modules, the `MetaPropertyKey` enum and `METADATA_PROPERTY_SPECS` sorted by
+// public name, so a new property does not edit a shared list here.
+include!(concat!(env!("OUT_DIR"), "/properties_modules.rs"));
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MetaPropertyValueKind {
@@ -86,15 +20,147 @@ pub enum MetaPropertyValueKind {
 pub enum MetaPropertyValue {
     Type(MetadataType),
     String(String),
+    /// Every language of a multilingual property, as `view` reads it at
+    /// `<node>.Props.<name>` (#2163).
+    Localized(Vec<LocalizedItem>),
     Boolean(bool),
     UnsignedInteger(u32),
+}
+
+/// One language of a multilingual value: `{"language", "content"}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LocalizedItem {
+    pub language: String,
+    pub content: String,
+}
+
+impl LocalizedItem {
+    pub fn new(language: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            language: language.into(),
+            content: content.into(),
+        }
+    }
+}
+
+/// The JSON Schema of a multilingual property: one string in the NStr form
+/// of 1C, `ru = 'Валюты'; en = 'Currencies'`.
+pub fn localized_value_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "string",
+        "pattern": NSTR_PATTERN,
+        "description": "Every language of the value in NStr form: ru = 'Валюты'; en = 'Currencies'. A quote inside the text is doubled. Languages not listed are removed; an empty string clears the value."
+    })
+}
+
+/// The NStr grammar `parse_nstr` reads; language codes are ASCII. A repeated
+/// code is refused by the parser alone.
+pub const NSTR_PATTERN: &str = r"^\s*(?:[A-Za-z0-9_-]+\s*=\s*'(?:[^']|'')*'\s*(?:;\s*[A-Za-z0-9_-]+\s*=\s*'(?:[^']|'')*'\s*)*;?\s*)?$";
+
+/// The hint a refused multilingual value carries.
+pub const LOCALIZED_VALUE_FORM: &str =
+    "a multilingual value is a string in NStr form: ru = 'Валюты'; en = 'Currencies'";
+
+fn is_xml_text_character(ch: char) -> bool {
+    matches!(ch, '\t' | '\n' | '\r' | '\u{20}'..='\u{D7FF}' | '\u{E000}'..='\u{FFFD}' | '\u{10000}'..='\u{10FFFF}')
+}
+
+/// Every language of an NStr-form string: `code = 'text'` pairs separated by
+/// `;`, a doubled quote standing for one quote. An empty or blank string has
+/// no languages. Codes are distinct.
+pub fn parse_nstr(value: &str) -> Result<Vec<LocalizedItem>, String> {
+    let mut items: Vec<LocalizedItem> = Vec::new();
+    let mut rest = value.trim_start();
+    while !rest.is_empty() {
+        let code_end = rest
+            .find(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_' || ch == '-'))
+            .unwrap_or(rest.len());
+        let language = &rest[..code_end];
+        if language.is_empty() {
+            return Err(format!(
+                "{LOCALIZED_VALUE_FORM}; a language code is missing"
+            ));
+        }
+        rest = rest[code_end..].trim_start();
+        rest = rest
+            .strip_prefix('=')
+            .ok_or_else(|| format!("{LOCALIZED_VALUE_FORM}; `=` must follow `{language}`"))?
+            .trim_start();
+        rest = rest.strip_prefix('\'').ok_or_else(|| {
+            format!("{LOCALIZED_VALUE_FORM}; the text of `{language}` must be quoted")
+        })?;
+        let mut content = String::new();
+        loop {
+            let quote = rest.find('\'').ok_or_else(|| {
+                format!("{LOCALIZED_VALUE_FORM}; the text of `{language}` is not closed")
+            })?;
+            content.push_str(&rest[..quote]);
+            rest = &rest[quote + 1..];
+            match rest.strip_prefix('\'') {
+                Some(after) => {
+                    content.push('\'');
+                    rest = after;
+                }
+                None => break,
+            }
+        }
+        if !content.chars().all(is_xml_text_character) {
+            return Err(format!("{LOCALIZED_VALUE_FORM}; the text of `{language}` must contain only XML 1.0 characters"));
+        }
+        if items
+            .iter()
+            .any(|item| item.language.eq_ignore_ascii_case(language))
+        {
+            return Err(format!(
+                "{LOCALIZED_VALUE_FORM}; language `{language}` is listed twice"
+            ));
+        }
+        items.push(LocalizedItem {
+            language: language.to_string(),
+            content,
+        });
+        rest = rest.trim_start();
+        if rest.is_empty() {
+            break;
+        }
+        rest = rest
+            .strip_prefix(';')
+            .ok_or_else(|| format!("{LOCALIZED_VALUE_FORM}; `;` separates the languages"))?
+            .trim_start();
+    }
+    Ok(items)
+}
+
+/// The NStr form of `items`, as `view` writes a multilingual value. Items an
+/// NStr string cannot carry — a code outside the grammar or a repeated code —
+/// have no form, so a reader never publishes what a write would refuse.
+pub fn format_nstr(items: &[LocalizedItem]) -> Option<String> {
+    let mut seen: Vec<&str> = Vec::with_capacity(items.len());
+    let mut pairs = Vec::with_capacity(items.len());
+    for item in items {
+        let code = item.language.as_str();
+        if code.is_empty()
+            || !code
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+            || seen
+                .iter()
+                .any(|previous| previous.eq_ignore_ascii_case(code))
+            || !item.content.chars().all(is_xml_text_character)
+        {
+            return None;
+        }
+        seen.push(code);
+        pairs.push(format!("{code} = '{}'", item.content.replace('\'', "''")));
+    }
+    Some(pairs.join("; "))
 }
 
 impl MetaPropertyValue {
     fn kind(&self) -> MetaPropertyValueKind {
         match self {
             Self::Type(_) => MetaPropertyValueKind::Type,
-            Self::String(_) => MetaPropertyValueKind::String,
+            Self::String(_) | Self::Localized(_) => MetaPropertyValueKind::String,
             Self::Boolean(_) => MetaPropertyValueKind::Boolean,
             Self::UnsignedInteger(_) => MetaPropertyValueKind::UnsignedInteger,
         }
@@ -125,6 +191,39 @@ pub struct MetadataPropertySpec {
     pub allowed_kinds: &'static [MetadataKind],
     pub enum_values: &'static [&'static str],
     pub string_pattern: Option<&'static str>,
+    pub string_max_length: Option<usize>,
+    /// Owners whose existing enum element `props.set` rewrites in place.
+    pub in_place: InPlace,
+}
+
+/// Owners whose existing element of an enum property is written in place:
+/// the single direct element must hold a confirmed value, and only its text
+/// changes, keeping the qualified element and its namespace declarations.
+/// Other owners use the general property writer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InPlace {
+    Never,
+    /// Every owner the property allows.
+    Always,
+    /// Only these owners.
+    Owners(&'static [MetadataKind]),
+}
+
+impl MetadataPropertySpec {
+    /// Whether `props.set` rewrites this property of `kind` in place.
+    pub fn in_place(&self, kind: MetadataKind) -> bool {
+        self.allowed_kinds.contains(&kind)
+            && match self.in_place {
+                InPlace::Never => false,
+                InPlace::Always => true,
+                InPlace::Owners(owners) => owners.contains(&kind),
+            }
+    }
+
+    const fn written_in_place(mut self, in_place: InPlace) -> Self {
+        self.in_place = in_place;
+        self
+    }
 }
 
 const fn property(
@@ -141,6 +240,8 @@ const fn property(
         allowed_kinds,
         enum_values: &[],
         string_pattern: None,
+        string_max_length: None,
+        in_place: InPlace::Never,
     }
 }
 
@@ -185,6 +286,8 @@ const fn enum_property(
         allowed_kinds,
         enum_values,
         string_pattern: None,
+        string_max_length: None,
+        in_place: InPlace::Never,
     }
 }
 
@@ -202,6 +305,8 @@ const fn patterned_string_property(
         allowed_kinds,
         enum_values: &[],
         string_pattern: Some(string_pattern),
+        string_max_length: None,
+        in_place: InPlace::Never,
     }
 }
 
@@ -215,548 +320,30 @@ const CHART_OF_ACCOUNTS_KINDS: &[MetadataKind] = &[MetadataKind::ChartOfAccounts
 const CHART_OF_CALCULATION_TYPES_KINDS: &[MetadataKind] = &[MetadataKind::ChartOfCalculationTypes];
 const COMMON_MODULE_KINDS: &[MetadataKind] = &[MetadataKind::CommonModule];
 const SCHEDULED_JOB_KINDS: &[MetadataKind] = &[MetadataKind::ScheduledJob];
-const EXCHANGE_PLAN_KINDS: &[MetadataKind] = &[MetadataKind::ExchangePlan];
-const HTTP_SERVICE_KINDS: &[MetadataKind] = &[MetadataKind::HTTPService];
-const WEB_SERVICE_KINDS: &[MetadataKind] = &[MetadataKind::WebService];
 const EVENT_SUBSCRIPTION_KINDS: &[MetadataKind] = &[MetadataKind::EventSubscription];
 const WEB_SERVICE_SESSION_KINDS: &[MetadataKind] =
     &[MetadataKind::HTTPService, MetadataKind::WebService];
 
+const NUMBER_PERIODICITY_KINDS: &[MetadataKind] =
+    &[MetadataKind::Document, MetadataKind::BusinessProcess];
 const DOCUMENT_NUMBER_KINDS: &[MetadataKind] = &[
     MetadataKind::Document,
     MetadataKind::BusinessProcess,
     MetadataKind::Task,
 ];
-const CODE_KINDS: &[MetadataKind] = &[
-    MetadataKind::Catalog,
-    MetadataKind::ChartOfAccounts,
-    MetadataKind::ChartOfCharacteristicTypes,
-    MetadataKind::ChartOfCalculationTypes,
-    MetadataKind::ExchangePlan,
-];
-const DESCRIPTION_KINDS: &[MetadataKind] = &[
-    MetadataKind::Catalog,
-    MetadataKind::ChartOfAccounts,
-    MetadataKind::ChartOfCharacteristicTypes,
-    MetadataKind::ChartOfCalculationTypes,
-    MetadataKind::Task,
-    MetadataKind::ExchangePlan,
-];
-const HIERARCHICAL_KINDS: &[MetadataKind] = &[
-    MetadataKind::Catalog,
-    MetadataKind::ChartOfCharacteristicTypes,
-];
-const CHECK_UNIQUE_KINDS: &[MetadataKind] = &[
-    MetadataKind::Catalog,
-    MetadataKind::Document,
-    MetadataKind::ChartOfAccounts,
-    MetadataKind::ChartOfCharacteristicTypes,
-    MetadataKind::BusinessProcess,
-    MetadataKind::Task,
-];
-const AUTONUMBER_KINDS: &[MetadataKind] = &[
-    MetadataKind::Catalog,
-    MetadataKind::Document,
-    MetadataKind::ChartOfCharacteristicTypes,
-    MetadataKind::BusinessProcess,
-    MetadataKind::Task,
-];
-const STANDARD_COMMAND_KINDS: &[MetadataKind] = &[
-    MetadataKind::Catalog,
-    MetadataKind::Document,
-    MetadataKind::Enum,
-    MetadataKind::Constant,
-    MetadataKind::InformationRegister,
-    MetadataKind::AccumulationRegister,
-    MetadataKind::AccountingRegister,
-    MetadataKind::CalculationRegister,
-    MetadataKind::ChartOfAccounts,
-    MetadataKind::ChartOfCharacteristicTypes,
-    MetadataKind::ChartOfCalculationTypes,
-    MetadataKind::BusinessProcess,
-    MetadataKind::Task,
-    MetadataKind::ExchangePlan,
-    MetadataKind::DocumentJournal,
-    MetadataKind::Report,
-    MetadataKind::DataProcessor,
-];
-/// Kinds whose 8.3.27 descriptor carries a root `IncludeHelpInContents`.
-///
-/// Source: the Sendbox vendor configuration dumped by Designer 8.3.27
-/// (format 2.20) and the v8-runner designer fixture
-/// `tests/fixtures/designer/configuration` (format 2.20). The vendor dump
-/// has no AccountingRegister, CalculationRegister, ChartOfAccounts or
-/// ChartOfCalculationTypes; the v8-runner fixture confirms those four. Every
-/// object of the listed kinds in both dumps has the element; no object of the
-/// other typed kinds has it (Constant, Enum, CommonModule, ScheduledJob,
-/// EventSubscription, HTTPService, WebService, DefinedType).
-const INCLUDE_HELP_KINDS: &[MetadataKind] = &[
+const CODE_TYPE_KINDS: &[MetadataKind] =
+    &[MetadataKind::Catalog, MetadataKind::ChartOfCalculationTypes];
+/// Owners of the three data-history properties.
+const DATA_HISTORY_KINDS: &[MetadataKind] = &[
     MetadataKind::Catalog,
     MetadataKind::Document,
     MetadataKind::InformationRegister,
-    MetadataKind::AccumulationRegister,
-    MetadataKind::AccountingRegister,
-    MetadataKind::CalculationRegister,
-    MetadataKind::ChartOfAccounts,
-    MetadataKind::ChartOfCharacteristicTypes,
-    MetadataKind::ChartOfCalculationTypes,
-    MetadataKind::BusinessProcess,
-    MetadataKind::Task,
-    MetadataKind::ExchangePlan,
-    MetadataKind::DocumentJournal,
-    MetadataKind::Report,
-    MetadataKind::DataProcessor,
 ];
-
-const CHOICE_MODE_VALUES: &[&str] = &["BothWays", "FromForm", "QuickChoice"];
-const CODE_ALLOWED_LENGTH_VALUES: &[&str] = &["Variable", "Fixed"];
-const CODE_TYPE_VALUES: &[&str] = &["String", "Number"];
-const DEFAULT_PRESENTATION_VALUES: &[&str] = &["AsDescription", "AsCode"];
-const DEPENDENCE_VALUES: &[&str] = &["DontUse", "OnActionPeriod"];
-const HIERARCHY_TYPE_VALUES: &[&str] = &["HierarchyFoldersAndItems", "HierarchyOfItems"];
-const NUMBER_ALLOWED_LENGTH_VALUES: &[&str] = &["Variable", "Fixed"];
-const NUMBER_PERIODICITY_VALUES: &[&str] = &["Day", "Month", "Nonperiodical", "Quarter", "Year"];
-const NUMBER_TYPE_VALUES: &[&str] = &["String", "Number"];
-const INFORMATION_REGISTER_PERIODICITY_VALUES: &[&str] = &[
-    "Nonperiodical",
-    "Second",
-    "Day",
-    "Month",
-    "Quarter",
-    "Year",
-    "RecorderPosition",
-];
-const CALCULATION_REGISTER_PERIODICITY_VALUES: &[&str] = &["Day", "Month", "Quarter", "Year"];
 const POSTING_VALUES: &[&str] = &["Allow", "Deny"];
 const REGISTER_RECORDS_DELETION_VALUES: &[&str] =
     &["AutoDelete", "AutoDeleteOnUnpost", "AutoDeleteOff"];
-const REGISTER_RECORDS_WRITING_VALUES: &[&str] = &["WriteModified", "WriteSelected", "WriteAll"];
 /// Platform enumeration `AccumulationRegisterType`: `Balance` (остатки) or
 /// `Turnovers` (обороты). There is no `Balances` member.
-const REGISTER_TYPE_VALUES: &[&str] = &["Balance", "Turnovers"];
-const RETURN_VALUES_REUSE_VALUES: &[&str] = &["DontUse", "DuringRequest", "DuringSession"];
-const REUSE_SESSIONS_VALUES: &[&str] = &["DontUse", "AutoUse"];
-const SUBORDINATION_USE_VALUES: &[&str] = &["ToFolders", "ToFoldersAndItems", "ToItems"];
-const WRITE_MODE_VALUES: &[&str] = &["Independent", "RecorderSubordinate"];
-
-pub const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
-    property(
-        "Type",
-        MetaPropertyKey::Type,
-        MetaPropertyValueKind::Type,
-        &[MetadataKind::Constant],
-    ),
-    property(
-        "Synonym",
-        MetaPropertyKey::Synonym,
-        MetaPropertyValueKind::String,
-        MetadataKind::ALL,
-    ),
-    property(
-        "Comment",
-        MetaPropertyKey::Comment,
-        MetaPropertyValueKind::String,
-        MetadataKind::ALL,
-    ),
-    property(
-        "ActionPeriod",
-        MetaPropertyKey::ActionPeriod,
-        MetaPropertyValueKind::Boolean,
-        CALCULATION_REGISTER_KINDS,
-    ),
-    property(
-        "ActionPeriodUse",
-        MetaPropertyKey::ActionPeriodUse,
-        MetaPropertyValueKind::Boolean,
-        CHART_OF_CALCULATION_TYPES_KINDS,
-    ),
-    property(
-        "AutoOrderByCode",
-        MetaPropertyKey::AutoOrderByCode,
-        MetaPropertyValueKind::Boolean,
-        CHART_OF_ACCOUNTS_KINDS,
-    ),
-    property(
-        "BasePeriod",
-        MetaPropertyKey::BasePeriod,
-        MetaPropertyValueKind::Boolean,
-        CALCULATION_REGISTER_KINDS,
-    ),
-    enum_property(
-        "ChoiceMode",
-        "ChoiceMode",
-        MetaPropertyKey::ChoiceMode,
-        CATALOG_KINDS,
-        CHOICE_MODE_VALUES,
-    ),
-    property(
-        "ClientManagedApplication",
-        MetaPropertyKey::ClientManagedApplication,
-        MetaPropertyValueKind::Boolean,
-        COMMON_MODULE_KINDS,
-    ),
-    property(
-        "ClientOrdinaryApplication",
-        MetaPropertyKey::ClientOrdinaryApplication,
-        MetaPropertyValueKind::Boolean,
-        COMMON_MODULE_KINDS,
-    ),
-    enum_property(
-        "CodeAllowedLength",
-        "CodeAllowedLength",
-        MetaPropertyKey::CodeAllowedLength,
-        CATALOG_KINDS,
-        CODE_ALLOWED_LENGTH_VALUES,
-    ),
-    property(
-        "CodeMask",
-        MetaPropertyKey::CodeMask,
-        MetaPropertyValueKind::String,
-        CHART_OF_ACCOUNTS_KINDS,
-    ),
-    enum_property(
-        "CodeType",
-        "CodeType",
-        MetaPropertyKey::CodeType,
-        CATALOG_KINDS,
-        CODE_TYPE_VALUES,
-    ),
-    property(
-        "Correspondence",
-        MetaPropertyKey::Correspondence,
-        MetaPropertyValueKind::Boolean,
-        ACCOUNTING_REGISTER_KINDS,
-    ),
-    enum_property(
-        "DefaultPresentation",
-        "DefaultPresentation",
-        MetaPropertyKey::DefaultPresentation,
-        CATALOG_KINDS,
-        DEFAULT_PRESENTATION_VALUES,
-    ),
-    enum_property(
-        "DependenceOnCalculationTypes",
-        "DependenceOnCalculationTypes",
-        MetaPropertyKey::DependenceOnCalculationTypes,
-        CHART_OF_CALCULATION_TYPES_KINDS,
-        DEPENDENCE_VALUES,
-    ),
-    property(
-        "Description",
-        MetaPropertyKey::Description,
-        MetaPropertyValueKind::String,
-        SCHEDULED_JOB_KINDS,
-    ),
-    patterned_string_property(
-        "Event",
-        MetaPropertyKey::Event,
-        EVENT_SUBSCRIPTION_KINDS,
-        "^[A-Z][A-Za-z0-9]*$",
-    ),
-    property(
-        "DistributedInfoBase",
-        MetaPropertyKey::DistributedInfoBase,
-        MetaPropertyValueKind::Boolean,
-        EXCHANGE_PLAN_KINDS,
-    ),
-    property(
-        "EnableTotalsSplitting",
-        MetaPropertyKey::EnableTotalsSplitting,
-        MetaPropertyValueKind::Boolean,
-        ACCUMULATION_REGISTER_KINDS,
-    ),
-    property(
-        "ExternalConnection",
-        MetaPropertyKey::ExternalConnection,
-        MetaPropertyValueKind::Boolean,
-        COMMON_MODULE_KINDS,
-    ),
-    property(
-        "FoldersOnTop",
-        MetaPropertyKey::FoldersOnTop,
-        MetaPropertyValueKind::Boolean,
-        CATALOG_KINDS,
-    ),
-    property(
-        "Global",
-        MetaPropertyKey::Global,
-        MetaPropertyValueKind::Boolean,
-        COMMON_MODULE_KINDS,
-    ),
-    patterned_string_property(
-        "Handler",
-        MetaPropertyKey::Handler,
-        EVENT_SUBSCRIPTION_KINDS,
-        r"^CommonModule\.[^.]+\.[^.]+$",
-    ),
-    enum_property(
-        "HierarchyType",
-        "HierarchyType",
-        MetaPropertyKey::HierarchyType,
-        CATALOG_KINDS,
-        HIERARCHY_TYPE_VALUES,
-    ),
-    property(
-        "LevelCount",
-        MetaPropertyKey::LevelCount,
-        MetaPropertyValueKind::UnsignedInteger,
-        CATALOG_KINDS,
-    ),
-    property(
-        "LimitLevelCount",
-        MetaPropertyKey::LimitLevelCount,
-        MetaPropertyValueKind::Boolean,
-        CATALOG_KINDS,
-    ),
-    property(
-        "MainFilterOnPeriod",
-        MetaPropertyKey::MainFilterOnPeriod,
-        MetaPropertyValueKind::Boolean,
-        INFORMATION_REGISTER_KINDS,
-    ),
-    property(
-        "MaxExtDimensionCount",
-        MetaPropertyKey::MaxExtDimensionCount,
-        MetaPropertyValueKind::UnsignedInteger,
-        CHART_OF_ACCOUNTS_KINDS,
-    ),
-    property(
-        "Namespace",
-        MetaPropertyKey::Namespace,
-        MetaPropertyValueKind::String,
-        WEB_SERVICE_KINDS,
-    ),
-    enum_property(
-        "NumberAllowedLength",
-        "NumberAllowedLength",
-        MetaPropertyKey::NumberAllowedLength,
-        DOCUMENT_KINDS,
-        NUMBER_ALLOWED_LENGTH_VALUES,
-    ),
-    enum_property(
-        "NumberPeriodicity",
-        "NumberPeriodicity",
-        MetaPropertyKey::NumberPeriodicity,
-        DOCUMENT_KINDS,
-        NUMBER_PERIODICITY_VALUES,
-    ),
-    enum_property(
-        "NumberType",
-        "NumberType",
-        MetaPropertyKey::NumberType,
-        DOCUMENT_NUMBER_KINDS,
-        NUMBER_TYPE_VALUES,
-    ),
-    property(
-        "OrderLength",
-        MetaPropertyKey::OrderLength,
-        MetaPropertyValueKind::UnsignedInteger,
-        CHART_OF_ACCOUNTS_KINDS,
-    ),
-    property(
-        "PeriodAdjustmentLength",
-        MetaPropertyKey::PeriodAdjustmentLength,
-        MetaPropertyValueKind::UnsignedInteger,
-        ACCOUNTING_REGISTER_KINDS,
-    ),
-    enum_property(
-        "Periodicity",
-        "InformationRegisterPeriodicity",
-        MetaPropertyKey::Periodicity,
-        INFORMATION_REGISTER_KINDS,
-        INFORMATION_REGISTER_PERIODICITY_VALUES,
-    ),
-    enum_property(
-        "Periodicity",
-        "Periodicity",
-        MetaPropertyKey::Periodicity,
-        CALCULATION_REGISTER_KINDS,
-        CALCULATION_REGISTER_PERIODICITY_VALUES,
-    ),
-    property(
-        "PostInPrivilegedMode",
-        MetaPropertyKey::PostInPrivilegedMode,
-        MetaPropertyValueKind::Boolean,
-        DOCUMENT_KINDS,
-    ),
-    enum_property(
-        "Posting",
-        "Posting",
-        MetaPropertyKey::Posting,
-        DOCUMENT_KINDS,
-        POSTING_VALUES,
-    ),
-    property(
-        "Predefined",
-        MetaPropertyKey::Predefined,
-        MetaPropertyValueKind::Boolean,
-        SCHEDULED_JOB_KINDS,
-    ),
-    property(
-        "Privileged",
-        MetaPropertyKey::Privileged,
-        MetaPropertyValueKind::Boolean,
-        COMMON_MODULE_KINDS,
-    ),
-    property(
-        "QuickChoice",
-        MetaPropertyKey::QuickChoice,
-        MetaPropertyValueKind::Boolean,
-        CATALOG_KINDS,
-    ),
-    enum_property(
-        "RealTimePosting",
-        "RealTimePosting",
-        MetaPropertyKey::RealTimePosting,
-        DOCUMENT_KINDS,
-        POSTING_VALUES,
-    ),
-    enum_property(
-        "RegisterRecordsDeletion",
-        "RegisterRecordsDeletion",
-        MetaPropertyKey::RegisterRecordsDeletion,
-        DOCUMENT_KINDS,
-        REGISTER_RECORDS_DELETION_VALUES,
-    ),
-    enum_property(
-        "RegisterRecordsWritingOnPost",
-        "RegisterRecordsWritingOnPost",
-        MetaPropertyKey::RegisterRecordsWritingOnPost,
-        DOCUMENT_KINDS,
-        REGISTER_RECORDS_WRITING_VALUES,
-    ),
-    property(
-        "RestartCountOnFailure",
-        MetaPropertyKey::RestartCountOnFailure,
-        MetaPropertyValueKind::UnsignedInteger,
-        SCHEDULED_JOB_KINDS,
-    ),
-    property(
-        "RestartIntervalOnFailure",
-        MetaPropertyKey::RestartIntervalOnFailure,
-        MetaPropertyValueKind::UnsignedInteger,
-        SCHEDULED_JOB_KINDS,
-    ),
-    enum_property(
-        "ReturnValuesReuse",
-        "ReturnValuesReuse",
-        MetaPropertyKey::ReturnValuesReuse,
-        COMMON_MODULE_KINDS,
-        RETURN_VALUES_REUSE_VALUES,
-    ),
-    enum_property(
-        "ReuseSessions",
-        "ReuseSessions",
-        MetaPropertyKey::ReuseSessions,
-        WEB_SERVICE_SESSION_KINDS,
-        REUSE_SESSIONS_VALUES,
-    ),
-    property(
-        "RootURL",
-        MetaPropertyKey::RootUrl,
-        MetaPropertyValueKind::String,
-        HTTP_SERVICE_KINDS,
-    ),
-    property(
-        "Server",
-        MetaPropertyKey::Server,
-        MetaPropertyValueKind::Boolean,
-        COMMON_MODULE_KINDS,
-    ),
-    property(
-        "ServerCall",
-        MetaPropertyKey::ServerCall,
-        MetaPropertyValueKind::Boolean,
-        COMMON_MODULE_KINDS,
-    ),
-    property(
-        "SessionMaxAge",
-        MetaPropertyKey::SessionMaxAge,
-        MetaPropertyValueKind::UnsignedInteger,
-        WEB_SERVICE_SESSION_KINDS,
-    ),
-    enum_property(
-        "SubordinationUse",
-        "SubordinationUse",
-        MetaPropertyKey::SubordinationUse,
-        CATALOG_KINDS,
-        SUBORDINATION_USE_VALUES,
-    ),
-    property(
-        "UnpostInPrivilegedMode",
-        MetaPropertyKey::UnpostInPrivilegedMode,
-        MetaPropertyValueKind::Boolean,
-        DOCUMENT_KINDS,
-    ),
-    property(
-        "Use",
-        MetaPropertyKey::Use,
-        MetaPropertyValueKind::Boolean,
-        SCHEDULED_JOB_KINDS,
-    ),
-    enum_property(
-        "WriteMode",
-        "WriteMode",
-        MetaPropertyKey::WriteMode,
-        INFORMATION_REGISTER_KINDS,
-        WRITE_MODE_VALUES,
-    ),
-    property(
-        "NumberLength",
-        MetaPropertyKey::NumberLength,
-        MetaPropertyValueKind::UnsignedInteger,
-        DOCUMENT_NUMBER_KINDS,
-    ),
-    property(
-        "CheckUnique",
-        MetaPropertyKey::CheckUnique,
-        MetaPropertyValueKind::Boolean,
-        CHECK_UNIQUE_KINDS,
-    ),
-    property(
-        "CodeLength",
-        MetaPropertyKey::CodeLength,
-        MetaPropertyValueKind::UnsignedInteger,
-        CODE_KINDS,
-    ),
-    property(
-        "DescriptionLength",
-        MetaPropertyKey::DescriptionLength,
-        MetaPropertyValueKind::UnsignedInteger,
-        DESCRIPTION_KINDS,
-    ),
-    property(
-        "Hierarchical",
-        MetaPropertyKey::Hierarchical,
-        MetaPropertyValueKind::Boolean,
-        HIERARCHICAL_KINDS,
-    ),
-    property(
-        "Autonumbering",
-        MetaPropertyKey::Autonumbering,
-        MetaPropertyValueKind::Boolean,
-        AUTONUMBER_KINDS,
-    ),
-    property(
-        "UseStandardCommands",
-        MetaPropertyKey::UseStandardCommands,
-        MetaPropertyValueKind::Boolean,
-        STANDARD_COMMAND_KINDS,
-    ),
-    property(
-        "IncludeHelpInContents",
-        MetaPropertyKey::IncludeHelpInContents,
-        MetaPropertyValueKind::Boolean,
-        INCLUDE_HELP_KINDS,
-    ),
-    enum_property(
-        "RegisterType",
-        "RegisterType",
-        MetaPropertyKey::RegisterType,
-        ACCUMULATION_REGISTER_KINDS,
-        REGISTER_TYPE_VALUES,
-    ),
-];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MetaPropertyChanges {
@@ -812,6 +399,27 @@ impl MetaPropertyChanges {
                 .with_field(&field));
             }
             if let MetaPropertyValue::String(value) = &input.value {
+                if spec
+                    .string_max_length
+                    .is_some_and(|max| value.chars().count() > max)
+                {
+                    return Err(MetaDiagnostic::error(
+                        MetaDiagnosticCode::InvalidArguments,
+                        format!(
+                            "property `{}` exceeds its maximum length of {} characters",
+                            input.name,
+                            spec.string_max_length.unwrap()
+                        ),
+                    )
+                    .with_field(&field));
+                }
+                if spec.key == MetaPropertyKey::Key && !value.chars().all(is_xml_text_character) {
+                    return Err(MetaDiagnostic::error(
+                        MetaDiagnosticCode::InvalidArguments,
+                        "Key must contain only XML 1.0 characters",
+                    )
+                    .with_field(&field));
+                }
                 match spec.key {
                     MetaPropertyKey::Event
                         if value.is_empty()
@@ -827,18 +435,14 @@ impl MetaPropertyChanges {
                         )
                         .with_field(&field));
                     }
-                    MetaPropertyKey::Handler => {
-                        let parts = value.split('.').collect::<Vec<_>>();
-                        if !matches!(parts.as_slice(), ["CommonModule", module, procedure]
-                            if crate::identifier::is_1c_identifier(module)
-                                && crate::identifier::is_1c_identifier(procedure))
-                        {
-                            return Err(MetaDiagnostic::error(
-                                MetaDiagnosticCode::InvalidArguments,
-                                "Handler must use CommonModule.<Module>.<Procedure>",
-                            )
-                            .with_field(&field));
-                        }
+                    MetaPropertyKey::Handler
+                        if crate::event_subscription::platform_handler_parts(value).is_none() =>
+                    {
+                        return Err(MetaDiagnostic::error(
+                            MetaDiagnosticCode::InvalidArguments,
+                            "Handler must identify a common module method",
+                        )
+                        .with_field(&field));
                     }
                     _ => {}
                 }
@@ -873,10 +477,150 @@ impl MetaPropertyChanges {
 
 #[cfg(test)]
 mod tests {
+    /// #2163: the NStr form of a multilingual value, read and written alike.
+    /// rule: INV.SOURCE.LOCALIZED-STRING-NSTR
+    #[test]
+    fn nstr_round_trips_quotes_and_rejects_text_without_a_language() {
+        let items = super::parse_nstr(" ru = 'Товары ''склада''' ;en='Goods'; ").unwrap();
+        assert_eq!(
+            items,
+            [
+                super::LocalizedItem {
+                    language: "ru".into(),
+                    content: "Товары 'склада'".into()
+                },
+                super::LocalizedItem {
+                    language: "en".into(),
+                    content: "Goods".into()
+                },
+            ]
+        );
+        assert_eq!(
+            super::format_nstr(&items).unwrap(),
+            "ru = 'Товары ''склада'''; en = 'Goods'"
+        );
+        assert_eq!(
+            super::parse_nstr(&super::format_nstr(&items).unwrap()).unwrap(),
+            items
+        );
+        for unwritable in [" custom ", "", "ru"] {
+            let mut items = items.clone();
+            items.push(super::LocalizedItem::new(unwritable, "x"));
+            assert_eq!(super::format_nstr(&items), None, "{unwritable:?}");
+        }
+        assert!(super::parse_nstr("").unwrap().is_empty());
+        assert!(super::parse_nstr("  ").unwrap().is_empty());
+        assert_eq!(
+            super::parse_nstr("ru = 'строка;\nдругая'").unwrap()[0].content,
+            "строка;\nдругая"
+        );
+        for invalid in [
+            "Товары",
+            "ru 'А'",
+            "ru = А",
+            "ru = 'А",
+            "ru = 'А' en = 'B'",
+            "ru = 'А'; ru = 'Б'",
+            "ru = 'А'; RU = 'Б'",
+            "ru = 'А\u{1}Б'",
+            "= 'А'",
+        ] {
+            assert!(super::parse_nstr(invalid).is_err(), "{invalid}");
+        }
+    }
+
     use super::*;
     use crate::{MetaDiagnosticCode, MetadataKind};
 
-    fn assert_property_kind_matrix(
+    #[test]
+    fn scheduled_job_key_validation_matches_the_published_bounded_string() {
+        let schema = crate::metadata_property_schemas(Some(MetadataKind::ScheduledJob));
+        assert_eq!(schema["Key"]["maxLength"], 128);
+        let validator = jsonschema::validator_for(&schema["Key"]).unwrap();
+        for value in [
+            "".to_string(),
+            "я".repeat(128),
+            "😀".repeat(128),
+            " a\r\nb\t<&> ".to_string(),
+        ] {
+            assert!(validator.is_valid(&serde_json::json!(value)));
+            assert!(MetaPropertyChanges::convert(
+                MetadataKind::ScheduledJob,
+                vec![MetaPropertyInput::new(
+                    "Key",
+                    MetaPropertyValue::String(value)
+                ),]
+            )
+            .is_ok());
+        }
+        for value in [
+            "я".repeat(129),
+            "😀".repeat(129),
+            "bad\0key".to_string(),
+            "bad\u{b}key".to_string(),
+            "bad\u{fffe}key".to_string(),
+        ] {
+            assert!(!validator.is_valid(&serde_json::json!(value)));
+            assert!(MetaPropertyChanges::convert(
+                MetadataKind::ScheduledJob,
+                vec![MetaPropertyInput::new(
+                    "Key",
+                    MetaPropertyValue::String(value)
+                ),]
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn scheduled_job_key_is_a_closed_string_property() {
+        assert_property_kind_matrix(
+            "Key",
+            MetaPropertyValue::String("Обмен & очереди".into()),
+            &[MetadataKind::ScheduledJob],
+        );
+        for value in [
+            MetaPropertyValue::Boolean(true),
+            MetaPropertyValue::UnsignedInteger(1),
+        ] {
+            assert!(MetaPropertyChanges::convert(
+                MetadataKind::ScheduledJob,
+                vec![MetaPropertyInput::new("Key", value)],
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn in_place_writes_only_confirmed_enum_elements_of_allowed_owners() {
+        for spec in METADATA_PROPERTY_SPECS {
+            if spec.in_place == InPlace::Never {
+                continue;
+            }
+            assert!(
+                spec.value_kind == MetaPropertyValueKind::String && !spec.enum_values.is_empty(),
+                "{}: only an enum value can be confirmed before an in-place write",
+                spec.public_name
+            );
+            if let InPlace::Owners(owners) = spec.in_place {
+                assert!(
+                    !owners.is_empty(),
+                    "{}: use InPlace::Never",
+                    spec.public_name
+                );
+                for owner in owners {
+                    assert!(
+                        spec.allowed_kinds.contains(owner),
+                        "{}: in-place owner {} is not an allowed owner",
+                        spec.public_name,
+                        owner.as_str()
+                    );
+                }
+            }
+        }
+    }
+
+    pub(super) fn assert_property_kind_matrix(
         property_name: &str,
         value: MetaPropertyValue,
         allowed: &[MetadataKind],
@@ -893,169 +637,6 @@ mod tests {
                 kind.as_str()
             );
         }
-    }
-
-    #[test]
-    fn code_length_uses_the_current_writer_kind_matrix() {
-        assert_property_kind_matrix(
-            "CodeLength",
-            MetaPropertyValue::UnsignedInteger(9),
-            &[
-                MetadataKind::Catalog,
-                MetadataKind::ChartOfAccounts,
-                MetadataKind::ChartOfCharacteristicTypes,
-                MetadataKind::ChartOfCalculationTypes,
-                MetadataKind::ExchangePlan,
-            ],
-        );
-    }
-
-    #[test]
-    fn description_length_uses_its_distinct_current_writer_kind_matrix() {
-        assert_property_kind_matrix(
-            "DescriptionLength",
-            MetaPropertyValue::UnsignedInteger(100),
-            &[
-                MetadataKind::Catalog,
-                MetadataKind::ChartOfAccounts,
-                MetadataKind::ChartOfCharacteristicTypes,
-                MetadataKind::ChartOfCalculationTypes,
-                MetadataKind::Task,
-                MetadataKind::ExchangePlan,
-            ],
-        );
-    }
-
-    #[test]
-    fn hierarchical_uses_the_current_writer_and_validator_kind_matrix() {
-        assert_property_kind_matrix(
-            "Hierarchical",
-            MetaPropertyValue::Boolean(true),
-            &[
-                MetadataKind::Catalog,
-                MetadataKind::ChartOfCharacteristicTypes,
-            ],
-        );
-    }
-
-    #[test]
-    fn autonumbering_excludes_both_chart_kinds_forbidden_by_the_validator() {
-        assert_property_kind_matrix(
-            "Autonumbering",
-            MetaPropertyValue::Boolean(true),
-            &[
-                MetadataKind::Catalog,
-                MetadataKind::Document,
-                MetadataKind::ChartOfCharacteristicTypes,
-                MetadataKind::BusinessProcess,
-                MetadataKind::Task,
-            ],
-        );
-    }
-
-    #[test]
-    fn use_standard_commands_uses_the_current_writer_kind_matrix() {
-        assert_property_kind_matrix(
-            "UseStandardCommands",
-            MetaPropertyValue::Boolean(true),
-            &[
-                MetadataKind::Catalog,
-                MetadataKind::Document,
-                MetadataKind::Enum,
-                MetadataKind::Constant,
-                MetadataKind::InformationRegister,
-                MetadataKind::AccumulationRegister,
-                MetadataKind::AccountingRegister,
-                MetadataKind::CalculationRegister,
-                MetadataKind::ChartOfAccounts,
-                MetadataKind::ChartOfCharacteristicTypes,
-                MetadataKind::ChartOfCalculationTypes,
-                MetadataKind::BusinessProcess,
-                MetadataKind::Task,
-                MetadataKind::ExchangePlan,
-                MetadataKind::DocumentJournal,
-                MetadataKind::Report,
-                MetadataKind::DataProcessor,
-            ],
-        );
-    }
-
-    #[test]
-    fn include_help_in_contents_follows_the_8_3_27_dump_kind_matrix() {
-        assert_property_kind_matrix(
-            "IncludeHelpInContents",
-            MetaPropertyValue::Boolean(true),
-            &[
-                MetadataKind::Catalog,
-                MetadataKind::Document,
-                MetadataKind::InformationRegister,
-                MetadataKind::AccumulationRegister,
-                MetadataKind::AccountingRegister,
-                MetadataKind::CalculationRegister,
-                MetadataKind::ChartOfAccounts,
-                MetadataKind::ChartOfCharacteristicTypes,
-                MetadataKind::ChartOfCalculationTypes,
-                MetadataKind::BusinessProcess,
-                MetadataKind::Task,
-                MetadataKind::ExchangePlan,
-                MetadataKind::DocumentJournal,
-                MetadataKind::Report,
-                MetadataKind::DataProcessor,
-            ],
-        );
-
-        let diagnostic = MetaPropertyChanges::convert(
-            MetadataKind::Enum,
-            vec![MetaPropertyInput::new(
-                "IncludeHelpInContents",
-                MetaPropertyValue::Boolean(true),
-            )],
-        )
-        .expect_err("an enum descriptor has no help-contents flag");
-        assert_eq!(diagnostic.code, MetaDiagnosticCode::UnsupportedKind);
-        assert_eq!(
-            diagnostic.message,
-            "property `IncludeHelpInContents` is not supported for Enum"
-        );
-        assert_eq!(
-            diagnostic.field.as_deref(),
-            Some("values.IncludeHelpInContents")
-        );
-    }
-
-    #[test]
-    fn register_type_accepts_only_the_platform_enumeration() {
-        for accepted in ["Balance", "Turnovers"] {
-            let changes = MetaPropertyChanges::convert(
-                MetadataKind::AccumulationRegister,
-                vec![MetaPropertyInput::new(
-                    "RegisterType",
-                    MetaPropertyValue::String(accepted.to_string()),
-                )],
-            )
-            .unwrap();
-            assert_eq!(
-                changes.entries(),
-                &[(
-                    MetaPropertyKey::RegisterType,
-                    MetaPropertyValue::String(accepted.to_string()),
-                )]
-            );
-        }
-        // `Balances` is the documentation typo from #852, not a platform value.
-        let diagnostic = MetaPropertyChanges::convert(
-            MetadataKind::AccumulationRegister,
-            vec![MetaPropertyInput::new(
-                "RegisterType",
-                MetaPropertyValue::String("Balances".to_string()),
-            )],
-        )
-        .expect_err("Balances is not an AccumulationRegisterType member");
-        assert_eq!(diagnostic.code, MetaDiagnosticCode::InvalidArguments);
-        assert_eq!(
-            diagnostic.message,
-            "property `RegisterType` value `Balances` is invalid; expected one of: Balance, Turnovers"
-        );
     }
 
     #[test]
@@ -1121,7 +702,7 @@ mod tests {
     }
 
     #[test]
-    fn retired_dsl_scalar_capabilities_have_exact_typed_kind_matrices() {
+    fn scalar_property_capabilities_have_exact_typed_kind_matrices() {
         use MetadataKind::*;
 
         let cases: &[(&str, MetaPropertyValue, &[MetadataKind])] = &[
@@ -1148,7 +729,14 @@ mod tests {
             (
                 "ChoiceMode",
                 MetaPropertyValue::String("FromForm".into()),
-                &[Catalog],
+                &[
+                    Catalog,
+                    Enum,
+                    ChartOfCharacteristicTypes,
+                    ChartOfCalculationTypes,
+                    ChartOfAccounts,
+                    ExchangePlan,
+                ],
             ),
             (
                 "ClientManagedApplication",
@@ -1163,7 +751,12 @@ mod tests {
             (
                 "CodeAllowedLength",
                 MetaPropertyValue::String("Fixed".into()),
-                &[Catalog],
+                &[
+                    Catalog,
+                    ChartOfCharacteristicTypes,
+                    ChartOfCalculationTypes,
+                    ExchangePlan,
+                ],
             ),
             (
                 "CodeLength",
@@ -1184,12 +777,76 @@ mod tests {
             (
                 "CodeType",
                 MetaPropertyValue::String("Number".into()),
-                &[Catalog],
+                &[Catalog, ChartOfCalculationTypes],
             ),
             (
                 "Correspondence",
                 MetaPropertyValue::Boolean(true),
                 &[AccountingRegister],
+            ),
+            (
+                "DataHistory",
+                MetaPropertyValue::String("Use".into()),
+                &[Catalog, Document, InformationRegister],
+            ),
+            (
+                "UpdateDataHistoryImmediatelyAfterWrite",
+                MetaPropertyValue::Boolean(true),
+                &[Catalog, Document, InformationRegister],
+            ),
+            (
+                "ExecuteAfterWriteDataHistoryVersionProcessing",
+                MetaPropertyValue::Boolean(true),
+                &[Catalog, Document, InformationRegister],
+            ),
+            (
+                "FullTextSearch",
+                MetaPropertyValue::String("Use".into()),
+                &[Catalog, Document],
+            ),
+            (
+                "SearchStringModeOnInputByString",
+                MetaPropertyValue::String("Begin".into()),
+                &[Catalog, Document],
+            ),
+            (
+                "FullTextSearchOnInputByString",
+                MetaPropertyValue::String("Use".into()),
+                &[Catalog, Document],
+            ),
+            (
+                "ChoiceDataGetModeOnInputByString",
+                MetaPropertyValue::String("Directly".into()),
+                &[Catalog, Document],
+            ),
+            (
+                "CreateOnInput",
+                MetaPropertyValue::String("Auto".into()),
+                &[Catalog, Document],
+            ),
+            (
+                "ChoiceHistoryOnInput",
+                MetaPropertyValue::String("Auto".into()),
+                &[Catalog, Document],
+            ),
+            (
+                "DataLockControlMode",
+                MetaPropertyValue::String("Managed".into()),
+                &[
+                    Catalog,
+                    Document,
+                    Constant,
+                    InformationRegister,
+                    AccumulationRegister,
+                    AccountingRegister,
+                    CalculationRegister,
+                    ChartOfAccounts,
+                    ChartOfCharacteristicTypes,
+                    ChartOfCalculationTypes,
+                    BusinessProcess,
+                    Task,
+                    ExchangePlan,
+                ],
             ),
             (
                 "DefaultPresentation",
@@ -1272,7 +929,7 @@ mod tests {
             (
                 "NumberAllowedLength",
                 MetaPropertyValue::String("Fixed".into()),
-                &[Document],
+                &[Document, BusinessProcess, Task],
             ),
             (
                 "NumberLength",
@@ -1282,7 +939,7 @@ mod tests {
             (
                 "NumberPeriodicity",
                 MetaPropertyValue::String("Month".into()),
-                &[Document],
+                &[Document, BusinessProcess],
             ),
             (
                 "NumberType",
@@ -1313,6 +970,16 @@ mod tests {
                 "Posting",
                 MetaPropertyValue::String("Deny".into()),
                 &[Document],
+            ),
+            (
+                "PredefinedDataUpdate",
+                MetaPropertyValue::String("AutoUpdate".into()),
+                &[
+                    Catalog,
+                    ChartOfAccounts,
+                    ChartOfCharacteristicTypes,
+                    ChartOfCalculationTypes,
+                ],
             ),
             (
                 "Predefined",
@@ -1433,7 +1100,7 @@ mod tests {
         assert_eq!(diagnostic.code, MetaDiagnosticCode::InvalidArguments);
         assert_eq!(
             diagnostic.message,
-            "unknown metadata property `ClientOrdinaryApplications`; supported properties for CommonModule: Synonym, Comment, ClientManagedApplication, ClientOrdinaryApplication, ExternalConnection, Global, Privileged, ReturnValuesReuse, Server, ServerCall"
+            "unknown metadata property `ClientOrdinaryApplications`; supported properties for CommonModule: ClientManagedApplication, ClientOrdinaryApplication, Comment, ExternalConnection, Global, Privileged, ReturnValuesReuse, Server, ServerCall, Synonym"
         );
         assert_eq!(
             diagnostic.field.as_deref(),

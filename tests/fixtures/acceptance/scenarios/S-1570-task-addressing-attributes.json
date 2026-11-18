@@ -1,0 +1,369 @@
+{
+  "id": "S-1570-task-addressing-attributes",
+  "issue": 1570,
+  "area": "Метаданные",
+  "workspace": "tests/fixtures/acceptance/workspace-task-addressing",
+  "task": "Из Task перейти по возвращённым адресам в отдельные 14 Attribute и 4 AddressingAttribute, сверить четыре имени/типа/измерения и одноимённый обычный реквизит. Проверить Props.type, русский псевдоним и отсутствие props.set; все байты сохраняются. Синтетический пример, не пользовательские исходники.",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effectiveSourceSet",
+          "eq": "main"
+        }
+      ],
+      "captures": {
+        "unchanged1": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "unchanged2": {
+          "file": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256"
+        },
+        "unchanged3": {
+          "file": "src/Languages/Русский.xml",
+          "kind": "sha256"
+        },
+        "unchanged4": {
+          "file": "src/Tasks/Approval.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Task"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Task.Approval"
+        }
+      ],
+      "captures": {
+        "taskNode": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.taskNode"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "main:Task.Approval.AddressingAttribute",
+            "count": 4
+          }
+        },
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "main:Task.Approval.Attribute",
+            "count": 14
+          }
+        }
+      ],
+      "captures": {
+        "addressing": {
+          "pointer": "/data/branches/1/at"
+        },
+        "ordinary": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.addressing"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Task.Approval.AddressingAttribute.Performer"
+        },
+        {
+          "pointer": "/data/items/1/at",
+          "eq": "main:Task.Approval.AddressingAttribute.Deputy"
+        },
+        {
+          "pointer": "/data/items/2/at",
+          "eq": "main:Task.Approval.AddressingAttribute.Reviewer"
+        },
+        {
+          "pointer": "/data/items/3/at",
+          "eq": "main:Task.Approval.AddressingAttribute.Owner"
+        }
+      ],
+      "captures": {
+        "member0": {
+          "pointer": "/data/items/0/at"
+        },
+        "member1": {
+          "pointer": "/data/items/1/at"
+        },
+        "member2": {
+          "pointer": "/data/items/2/at"
+        },
+        "member3": {
+          "pointer": "/data/items/3/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.member0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "AddressingAttribute"
+        },
+        {
+          "pointer": "/data/props/type/variants",
+          "eq": [
+            {
+              "kind": "string",
+              "length": 50,
+              "allowedLength": "variable"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/props/addressingDimension",
+          "eq": "InformationRegister.Performers.Dimension.Performer"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.member1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "AddressingAttribute"
+        },
+        {
+          "pointer": "/data/props/type/variants",
+          "eq": [
+            {
+              "kind": "string",
+              "length": 50,
+              "allowedLength": "variable"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/props/addressingDimension",
+          "eq": "InformationRegister.Performers.Dimension.Performer"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.member2"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "AddressingAttribute"
+        },
+        {
+          "pointer": "/data/props/type/variants",
+          "eq": [
+            {
+              "kind": "string",
+              "length": 50,
+              "allowedLength": "variable"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/props/addressingDimension",
+          "eq": "InformationRegister.Performers.Dimension.Performer"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.member3"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "AddressingAttribute"
+        },
+        {
+          "pointer": "/data/props/type/variants",
+          "eq": [
+            {
+              "kind": "string",
+              "length": 50,
+              "allowedLength": "variable"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/props/addressingDimension",
+          "eq": "InformationRegister.Performers.Dimension.Performer"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.ordinary"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Task.Approval.Attribute.Performer"
+        }
+      ],
+      "captures": {
+        "ordinaryMember": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.ordinaryMember"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Attribute"
+        },
+        {
+          "pointer": "/data/props/type/variants",
+          "eq": [
+            {
+              "kind": "boolean"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Task.Approval.AddressingAttribute.Performer.Props.type"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Props"
+        },
+        {
+          "pointer": "/data/props/type/variants",
+          "eq": [
+            {
+              "kind": "string",
+              "length": 50,
+              "allowedLength": "variable"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Задача.Approval.РеквизитАдресации.Performer"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Task.Approval.AddressingAttribute.Performer"
+        },
+        {
+          "pointer": "/data/props/addressingDimension",
+          "eq": "InformationRegister.Performers.Dimension.Performer"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Task.Approval.AddressingAttribute.Owner.Can.props.set"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: operation `props.set` does not apply to AddressingAttribute",
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged1"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged2"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged3"
+        },
+        {
+          "path": "src/Tasks/Approval.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged4"
+        }
+      ]
+    }
+  ]
+}

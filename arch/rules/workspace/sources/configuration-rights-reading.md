@@ -1,7 +1,5 @@
 ---
 id: INV.SOURCE.CONFIGURATION-RIGHTS-READING
-check:
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::configuration_level_rights_are_readable_role_objects
 ---
 
 # Чтение учитывает права конфигурации с неизвестными именами

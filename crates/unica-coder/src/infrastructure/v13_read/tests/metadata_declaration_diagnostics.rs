@@ -153,6 +153,7 @@ fn assert_failure(fixture: &RealReaderFixture, case: FailedDeclaration) {
     );
 }
 
+/// rule: INV.SOURCE.METADATA-OBJECT-FACTS
 #[test]
 fn malformed_standard_attributes_keep_the_cause_and_the_characteristic_sibling() {
     let fixture = readable_declarations();
@@ -169,6 +170,7 @@ fn malformed_standard_attributes_keep_the_cause_and_the_characteristic_sibling()
     );
 }
 
+/// rule: INV.SOURCE.METADATA-OBJECT-FACTS
 #[test]
 fn malformed_characteristics_keep_the_cause_and_the_standard_attribute_sibling() {
     let fixture = readable_declarations();
@@ -190,6 +192,7 @@ fn malformed_characteristics_keep_the_cause_and_the_standard_attribute_sibling()
     );
 }
 
+/// rule: INV.SOURCE.METADATA-OBJECT-FACTS
 #[test]
 fn malformed_standard_tabular_sections_keep_the_root_attribute_sibling() {
     let fixture = readable_declarations();
@@ -211,6 +214,7 @@ fn malformed_standard_tabular_sections_keep_the_root_attribute_sibling() {
     );
 }
 
+/// rule: INV.SOURCE.METADATA-OBJECT-FACTS
 #[test]
 fn nested_standard_attributes_keep_their_standard_tabular_section_context() {
     let fixture = readable_declarations();
@@ -231,9 +235,7 @@ fn nested_standard_attributes_keep_their_standard_tabular_section_context() {
         },
     );
     let reader = fixture.read_authority();
-    let target =
-        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "ChartOfAccounts.Accounts")
-            .unwrap();
+    let target = MetadataAddress::parse_logical("ChartOfAccounts.Accounts").unwrap();
     let local = reader.read.metadata_local(&target, &mut || Ok(())).unwrap();
     let diagnostic = local
         .info
@@ -256,6 +258,7 @@ fn nested_standard_attributes_keep_their_standard_tabular_section_context() {
     assert_eq!(diagnostic.message, "standard attribute has no name");
 }
 
+/// rule: INV.SOURCE.METADATA-OBJECT-FACTS
 #[test]
 fn duplicate_standard_attributes_refuse_only_their_dependent_branch() {
     let fixture = readable_declarations();
@@ -272,6 +275,7 @@ fn duplicate_standard_attributes_refuse_only_their_dependent_branch() {
     );
 }
 
+/// rule: INV.SOURCE.METADATA-OBJECT-FACTS
 #[test]
 fn duplicate_characteristics_refuse_only_their_dependent_branch() {
     let fixture = readable_declarations();
@@ -288,6 +292,7 @@ fn duplicate_characteristics_refuse_only_their_dependent_branch() {
     );
 }
 
+/// rule: INV.SOURCE.METADATA-OBJECT-FACTS
 #[test]
 fn duplicate_standard_tabular_sections_refuse_only_their_dependent_branch() {
     let fixture = readable_declarations();
@@ -304,6 +309,7 @@ fn duplicate_standard_tabular_sections_refuse_only_their_dependent_branch() {
     );
 }
 
+/// rule: INV.SOURCE.METADATA-OBJECT-FACTS
 #[test]
 fn foreign_standard_attributes_refuse_only_their_dependent_branch() {
     let fixture = readable_declarations();
@@ -320,6 +326,7 @@ fn foreign_standard_attributes_refuse_only_their_dependent_branch() {
     );
 }
 
+/// rule: INV.SOURCE.METADATA-OBJECT-FACTS
 #[test]
 fn foreign_characteristics_refuse_only_their_dependent_branch() {
     let fixture = readable_declarations();
@@ -336,6 +343,7 @@ fn foreign_characteristics_refuse_only_their_dependent_branch() {
     );
 }
 
+/// rule: INV.SOURCE.METADATA-OBJECT-FACTS
 #[test]
 fn foreign_standard_tabular_sections_refuse_only_their_dependent_branch() {
     let fixture = readable_declarations();
@@ -352,6 +360,7 @@ fn foreign_standard_tabular_sections_refuse_only_their_dependent_branch() {
     );
 }
 
+/// rule: INV.SOURCE.METADATA-OBJECT-FACTS
 #[test]
 fn similarly_named_property_diagnostics_do_not_poison_readable_declarations() {
     for (relative, anchor, near_name, owner, branch, sibling) in [
@@ -426,6 +435,7 @@ fn similarly_named_property_diagnostics_do_not_poison_readable_declarations() {
     }
 }
 
+/// rule: INV.SOURCE.METADATA-OBJECT-FACTS
 #[test]
 fn valid_declarations_preserve_items_details_and_readonly_sources() {
     let fixture = readable_declarations();
@@ -474,6 +484,7 @@ fn valid_declarations_preserve_items_details_and_readonly_sources() {
     );
 }
 
+/// rule: INV.SOURCE.METADATA-OBJECT-FACTS
 #[test]
 fn projection_matches_canonical_segments_and_exact_xml_property_aliases() {
     // Routing alone uses a synthetic payload; the XML cases cover the producer.
@@ -548,8 +559,7 @@ fn assert_web_service_declaration_stays_inapplicable(
     let fixture = RealReaderFixture::new();
     let owner_at = "main:WebService.Exchange";
     let branch_at = format!("{owner_at}.{branch_kind}");
-    let target =
-        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "WebService.Exchange").unwrap();
+    let target = MetadataAddress::parse_logical("WebService.Exchange").unwrap();
     let original = unica_workspace::test_support::tree_snapshot(&fixture.source);
     {
         let service = fixture.view_service();
@@ -651,6 +661,7 @@ fn assert_web_service_declaration_stays_inapplicable(
     );
 }
 
+/// rule: INV.SOURCE.METADATA-OBJECT-FACTS
 #[test]
 fn inapplicable_web_service_standard_attributes_ignore_a_metadata_container_alias() {
     assert_web_service_declaration_stays_inapplicable(
@@ -660,6 +671,7 @@ fn inapplicable_web_service_standard_attributes_ignore_a_metadata_container_alia
     );
 }
 
+/// rule: INV.SOURCE.METADATA-OBJECT-FACTS
 #[test]
 fn inapplicable_web_service_characteristics_ignore_a_metadata_container_alias() {
     assert_web_service_declaration_stays_inapplicable(
@@ -669,6 +681,7 @@ fn inapplicable_web_service_characteristics_ignore_a_metadata_container_alias() 
     );
 }
 
+/// rule: INV.SOURCE.METADATA-OBJECT-FACTS
 #[test]
 fn inapplicable_web_service_standard_tabular_sections_ignore_a_metadata_container_alias() {
     assert_web_service_declaration_stays_inapplicable(
@@ -678,6 +691,7 @@ fn inapplicable_web_service_standard_tabular_sections_ignore_a_metadata_containe
     );
 }
 
+/// rule: INV.SOURCE.METADATA-OBJECT-FACTS
 #[test]
 fn inapplicable_web_service_standard_attributes_ignore_a_foreign_container_alias() {
     assert_web_service_declaration_stays_inapplicable(
@@ -687,6 +701,7 @@ fn inapplicable_web_service_standard_attributes_ignore_a_foreign_container_alias
     );
 }
 
+/// rule: INV.SOURCE.METADATA-OBJECT-FACTS
 #[test]
 fn inapplicable_web_service_characteristics_ignore_a_foreign_container_alias() {
     assert_web_service_declaration_stays_inapplicable(
@@ -696,6 +711,7 @@ fn inapplicable_web_service_characteristics_ignore_a_foreign_container_alias() {
     );
 }
 
+/// rule: INV.SOURCE.METADATA-OBJECT-FACTS
 #[test]
 fn inapplicable_web_service_standard_tabular_sections_ignore_a_foreign_container_alias() {
     assert_web_service_declaration_stays_inapplicable(

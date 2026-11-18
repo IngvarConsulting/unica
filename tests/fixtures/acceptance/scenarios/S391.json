@@ -1,0 +1,460 @@
+{
+  "id": "S391",
+  "name": "batched-register-creation",
+  "issue": 1332,
+  "area": "Создание и удаление объектов",
+  "task": "Создать одним пакетом три регистра накопления, затем два регистра расчёта, затем регистр вместе с журналом документов при общем документе-регистраторе; каждый пакет проходит предпросмотр и публикацию, документ перечисляет все регистры в движениях",
+  "workspace": "tests/fixtures/acceptance/workspace-metadata-values",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "object.create",
+            "args": {
+              "values": {
+                "kind": "Document",
+                "name": "Реализация"
+              }
+            }
+          },
+          {
+            "op": "object.create",
+            "args": {
+              "values": {
+                "kind": "ChartOfCalculationTypes",
+                "name": "ВидыРасчётов"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executable",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "exists",
+          "path": "src/Documents/Реализация.xml",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "xml",
+          "path": "src/Documents/Реализация.xml",
+          "select": ".//{*}Document/{*}Properties/{*}RegisterRecords/{*}Item",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "object.create",
+            "args": {
+              "values": {
+                "kind": "AccumulationRegister",
+                "name": "Продажи"
+              }
+            }
+          },
+          {
+            "op": "resource.add",
+            "args": {
+              "at": "main:AccumulationRegister.Продажи",
+              "items": [
+                {
+                  "name": "Количество",
+                  "type": {
+                    "variants": [
+                      {
+                        "kind": "number",
+                        "digits": 10,
+                        "fraction": 0,
+                        "sign": "any"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "op": "object.create",
+            "args": {
+              "values": {
+                "kind": "AccumulationRegister",
+                "name": "Остатки"
+              }
+            }
+          },
+          {
+            "op": "resource.add",
+            "args": {
+              "at": "main:AccumulationRegister.Остатки",
+              "items": [
+                {
+                  "name": "Количество",
+                  "type": {
+                    "variants": [
+                      {
+                        "kind": "number",
+                        "digits": 10,
+                        "fraction": 0,
+                        "sign": "any"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "op": "object.create",
+            "args": {
+              "values": {
+                "kind": "AccumulationRegister",
+                "name": "Обороты"
+              }
+            }
+          },
+          {
+            "op": "resource.add",
+            "args": {
+              "at": "main:AccumulationRegister.Обороты",
+              "items": [
+                {
+                  "name": "Количество",
+                  "type": {
+                    "variants": [
+                      {
+                        "kind": "number",
+                        "digits": 10,
+                        "fraction": 0,
+                        "sign": "any"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executable",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "exists",
+          "path": "src/AccumulationRegisters/Продажи.xml",
+          "eq": false
+        },
+        {
+          "kind": "exists",
+          "path": "src/AccumulationRegisters/Остатки.xml",
+          "eq": false
+        },
+        {
+          "kind": "exists",
+          "path": "src/AccumulationRegisters/Обороты.xml",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "xml",
+          "path": "src/Documents/Реализация.xml",
+          "select": ".//{*}Document/{*}Properties/{*}RegisterRecords/{*}Item",
+          "sameItems": [
+            "AccumulationRegister.Продажи",
+            "AccumulationRegister.Остатки",
+            "AccumulationRegister.Обороты"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/Configuration.xml",
+          "select": ".//{*}Configuration/{*}ChildObjects/{*}AccumulationRegister",
+          "eq": [
+            "Обороты",
+            "Остатки",
+            "Продажи"
+          ]
+        },
+        {
+          "kind": "exists",
+          "path": "src/AccumulationRegisters/Продажи.xml",
+          "eq": true
+        },
+        {
+          "kind": "exists",
+          "path": "src/AccumulationRegisters/Остатки.xml",
+          "eq": true
+        },
+        {
+          "kind": "exists",
+          "path": "src/AccumulationRegisters/Обороты.xml",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "object.create",
+            "args": {
+              "values": {
+                "kind": "CalculationRegister",
+                "name": "Начисления"
+              }
+            }
+          },
+          {
+            "op": "object.create",
+            "args": {
+              "values": {
+                "kind": "CalculationRegister",
+                "name": "Премии"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executable",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "exists",
+          "path": "src/CalculationRegisters/Начисления.xml",
+          "eq": false
+        },
+        {
+          "kind": "exists",
+          "path": "src/CalculationRegisters/Премии.xml",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "xml",
+          "path": "src/Documents/Реализация.xml",
+          "select": ".//{*}Document/{*}Properties/{*}RegisterRecords/{*}Item",
+          "sameItems": [
+            "AccumulationRegister.Продажи",
+            "AccumulationRegister.Остатки",
+            "AccumulationRegister.Обороты",
+            "CalculationRegister.Начисления",
+            "CalculationRegister.Премии"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/Configuration.xml",
+          "select": ".//{*}Configuration/{*}ChildObjects/{*}CalculationRegister",
+          "eq": [
+            "Начисления",
+            "Премии"
+          ]
+        },
+        {
+          "kind": "exists",
+          "path": "src/CalculationRegisters/Начисления.xml",
+          "eq": true
+        },
+        {
+          "kind": "exists",
+          "path": "src/CalculationRegisters/Премии.xml",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "object.create",
+            "args": {
+              "values": {
+                "kind": "AccumulationRegister",
+                "name": "Резервы"
+              }
+            }
+          },
+          {
+            "op": "resource.add",
+            "args": {
+              "at": "main:AccumulationRegister.Резервы",
+              "items": [
+                {
+                  "name": "Количество",
+                  "type": {
+                    "variants": [
+                      {
+                        "kind": "number",
+                        "digits": 10,
+                        "fraction": 0,
+                        "sign": "any"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "op": "object.create",
+            "args": {
+              "values": {
+                "kind": "DocumentJournal",
+                "name": "ЖурналПродаж"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executable",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "exists",
+          "path": "src/DocumentJournals/ЖурналПродаж.xml",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "xml",
+          "path": "src/Documents/Реализация.xml",
+          "select": ".//{*}Document/{*}Properties/{*}RegisterRecords/{*}Item",
+          "sameItems": [
+            "AccumulationRegister.Продажи",
+            "AccumulationRegister.Остатки",
+            "AccumulationRegister.Обороты",
+            "CalculationRegister.Начисления",
+            "CalculationRegister.Премии",
+            "AccumulationRegister.Резервы"
+          ]
+        },
+        {
+          "kind": "exists",
+          "path": "src/DocumentJournals/ЖурналПродаж.xml",
+          "eq": true
+        }
+      ]
+    }
+  ]
+}

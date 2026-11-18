@@ -32,6 +32,8 @@ import sys
 import tomllib
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from cargo_target import cargo_target_dir  # noqa: E402
 CONFIG = Path(".config/clippy/file-io-free")
 PROBE = Path("scripts/ci/fixtures/file-io-probe")
 LINT = "clippy::disallowed_methods"
@@ -61,7 +63,11 @@ def clippy_command(selection: list[str], target_dir: Path) -> list[str]:
 
 
 def diagnostics(stdout: str) -> list[tuple[str, int, str]]:
-    """(file, line, message) of every disallowed-method diagnostic."""
+    """(file, line, message) of every disallowed-method diagnostic.
+
+    The file is written with `/`: on Windows Clippy reports `src\\lib.rs`, and
+    the probe markers and the package filter compare against `/` paths.
+    """
     found = []
     for line in stdout.splitlines():
         try:
@@ -73,7 +79,7 @@ def diagnostics(stdout: str) -> list[tuple[str, int, str]]:
             continue
         span = next((span for span in compiler.get("spans", []) if span.get("is_primary")), None)
         if span:
-            found.append((span["file_name"], span["line_start"], compiler["message"]))
+            found.append((span["file_name"].replace("\\", "/"), span["line_start"], compiler["message"]))
     return found
 
 
@@ -124,7 +130,7 @@ def main() -> int:
     parser.add_argument("--target-dir", type=Path, default=None)
     args = parser.parse_args()
     root = args.repo_root.resolve()
-    target_dir = (args.target_dir or root / "target").resolve()
+    target_dir = (args.target_dir or cargo_target_dir(root)).resolve()
     problems = check_probe(root, target_dir / "file-io-probe")
     if not problems:
         problems = check_packages(root, boundary_packages(root), target_dir)

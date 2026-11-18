@@ -18,12 +18,3 @@ commit generated tool binaries.
   commit, AGPL-3.0-only license field, and target assets.
 - The publisher's release archive is delivered unchanged: next to the binary it
   carries its own `LICENSE`, `FORK_NOTICE.md`, `README.md`, and `examples/`.
-
-## rlm-tools-bsl
-
-- Included notices: `third-party/licenses/rlm-tools-bsl/`
-
-Record tool version changes in `third-party/tools.lock.json`. Before publishing
-a plugin with an updated lock, bump the plugin version in every package contract
-location as described in the release runbook. The release workflow then
-regenerates the manifest and archives.

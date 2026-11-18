@@ -239,8 +239,8 @@ def set_file_mode(path: Path, *, executable: bool) -> None:
 
 
 def artifact_name(tool: dict) -> str:
-    """Имя скачиваемого архива. Несколько инструментов делят один: у RLM это
-    `rlm-tools-bsl` на `rlm-bsl-mcp` и `rlm-bsl-index`. Где архив свой,
+    """Имя скачиваемого архива. Несколько инструментов могут делить один: тогда
+    его имя стоит в `releaseName`. Где архив свой,
     артефакт зовётся как инструмент."""
     return tool.get("releaseName", tool["name"])
 

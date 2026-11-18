@@ -1,0 +1,47 @@
+{
+  "family": "Xdto",
+  "operations": [
+    {
+      "variant": "AddValueType",
+      "operation": "valueType.add",
+      "applicability": "XdtoPackage",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "AddObjectType",
+      "operation": "objectType.add",
+      "applicability": "XdtoPackage",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "AddProperty",
+      "operation": "property.add",
+      "applicability": "XdtoPropertyContainer",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "RemoveType",
+      "operation": "type.remove",
+      "applicability": "XdtoType",
+      "skeleton": "Target"
+    },
+    {
+      "variant": "RemoveProperty",
+      "operation": "property.remove",
+      "applicability": "XdtoProperty",
+      "skeleton": "Target"
+    },
+    {
+      "variant": "RenameProperty",
+      "operation": "property.rename",
+      "applicability": "XdtoProperty",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "SetType",
+      "operation": "type.set",
+      "applicability": "XdtoType",
+      "skeleton": "Values"
+    }
+  ]
+}

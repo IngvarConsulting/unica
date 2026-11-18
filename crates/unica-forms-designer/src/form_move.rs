@@ -469,7 +469,7 @@ pub fn move_item(xml: &str, request: &FormItemMove) -> Result<String, MoveError>
 }
 
 // The platform observations and the complete type/context matrix live in
-// tests/fixtures/platform_8_3_27/form_move. A successful platform Move alone
+// crates/unica-forms-designer/tests/fixtures/form_move. A successful platform Move alone
 // is insufficient: 1C can convert the kind/path or silently keep the parent.
 fn is_field(kind: &str) -> bool {
     matches!(

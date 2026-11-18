@@ -1,6 +1,5 @@
 ---
 id: INV.SOURCE.FORM-ELEMENT-REMOVAL-TARGET
-check: []
 gap: https://github.com/IngvarConsulting/unica/issues/1937
 ---
 

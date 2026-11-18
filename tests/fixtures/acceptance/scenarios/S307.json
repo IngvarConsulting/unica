@@ -1,0 +1,16 @@
+{
+  "area": "Навигация и чтение",
+  "task": "Перевести путь из чужого диффа в логический адрес",
+  "wire": [
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "src/CommonModules/GoogleПереводчик.xml"
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S307"
+}

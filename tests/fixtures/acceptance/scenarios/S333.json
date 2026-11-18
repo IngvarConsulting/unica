@@ -1,0 +1,798 @@
+{
+  "id": "S333",
+  "name": "mxl-readable-profiles-edit-only-the-addressed-cell",
+  "issue": 1448,
+  "area": "Макеты",
+  "task": "Соседние строки, пересечения и порядок областей, языки, наборы колонок и рисунки больше не мешают правке: mxl.set меняет только текст адресованной ячейки, остальные байты совпадают (sha результата); область колонок и наложенные строки отказывают без записи",
+  "workspace": "tests/fixtures/acceptance/workspace-mxl",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F06Report.Template.UnsafeOutsideRow"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "unchanged1": {
+          "file": "src/cf/Reports/F06Report/Templates/UnsafeOutsideRow/Ext/Template.xml",
+          "kind": "sha256"
+        },
+        "unchanged2": {
+          "file": "src/cf/Reports/F06Report/Templates/UnsafeOverlappingAreas/Ext/Template.xml",
+          "kind": "sha256"
+        },
+        "unchanged3": {
+          "file": "src/cf/Reports/F06Report/Templates/UnsafePhysicalAreaOrder/Ext/Template.xml",
+          "kind": "sha256"
+        },
+        "unchanged4": {
+          "file": "src/cf/Reports/F06Report/Templates/UnsafeCellTranslations/Ext/Template.xml",
+          "kind": "sha256"
+        },
+        "unchanged5": {
+          "file": "src/cf/Reports/F06Report/Templates/UnsafeMultipleColumnSets/Ext/Template.xml",
+          "kind": "sha256"
+        },
+        "unchanged6": {
+          "file": "src/cf/Reports/F06Report/Templates/UnsafeColumnsId/Ext/Template.xml",
+          "kind": "sha256"
+        },
+        "unchanged7": {
+          "file": "src/cf/Reports/F06Report/Templates/UnsafeLanguageSettings/Ext/Template.xml",
+          "kind": "sha256"
+        },
+        "unchanged8": {
+          "file": "src/cf/Reports/F06Report/Templates/UnsafeDrawing/Ext/Template.xml",
+          "kind": "sha256"
+        },
+        "unchanged9": {
+          "file": "src/cf/Reports/F06Report/Templates/UnsafeColumnArea/Ext/Template.xml",
+          "kind": "sha256"
+        },
+        "unchanged10": {
+          "file": "src/cf/Reports/F06Report/Templates/UnsafeFormatTranslations/Ext/Template.xml",
+          "kind": "sha256"
+        },
+        "unchanged11": {
+          "file": "src/cf/Reports/F06Report/Templates/UnsafeCompressedOutsideRow/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F06Report.Template.UnsafeOutsideRow.Area.A",
+        "ops": [
+          {
+            "op": "mxl.set",
+            "args": {
+              "values": {
+                "cells": {
+                  "R1C1": "Edited"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "tokenUnsafeOutsideRow": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/cf/Reports/F06Report/Templates/UnsafeOutsideRow/Ext/Template.xml",
+          "eq": "$capture.unchanged1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.tokenUnsafeOutsideRow"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/cf/Reports/F06Report/Templates/UnsafeOutsideRow/Ext/Template.xml",
+          "eq": "353e8f920bec3a9a728697a8c8374312ecfabefb8f0101edd78fa26d16fc06c5"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F06Report.Template.UnsafeOverlappingAreas"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F06Report.Template.UnsafeOverlappingAreas.Area.A",
+        "ops": [
+          {
+            "op": "mxl.set",
+            "args": {
+              "values": {
+                "cells": {
+                  "R1C1": "Edited"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "tokenUnsafeOverlappingAreas": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/cf/Reports/F06Report/Templates/UnsafeOverlappingAreas/Ext/Template.xml",
+          "eq": "$capture.unchanged2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.tokenUnsafeOverlappingAreas"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/cf/Reports/F06Report/Templates/UnsafeOverlappingAreas/Ext/Template.xml",
+          "eq": "453635211e8198441152320b1c6b495333b477f874d3630d24f2d0baf1e2560e"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F06Report.Template.UnsafePhysicalAreaOrder"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F06Report.Template.UnsafePhysicalAreaOrder.Area.A",
+        "ops": [
+          {
+            "op": "mxl.set",
+            "args": {
+              "values": {
+                "cells": {
+                  "R1C1": "Edited"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "tokenUnsafePhysicalAreaOrder": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/cf/Reports/F06Report/Templates/UnsafePhysicalAreaOrder/Ext/Template.xml",
+          "eq": "$capture.unchanged3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.tokenUnsafePhysicalAreaOrder"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/cf/Reports/F06Report/Templates/UnsafePhysicalAreaOrder/Ext/Template.xml",
+          "eq": "256f21916b3df25f76a9ccb504371a96e75be8ff57da1b7f687f35cd665c0a3f"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F06Report.Template.UnsafeCellTranslations"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F06Report.Template.UnsafeCellTranslations.Area.A",
+        "ops": [
+          {
+            "op": "mxl.set",
+            "args": {
+              "values": {
+                "cells": {
+                  "R1C1": "Edited"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "tokenUnsafeCellTranslations": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/cf/Reports/F06Report/Templates/UnsafeCellTranslations/Ext/Template.xml",
+          "eq": "$capture.unchanged4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.tokenUnsafeCellTranslations"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/cf/Reports/F06Report/Templates/UnsafeCellTranslations/Ext/Template.xml",
+          "eq": "714bb1544ee18d4179636fff292d3b6e80373b35e143dba28ef9c686f7d79249"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F06Report.Template.UnsafeMultipleColumnSets"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F06Report.Template.UnsafeMultipleColumnSets.Area.A",
+        "ops": [
+          {
+            "op": "mxl.set",
+            "args": {
+              "values": {
+                "cells": {
+                  "R1C1": "Edited"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "tokenUnsafeMultipleColumnSets": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/cf/Reports/F06Report/Templates/UnsafeMultipleColumnSets/Ext/Template.xml",
+          "eq": "$capture.unchanged5"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.tokenUnsafeMultipleColumnSets"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/cf/Reports/F06Report/Templates/UnsafeMultipleColumnSets/Ext/Template.xml",
+          "eq": "c38d54ba0edcd57bb6998f9b92361068548bf0c66e59daef79b0f27b1b52583e"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F06Report.Template.UnsafeColumnsId"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F06Report.Template.UnsafeColumnsId.Area.A",
+        "ops": [
+          {
+            "op": "mxl.set",
+            "args": {
+              "values": {
+                "cells": {
+                  "R1C1": "Edited"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "tokenUnsafeColumnsId": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/cf/Reports/F06Report/Templates/UnsafeColumnsId/Ext/Template.xml",
+          "eq": "$capture.unchanged6"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.tokenUnsafeColumnsId"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/cf/Reports/F06Report/Templates/UnsafeColumnsId/Ext/Template.xml",
+          "eq": "02502c78731d19bd9aee3d1344d56fef81decb4f29f0490f179ad81140fe95f6"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F06Report.Template.UnsafeLanguageSettings"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F06Report.Template.UnsafeLanguageSettings.Area.A",
+        "ops": [
+          {
+            "op": "mxl.set",
+            "args": {
+              "values": {
+                "cells": {
+                  "R1C1": "Edited"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "tokenUnsafeLanguageSettings": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/cf/Reports/F06Report/Templates/UnsafeLanguageSettings/Ext/Template.xml",
+          "eq": "$capture.unchanged7"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.tokenUnsafeLanguageSettings"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/cf/Reports/F06Report/Templates/UnsafeLanguageSettings/Ext/Template.xml",
+          "eq": "edd181bdc7e5aab0a27967acaa9e09b66acfd2b74c79603ea7186826cc3772c6"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F06Report.Template.UnsafeDrawing"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F06Report.Template.UnsafeDrawing.Area.A",
+        "ops": [
+          {
+            "op": "mxl.set",
+            "args": {
+              "values": {
+                "cells": {
+                  "R1C1": "Edited"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "tokenUnsafeDrawing": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/cf/Reports/F06Report/Templates/UnsafeDrawing/Ext/Template.xml",
+          "eq": "$capture.unchanged8"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.tokenUnsafeDrawing"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/cf/Reports/F06Report/Templates/UnsafeDrawing/Ext/Template.xml",
+          "eq": "36864934cbcfa6e951d4d07dceb5ace4f31fab7defec381ac32d21c1e843af12"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F06Report.Template.UnsafeColumnArea"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F06Report.Template.UnsafeColumnArea.Area.A",
+        "ops": [
+          {
+            "op": "mxl.set",
+            "args": {
+              "values": {
+                "cells": {
+                  "R1C1": "Edited"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_source: area `A` is a `Columns` area; the cell editor writes Rows areas, edit this one in the Designer",
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/cf/Reports/F06Report/Templates/UnsafeColumnArea/Ext/Template.xml",
+          "eq": "$capture.unchanged9"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F06Report.Template.UnsafeFormatTranslations"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F06Report.Template.UnsafeFormatTranslations.Area.A",
+        "ops": [
+          {
+            "op": "mxl.set",
+            "args": {
+              "values": {
+                "cells": {
+                  "R1C1": "Edited"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "tokenUnsafeFormatTranslations": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/cf/Reports/F06Report/Templates/UnsafeFormatTranslations/Ext/Template.xml",
+          "eq": "$capture.unchanged10"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.tokenUnsafeFormatTranslations"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/cf/Reports/F06Report/Templates/UnsafeFormatTranslations/Ext/Template.xml",
+          "eq": "1513fd5000dfbd17e77e7c622bc89eb38ad380a9f17327d97be8f0924e3e7e79"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F06Report.Template.UnsafeCompressedOutsideRow"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F06Report.Template.UnsafeCompressedOutsideRow.Area.A",
+        "ops": [
+          {
+            "op": "mxl.set",
+            "args": {
+              "values": {
+                "cells": {
+                  "R1C1": "Edited"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_source: rows 0..4 overlap other rows of the document; edit this template in the Designer",
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/cf/Reports/F06Report/Templates/UnsafeCompressedOutsideRow/Ext/Template.xml",
+          "eq": "$capture.unchanged11"
+        }
+      ]
+    }
+  ]
+}

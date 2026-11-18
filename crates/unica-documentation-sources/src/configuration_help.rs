@@ -279,6 +279,11 @@ impl DocumentationProvider for ConfigurationHelpProvider {
                         .cloned()
                         .flatten()
                         .unwrap_or_else(|| "unversioned".to_string()),
+                    // Вид статьи и владельца различает справка платформы:
+                    // её страница знает, метод это, свойство или тип.
+                    // Страница справки конфигурации — нет.
+                    kind: None,
+                    owner: None,
                 }
             })
             .collect();
@@ -357,6 +362,8 @@ impl DocumentationProvider for ConfigurationHelpProvider {
             applicable_version: configuration_version(root)
                 .unwrap_or_else(|| "unversioned".to_string()),
             text,
+            // Поставщик статью полями не разбирает.
+            article: None,
         }))
     }
 }
@@ -469,7 +476,7 @@ mod tests {
     }
 
     /// Лексический поиск: естественная формулировка с падежами находит страницу,
-    /// хотя точной подстроки запроса в ней нет (#415).
+    /// хотя точной подстроки запроса в ней нет.
     #[test]
     fn natural_phrasing_with_morphology_finds_the_page() {
         let root = workspace();

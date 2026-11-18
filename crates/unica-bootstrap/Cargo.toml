@@ -27,3 +27,8 @@ flate2.workspace = true
 sha2.workspace = true
 tar.workspace = true
 uuid.workspace = true
+
+[package.metadata.unica]
+component = "service"
+file-io = "owned"
+inputs = ["plugins/unica"]

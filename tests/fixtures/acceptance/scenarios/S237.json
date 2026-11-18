@@ -1,0 +1,19 @@
+{
+  "area": "Документация и стандарты",
+  "task": "Стандарт оформления процедур и функций",
+  "wire": [
+    {
+      "tool": "unica.docs",
+      "args": {
+        "query": "оформление процедур и функций",
+        "source": "development-standard"
+      },
+      "expect": [
+        "ok",
+        "provider",
+        "task"
+      ]
+    }
+  ],
+  "id": "S237"
+}

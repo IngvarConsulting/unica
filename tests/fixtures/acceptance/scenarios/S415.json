@@ -1,0 +1,126 @@
+{
+  "id": "S415",
+  "name": "catalog-members-take-platform-slots",
+  "issue": 1385,
+  "area": "Реквизиты и состав",
+  "task": "Новый реквизит шапки справочника встаёт перед табличными частями, новая табличная часть — после имеющихся и перед формами, а её `Use` предшествует `LineNumberLength`, как в выгрузке платформы",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [
+          {
+            "op": "attribute.add",
+            "args": {
+              "items": [
+                {
+                  "name": "Примечание",
+                  "type": {
+                    "variants": [
+                      {
+                        "kind": "string",
+                        "length": 100,
+                        "allowedLength": "variable"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "op": "tabularSection.add",
+            "args": {
+              "items": [
+                {
+                  "name": "ИсторияКурсов",
+                  "attributes": [
+                    {
+                      "name": "Курс",
+                      "type": {
+                        "variants": [
+                          {
+                            "kind": "number",
+                            "digits": 10,
+                            "fraction": 4,
+                            "sign": "nonNegative"
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/*/{*}Properties/{*}Name",
+          "eq": [
+            "ЗагружаетсяИзИнтернета",
+            "НаименованиеПолное",
+            "Наценка",
+            "ОсновнаяВалюта",
+            "ПараметрыПрописи",
+            "ФормулаРасчетаКурса",
+            "СпособУстановкиКурса",
+            "Примечание",
+            "Представления",
+            "ИсторияКурсов"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "xmlTags",
+          "select": "./{*}Catalog/{*}ChildObjects/*",
+          "eq": [
+            "Attribute",
+            "Attribute",
+            "Attribute",
+            "Attribute",
+            "Attribute",
+            "Attribute",
+            "Attribute",
+            "Attribute",
+            "TabularSection",
+            "TabularSection",
+            "Form",
+            "Form"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "xmlTags",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}TabularSection[2]/{*}Properties/*",
+          "eq": [
+            "Name",
+            "Synonym",
+            "Comment",
+            "ToolTip",
+            "FillChecking",
+            "StandardAttributes",
+            "Use",
+            "LineNumberLength"
+          ]
+        }
+      ]
+    }
+  ]
+}

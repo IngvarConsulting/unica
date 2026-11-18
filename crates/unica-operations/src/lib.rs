@@ -1,12 +1,9 @@
 //! Ordered operation registration through coherent family-owned typed bundles.
 //! This owner knows no family implementations or representation codecs.
 
-pub mod recovery;
 mod registry;
 pub use registry::OperationRegistry;
 
-use recovery::{MemberPathLookup, PreparedRedirect, RetiredArgument};
-use serde_json::{Map, Value};
 use std::any::{Any, TypeId};
 use std::fmt;
 use unica_address::address::QualifiedAddress;
@@ -64,38 +61,21 @@ pub trait FamilyOperation: Copy + fmt::Debug + Send + Sync + 'static {
         self.contract()
     }
 
+    fn contract_at_with_observation(
+        self,
+        site: &OperationSite<'_>,
+        _observation: Option<&Self::Observation>,
+    ) -> Option<OperationContract> {
+        self.contract_at(site)
+    }
+
     fn content_resource(self) -> Option<&'static str> {
         None
     }
 
-    fn creator(self) -> Option<&'static str> {
-        None
-    }
-    fn retired_arguments(self) -> &'static [RetiredArgument] {
-        &[]
-    }
-    fn prepare_redirect(
-        self,
-        template: &str,
-        _at: &QualifiedAddress,
-        _args: &Map<String, Value>,
-        _value: &str,
-        _members: MemberPathLookup<'_>,
-    ) -> Option<PreparedRedirect> {
-        Some(PreparedRedirect::literal(template))
-    }
     fn additional_recovery_candidates(self, _site: &OperationSite<'_>) -> Vec<QualifiedAddress> {
         Vec::new()
     }
-    fn retired_query_alias_target(
-        self,
-        _site: &OperationSite<'_>,
-        _context: RegistryContext,
-        _members: MemberPathLookup<'_>,
-    ) -> Option<QualifiedAddress> {
-        None
-    }
-
     /// `Some(site)` is the node dictionary/recovery phase. `None` is the
     /// backend's explicit context filter; no additional read is performed here.
     fn needs_observation(self, _site: Option<&OperationSite<'_>>) -> bool {
@@ -126,25 +106,13 @@ trait ErasedOperation: Sync {
     fn matches(&self, site: &OperationSite<'_>) -> bool;
     fn contract(&self) -> Option<OperationContract>;
     fn contract_at(&self, site: &OperationSite<'_>) -> Option<OperationContract>;
-    fn content_resource(&self) -> Option<&'static str>;
-    fn creator(&self) -> Option<&'static str>;
-    fn retired_arguments(&self) -> &'static [RetiredArgument];
-    fn prepare_redirect(
-        &self,
-        template: &str,
-        at: &QualifiedAddress,
-        args: &Map<String, Value>,
-        value: &str,
-        members: MemberPathLookup<'_>,
-    ) -> Option<PreparedRedirect>;
-    fn additional_recovery_candidates(&self, site: &OperationSite<'_>) -> Vec<QualifiedAddress>;
-    fn retired_query_alias_target(
+    fn contract_at_with_observations(
         &self,
         site: &OperationSite<'_>,
-        context: RegistryContext,
-        members: MemberPathLookup<'_>,
-    ) -> Option<QualifiedAddress>;
-
+        lookup: ObservationLookup<'_>,
+    ) -> Option<OperationContract>;
+    fn content_resource(&self) -> Option<&'static str>;
+    fn additional_recovery_candidates(&self, site: &OperationSite<'_>) -> Vec<QualifiedAddress>;
     fn operation(&self) -> &dyn Any;
     fn observation_type(&self) -> ObservationType;
     fn admits(
@@ -176,38 +144,23 @@ impl<O: FamilyOperation> ErasedOperation for TypedOperationBundle<O> {
     fn contract_at(&self, site: &OperationSite<'_>) -> Option<OperationContract> {
         self.operation.contract_at(site)
     }
+    fn contract_at_with_observations(
+        &self,
+        site: &OperationSite<'_>,
+        lookup: ObservationLookup<'_>,
+    ) -> Option<OperationContract> {
+        let observed = lookup(site.at(), self.observation_type());
+        let typed = match &observed {
+            Some(value) => Some(value.downcast_ref::<O::Observation>()?),
+            None => None,
+        };
+        self.operation.contract_at_with_observation(site, typed)
+    }
     fn content_resource(&self) -> Option<&'static str> {
         self.operation.content_resource()
     }
-    fn creator(&self) -> Option<&'static str> {
-        self.operation.creator()
-    }
-
-    fn retired_arguments(&self) -> &'static [RetiredArgument] {
-        self.operation.retired_arguments()
-    }
-    fn prepare_redirect(
-        &self,
-        template: &str,
-        at: &QualifiedAddress,
-        args: &Map<String, Value>,
-        value: &str,
-        members: MemberPathLookup<'_>,
-    ) -> Option<PreparedRedirect> {
-        self.operation
-            .prepare_redirect(template, at, args, value, members)
-    }
     fn additional_recovery_candidates(&self, site: &OperationSite<'_>) -> Vec<QualifiedAddress> {
         self.operation.additional_recovery_candidates(site)
-    }
-    fn retired_query_alias_target(
-        &self,
-        site: &OperationSite<'_>,
-        context: RegistryContext,
-        members: MemberPathLookup<'_>,
-    ) -> Option<QualifiedAddress> {
-        self.operation
-            .retired_query_alias_target(site, context, members)
     }
     fn operation(&self) -> &dyn Any {
         &self.operation
@@ -272,14 +225,19 @@ impl OperationDescriptor {
     pub fn content_resource(self) -> Option<&'static str> {
         self.binding.content_resource()
     }
-    pub fn creator(self) -> Option<&'static str> {
-        self.binding.creator()
-    }
     pub fn argument_contract(self) -> Option<OperationContract> {
         self.binding.contract()
     }
     pub fn argument_contract_at(self, site: &OperationSite<'_>) -> Option<OperationContract> {
         self.binding.contract_at(site)
+    }
+
+    pub fn argument_contract_at_with_observations(
+        self,
+        site: &OperationSite<'_>,
+        lookup: ObservationLookup<'_>,
+    ) -> Option<OperationContract> {
+        self.binding.contract_at_with_observations(site, lookup)
     }
 
     pub fn applies_at(self, site: &OperationSite<'_>) -> bool {
@@ -341,29 +299,6 @@ impl OperationDescriptor {
 }
 
 impl OperationDescriptor {
-    pub fn retired_arguments(self) -> &'static [RetiredArgument] {
-        self.binding.retired_arguments()
-    }
-    pub fn prepare_redirect(
-        self,
-        template: &str,
-        at: &QualifiedAddress,
-        args: &Map<String, Value>,
-        value: &str,
-        members: MemberPathLookup<'_>,
-    ) -> Option<PreparedRedirect> {
-        self.binding
-            .prepare_redirect(template, at, args, value, members)
-    }
-    pub fn retired_query_alias_target(
-        self,
-        site: &OperationSite<'_>,
-        context: RegistryContext,
-        members: MemberPathLookup<'_>,
-    ) -> Option<QualifiedAddress> {
-        self.binding
-            .retired_query_alias_target(site, context, members)
-    }
     pub fn nearest_ancestor_with_observations(
         self,
         site: &OperationSite<'_>,
@@ -459,6 +394,17 @@ mod tests {
         fn matches(self, _: &OperationSite<'_>) -> bool {
             true
         }
+        fn contract_at(self, site: &OperationSite<'_>) -> Option<OperationContract> {
+            Some(OperationContract {
+                schema: serde_json::json!({"address":site.at().to_string()}),
+                target: "test form",
+                effect: "test",
+                notes: "test",
+                example_args: serde_json::json!({}),
+                help: "test",
+                format_validators: &[],
+            })
+        }
         fn needs_observation(self, _: Option<&OperationSite<'_>>) -> bool {
             true
         }
@@ -512,12 +458,45 @@ mod tests {
 
     #[test]
     fn wrong_form_observation_never_becomes_the_historically_permitted_missing_fact() {
+        use unica_source_contract::context::SourceSetTraits;
+        use unica_source_contract::{SourceProfile, SourceSetKind};
+        let at = QualifiedAddress::parse("main:CommonForm.Card").unwrap();
+        let profile = SourceProfile::platform_xml_8_3_27_format_2_20();
+        let source =
+            SourceSetTraits::from_profiles(SourceSetKind::Configuration, Some(profile), profile);
+        let site = OperationSite::from_route(
+            &at,
+            source,
+            unica_source_contract::route::RouteClass::Metadata,
+        );
         for operation in [FormOperation::Add, FormOperation::Remove] {
             let descriptor = match operation {
                 FormOperation::Add => OperationDescriptor::bind(&FORM_ADD),
                 FormOperation::Remove => OperationDescriptor::bind(&FORM_REMOVE),
             };
             assert!(descriptor.admits_context(&|_| None));
+            let expected = descriptor.argument_contract_at(&site).unwrap().schema;
+            assert_eq!(
+                descriptor
+                    .argument_contract_at_with_observations(&site, &|_, _| None)
+                    .unwrap()
+                    .schema,
+                expected
+            );
+            assert_eq!(
+                descriptor
+                    .argument_contract_at_with_observations(&site, &|_, _| Some(Box::new(
+                        FormItemRole
+                    )))
+                    .unwrap()
+                    .schema,
+                expected
+            );
+            assert!(descriptor
+                .argument_contract_at_with_observations(&site, &|_, _| Some(Box::new(
+                    TemplateFormat
+                )))
+                .is_none());
             assert!(!descriptor.admits_context(&|requested| {
                 assert!(requested.is::<FormItemRole>());
                 Some(Box::new(TemplateFormat))

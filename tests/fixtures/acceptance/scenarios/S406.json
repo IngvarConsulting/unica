@@ -1,0 +1,69 @@
+{
+  "id": "S406",
+  "name": "form-event-handler-has-no-item-parameter",
+  "issue": 1390,
+  "area": "Формы",
+  "task": "Реализовать обработчик события самой формы: `event.implement` пишет сигнатуру без `Элемент`, `view` показывает событие реализованным",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+        "ops": [
+          {
+            "op": "event.implement",
+            "args": {
+              "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Event.OnOpen"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Module.Form.Method.ПриОткрытии"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/signature",
+          "eq": "Процедура ПриОткрытии(Отказ)"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Event.OnOpen"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/state",
+          "eq": "implemented"
+        },
+        {
+          "pointer": "/data/props/signature",
+          "eq": "Процедура ПриОткрытии(Отказ)"
+        }
+      ]
+    }
+  ]
+}

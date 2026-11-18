@@ -1,0 +1,65 @@
+{
+  "area": "Реквизиты и состав",
+  "task": "Полный маршрут: найти объект, изучить состав, превью добавления, перечитать состав",
+  "wire": [
+    {
+      "tool": "unica.search",
+      "args": {
+        "corpus": "names",
+        "query": "АктОбУничтоженииПерсональныхДанных"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.АктОбУничтоженииПерсональныхДанных.Attribute"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.АктОбУничтоженииПерсональныхДанных",
+        "ops": [
+          {
+            "op": "attribute.add",
+            "args": {
+              "items": [
+                {
+                  "name": "МаршрутныйРеквизит",
+                  "type": {
+                    "variants": [
+                      {
+                        "kind": "string",
+                        "length": 30,
+                        "allowedLength": "variable"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.АктОбУничтоженииПерсональныхДанных.Attribute"
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S095"
+}

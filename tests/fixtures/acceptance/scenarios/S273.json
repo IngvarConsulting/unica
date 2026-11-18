@@ -1,0 +1,31 @@
+{
+  "id": "S273",
+  "area": "Формы",
+  "task": "Добавить форму справочнику в выгрузке 2.23 — запись вне записываемого профиля отказывает до первого байта",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "newer:Catalog.Валюты",
+        "ops": [
+          {
+            "op": "form.add",
+            "args": {
+              "items": [
+                {
+                  "name": "ФормаНовая",
+                  "type": "ListForm"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_source: Configuration.xml: export format 2.23 is newer than the newest writable format 2.22 for 1C 8.5.4; Unica does not edit this export yet"
+    }
+  ],
+  "workspace": "tests/fixtures/acceptance/workspace-format"
+}

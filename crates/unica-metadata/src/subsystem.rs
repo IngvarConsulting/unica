@@ -2,6 +2,16 @@ use serde::Serialize;
 use std::fmt;
 use std::path::PathBuf;
 
+// resource-limit: metadata.subsystem-address-depth
+// class: format
+// unit: depth
+// scope: record
+// value: 8
+// resource: Число имён в адресе подсистемы (вложенность подсистем); удвоенное значение ограничивает глубину обхода Subsystems/.
+// status: unproven
+// origin: a8c0c30fa
+// problem: неизвестно
+// on-reach: Ошибка адреса «subsystem address must contain from 1 to 8 names»; в логическом дереве — not_found.
 pub const SUBSYSTEM_ADDRESS_MAX_DEPTH: usize = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
@@ -123,6 +133,7 @@ pub struct SubsystemInfoData {
     pub name: String,
     pub synonym: String,
     pub comment: Option<String>,
+    pub include_help_in_contents: Option<bool>,
     pub include_ci: String,
     pub use_one_command: String,
     pub explanation: Option<String>,
@@ -198,6 +209,8 @@ pub struct SubsystemInfoResult {
     pub name: String,
     pub synonym: Option<String>,
     pub comment: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub include_help_in_contents: Option<bool>,
     pub explanation: Option<String>,
     pub picture: Option<String>,
     pub include_in_command_interface: Option<String>,

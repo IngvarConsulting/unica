@@ -1,0 +1,26 @@
+{
+  "area": "Свойства объектов",
+  "task": "Включить индексирование реквизита документа (превью)",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.АктОбУничтоженииПерсональныхДанных.Attribute.Организация",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "indexing": "Index"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S053"
+}

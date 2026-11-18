@@ -1,0 +1,17 @@
+{
+  "id": "S289",
+  "area": "Расширения конфигурации",
+  "task": "Открыть корень набора-расширения — проекция корня как у конфигурации",
+  "workspace": "tests/fixtures/acceptance/workspace-format",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "ext:Configuration"
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ]
+}

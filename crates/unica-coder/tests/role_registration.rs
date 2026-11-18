@@ -93,7 +93,7 @@ fn compile_registration(entry: &str) -> Output {
 }
 
 fn compile_registration_with_declarations(entry: &str, metadata: &str, form: &str) -> Output {
-    let source = syn::parse_file(include_str!("../src/domain/apply.rs")).unwrap();
+    let source = syn::parse_file(include_str!("../../unica-domain/src/apply.rs")).unwrap();
     let macros = source
         .items
         .iter()
@@ -133,8 +133,8 @@ fn compile_registration_with_declarations(entry: &str, metadata: &str, form: &st
         enum OperationApplicability {{
             Configuration, ExtensionRoot, Metadata, MetadataOrCommonTemplate, Role, RoleRight, SupportRule, MetadataAttributeContainer,
             CatalogTabularAttribute,
-            MetadataAttribute, MetadataCommands, MetadataCommand, MetadataForms,
-            Form, FormItemContainer, FormItem, FormEvent,
+            MetadataAttribute, MetadataCommands, MetadataCommand, MetadataForms, FormSlots,
+            Form, FormAttribute, FormProperties, FormItemContainer, FormItem, FormEvent,
             MetadataTabularSections, MetadataTabularSection,
             MetadataDimensions, MetadataDimension, MetadataResources, MetadataResource,
             MetadataEnumValues, MetadataEnumValue, MetadataColumns, MetadataColumn,
@@ -231,7 +231,7 @@ fn typed_contextual_registrations_compile_and_migrated_raw_tuples_are_rejected()
             (MetadataOperation::CommandSet), (MetadataOperation::CommandRemove),
             (FormOperation::Add), (FormOperation::Set), (FormOperation::Remove),
             (FormOperation::ItemAdd), (FormOperation::ItemRemove), (FormOperation::ItemMove),
-            (FormOperation::AttributeAdd), (FormOperation::CommandAdd),
+            (FormOperation::AttributeAdd), (FormOperation::AttributeRemove), (FormOperation::ColumnAdd), (FormOperation::CommandAdd),
             (FormOperation::EventBind),
             (MetadataOperation::ObjectCreate)"#,
     );
@@ -258,12 +258,13 @@ fn typed_contextual_registrations_compile_and_migrated_raw_tuples_are_rejected()
         ("Metadata", "command.set", "MetadataCommand", "Values"),
         ("Metadata", "command.remove", "MetadataCommand", "Target"),
         ("Form", "form.add", "MetadataForms", "Items"),
-        ("Form", "form.set", "MetadataForms", "Values"),
+        ("Form", "form.set", "FormSlots", "Values"),
         ("Form", "form.remove", "Form", "Target"),
         ("Form", "item.add", "FormItemContainer", "Items"),
         ("Form", "item.remove", "FormItem", "Target"),
         ("Form", "item.move", "FormItem", "Values"),
         ("Form", "attribute.add", "Form", "Items"),
+        ("Form", "column.add", "FormAttribute", "Items"),
         ("Form", "command.add", "Form", "Items"),
         ("Form", "event.bind", "FormEvent", "Values"),
         ("Form", "future.operation", "Form", "Items"),

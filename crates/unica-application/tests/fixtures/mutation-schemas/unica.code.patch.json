@@ -1,0 +1,129 @@
+{
+  "inputSchema": {
+    "additionalProperties": false,
+    "oneOf": [
+      {
+        "properties": {
+          "operation": {
+            "const": "insert"
+          }
+        },
+        "required": [
+          "selector",
+          "position"
+        ]
+      },
+      {
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "selector"
+              ]
+            },
+            {
+              "required": [
+                "position"
+              ]
+            }
+          ]
+        },
+        "properties": {
+          "operation": {
+            "const": "insert"
+          }
+        }
+      },
+      {
+        "not": {
+          "required": [
+            "position"
+          ]
+        },
+        "properties": {
+          "operation": {
+            "const": "replace"
+          }
+        },
+        "required": [
+          "selector"
+        ]
+      }
+    ],
+    "properties": {
+      "confirm": {
+        "type": "boolean"
+      },
+      "content": {
+        "minLength": 1,
+        "pattern": "\\S",
+        "type": "string"
+      },
+      "cwd": {
+        "type": "string"
+      },
+      "dryRun": {
+        "default": true,
+        "type": "boolean"
+      },
+      "metadataPath": {
+        "minLength": 1,
+        "pattern": "\\S",
+        "type": "string"
+      },
+      "operation": {
+        "enum": [
+          "insert",
+          "replace"
+        ],
+        "type": "string"
+      },
+      "position": {
+        "enum": [
+          "before",
+          "after"
+        ],
+        "type": "string"
+      },
+      "selector": {
+        "additionalProperties": false,
+        "oneOf": [
+          {
+            "required": [
+              "method"
+            ]
+          },
+          {
+            "required": [
+              "anchor"
+            ]
+          }
+        ],
+        "properties": {
+          "anchor": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "method": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "sourceSet": {
+        "minLength": 1,
+        "pattern": "\\S",
+        "type": "string"
+      }
+    },
+    "required": [
+      "sourceSet",
+      "metadataPath",
+      "operation",
+      "content"
+    ],
+    "type": "object"
+  },
+  "operation": "code-patch"
+}

@@ -1,6 +1,5 @@
 ---
 id: INV.WIRE.ENGINE-FREE-HANDSHAKE
-check: []
 gap: https://github.com/IngvarConsulting/unica/issues/966
 ---
 

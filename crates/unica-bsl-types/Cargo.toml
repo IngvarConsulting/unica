@@ -6,10 +6,13 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-unica-documentation-sources = { path = "../unica-documentation-sources" }
 serde.workspace = true
 serde_json.workspace = true
 flate2.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[package.metadata.unica]
+component = "service"
+file-io = "owned"

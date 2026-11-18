@@ -35,6 +35,7 @@ fn metadata_kind_branch_lists_registered_objects_with_canonical_addresses() {
     );
 }
 
+/// rule: INV.SOURCE.METADATA-NODE-PROPERTIES
 #[test]
 fn metadata_node_props_carry_the_observed_object_properties() {
     let fixture = RealReaderFixture::new();
@@ -97,14 +98,18 @@ fn catalog_standard_attribute_properties_reach_collection_and_detail() {
                                 .text()
                                 .unwrap_or("")
                         };
-                        json!({"language":text("lang"),"content":text("content")})
+                        format!(
+                            "{} = '{}'",
+                            text("lang"),
+                            text("content").replace('\'', "''")
+                        )
                     })
                     .collect::<Vec<_>>();
                 assert!(
                     !expected.is_empty(),
                     "the fixture must carry {key} translations"
                 );
-                assert_eq!(value, json!(expected));
+                assert_eq!(value, json!(expected.join("; ")));
             }
         }
     }
@@ -342,7 +347,7 @@ fn metadata_long_type_read_preserves_other_facts_and_names_the_size_limit() {
         && limit.as_str().unwrap().contains("2048")));
     assert!(data["props"].get("type").is_none());
     assert_eq!(data["props"]["required"], false);
-    assert_eq!(data["props"]["synonym"], "Long");
+    assert_eq!(data["props"]["synonym"], "ru = 'Long'");
     let control = service
         .view(ViewRequest::new("main:AccumulationRegister.Movements.Dimension.Small").unwrap());
     assert!(control.ok, "the call failed");
@@ -387,7 +392,7 @@ fn metadata_missing_empty_and_malformed_types_do_not_claim_a_size_limit() {
         let data = detail.data.unwrap();
         assert!(data["props"].get("type").is_none(), "unexpected answer");
         // Отсутствующий, пустой и повреждённый тип не заявляют предел размера;
-        // причина повреждения названа у самого реквизита (#1933).
+        // причина повреждения названа у самого реквизита.
         let item_limits = data["limits"].as_array().cloned().unwrap_or_default();
         assert!(
             item_limits.iter().all(|limit| {
@@ -538,8 +543,7 @@ fn predefined_long_type_read_preserves_other_facts_and_names_the_size_limit() {
             expected_small
                 .iter()
                 .map(|path| unica_metadata::MetadataTypeVariant::Reference {
-                    metadata_path: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, path)
-                        .unwrap(),
+                    metadata_path: MetadataAddress::parse_logical(path).unwrap(),
                 })
                 .collect()
         )
@@ -810,6 +814,7 @@ fn metadata_attribute_fill_value_is_a_bounded_observed_fact() {
     }
 }
 
+/// rule: INV.SOURCE.METADATA-NODE-PROPERTIES
 #[test]
 fn metadata_node_props_lay_out_the_per_kind_facts_by_role() {
     let fixture = RealReaderFixture::new();
@@ -840,10 +845,10 @@ fn metadata_node_props_lay_out_the_per_kind_facts_by_role() {
     );
 
     // Тип константы: одно составное значение, вложенным JSON — тем же
-    // механизмом, каким отвечает тип реквизита (#2031).
+    // механизмом, каким отвечает тип реквизита.
     let constant = service.view(ViewRequest::new("main:Constant.MainCurrency").unwrap());
     assert!(constant.ok, "{:?}", refusal_codes(&constant));
-    let ty = &constant.data.as_ref().unwrap()["props"]["type"];
+    let ty = &constant.data.as_ref().unwrap()["props"]["Type"];
     assert!(ty.is_object(), "constant type arrives as nested JSON");
     assert_eq!(ty["variants"][0]["kind"], json!("string"));
 }
@@ -851,8 +856,9 @@ fn metadata_node_props_lay_out_the_per_kind_facts_by_role() {
 /// Сервис в том виде, в каком его выгружает Конфигуратор 8.3.27: у шаблона
 /// и метода есть `Synonym` и `<Comment/>` (#634).
 fn install_configurator_http_service(fixture: &RealReaderFixture, edit: impl Fn(&str) -> String) {
-    let xml = fixture_text("platform_8_3_27/meta_info/edge/http-service-configurator.xml")
-        .replace("<Name>ПроверкаСвязи</Name>", "<Name>ExternalAPI</Name>");
+    let xml =
+        fixture_text("formats/platform_xml/2.20/meta_info/edge/http-service-configurator.xml")
+            .replace("<Name>ПроверкаСвязи</Name>", "<Name>ExternalAPI</Name>");
     write(
         &fixture.source.join("HTTPServices/ExternalAPI.xml"),
         &edit(&xml),
@@ -912,7 +918,7 @@ fn configurator_web_service_view_opens_its_operations_and_parameters() {
     let fixture = RealReaderFixture::new();
     write(
         &fixture.source.join("WebServices/Exchange.xml"),
-        &fixture_text("platform_8_3_27/meta_info/edge/web-service-configurator.xml")
+        &fixture_text("formats/platform_xml/2.20/meta_info/edge/web-service-configurator.xml")
             .replace("<Name>ОбменДанными</Name>", "<Name>Exchange</Name>"),
     );
     let service = fixture.view_service();
@@ -984,6 +990,7 @@ fn an_unreadable_http_template_is_named_rather_than_reported_absent() {
     );
 }
 
+/// rule: INV.SOURCE.SERVICE-SEQUENCES-ARE-BRANCHES
 #[test]
 fn declared_service_kinds_finally_get_their_subject() {
     let fixture = RealReaderFixture::new();
@@ -1051,6 +1058,7 @@ fn declared_service_kinds_finally_get_their_subject() {
     );
 }
 
+/// rule: INV.SOURCE.RELATIONS-ANSWER-IN-ONE-BRANCH
 #[test]
 fn every_reference_of_an_object_answers_in_one_relation_branch() {
     let fixture = RealReaderFixture::new();
@@ -1116,7 +1124,7 @@ fn every_reference_of_an_object_answers_in_one_relation_branch() {
                 "dataLockField".to_string(),
                 "main:Catalog.Items.Attribute.Code".to_string()
             ),
-            // Membership in a subsystem is the same branch (#2235).
+            // Membership in a subsystem is the same branch.
             ("subsystem".to_string(), "main:Subsystem.Sales".to_string()),
         ]
     );
@@ -1136,7 +1144,19 @@ fn every_reference_of_an_object_answers_in_one_relation_branch() {
     );
     assert_eq!(
         sources("main:EventSubscription.ПриЗаписи.Relation"),
-        [("source".to_string(), "main:Catalog.Items".to_string())]
+        [
+            ("source".to_string(), "main:Catalog.Items".to_string()),
+            (
+                "handler".to_string(),
+                "main:CommonModule.РеактивныйСервер.Method.ПриЗаписи".to_string()
+            ),
+        ]
+    );
+    let subscription = service.view(ViewRequest::new("main:EventSubscription.ПриЗаписи").unwrap());
+    let subscription = serde_json::to_value(subscription).unwrap();
+    assert_eq!(
+        subscription["data"]["props"]["Handler"],
+        "main:CommonModule.РеактивныйСервер.Method.ПриЗаписи"
     );
     // Пакет XDTO бывает ссылкой и бывает пространством имён; в ветвь попадает
     // только адресуемый вариант, и это названная граница, а не потеря.
@@ -1155,6 +1175,7 @@ fn every_reference_of_an_object_answers_in_one_relation_branch() {
     assert_eq!(refusal_codes(&inward), ["not_found"]);
 }
 
+/// rule: INV.SOURCE.DECLARATION-BRANCHES-FOLLOW-THE-NAME
 #[test]
 fn root_declarations_get_branches_and_only_the_named_one_is_addressable() {
     let fixture = RealReaderFixture::new();
@@ -1206,6 +1227,7 @@ fn root_declarations_get_branches_and_only_the_named_one_is_addressable() {
     assert_eq!(refusal_codes(&named), ["not_found"]);
 }
 
+/// rule: INV.SOURCE.PREDEFINED-ITEMS-ANSWER-BY-ADDRESS
 #[test]
 fn predefined_items_beyond_first_page_answer_by_address() {
     let fixture = predefined_page_fixture();
@@ -1242,6 +1264,7 @@ fn predefined_items_beyond_first_page_answer_by_address() {
     assert_eq!(refusal_codes(&missing), ["not_found"]);
 }
 
+/// rule: INV.SOURCE.PREDEFINED-ITEMS-ANSWER-BY-ADDRESS
 #[test]
 fn predefined_items_pages_preserve_complete_document_order() {
     let fixture = predefined_page_fixture();
@@ -1331,6 +1354,7 @@ fn predefined_page_fixture() -> RealReaderFixture {
     fixture
 }
 
+/// rule: INV.SOURCE.PREDEFINED-ITEMS-ANSWER-BY-ADDRESS
 #[test]
 fn predefined_items_empty_inapplicable_and_unreadable_are_distinct() {
     let fixture = RealReaderFixture::new();
@@ -1340,7 +1364,7 @@ fn predefined_items_empty_inapplicable_and_unreadable_are_distinct() {
     let owner = service.view(ViewRequest::new("main:Catalog.Items").unwrap());
     assert!(owner.ok, "the call failed");
     let authority = fixture.read_authority();
-    let target = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Items").unwrap();
+    let target = MetadataAddress::parse_logical("Catalog.Items").unwrap();
     let empty_data = authority
         .read
         .predefined_items(
@@ -1382,6 +1406,7 @@ fn predefined_items_empty_inapplicable_and_unreadable_are_distinct() {
     assert!(unreadable.cursor.is_none());
 }
 
+/// rule: INV.SOURCE.PREDEFINED-ITEMS-ANSWER-BY-ADDRESS
 #[test]
 fn predefined_items_cursor_replays_after_source_removal() {
     let fixture = predefined_page_fixture();
@@ -1413,6 +1438,7 @@ fn predefined_items_cursor_replays_after_source_removal() {
     assert_eq!(fresh.data.unwrap()["items"], json!([]));
 }
 
+/// rule: INV.SOURCE.PREDEFINED-ITEMS-ANSWER-BY-ADDRESS
 #[test]
 fn predefined_items_refuse_the_snapshot_budget_and_read_a_large_file_whole() {
     let fixture = predefined_page_fixture();
@@ -1421,7 +1447,7 @@ fn predefined_items_refuse_the_snapshot_budget_and_read_a_large_file_whole() {
     assert_eq!(refusal_codes(&result), ["result_too_large"]);
     assert!(result.cursor.is_none());
 
-    // #1119: the file size is no reason to refuse; a correct file larger than
+    // The file size is no reason to refuse; a correct file larger than
     // the former 8 MiB read limit lists the same items.
     let path = fixture.source.join("Catalogs/Items/Ext/Predefined.xml");
     let original = fs::read_to_string(&path).unwrap();
@@ -1438,12 +1464,13 @@ fn predefined_items_refuse_the_snapshot_budget_and_read_a_large_file_whole() {
     assert!(result.ok);
 }
 
+/// rule: INV.SOURCE.PREDEFINED-ITEMS-ANSWER-BY-ADDRESS
 #[test]
 fn predefined_items_checkpoint_preserves_cancellation_and_deadline() {
     use unica_metadata::MetadataKind;
     let fixture = predefined_page_fixture();
     let authority = fixture.read_authority();
-    let target = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Items").unwrap();
+    let target = MetadataAddress::parse_logical("Catalog.Items").unwrap();
     let mut completed_checkpoints = 0;
     let data = authority
         .read
@@ -1475,6 +1502,7 @@ fn predefined_items_checkpoint_preserves_cancellation_and_deadline() {
     }
 }
 
+/// rule: INV.SOURCE.PREDEFINED-ITEMS-ANSWER-BY-ADDRESS
 #[test]
 fn predefined_items_other_owner_fields_survive_addressed_reads() {
     use unica_metadata::{MetadataType, MetadataTypeVariant};
@@ -1522,7 +1550,7 @@ fn predefined_items_other_owner_fields_survive_addressed_reads() {
             &fixture
                 .source
                 .join(format!("{directory}/{name}/Ext/Predefined.xml")),
-            &fixture_text(&format!("platform_8_3_27/predefined/{fixture_file}")),
+            &crate_fixture_text(&format!("predefined/{fixture_file}")),
         );
     }
     let service = fixture.view_service();
@@ -1564,8 +1592,7 @@ fn predefined_items_other_owner_fields_survive_addressed_reads() {
     assert_eq!(
         characteristic.data.as_ref().unwrap()["props"]["type"],
         json!(MetadataType::new(vec![MetadataTypeVariant::Reference {
-            metadata_path: MetadataAddress::parse(
-                PLATFORM_XML_8_3_27_FORMAT_2_20,
+            metadata_path: MetadataAddress::parse_logical(
                 "ChartOfCharacteristicTypes.РазделыДатЗапретаИзменения"
             )
             .unwrap(),
@@ -1583,6 +1610,7 @@ fn predefined_items_other_owner_fields_survive_addressed_reads() {
     );
 }
 
+/// rule: INV.SOURCE.PREDEFINED-ITEMS-ANSWER-BY-ADDRESS
 #[test]
 fn predefined_items_answer_by_address_with_the_count_from_the_reader() {
     let fixture = RealReaderFixture::new();

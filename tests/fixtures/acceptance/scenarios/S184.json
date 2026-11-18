@@ -1,0 +1,29 @@
+{
+  "area": "СКД",
+  "task": "Добавить параметр периода",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных",
+        "ops": [
+          {
+            "op": "parameter.add",
+            "args": {
+              "items": [
+                {
+                  "name": "Период",
+                  "type": "StandardPeriod"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S184"
+}

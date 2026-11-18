@@ -13,9 +13,20 @@ test-support = []
 uuid.workspace = true
 sha2.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 serde_yaml.workspace = true
 unsafe-libyaml.workspace = true
 unica-xml-format = { path = "../unica-xml-format" }
 unica-address = { path = "../unica-address" }
 roxmltree.workspace = true
 unica-source-contract = { path = "../unica-source-contract" }
+
+[package.metadata.unica]
+version-literal-baseline = 2
+component = "service"
+file-io = "none"
+inputs = [
+    "tests/fixtures/formats/platform_xml/2.20/all_kinds",
+    "tests/fixtures/formats/platform_xml/2.21/all_kinds",
+    "tests/fixtures/formats/platform_xml/2.22/all_kinds",
+]

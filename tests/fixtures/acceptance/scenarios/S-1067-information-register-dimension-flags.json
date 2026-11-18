@@ -1,0 +1,606 @@
+{
+  "id": "S-1067-information-register-dimension-flags",
+  "issue": 1067,
+  "area": "Реквизиты и состав",
+  "task": "Создать и изменить Master, MainFilter, DenyIncompleteValues измерения регистра сведений: контракты, true/false, defaults, no-op, точный возврат, preview/token/readback и stale-token",
+  "workspace": "tests/fixtures/acceptance/workspace-information-register-dimension-flags",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Facts.Dimension.RefDimension"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/master",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/mainFilter",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/denyIncompleteValues",
+          "eq": true
+        }
+      ],
+      "captures": {
+        "initial": {
+          "file": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Facts.Dimension.RefDimension.Can.dimension.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/master/type",
+          "eq": "boolean"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/mainFilter/type",
+          "eq": "boolean"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/denyIncompleteValues/type",
+          "eq": "boolean"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Facts.Can.dimension.add"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/items/items/properties/master/type",
+          "eq": "boolean"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/items/items/properties/mainFilter/type",
+          "eq": "boolean"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/items/items/properties/denyIncompleteValues/type",
+          "eq": "boolean"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.Facts.Dimension.RefDimension",
+        "ops": [
+          {
+            "op": "dimension.set",
+            "args": {
+              "values": {
+                "master": false,
+                "mainFilter": false,
+                "denyIncompleteValues": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Dimension/{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"RefDimension\"]/{http://v8.1c.ru/8.3/MDClasses}Master",
+          "eq": [
+            "false"
+          ]
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Dimension/{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"RefDimension\"]/{http://v8.1c.ru/8.3/MDClasses}MainFilter",
+          "eq": [
+            "false"
+          ]
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Dimension/{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"RefDimension\"]/{http://v8.1c.ru/8.3/MDClasses}DenyIncompleteValues",
+          "eq": [
+            "false"
+          ]
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Dimension/{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"StringDimension\"]/{http://v8.1c.ru/8.3/MDClasses}Master",
+          "eq": [
+            "true"
+          ]
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Dimension/{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"StringDimension\"]/{http://v8.1c.ru/8.3/MDClasses}MainFilter",
+          "eq": [
+            "true"
+          ]
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Dimension/{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"StringDimension\"]/{http://v8.1c.ru/8.3/MDClasses}DenyIncompleteValues",
+          "eq": [
+            "true"
+          ]
+        }
+      ],
+      "captures": {
+        "disabled": {
+          "file": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Facts.Dimension.RefDimension"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/master",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/mainFilter",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/denyIncompleteValues",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.Facts.Dimension.RefDimension",
+        "ops": [
+          {
+            "op": "dimension.set",
+            "args": {
+              "values": {
+                "master": false,
+                "mainFilter": false,
+                "denyIncompleteValues": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "$capture.disabled"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "$capture.disabled"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.Facts.Dimension.RefDimension",
+        "ops": [
+          {
+            "op": "dimension.set",
+            "args": {
+              "values": {
+                "master": true,
+                "mainFilter": true,
+                "denyIncompleteValues": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "$capture.disabled"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.Facts",
+        "ops": [
+          {
+            "op": "dimension.add",
+            "args": {
+              "items": [
+                {
+                  "name": "Explicit",
+                  "type": {
+                    "variants": [
+                      {
+                        "kind": "string",
+                        "length": 10,
+                        "allowedLength": "variable"
+                      }
+                    ]
+                  },
+                  "master": true,
+                  "mainFilter": true,
+                  "denyIncompleteValues": true
+                },
+                {
+                  "name": "Default",
+                  "type": {
+                    "variants": [
+                      {
+                        "kind": "string",
+                        "length": 10,
+                        "allowedLength": "variable"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Dimension/{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"Explicit\"]/{http://v8.1c.ru/8.3/MDClasses}Master",
+          "eq": [
+            "true"
+          ]
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Dimension/{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"Explicit\"]/{http://v8.1c.ru/8.3/MDClasses}MainFilter",
+          "eq": [
+            "true"
+          ]
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Dimension/{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"Explicit\"]/{http://v8.1c.ru/8.3/MDClasses}DenyIncompleteValues",
+          "eq": [
+            "true"
+          ]
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Dimension/{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"Default\"]/{http://v8.1c.ru/8.3/MDClasses}Master",
+          "eq": [
+            "false"
+          ]
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Dimension/{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"Default\"]/{http://v8.1c.ru/8.3/MDClasses}MainFilter",
+          "eq": [
+            "false"
+          ]
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Dimension/{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"Default\"]/{http://v8.1c.ru/8.3/MDClasses}DenyIncompleteValues",
+          "eq": [
+            "false"
+          ]
+        }
+      ],
+      "captures": {
+        "added": {
+          "file": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Facts.Dimension.Explicit"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/master",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/mainFilter",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/denyIncompleteValues",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Facts.Dimension.Default"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/master",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/mainFilter",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/denyIncompleteValues",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.Facts",
+        "ops": [
+          {
+            "op": "dimension.set",
+            "args": {
+              "at": "main:InformationRegister.Facts.Dimension.RefDimension",
+              "values": {
+                "master": false
+              }
+            }
+          },
+          {
+            "op": "dimension.set",
+            "args": {
+              "at": "main:InformationRegister.Facts.Dimension.Missing",
+              "values": {
+                "mainFilter": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: element `Missing` was not found",
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "$capture.added"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.Facts.Dimension.RefDimension",
+        "ops": [
+          {
+            "op": "dimension.set",
+            "args": {
+              "values": {
+                "master": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "stale": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "$capture.added"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.Facts",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Concurrent update"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "$capture.added"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "concurrent": {
+          "file": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.stale"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "stale_revision: retained apply preimage changed: InformationRegisters/Facts.xml; input `InformationRegisters/Facts.xml`: source write target; the plan retains its original stat",
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "$capture.concurrent"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Facts.Dimension.RefDimension"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/master",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/mainFilter",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/denyIncompleteValues",
+          "eq": true
+        }
+      ]
+    }
+  ]
+}

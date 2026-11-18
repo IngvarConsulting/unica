@@ -1,0 +1,107 @@
+{
+  "id": "S347",
+  "name": "metadata-warning-passed",
+  "issue": 858,
+  "area": "Метаданные",
+  "task": "Предупреждение имеет свой код и сохраняет вердикт passed",
+  "workspace": "tests/fixtures/acceptance/workspace-metadata-warning",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:DocumentJournal.WarningJournal"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "unchanged1": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "unchanged2": {
+          "file": "src/DocumentJournals/MixedJournal.xml",
+          "kind": "sha256"
+        },
+        "unchanged3": {
+          "file": "src/DocumentJournals/WarningJournal.xml",
+          "kind": "sha256"
+        },
+        "unchanged4": {
+          "file": "src/Languages/Русский.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:DocumentJournal.WarningJournal"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "validators": [
+        "meta"
+      ],
+      "diagnostic": "validation_warning",
+      "assertions": [
+        {
+          "pointer": "/ok",
+          "eq": true
+        },
+        {
+          "pointer": "/data/diagnostics",
+          "contains": {
+            "code": "validation_warning",
+            "severity": "warning",
+            "message": "10. DocumentJournal: no RegisteredDocuments specified",
+            "metadataPath": "DocumentJournal.WarningJournal",
+            "field": "properties",
+            "validator": "meta"
+          }
+        },
+        {
+          "pointer": "/data/diagnosticCount",
+          "eq": 1
+        },
+        {
+          "pointer": "/data/diagnostics",
+          "eq": [
+            {
+              "code": "validation_warning",
+              "severity": "warning",
+              "message": "10. DocumentJournal: no RegisteredDocuments specified",
+              "metadataPath": "DocumentJournal.WarningJournal",
+              "field": "properties",
+              "validator": "meta"
+            }
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.unchanged1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/DocumentJournals/MixedJournal.xml",
+          "eq": "$capture.unchanged2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/DocumentJournals/WarningJournal.xml",
+          "eq": "$capture.unchanged3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "eq": "$capture.unchanged4"
+        }
+      ]
+    }
+  ]
+}

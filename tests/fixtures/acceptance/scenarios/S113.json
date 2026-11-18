@@ -1,0 +1,31 @@
+{
+  "area": "Создание и удаление объектов",
+  "task": "Добавить документ в основания создания справочника (превью)",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [
+          {
+            "op": "relation.add",
+            "args": {
+              "values": {
+                "relation": "basedOn",
+                "targets": [
+                  {
+                    "metadataPath": "Document.АктОбУничтоженииПерсональныхДанных"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S113"
+}

@@ -169,6 +169,7 @@ mod tests {
         set.iter().map(String::as_str).collect()
     }
 
+    /// rule: INV.CACHE.EVENT-IMPACT-CLOSED
     #[test]
     fn the_kind_list_covers_the_whole_enum() {
         let syntax = syn::parse_file(include_str!("../../unica-source-contract/src/events.rs"))
@@ -223,6 +224,7 @@ mod tests {
 
     /// Refreshing a cache that was never invalidated would rebuild something
     /// already fresh; the report would then name work that did not need doing.
+    /// rule: INV.CACHE.EVENT-IMPACT-CLOSED
     #[test]
     fn no_event_refreshes_a_cache_it_did_not_invalidate() {
         for kind in ALL_KINDS {
@@ -241,6 +243,7 @@ mod tests {
 
     /// An event that invalidates nothing would be a change no consumer hears
     /// about, which is the failure this whole model exists to prevent.
+    /// rule: INV.CACHE.EVENT-IMPACT-CLOSED
     #[test]
     fn every_event_invalidates_at_least_one_cache() {
         for kind in ALL_KINDS {
@@ -254,6 +257,7 @@ mod tests {
 
     /// One call reporting several events must answer for all of them: a
     /// mutation that emits two events cannot leave one of their caches warm.
+    /// rule: INV.CACHE.EVENT-IMPACT-CLOSED
     #[test]
     fn from_events_unions_the_impact_of_every_event() {
         let combined = CacheImpact::from_events(&[
@@ -303,6 +307,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.CACHE.EVENT-IMPACT-CLOSED
     #[test]
     fn no_events_leave_the_impact_empty() {
         let impact = CacheImpact::from_events(&[]);

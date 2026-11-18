@@ -1,0 +1,40 @@
+{
+  "id": "S344",
+  "name": "diagnostics-jsonl-empty",
+  "issue": 1064,
+  "area": "Код BSL",
+  "task": "Пустой поток называет отсутствие start и действие восстановления без номера строки",
+  "workspace": "tests/fixtures/acceptance/workspace-diagnostics",
+  "profile": "fault-injection",
+  "driver": "analyzer-jsonl-fault",
+  "evaluation": "empty",
+  "wire": [
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:CommonModule.Пример"
+      },
+      "expect": [
+        "provider"
+      ],
+      "assertions": [
+        {
+          "pointer": "/ok",
+          "eq": false
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "provider_unavailable"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "eq": "BSL analysis did not complete, so the module is unproven: stream is missing start event. Check compatibility between Unica and its bundled analyzer; if the problem persists, report this reason."
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ]
+    }
+  ]
+}

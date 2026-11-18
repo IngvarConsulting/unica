@@ -6,13 +6,13 @@ use std::path::{Path, PathBuf};
 use unica_source_contract::proposal::{DirectoryMembershipSelector, DirectoryMembershipSnapshot};
 use unica_source_contract::workspace::WorkspaceContext;
 use unica_source_contract::SourceSetKind;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_source_designer::owner::MD_CLASSES_NS;
 use unica_source_designer::owner::{
     invalid_owner, parse_platform_xml_owner, OwnerExpectation, PlatformXmlOwner,
     PlatformXmlOwnerError, PlatformXmlRootExpectation,
 };
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_source_designer::owner::{PlatformXmlOwnerKind, DCS_ROOT, MXL_ROOT};
 use unica_source_designer::probe::{
     classify_already_read_config_dump_info_xml, ConfigDumpInfoXmlKind,
@@ -117,7 +117,7 @@ pub(crate) struct PlatformXmlOwnerResolution {
     pub provenance: PlatformXmlOwnerProvenance,
 }
 
-pub(crate) fn resolve_platform_xml_owners(
+pub fn resolve_platform_xml_owners(
     target: &Path,
     context: &WorkspaceContext,
 ) -> Result<Vec<PlatformXmlOwner>, PlatformXmlOwnerError> {
@@ -190,7 +190,7 @@ fn resolve_platform_xml_owners_with_optional_exact_root(
                     message,
                 },
             )?;
-        if target.starts_with(&source_root) {
+        if unica_workspace::paths::path_starts_with_host_root(&target, &source_root) {
             containing.push((source_set, source_root));
         }
     }
@@ -277,7 +277,7 @@ fn resolve_platform_xml_owners_with_optional_exact_root(
     })
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn resolve_existing_platform_xml_owners_for_new_output(
     target: &Path,
     context: &WorkspaceContext,
@@ -336,7 +336,7 @@ fn resolve_existing_platform_xml_owners_for_new_output_with_optional_exact_root(
                     message,
                 },
             )?;
-        if target.starts_with(&source_root) {
+        if unica_workspace::paths::path_starts_with_host_root(&target, &source_root) {
             containing.push((source_set, source_root));
         }
     }
@@ -606,7 +606,7 @@ fn read_required_platform_xml_owner(
     })
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn require_regular_owner(path: &Path) -> Result<(), PlatformXmlOwnerError> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata_is_link_or_reparse_point(&metadata) => Err(link_owner_error(path)),
@@ -733,8 +733,9 @@ fn owner_path_in_source_set(
             Some(source_root.join("Configuration.xml"))
         }
         SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport => {
-            let relative = target.strip_prefix(source_root).ok()?;
-            let first = relative.components().next()?.as_os_str();
+            let relative = unica_workspace::paths::host_path_relative_to(target, source_root)?;
+            let first = relative.components().next()?;
+            let first = first.as_os_str();
             let first_path = Path::new(first);
             let artifact = if first_path.extension().and_then(|ext| ext.to_str()) == Some("xml") {
                 first_path.file_stem()?
@@ -756,7 +757,7 @@ pub(crate) fn source_set_owner_from_bytes(
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+pub(crate) mod medium_tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
     use unica_workspace::test_support::{
@@ -800,6 +801,7 @@ pub(crate) mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.EXACT-ROOT-QNAME
     #[test]
     fn exact_declared_target_rejects_a_source_set_owner_with_the_wrong_root() {
         let context = temp_context("exact-target-source-owner");
@@ -827,6 +829,7 @@ pub(crate) mod tests {
         let _ = fs::remove_dir_all(&context.cwd);
     }
 
+    /// rule: INV.SOURCE.EXACT-ROOT-QNAME
     #[test]
     fn exact_declared_versionless_roots_and_absent_outputs_have_no_owner() {
         let context = temp_context("exact-versionless-or-absent");
@@ -925,6 +928,7 @@ pub(crate) mod tests {
         let _ = fs::remove_dir_all(&context.cwd);
     }
 
+    /// rule: INV.SOURCE.ROOT-POLICY-OWNERSHIP
     #[test]
     fn container_scoped_versioned_roots_never_become_standalone_owners() {
         let cases = [
@@ -949,11 +953,15 @@ pub(crate) mod tests {
             ),
             (
                 "additional-indexes",
-                include_bytes!("../../../../tests/fixtures/platform_8_3_27/additional_indexes/AdditionalIndexes.xml").as_slice(),
+                include_bytes!("../../tests/fixtures/additional_indexes/AdditionalIndexes.xml")
+                    .as_slice(),
             ),
             (
                 "accumulation-register-aggregates",
-                include_bytes!("../../../../tests/fixtures/platform_8_3_27/accumulation_register_aggregates/Aggregates.xml").as_slice(),
+                include_bytes!(
+                    "../../tests/fixtures/accumulation_register_aggregates/Aggregates.xml"
+                )
+                .as_slice(),
             ),
             (
                 "job-schedule",
@@ -1314,6 +1322,7 @@ pub(crate) mod tests {
         let _ = fs::remove_dir_all(&context.cwd);
     }
 
+    /// rule: INV.SOURCE.EXACT-VERSION
     #[test]
     fn existing_form_content_resolves_exact_wrapper_and_source_set_owners() {
         let context = temp_context("form-content-bounded-owners");
@@ -1686,6 +1695,53 @@ pub(crate) mod tests {
             assert!(!error.message.contains("ambiguous"), "{label}: {error:?}");
             let _ = fs::remove_dir_all(&context.cwd);
         }
+    }
+
+    #[test]
+    fn external_owner_of_an_absent_target_ignores_the_host_spelling_of_the_root() {
+        use unica_workspace::test_support::{
+            extended_length_spelling_for_test, other_letter_case_for_test,
+        };
+        let context = temp_context("host-spelling-owner");
+        let source = context.cwd.join("Src");
+
+        let owner = owner_path_in_source_set(
+            &extended_length_spelling_for_test(&source),
+            &other_letter_case_for_test(&source).join("Tool/Absent/Form.xml"),
+            SourceSetKind::ExternalProcessor,
+        );
+
+        assert_eq!(
+            owner,
+            Some(extended_length_spelling_for_test(&source).join("Tool.xml"))
+        );
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    /// `Foo` and `foo` are one directory where the host ignores letter case:
+    /// two source sets declared with both spellings own its files equally, and
+    /// neither may win silently. Where case separates paths, each owns its own.
+    #[test]
+    fn source_sets_differing_only_in_letter_case_merge_only_loudly() {
+        let context = temp_context("letter-case-sets");
+        fs::write(
+            context.cwd.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: upper\n    type: CONFIGURATION\n    path: Foo\n  - name: lower\n    type: EXTENSION\n    path: foo\n",
+        )
+        .unwrap();
+
+        let result = resolve_existing_platform_xml_owners_for_new_output(
+            &context.cwd.join("foo/Absent/Form.xml"),
+            &context,
+        );
+
+        if unica_workspace::paths::same_host_path(Path::new("Foo"), Path::new("foo")) {
+            let error = result.expect_err("one directory declared twice has no single owner");
+            assert!(error.message.contains("ambiguous"), "{}", error.message);
+        } else if let Err(error) = result {
+            assert!(!error.message.contains("ambiguous"), "{}", error.message);
+        }
+        let _ = fs::remove_dir_all(&context.cwd);
     }
 
     #[test]

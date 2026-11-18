@@ -1,0 +1,16 @@
+{
+  "area": "Код BSL",
+  "task": "Найти все внешние адреса, зашитые в код",
+  "wire": [
+    {
+      "tool": "unica.search",
+      "args": {
+        "query": "https://"
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S261"
+}

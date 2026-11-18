@@ -1,8 +1,5 @@
 ---
 id: INV.PKG.POSIX-TWO-HOSTS-ONE-ROOT
-check:
-  - tests/ci/test_package_unica_plugin.py::PackageUnicaPluginTests.test_packaged_alias_resolves_the_plugin_root_for_both_hosts
-  - tests/ci/test_package_unica_plugin.py::PackageUnicaPluginTests.test_packaged_alias_launches_with_zcode_expansion_from_another_cwd
 ---
 
 # Codex, Claude Code и ZCode находят один и тот же установленный плагин

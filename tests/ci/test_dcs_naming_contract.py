@@ -58,7 +58,7 @@ def operations_with_checked_publication(scenarios: list[dict]) -> set[str]:
 
 class DcsNamingContractTests(unittest.TestCase):
     def test_mutations_use_canonical_operations_without_legacy_tools(self) -> None:
-        source = REPO_ROOT / "crates" / "unica-coder" / "src"
+        source = REPO_ROOT / "crates" / "unica-application" / "src"
         tool_registry = (source / "application" / "mod.rs").read_text(encoding="utf-8")
         legacy_surface = re.findall(r'name: "(unica\.(?:dcs|skd)\.[^"]+)"', tool_registry)
         self.assertEqual(legacy_surface, [])
@@ -76,7 +76,7 @@ class DcsNamingContractTests(unittest.TestCase):
 
     def test_every_dcs_primitive_has_content_checked_publication(self) -> None:
         registered, _ = load_dcs_registry()
-        # Owner-approved scope of #1310: deleting both implementation and wire
+        # Scope: deleting both implementation and wire
         # must not silently narrow the promised set.
         self.assertEqual(len(registered), 53)
         scenarios = load_acceptance_corpus()["scenarios"]
@@ -137,7 +137,7 @@ class DcsNamingContractTests(unittest.TestCase):
             entry = entries[skill]
             self.assertFalse(entry["promptSkill"])
             self.assertIn(primitive_path, entry["localPaths"])
-            self.assertIn("tests/fixtures/acceptance/scenario-corpus.json", entry["contractPaths"])
+            self.assertIn("tests/fixtures/acceptance/scenarios", entry["contractPaths"])
             for active_path in entry["localPaths"] + entry["contractPaths"]:
                 self.assertTrue((REPO_ROOT / active_path).exists(), active_path)
             self.assertTrue(
@@ -149,7 +149,7 @@ class DcsNamingContractTests(unittest.TestCase):
         contracts = (
             REPO_ROOT
             / "crates"
-            / "unica-coder"
+            / "unica-application"
             / "src"
             / "application"
             / "tool_contracts.rs"

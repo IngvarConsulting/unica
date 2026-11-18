@@ -1,6 +1,7 @@
 use super::*;
 use std::sync::Mutex;
 use std::time::Duration;
+use unica_work_control::provider_deadline::ProviderDeadline;
 
 const MODULE_AT: &str = "main:Catalog.Валюты.Module.Manager";
 const MODULE_PATH: &str = "Catalogs/Валюты/Ext/ManagerModule.bsl";
@@ -287,6 +288,7 @@ fn metadata_and_common_module_names_resolve_to_unica_nodes() {
     );
 }
 
+/// rule: INV.LSP.PROVIDER-HIDDEN
 #[test]
 fn a_saved_module_asks_by_position_and_an_edited_one_by_saved_declaration_or_name() {
     let environment = Environment;
@@ -472,6 +474,7 @@ fn a_name_in_a_call_chain_and_an_unknown_catalog_go_to_the_provider() {
     assert_eq!(provider.queries.lock().unwrap().len(), 2);
 }
 
+/// rule: INV.LSP.PROVIDER-HIDDEN
 #[test]
 fn an_answer_names_no_provider_and_a_failed_provider_is_a_unica_reason() {
     struct Failing;
@@ -538,7 +541,7 @@ fn caller_document() -> SymbolDocument<'static> {
     }
 }
 
-/// #2190: other modules' uses come from the modules the name index lists,
+/// Other modules' uses come from the modules the name index lists,
 /// each parsed and its paths resolved, in any letter case; until the index is
 /// built the answer is the module's own places, marked not indexed.
 #[test]

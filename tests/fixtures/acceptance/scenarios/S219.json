@@ -1,0 +1,19 @@
+{
+  "area": "XDTO и обмены",
+  "task": "Узнать по документации, как устроены XDTO-пакеты",
+  "wire": [
+    {
+      "tool": "unica.docs",
+      "args": {
+        "query": "XDTO пакет фабрика",
+        "source": "platform-help"
+      },
+      "expect": [
+        "ok",
+        "provider",
+        "task"
+      ]
+    }
+  ],
+  "id": "S219"
+}

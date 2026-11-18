@@ -263,6 +263,8 @@ fn canonical_dcs_captured_body_and_each_owner_descriptor_reject_stale_publicatio
     }
 }
 
+/// rule: INV.SOURCE.EXACT-VERSION
+/// rule: INV.SOURCE.WRITABLE-PROFILE
 #[test]
 fn canonical_dcs_supported_source_still_requires_each_exact_owner_version() {
     for relative in [
@@ -307,7 +309,7 @@ fn canonical_dcs_late_planning_failure_discards_prior_successful_operations() {
     let batch = preview_request(
         TEMPLATE,
         json!([
-            {"op":"field.add","args":{"at":DATASET,"items":[{"dataPath":"Added","title":"Added"}]}},
+            {"op":"field.add","args":{"at":DATASET,"items":[{"dataPath":"Added","title":"ru = 'Added'"}]}},
             {"op":"query.patch","args":{"at":QUERY,"values":{"find":"Missing query text","replace":"cannot publish","once":true}}}
         ]),
     );

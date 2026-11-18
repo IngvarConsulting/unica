@@ -28,7 +28,6 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use unica_address::source_target::{
     MetadataAddress, SourceTarget, SourceTargetErrorCode, TargetKind,
-    PLATFORM_XML_8_3_27_FORMAT_2_20,
 };
 use unica_execution_contract::adapter_outcome::AdapterOutcome;
 use unica_forms::facts::*;
@@ -68,7 +67,7 @@ use unica_workspace::compile_transaction::{
     CommitFailure, CommitFailureKind, CompileTransaction, RegistrationStatus,
 };
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     static ROLE_EDIT_BEFORE_NATIVE_GUARD_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
@@ -81,7 +80,7 @@ thread_local! {
     };
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn with_role_edit_before_native_guard_hook<T>(
     hook: impl FnOnce() + 'static,
     action: impl FnOnce() -> T,
@@ -100,7 +99,7 @@ fn with_role_edit_before_native_guard_hook<T>(
     action()
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn run_role_edit_before_native_guard_hook() {
     ROLE_EDIT_BEFORE_NATIVE_GUARD_HOOK.with(|slot| {
         if let Some(hook) = slot.borrow_mut().take() {
@@ -109,7 +108,7 @@ fn run_role_edit_before_native_guard_hook() {
     });
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn with_role_edit_before_publish_hook<T>(
     hook: impl FnOnce() + 'static,
     action: impl FnOnce() -> T,
@@ -127,7 +126,7 @@ fn with_role_edit_before_publish_hook<T>(
     action()
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn run_role_edit_before_publish_hook() {
     ROLE_EDIT_BEFORE_PUBLISH_HOOK.with(|slot| {
         if let Some(hook) = slot.borrow_mut().take() {
@@ -136,7 +135,7 @@ fn run_role_edit_before_publish_hook() {
     });
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn with_role_edit_after_rights_reread_hook<T>(
     hook: impl FnOnce() + 'static,
     action: impl FnOnce() -> T,
@@ -155,7 +154,7 @@ fn with_role_edit_after_rights_reread_hook<T>(
     action()
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn run_role_edit_after_rights_reread_hook() {
     ROLE_EDIT_AFTER_RIGHTS_REREAD_HOOK.with(|slot| {
         if let Some(hook) = slot.borrow_mut().take() {
@@ -164,7 +163,7 @@ fn run_role_edit_after_rights_reread_hook() {
     });
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn with_role_edit_post_validation_failure<T>(action: impl FnOnce() -> T) -> T {
     struct Reset(bool);
     impl Drop for Reset {
@@ -486,10 +485,6 @@ fn role_resolution_failure(code: SourceTargetErrorCode) -> RoleResolutionFailure
             RoleResolutionCode::ContainmentDenied,
             "the logical role target failed containment checks",
         ),
-        SourceTargetErrorCode::AddressProfileUnsupported => RoleResolutionFailure::new(
-            RoleResolutionCode::ProfileUnsupported,
-            "the logical address profile is unsupported",
-        ),
         SourceTargetErrorCode::SourceRootNotAddressable => RoleResolutionFailure::new(
             RoleResolutionCode::ProviderUnavailable,
             "the logical source provider is unavailable",
@@ -571,7 +566,7 @@ fn edit_with_data(
     let mut events = Vec::new();
     let mut recorded_cache = None;
     if !preview && data.changed {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         run_role_edit_before_native_guard_hook();
         match publish_role_edit(&target, &postimage, context) {
             Ok(publication) => {
@@ -769,7 +764,7 @@ fn publish_role_edit(
     postimage: &[u8],
     context: &WorkspaceContext,
 ) -> Result<RoleEditPublication, (&'static str, Option<String>)> {
-    let address = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &target.metadata_path)
+    let address = MetadataAddress::parse_logical(&target.metadata_path)
         .map_err(|_| ("concurrent_modification", None))?;
     let (current_handle, current_evidence) =
         resolve_role_descriptor(&target.source_set, &address, context).map_err(|failure| {
@@ -799,7 +794,7 @@ fn publish_role_edit(
         return Err(("concurrent_modification", None));
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     run_role_edit_after_rights_reread_hook();
 
     let mut transaction = CompileTransaction::new();
@@ -855,10 +850,10 @@ fn publish_role_edit(
     let descriptor = target.descriptor_path.clone();
     let rights = target.rights_path.clone();
     let role_name = role_name.to_string();
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     run_role_edit_before_publish_hook();
     let report = transaction.commit_with_classified_post_validation(|| {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if ROLE_EDIT_POST_VALIDATION_FAILURE.with(|slot| slot.get()) {
             return Err(CommitFailure::provider(
                 "injected role.edit post-validation failure",
@@ -942,7 +937,7 @@ fn prove_role_rights_path(
 }
 
 #[cfg(test)]
-pub(crate) mod role_edit_contract_tests {
+pub(crate) mod medium_role_edit_contract_tests {
     use super::*;
     use unica_roles_designer::test_support::{operation, rights_xml, validate_every_role_value};
     use unica_workspace::single_file_publisher::{with_publish_failpoints, PublishCheckpoint};
@@ -1018,6 +1013,114 @@ pub(crate) mod role_edit_contract_tests {
             replacement.as_bytes().iter().copied(),
         );
         updated
+    }
+
+    /// Права очереди правятся в наборе её линии: файл прав 2.22 путь
+    /// принимает, чтение переключается, а `Update`, которого у вида нет,
+    /// отвергается без записи. Набор 2.20 здесь не подошёл бы: очереди
+    /// в той линии нет вовсе.
+    #[test]
+    fn queue_rights_are_edited_in_its_own_line_and_update_is_refused() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-role-edit-queue-{}-{}",
+            std::process::id(),
+            NONCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let rights = root.join("src/Roles/Demo/Ext/Rights.xml");
+        fs::create_dir_all(rights.parent().unwrap()).unwrap();
+        fs::create_dir_all(root.join("src/Queues")).unwrap();
+        fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        fs::write(
+                root.join("src/Configuration.xml"),
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.22"><Configuration><Properties><Name>Main</Name></Properties><ChildObjects><Queue>Проба</Queue><Role>Demo</Role></ChildObjects></Configuration></MetaDataObject>"#,
+            )
+            .unwrap();
+        fs::write(
+                root.join("src/Queues/Проба.xml"),
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.22"><Queue><Properties><Name>Проба</Name></Properties></Queue></MetaDataObject>"#,
+            )
+            .unwrap();
+        fs::write(
+                root.join("src/Roles/Demo.xml"),
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.22"><Role><Properties><Name>Demo</Name></Properties></Role></MetaDataObject>"#,
+            )
+            .unwrap();
+        let document = [
+            r#"<Rights xmlns="http://v8.1c.ru/8.2/roles" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="Rights" version="2.22">"#,
+            "\t<setForNewObjects>false</setForNewObjects>",
+            "\t<setForAttributesByDefault>true</setForAttributesByDefault>",
+            "\t<independentRightsOfChildObjects>false</independentRightsOfChildObjects>",
+            "\t<object>",
+            "\t\t<name>Queue.Проба</name>",
+            "\t\t<right><name>Read</name><value>false</value></right>",
+            "\t</object>",
+            "</Rights>",
+        ]
+        .join("\r\n");
+        fs::write(&rights, encode_role_xml(true, &document)).unwrap();
+        let context = WorkspaceContext {
+            cwd: root.clone(),
+            workspace_root: root.clone(),
+            cache_root: root.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+
+        let granted = json!({
+            "sourceSet": "main",
+            "metadataPath": "Role.Demo",
+            "operations": [
+                {"op":"setRight", "objectName":"Queue.Проба", "right":"Read", "value":true}
+            ]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let applied = apply_edit_with_data(&granted, &context);
+        assert!(applied.outcome.ok, "{:?}", applied.outcome.errors);
+        let after = String::from_utf8(fs::read(&rights).unwrap()).unwrap();
+        assert!(
+            after.contains("<name>Read</name>") && after.contains("<value>true</value>"),
+            "{after}"
+        );
+
+        // Сведения о роли показывают очередь своей группой и её право
+        // разрешённым: перечня видов у этого ответа нет, он идёт от файла.
+        let info = analyze_role_info(
+            &Map::from_iter([(
+                "RightsPath".to_string(),
+                json!("src/Roles/Demo/Ext/Rights.xml"),
+            )]),
+            &context,
+            &WorkspaceSupportStateReader::new(&context),
+        );
+        assert!(info.outcome.ok, "{:?}", info.outcome);
+        let data = info.data.expect("role info answers with data");
+        assert_eq!(data.totals.allowed, 1);
+        assert_eq!(data.totals.denied, 0);
+        let group = &data.allowed[0];
+        assert_eq!(group.kind, "Queue");
+        assert_eq!(group.objects[0].name, "Проба");
+        assert_eq!(group.objects[0].rights[0].name, "Read");
+
+        let absent = json!({
+            "sourceSet": "main",
+            "metadataPath": "Role.Demo",
+            "operations": [
+                {"op":"setRight", "objectName":"Queue.Проба", "right":"Update", "value":true}
+            ]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let before = fs::read(&rights).unwrap();
+        let refused = apply_edit_with_data(&absent, &context);
+        assert!(!refused.outcome.ok, "`Update` is not a right of a queue");
+        assert_eq!(fs::read(&rights).unwrap(), before);
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
@@ -1142,7 +1245,7 @@ pub(crate) mod role_edit_contract_tests {
         let (context, args, rights) = fixture("exact-profile");
         let original = fs::read(&rights).unwrap();
 
-        for version in [Some("2.19"), Some("2.21"), Some("2.2&#48;"), None] {
+        for version in [Some("2.19"), Some("2.23"), Some("2.2&#48;"), None] {
             let incompatible = replace_format_version(&original, version);
             fs::write(&rights, &incompatible).unwrap();
             let rejected = apply_edit_with_data(&args, &context);
@@ -1153,7 +1256,7 @@ pub(crate) mod role_edit_contract_tests {
         fs::write(&rights, &original).unwrap();
         let descriptor = context.workspace_root.join("src/Roles/Demo.xml");
         let original_descriptor = fs::read(&descriptor).unwrap();
-        for version in [Some("2.19"), Some("2.21"), Some("2.2&#48;"), None] {
+        for version in [Some("2.19"), Some("2.23"), Some("2.2&#48;"), None] {
             let incompatible = replace_format_version(&original_descriptor, version);
             fs::write(&descriptor, &incompatible).unwrap();
             let rejected = apply_edit_with_data(&args, &context);
@@ -1425,9 +1528,7 @@ pub(crate) mod role_edit_contract_tests {
         let support = WorkspaceSupportStateReader::new(&context)
             .object_support(&unica_address::source_target::ResolvedTarget {
                 source_set: "main".to_string(),
-                metadata_path: Some(
-                    MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Role.Demo").unwrap(),
-                ),
+                metadata_path: Some(MetadataAddress::parse_logical("Role.Demo").unwrap()),
                 target_kind: TargetKind::MetadataObject,
             })
             .unwrap();
@@ -1596,7 +1697,7 @@ pub(crate) mod role_edit_contract_tests {
 }
 
 #[cfg(test)]
-pub(super) mod role_info_typed_result_tests {
+pub(super) mod medium_role_info_typed_result_tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1820,7 +1921,7 @@ pub(super) mod role_info_typed_result_tests {
 }
 
 #[cfg(test)]
-pub(crate) mod role_validate_contract_tests {
+pub(crate) mod medium_role_validate_contract_tests {
     use super::*;
 
     fn temp_root(name: &str) -> PathBuf {

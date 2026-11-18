@@ -195,48 +195,32 @@ fn typed(tag: &str, kind: &str, body: &str, ns: &str) -> String {
         1,
     )
 }
-/// Refusal of a plain-string multilingual value written without a language;
-/// [`apply`] reports it as [`ApplyError::TextLanguageRequired`].
-const TEXT_LANGUAGE_REQUIRED: &str = "a plain-string multilingual value needs the default language";
-/// A `v8:LocalStringType` element from `value`. A plain string is the text
-/// of the `lang` language: the `LanguageCode` of the source set's default
-/// language (#1257). A language-to-text object is written as given.
-fn mltext(tag: &str, value: &Value, ns: &str, lang: Option<&str>) -> Result<String, String> {
-    let languages = match value {
-        Value::String(s) => vec![(
-            lang.ok_or_else(|| TEXT_LANGUAGE_REQUIRED.to_string())?,
-            s.as_str(),
-        )],
-        Value::Object(values) => values
-            .iter()
-            .map(|(lang, text)| {
-                text.as_str()
-                    .map(|text| (lang.as_str(), text))
-                    .ok_or_else(|| "translation must be text".to_string())
-            })
-            .collect::<Result<Vec<_>, _>>()?,
-        _ => return Err("title must be text or a language-to-text object".to_string()),
-    };
-    let body = languages
+/// Used when adding a variant without an explicit presentation.
+const TEXT_LANGUAGE_REQUIRED: &str = "a default variant presentation needs the default language";
+
+fn localized_values(value: &Value) -> Result<Vec<unica_metadata::LocalizedItem>, String> {
+    let value = value.as_str().ok_or(unica_metadata::LOCALIZED_VALUE_FORM)?;
+    unica_metadata::parse_nstr(value)
+}
+
+fn mltext(tag: &str, value: &Value, ns: &str, _lang: Option<&str>) -> Result<String, String> {
+    if let Some(text) = scalar_caption(value) {
+        let text = unica_xml_format::text::escape_xml(text).replace('\r', "&#13;");
+        return Ok(typed(tag, "xs:string", &text, ns));
+    }
+    let body = localized_values(value)?
         .into_iter()
-        .map(|(lang, content)| {
+        .map(|item| {
             format!(
                 "<v8:item><v8:lang>{}</v8:lang><v8:content>{}</v8:content></v8:item>",
-                unica_xml_format::text::escape_xml(lang),
-                unica_xml_format::text::escape_xml(content)
+                unica_xml_format::text::escape_xml(&item.language),
+                unica_xml_format::text::escape_xml(&item.content).replace('\r', "&#13;")
             )
         })
         .collect::<String>();
     Ok(typed(tag, "v8:LocalStringType", &body, ns))
 }
-/// The new image of an existing multilingual `existing` element set to
-/// `value`, or the fresh [`mltext`] where there is nothing to keep.
-///
-/// A plain string changes only the item of the default language `lang` and
-/// keeps the other translations byte for byte, as `props.set` does for
-/// metadata synonyms (#909). A language-to-text object replaces the value as
-/// given. An empty string removes the `lang` item while other translations
-/// remain; when it is the only item, the value is rewritten as before.
+
 fn mltext_update(
     xml_text: &str,
     existing: Option<Node<'_, '_>>,
@@ -245,23 +229,53 @@ fn mltext_update(
     ns: &str,
     lang: Option<&str>,
 ) -> Result<String, String> {
-    if let (Some(existing), Value::String(new_text)) = (existing, value) {
-        let lang = lang.ok_or_else(|| TEXT_LANGUAGE_REQUIRED.to_string())?;
-        let items = existing
-            .children()
-            .filter(|node| is(*node, V, "item"))
-            .collect::<Vec<_>>();
-        let only_default = items
-            .iter()
-            .all(|item| text(*item, V, "lang").trim() == lang);
-        if !(items.is_empty() || new_text.is_empty() && only_default) {
-            return Ok(unica_xml_format::localized::replace_language_value(
-                xml_text, existing, "", lang, new_text,
-            ));
+    if let Some(text) = scalar_caption(value) {
+        if let Some((node, old_text)) = existing.and_then(|node| {
+            crate::schema::dcs_info_plain_caption(node).map(|old_text| (node, old_text))
+        }) {
+            let original = &xml_text[node.range()];
+            if old_text == text {
+                return Ok(original.to_owned());
+            }
+
+            let inside = content(xml_text, node)?;
+            if !xml_text[inside.clone()].starts_with("/>") {
+                let text = unica_xml_format::text::escape_xml(text).replace('\r', "&#13;");
+                return Ok(format!(
+                    "{}{text}{}",
+                    &xml_text[node.range().start..inside.start],
+                    &xml_text[inside.end..node.range().end]
+                ));
+            }
         }
+        return mltext(tag, value, ns, lang);
+    }
+    if let Some(existing) = existing.filter(|node| {
+        has_value_type(*node, "v8:LocalStringType") && !crate::schema::dcs_info_nil(*node)
+    }) {
+        let values = localized_values(value)?
+            .into_iter()
+            .map(|item| (item.language, item.content))
+            .collect::<Vec<_>>();
+        return Ok(unica_xml_format::localized::replace_language_values(
+            xml_text, existing, "", &values,
+        ));
     }
     mltext(tag, value, ns, lang)
 }
+
+fn scalar_caption(value: &Value) -> Option<&str> {
+    (value.get("valueType")?.as_str()? == "xs:string")
+        .then(|| value.get("value")?.as_str())
+        .flatten()
+}
+
+pub(super) fn has_value_type(node: Node<'_, '_>, expected: &str) -> bool {
+    node.attribute((X, "type")).is_some_and(|qname| {
+        canonical_node_value_type(node, qname.trim()).as_deref() == Ok(expected)
+    })
+}
+
 fn content(xml_text: &str, node: Node<'_, '_>) -> Result<Range<usize>, String> {
     let range = node.range();
     let mut quote = None;
@@ -664,11 +678,11 @@ fn scalar_value(
         ),
     };
     if value.is_null() {
-        return Ok(xml(tag, "", ns).replacen(
-            &format!("<{tag} "),
-            &format!("<{tag} xsi:nil=\"true\" "),
-            1,
-        ));
+        let empty = match kind.as_deref() {
+            Some(kind @ ("xs:string" | "v8:LocalStringType")) => typed(tag, kind, "", ns),
+            _ => xml(tag, "", ns),
+        };
+        return Ok(empty.replacen(&format!("<{tag} "), &format!("<{tag} xsi:nil=\"true\" "), 1));
     }
     let kind = kind.as_deref().expect("non-null values have a type");
     let kind = if kind.starts_with("cfg:") {
@@ -728,19 +742,19 @@ fn scalar_value(
     let value = value_text(value);
     match kind {
         "xs:decimal" if !crate::xml::is_valid_xs_decimal(&value) => {
-            return Err("invalid decimal value".to_string())
+            return Err("invalid decimal value".to_string());
         }
         "xs:boolean" if !matches!(value.as_str(), "true" | "false" | "0" | "1") => {
-            return Err("invalid boolean value".to_string())
+            return Err("invalid boolean value".to_string());
         }
         "xs:dateTime" if !crate::xml::is_date_time_literal(&value) => {
-            return Err("invalid dateTime value".to_string())
+            return Err("invalid dateTime value".to_string());
         }
         "dcscor:DesignTimeValue" if !reference_value(&value) => {
-            return Err("DesignTimeValue requires a metadata reference path".to_string())
+            return Err("DesignTimeValue requires a metadata reference path".to_string());
         }
         "v8ui:Color" if !color_value(&value) => {
-            return Err("Color requires a web:, win: or style: QName".to_string())
+            return Err("Color requires a web:, win: or style: QName".to_string());
         }
         _ => {}
     }
@@ -1449,17 +1463,17 @@ fn add_data_set(
         DataSetKind::Query
             if item.query.as_deref().unwrap_or("").is_empty() || item.object_name.is_some() =>
         {
-            return Err("Query requires query and accepts no objectName".into())
+            return Err("Query requires query and accepts no objectName".into());
         }
         DataSetKind::Object
             if item.object_name.as_deref().unwrap_or("").is_empty() || item.query.is_some() =>
         {
-            return Err("Object requires objectName and accepts no query".into())
+            return Err("Object requires objectName and accepts no query".into());
         }
         DataSetKind::Union
             if item.data_source.is_some() || item.query.is_some() || item.object_name.is_some() =>
         {
-            return Err("Union members are composed separately".into())
+            return Err("Union members are composed separately".into());
         }
         DataSetKind::Query | DataSetKind::Object | DataSetKind::Union => {}
     }
@@ -2309,8 +2323,19 @@ fn add_variant(
     {
         return Ok(());
     }
+    let default_title;
+    let title = if let Some(title) = &item.title {
+        title.value()
+    } else {
+        let language = lang.ok_or(TEXT_LANGUAGE_REQUIRED)?;
+        let localized = unica_metadata::LocalizedItem::new(language, &item.name);
+        let nstr = unica_metadata::format_nstr(&[localized])
+            .ok_or(unica_metadata::LOCALIZED_VALUE_FORM)?;
+        default_title = Value::String(nstr);
+        &default_title
+    };
     let body = simple("name", &item.name, T)
-        + &mltext("presentation", item.title.value(), T, lang)?
+        + &mltext("presentation", title, T, lang)?
         + &xml("settings", "", T);
     Ok(insert(
         xml_text,
@@ -2817,7 +2842,7 @@ fn write_settings_parameter(
         body += &simple("userSettingID", value, T);
     }
     if let Some(value) = &item.meta.user_setting_presentation {
-        body += &simple("userSettingPresentation", &value_text(value.value()), T);
+        body += &mltext("userSettingPresentation", value.value(), T, lang)?;
     }
     let fragment = typed("item", "dcsset:SettingsParameterValue", &body, C);
     if exists {

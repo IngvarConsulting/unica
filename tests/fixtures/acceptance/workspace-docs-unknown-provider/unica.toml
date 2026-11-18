@@ -1,0 +1,3 @@
+# Секция поставщика, которого Unica не знает: политика документации отказывает.
+[providers.no-such-provider]
+network = "deny"

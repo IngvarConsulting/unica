@@ -1,0 +1,34 @@
+{
+  "area": "Свойства объектов",
+  "task": "Изменить тип реквизита на строку подлиннее (превью)",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.АктОбУничтоженииПерсональныхДанных.Attribute.НаименованиеИнформационнойСистемы",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "type": {
+                  "variants": [
+                    {
+                      "kind": "string",
+                      "length": 250,
+                      "allowedLength": "variable"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S051"
+}

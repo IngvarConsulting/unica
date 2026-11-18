@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from collector_rules import without_repository_rule_index
 
 SCRIPTS = Path(__file__).resolve().parents[2] / "scripts" / "ci"
 RUNNER = SCRIPTS / "run-unittest.py"
@@ -28,19 +29,19 @@ class PythonScopeSkipTests(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
         self.collector = load_collector()
+        without_repository_rule_index(self, self.collector)
         self.signature = {
             "sha": "b" * 40, "ref": "main", "run_id": "42", "run_attempt": "1",
             "run_url": "https://github.com/IngvarConsulting/unica/actions/runs/42",
             "profile": "queue", "runner": "ubuntu-latest", "ecosystem": "python",
         }
-        self.manifest = self.root / "sizes.toml"
-        self.manifest.write_text('[medium]\nentries = ["test_scope_fixture.Medium"]\n')
 
     def fixture(self, suite="tests/ci", *, small_failure=False, import_failure=False):
         path = self.root / suite
         path.mkdir(parents=True, exist_ok=True)
         source = (
             "import unittest\nfrom pathlib import Path\n"
+            "MEDIUM = ('Medium',)\n"
             "class Small(unittest.TestCase):\n"
             "    def test_small(self):\n"
             "        Path('small-ran').write_text('yes')\n"
@@ -60,7 +61,7 @@ class PythonScopeSkipTests(unittest.TestCase):
     def invoke(self, output, *, suite="tests/ci", plan=False, scope=True, profile="queue"):
         command = [sys.executable, str(RUNNER), "-s", suite, "--results", str(output),
                    "--runner", "ubuntu-latest", "--profile", profile,
-                   "--sizes", str(self.manifest), "--admit", "small", "--lane", "small"]
+                   "--admit", "small", "--lane", "small"]
         if plan:
             command.append("--plan-only")
         if scope:

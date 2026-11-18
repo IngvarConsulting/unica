@@ -1,7 +1,5 @@
 ---
 id: INV.TOKEN.RUNTIME-LOG-ARTIFACTS
-check:
-  - crates/unica-coder/src/infrastructure/runtime_jobs_integration.rs::terminal_snapshot_and_persistence_are_redacted_and_keep_log_artifacts
 ---
 
 # Итог задания содержит пути к журналам

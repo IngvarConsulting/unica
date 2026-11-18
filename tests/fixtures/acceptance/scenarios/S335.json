@@ -1,0 +1,177 @@
+{
+  "id": "S335",
+  "name": "mxl-contract-guidance-without-skills",
+  "issue": 1311,
+  "area": "Макеты",
+  "task": "Реальный агент по can/справке создаёт MXL и заполняет область, сохраняет исходный макет, проверяет содержимое и честно объясняет предел DSL",
+  "workspace": "tests/fixtures/acceptance/workspace-mxl",
+  "profile": "agent-evaluation",
+  "driver": "codex",
+  "evaluation": "mxl-contract",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F06Report.Template.F06Template.Area.A.Parameter"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/title",
+          "eq": "Probe"
+        },
+        {
+          "pointer": "/data/items/1/title",
+          "eq": "Label [tpl]"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F06Report.Template.Agent1311.Area.Header.Body"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "index": 1,
+              "template": false,
+              "text": "Товар"
+            },
+            {
+              "index": 2,
+              "template": false,
+              "text": "Сумма"
+            },
+            {
+              "index": 3,
+              "template": false,
+              "text": "Agent1311"
+            },
+            {
+              "index": 4,
+              "template": false,
+              "text": "12.5"
+            }
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "xml",
+          "path": "src/cf/Reports/F06Report/Templates/Agent1311/Ext/Template.xml",
+          "select": ".//{http://v8.1c.ru/8.1/data/core}content[.!='']",
+          "eq": [
+            "Товар",
+            "Сумма",
+            "Agent1311",
+            "12.5"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/cf/Reports/F06Report/Templates/Agent1311/Ext/Template.xml",
+          "select": "./{http://v8.1c.ru/8.2/data/spreadsheet}columns/{http://v8.1c.ru/8.2/data/spreadsheet}size",
+          "eq": [
+            "4"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/cf/Reports/F06Report/Templates/Agent1311/Ext/Template.xml",
+          "select": "./{http://v8.1c.ru/8.2/data/spreadsheet}namedItem/{http://v8.1c.ru/8.2/data/spreadsheet}name",
+          "eq": [
+            "Header"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/cf/Reports/F06Report/Templates/Agent1311/Ext/Template.xml",
+          "select": "./{http://v8.1c.ru/8.2/data/spreadsheet}rowsItem/{http://v8.1c.ru/8.2/data/spreadsheet}index",
+          "eq": [
+            "0",
+            "1"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/cf/Reports/F06Report/Templates/Agent1311/Ext/Template.xml",
+          "select": "./{http://v8.1c.ru/8.2/data/spreadsheet}namedItem/{http://v8.1c.ru/8.2/data/spreadsheet}area/{http://v8.1c.ru/8.2/data/spreadsheet}beginRow",
+          "eq": [
+            "0"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/cf/Reports/F06Report/Templates/Agent1311/Ext/Template.xml",
+          "select": "./{http://v8.1c.ru/8.2/data/spreadsheet}namedItem/{http://v8.1c.ru/8.2/data/spreadsheet}area/{http://v8.1c.ru/8.2/data/spreadsheet}endRow",
+          "eq": [
+            "1"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/cf/Reports/F06Report/Templates/Agent1311/Ext/Template.xml",
+          "select": "./{http://v8.1c.ru/8.2/data/spreadsheet}rowsItem/{http://v8.1c.ru/8.2/data/spreadsheet}row/{http://v8.1c.ru/8.2/data/spreadsheet}c/{http://v8.1c.ru/8.2/data/spreadsheet}i",
+          "eq": []
+        },
+        {
+          "kind": "xml",
+          "path": "src/cf/Reports/F06Report/Templates/Agent1311/Ext/Template.xml",
+          "select": "./{http://v8.1c.ru/8.2/data/spreadsheet}rowsItem[{http://v8.1c.ru/8.2/data/spreadsheet}index='0']/{http://v8.1c.ru/8.2/data/spreadsheet}row/{http://v8.1c.ru/8.2/data/spreadsheet}c/{http://v8.1c.ru/8.2/data/spreadsheet}c/{http://v8.1c.ru/8.2/data/spreadsheet}tl/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content[.!='']",
+          "eq": [
+            "Товар",
+            "Сумма"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/cf/Reports/F06Report/Templates/Agent1311/Ext/Template.xml",
+          "select": "./{http://v8.1c.ru/8.2/data/spreadsheet}rowsItem[{http://v8.1c.ru/8.2/data/spreadsheet}index='1']/{http://v8.1c.ru/8.2/data/spreadsheet}row/{http://v8.1c.ru/8.2/data/spreadsheet}c/{http://v8.1c.ru/8.2/data/spreadsheet}c/{http://v8.1c.ru/8.2/data/spreadsheet}tl/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content[.!='']",
+          "eq": [
+            "Agent1311",
+            "12.5"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/cf/Reports/F06Report/Templates/Agent1311/Ext/Template.xml",
+          "select": "./{http://v8.1c.ru/8.2/data/spreadsheet}rowsItem/{http://v8.1c.ru/8.2/data/spreadsheet}row/{http://v8.1c.ru/8.2/data/spreadsheet}c[3]/{http://v8.1c.ru/8.2/data/spreadsheet}c/{http://v8.1c.ru/8.2/data/spreadsheet}tl/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content[.!='']",
+          "eq": []
+        },
+        {
+          "kind": "xml",
+          "path": "src/cf/Reports/F06Report/Templates/Agent1311/Ext/Template.xml",
+          "select": "./{http://v8.1c.ru/8.2/data/spreadsheet}rowsItem/{http://v8.1c.ru/8.2/data/spreadsheet}row/{http://v8.1c.ru/8.2/data/spreadsheet}c[4]/{http://v8.1c.ru/8.2/data/spreadsheet}c/{http://v8.1c.ru/8.2/data/spreadsheet}tl/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content[.!='']",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "cf:Report.F06Report.Template.Agent1311"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "validators": [
+        "mxl"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/diagnostics",
+          "eq": []
+        }
+      ]
+    }
+  ]
+}

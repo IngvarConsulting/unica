@@ -1,0 +1,710 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:ns1="http://v8.1c.ru/8.1/data/core" xmlns:ns2="http://v8.1c.ru/8.1/data/ui" xmlns:tns="http://v8.1c.ru/8.2/data/spreadsheet" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://v8.1c.ru/8.2/data/spreadsheet" attributeFormDefault="unqualified" elementFormDefault="qualified">
+	<xs:import namespace="http://v8.1c.ru/8.1/data/core"/>
+	<xs:import namespace="http://v8.1c.ru/8.1/data/ui"/>
+	<xs:element name="document" type="tns:SpreadsheetDocument"/>
+	<xs:simpleType name="DimensionAttributePlacementType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="WithDimensions"/>
+			<xs:enumeration value="Separately"/>
+			<xs:enumeration value="Together"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DimensionPlacementType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Together"/>
+			<xs:enumeration value="Separately"/>
+			<xs:enumeration value="SeparatelyAndInTotalsOnly"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DuplexPrintingType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="FlipPagesLeft"/>
+			<xs:enumeration value="FlipPagesUp"/>
+			<xs:enumeration value="UsePrinterSettings"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="NamedItemType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Cells"/>
+			<xs:enumeration value="Drawing"/>
+			<xs:enumeration value="EmbeddedTable"/>
+			<xs:enumeration value="DataSource"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="PageOrientation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Portrait"/>
+			<xs:enumeration value="Landscape"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="PagePlacementAlternation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="DontUse"/>
+			<xs:enumeration value="MirrorOnLeft"/>
+			<xs:enumeration value="MirrorOnTop"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="PictureSize">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="RealSize"/>
+			<xs:enumeration value="Stretch"/>
+			<xs:enumeration value="Proportionally"/>
+			<xs:enumeration value="Tile"/>
+			<xs:enumeration value="AutoSize"/>
+			<xs:enumeration value="RealSizeIgnoreScale"/>
+			<xs:enumeration value="AutoSizeIgnoreScale"/>
+			<xs:enumeration value="ByFontSize"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="PivotTableLinesShowType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Always"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="PrintAccuracy">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Accurate"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="SpreadsheetDocumentAreaFillType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Text"/>
+			<xs:enumeration value="Parameter"/>
+			<xs:enumeration value="Template"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="SpreadsheetDocumentCellAreaType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Table"/>
+			<xs:enumeration value="Rows"/>
+			<xs:enumeration value="Columns"/>
+			<xs:enumeration value="Rectangle"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="SpreadsheetDocumentCellHighlightMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Cell"/>
+			<xs:enumeration value="Row"/>
+			<xs:enumeration value="DontHighlight"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="SpreadsheetDocumentDetailUse">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Cell"/>
+			<xs:enumeration value="Row"/>
+			<xs:enumeration value="WithoutProcessing"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="SpreadsheetDocumentDrawingType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Line"/>
+			<xs:enumeration value="Rectangle"/>
+			<xs:enumeration value="Text"/>
+			<xs:enumeration value="Ellipse"/>
+			<xs:enumeration value="Picture"/>
+			<xs:enumeration value="Object"/>
+			<xs:enumeration value="Group"/>
+			<xs:enumeration value="Chart"/>
+			<xs:enumeration value="GanttChart"/>
+			<xs:enumeration value="PivotChart"/>
+			<xs:enumeration value="Dendrogram"/>
+			<xs:enumeration value="GeographicalSchema"/>
+			<xs:enumeration value="Control"/>
+			<xs:enumeration value="Comment"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="SpreadsheetDocumentEditableCellShowType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="AsInputField"/>
+			<xs:enumeration value="Regular"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="SpreadsheetDocumentExtensionAlgorithm">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Replace"/>
+			<xs:enumeration value="Merge"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="SpreadsheetDocumentFileType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="MXL"/>
+			<xs:enumeration value="XLS"/>
+			<xs:enumeration value="HTML"/>
+			<xs:enumeration value="TXT"/>
+			<xs:enumeration value="MXL7"/>
+			<xs:enumeration value="HTML3"/>
+			<xs:enumeration value="HTML4"/>
+			<xs:enumeration value="HTML5"/>
+			<xs:enumeration value="XLS95"/>
+			<xs:enumeration value="XLS97"/>
+			<xs:enumeration value="ANSITXT"/>
+			<xs:enumeration value="DOCX"/>
+			<xs:enumeration value="XLSX"/>
+			<xs:enumeration value="ODS"/>
+			<xs:enumeration value="PDF"/>
+			<xs:enumeration value="PDF_A_1"/>
+			<xs:enumeration value="PDF_A_2"/>
+			<xs:enumeration value="PDF_A_3"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="SpreadsheetDocumentGroupHeaderPlacement">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Begin"/>
+			<xs:enumeration value="End"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="SpreadsheetDocumentPatternType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="WithoutPattern"/>
+			<xs:enumeration value="Solid"/>
+			<xs:enumeration value="Pattern1"/>
+			<xs:enumeration value="Pattern2"/>
+			<xs:enumeration value="Pattern3"/>
+			<xs:enumeration value="Pattern4"/>
+			<xs:enumeration value="Pattern5"/>
+			<xs:enumeration value="Pattern6"/>
+			<xs:enumeration value="Pattern7"/>
+			<xs:enumeration value="Pattern8"/>
+			<xs:enumeration value="Pattern9"/>
+			<xs:enumeration value="Pattern10"/>
+			<xs:enumeration value="Pattern11"/>
+			<xs:enumeration value="Pattern12"/>
+			<xs:enumeration value="Pattern13"/>
+			<xs:enumeration value="Pattern14"/>
+			<xs:enumeration value="Pattern15"/>
+			<xs:enumeration value="Pattern16"/>
+			<xs:enumeration value="Pattern17"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="SpreadsheetDocumentPointerType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Special"/>
+			<xs:enumeration value="Regular"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="SpreadsheetDocumentSavedPicturesDensity">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Original"/>
+			<xs:enumeration value="High"/>
+			<xs:enumeration value="Medium"/>
+			<xs:enumeration value="Low"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="SpreadsheetDocumentStepDirectionType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="ByRows"/>
+			<xs:enumeration value="ByColumns"/>
+			<xs:enumeration value="WithoutMove"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="SpreadsheetDocumentTextPlacementType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Cut"/>
+			<xs:enumeration value="Block"/>
+			<xs:enumeration value="Wrap"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="StandardAppearance">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="Stone"/>
+			<xs:enumeration value="Classic"/>
+			<xs:enumeration value="Classic2"/>
+			<xs:enumeration value="Classic3"/>
+			<xs:enumeration value="Spring"/>
+			<xs:enumeration value="Summer"/>
+			<xs:enumeration value="Autumn"/>
+			<xs:enumeration value="Winter"/>
+			<xs:enumeration value="Asphalt"/>
+			<xs:enumeration value="Copper"/>
+			<xs:enumeration value="Bronze"/>
+			<xs:enumeration value="Platinum"/>
+			<xs:enumeration value="Silver"/>
+			<xs:enumeration value="Turquoise"/>
+			<xs:enumeration value="Sand"/>
+			<xs:enumeration value="Grass"/>
+			<xs:enumeration value="Ice"/>
+			<xs:enumeration value="Orange"/>
+			<xs:enumeration value="Textile"/>
+			<xs:enumeration value="Wood"/>
+			<xs:enumeration value="Interface"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="TextPositionRelativeToPicture">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Left"/>
+			<xs:enumeration value="Right"/>
+			<xs:enumeration value="Top"/>
+			<xs:enumeration value="Bottom"/>
+			<xs:enumeration value="OnTop"/>
+			<xs:enumeration value="Auto"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:complexType name="Area">
+		<xs:sequence>
+			<xs:element name="type" type="tns:SpreadsheetDocumentCellAreaType"/>
+			<xs:element name="beginRow" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="endRow" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="beginColumn" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="endColumn" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="columnsID" type="ns1:UUID" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="Cell">
+		<xs:sequence>
+			<xs:element name="f" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="tl" type="ns1:LocalStringType" minOccurs="0"/>
+			<xs:element name="t" type="xs:string" minOccurs="0"/>
+			<xs:element name="tfl" type="ns1:LocalStringType" minOccurs="0"/>
+			<xs:element name="tf" type="xs:string" minOccurs="0"/>
+			<xs:element name="parameter" type="xs:string" minOccurs="0"/>
+			<xs:element name="v" minOccurs="0"/>
+			<xs:element name="detailParameter" type="xs:string" minOccurs="0"/>
+			<xs:element name="d" minOccurs="0"/>
+			<xs:element name="r" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="note" type="tns:Drawing" minOccurs="0"/>
+			<xs:element name="control" type="xs:base64Binary" minOccurs="0"/>
+			<xs:element name="pictureParameter" type="xs:string" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ChangedCell">
+		<xs:sequence>
+			<xs:element name="NewElement" type="xs:string"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ChangedCellItem">
+		<xs:sequence>
+			<xs:element name="i" type="xs:decimal"/>
+			<xs:element name="c" type="tns:Cell"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ChangedRow">
+		<xs:sequence>
+			<xs:element name="c" type="tns:ChangedCellItem" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ChangedRowItem">
+		<xs:sequence>
+			<xs:element name="index" type="xs:decimal"/>
+			<xs:element name="row" type="tns:ChangedRow"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="Changes">
+		<xs:sequence>
+			<xs:element name="commonPart" type="tns:SpreadsheetDocument" minOccurs="0"/>
+			<xs:element name="fullDocument" type="tns:SpreadsheetDocument" minOccurs="0"/>
+			<xs:element name="fullDocumentWithoutContent" type="tns:SpreadsheetDocument" minOccurs="0"/>
+			<xs:element name="row" type="tns:ChangedRowItem" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="vg" type="tns:Group" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="Column">
+		<xs:sequence>
+			<xs:element name="formatIndex" type="xs:decimal" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="Columns">
+		<xs:sequence>
+			<xs:element name="id" type="ns1:UUID" minOccurs="0"/>
+			<xs:element name="formatIndex" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="size" type="xs:decimal"/>
+			<xs:element name="columnsItem" type="tns:ColumnsItem" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ColumnsItem">
+		<xs:sequence>
+			<xs:element name="index" type="xs:decimal"/>
+			<xs:element name="column" type="tns:Column"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="Drawing">
+		<xs:sequence>
+			<xs:element name="drawingType" type="tns:SpreadsheetDocumentDrawingType"/>
+			<xs:element name="id" type="xs:decimal"/>
+			<xs:element name="formatIndex" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="text" type="ns1:LocalStringType" minOccurs="0"/>
+			<xs:element name="textString" type="xs:string" minOccurs="0"/>
+			<xs:element name="tfl" type="ns1:LocalStringType" minOccurs="0"/>
+			<xs:element name="tf" type="xs:string" minOccurs="0"/>
+			<xs:element name="parameter" type="xs:string" minOccurs="0"/>
+			<xs:element name="value" minOccurs="0"/>
+			<xs:element name="detailParameter" type="xs:string" minOccurs="0"/>
+			<xs:element name="detailValue" minOccurs="0"/>
+			<xs:element name="beginRow" type="xs:decimal"/>
+			<xs:element name="beginRowOffset" type="xs:decimal"/>
+			<xs:element name="endRow" type="xs:decimal"/>
+			<xs:element name="endRowOffset" type="xs:decimal"/>
+			<xs:element name="beginColumn" type="xs:decimal"/>
+			<xs:element name="beginColumnOffset" type="xs:decimal"/>
+			<xs:element name="endColumn" type="xs:decimal"/>
+			<xs:element name="endColumnOffset" type="xs:decimal"/>
+			<xs:element name="autoSize" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="pictureSize" type="tns:PictureSize" minOccurs="0"/>
+			<xs:element name="zOrder" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="nestedDrawing" type="tns:Drawing" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="object" minOccurs="0"/>
+			<xs:element name="pictureIndex" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="picture" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="DrawingsDataSource">
+		<xs:sequence>
+			<xs:element name="drawingID" type="xs:decimal"/>
+			<xs:element name="area" type="tns:Area"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="EmbeddedTableItem">
+		<xs:sequence>
+			<xs:element name="id" type="xs:decimal"/>
+			<xs:element name="table"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="Format">
+		<xs:sequence>
+			<xs:element name="font" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="border" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="leftBorder" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="rightBorder" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="topBorder" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="bottomBorder" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="borderColor" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="height" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="width" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="autoWidthCalculation" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="widthWeightFactor" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="horizontalAlignment" type="ns2:HorizontalAlign" minOccurs="0"/>
+			<xs:element name="verticalAlignment" type="ns2:VerticalAlign" minOccurs="0"/>
+			<xs:element name="textColor" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="backColor" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="patternColor" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="pattern" type="tns:SpreadsheetDocumentPatternType" minOccurs="0"/>
+			<xs:element name="textPlacement" type="tns:SpreadsheetDocumentTextPlacementType" minOccurs="0"/>
+			<xs:element name="fillType" type="tns:SpreadsheetDocumentAreaFillType" minOccurs="0"/>
+			<xs:element name="protection" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="hidden" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="textOrientation" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="detailsUse" type="tns:SpreadsheetDocumentDetailUse" minOccurs="0"/>
+			<xs:element name="bySelectedColumns" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="markNegatives" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="containsValue" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="valueType" type="ns1:TypeDescription" minOccurs="0"/>
+			<xs:element name="format" type="ns1:LocalStringType" minOccurs="0"/>
+			<xs:element name="controlType" type="ns1:UUID" minOccurs="0"/>
+			<xs:element name="hyperLink" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="quickDrag" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="autoMarkIncomplete" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="markIncomplete" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="indent" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="autoIndent" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="editFormat" type="ns1:LocalStringType" minOccurs="0"/>
+			<xs:element name="columnSizeChange" type="ns2:SizeChangeMode" minOccurs="0"/>
+			<xs:element name="print" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="drawingBorder" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="drawingHaveLeftBorder" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="drawingHaveTopBorder" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="drawingHaveRightBorder" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="drawingHaveBottomBorder" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="mask" type="ns1:LocalStringType" minOccurs="0"/>
+			<xs:element name="picIndex" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="pictureSizeMode" type="tns:PictureSize" minOccurs="0"/>
+			<xs:element name="picHorizontalAlignment" type="ns2:HorizontalAlign" minOccurs="0"/>
+			<xs:element name="picVerticalAlignment" type="ns2:VerticalAlign" minOccurs="0"/>
+			<xs:element name="textPosition" type="tns:TextPositionRelativeToPicture" minOccurs="0"/>
+			<xs:element name="leftMargin" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="topMargin" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="rightMargin" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="bottomMargin" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="highlightMode" type="tns:SpreadsheetDocumentCellHighlightMode" minOccurs="0"/>
+			<xs:element name="showEditMode" type="tns:SpreadsheetDocumentEditableCellShowType" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="Group">
+		<xs:sequence>
+			<xs:element name="columnsID" type="ns1:UUID" minOccurs="0"/>
+			<xs:element name="b" type="xs:decimal"/>
+			<xs:element name="e" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="t" type="ns1:LocalStringType" minOccurs="0"/>
+			<xs:element name="o" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="g" type="tns:SpreadsheetDocumentGroupHeaderPlacement" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="Merge">
+		<xs:sequence>
+			<xs:element name="r" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="c" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="h" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="w" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="columnsID" type="ns1:UUID" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="MoxelImageMap">
+		<xs:sequence>
+			<xs:element name="mi" type="tns:MoxelImageMapItem" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="MoxelImageMapItem">
+		<xs:sequence>
+			<xs:element name="p" type="xs:decimal" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="d" minOccurs="0"/>
+			<xs:element name="r" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="t" type="xs:string" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="NamedItem">
+		<xs:sequence>
+			<xs:element name="name" type="xs:string"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="NamedItemCells">
+		<xs:complexContent>
+			<xs:extension base="tns:NamedItem">
+				<xs:sequence>
+					<xs:element name="area" type="tns:Area" minOccurs="0"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="NamedItemDataSource">
+		<xs:complexContent>
+			<xs:extension base="tns:NamedItem">
+				<xs:sequence>
+					<xs:element name="area" type="tns:Area" minOccurs="0"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="NamedItemDrawing">
+		<xs:complexContent>
+			<xs:extension base="tns:NamedItem">
+				<xs:sequence>
+					<xs:element name="drawingID" type="xs:decimal" minOccurs="0"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="NamedItemEmbeddedTable">
+		<xs:complexContent>
+			<xs:extension base="tns:NamedItem">
+				<xs:sequence>
+					<xs:element name="area" type="tns:Area" minOccurs="0"/>
+					<xs:element name="embeddedTableID" type="xs:decimal" minOccurs="0"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="NewComplexType"/>
+	<xs:complexType name="PageBreak">
+		<xs:sequence>
+			<xs:element name="position" type="xs:decimal"/>
+			<xs:element name="columnsID" type="ns1:UUID" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="Picture">
+		<xs:sequence>
+			<xs:element name="index" type="xs:decimal"/>
+			<xs:element name="picture"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="PivotTable">
+		<xs:sequence>
+			<xs:element name="showFields" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="measuresAxis" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="horizontalRows" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="verticalRows" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="horizontalColumns" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="verticalColumns" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="horizontalOveralls" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="verticalOveralls" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="horizontalFullSize" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="verticalFullSize" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="horizontalFieldsArea" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="verticalFieldsArea" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="horizontalEmptyArea" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="verticalEmptyArea" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="autoFixation" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="rowsGroupping" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="columnsGroupping" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="totalRowsOnTop" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="totalColumnsOnLeft" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="dimensionAttributePlacementInRows" type="tns:DimensionAttributePlacementType" minOccurs="0"/>
+			<xs:element name="dimensionAttributePlacementInColumns" type="tns:DimensionAttributePlacementType" minOccurs="0"/>
+			<xs:element name="dimensionsPlacementOnRows" type="tns:DimensionPlacementType" minOccurs="0"/>
+			<xs:element name="dimensionsPlacementOnColumns" type="tns:DimensionPlacementType" minOccurs="0"/>
+			<xs:element name="standardAppearance" type="tns:StandardAppearance" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="notStandardAppearance" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="horizontalAdditionalSize" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="verticalAdditionalSize" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="showLines" type="tns:PivotTableLinesShowType" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="PrintSettings">
+		<xs:sequence>
+			<xs:element name="pageOrientation" type="tns:PageOrientation" minOccurs="0"/>
+			<xs:element name="scale" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="collate" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="copies" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="perPage" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="topMargin" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="leftMargin" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="bottomMargin" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="rightMargin" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="headerSize" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="footerSize" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="fitToPage" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="blackAndWhite" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="printerName" type="xs:string" minOccurs="0"/>
+			<xs:element name="paper" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="pageSize" type="xs:string" minOccurs="0"/>
+			<xs:element name="paperSource" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="pageWidth" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="pageHeight" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="printAccuracy" type="tns:PrintAccuracy" minOccurs="0"/>
+			<xs:element name="duplexType" type="tns:DuplexPrintingType" minOccurs="0"/>
+			<xs:element name="pagePlacementAlternation" type="tns:PagePlacementAlternation" minOccurs="0"/>
+			<xs:element name="firstPageNumber" type="xs:decimal" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="Row">
+		<xs:sequence>
+			<xs:element name="columnsID" type="ns1:UUID" minOccurs="0"/>
+			<xs:element name="formatIndex" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="empty" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="c" type="tns:RowCellsItem" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="RowCellsItem">
+		<xs:sequence>
+			<xs:element name="i" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="c" type="tns:Cell"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="Rows">
+		<xs:sequence>
+			<xs:element name="index" type="xs:decimal"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="RowsItem">
+		<xs:sequence>
+			<xs:element name="index" type="xs:decimal"/>
+			<xs:element name="indexTo" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="row" type="tns:Row"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="SpreadsheetDocument">
+		<xs:choice>
+			<xs:element name="distributedKey" type="xs:string" minOccurs="0"/>
+			<xs:element name="languageSettings" minOccurs="0">
+				<xs:complexType>
+					<xs:sequence>
+						<xs:element name="currentLanguage" type="xs:string"/>
+						<xs:element name="defaultLanguage" type="xs:string"/>
+						<xs:element name="languageInfo" minOccurs="0" maxOccurs="unbounded">
+							<xs:complexType>
+								<xs:sequence>
+									<xs:element name="id" type="xs:string"/>
+									<xs:element name="code" type="xs:string"/>
+									<xs:element name="description" type="xs:string" minOccurs="0"/>
+								</xs:sequence>
+							</xs:complexType>
+						</xs:element>
+					</xs:sequence>
+				</xs:complexType>
+			</xs:element>
+			<xs:element name="languageCode" type="xs:string" minOccurs="0"/>
+			<xs:element name="columns" type="tns:Columns" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="rowsItem" type="tns:RowsItem" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="drawing" type="tns:Drawing" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="backPicture" minOccurs="0"/>
+			<xs:element name="fixedBackground" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="leftHeader" type="tns:Cell" minOccurs="0"/>
+			<xs:element name="centerHeader" type="tns:Cell" minOccurs="0"/>
+			<xs:element name="rightHeader" type="tns:Cell" minOccurs="0"/>
+			<xs:element name="leftFooter" type="tns:Cell" minOccurs="0"/>
+			<xs:element name="centerFooter" type="tns:Cell" minOccurs="0"/>
+			<xs:element name="rightFooter" type="tns:Cell" minOccurs="0"/>
+			<xs:element name="templateMode" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="stepDirection" type="tns:SpreadsheetDocumentStepDirectionType" minOccurs="0"/>
+			<xs:element name="totalsRight" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="totalsBelow" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="defaultFormatIndex" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="height" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="vgLevels" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="vgRows" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="vg" type="tns:Group" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="hg" type="tns:Group" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="verticalPageBreak" type="tns:PageBreak" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="horizontalPageBreak" type="tns:PageBreak" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="merge" type="tns:Merge" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="verticalUnmerge" type="tns:Merge" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="horizontalUnmerge" type="tns:Merge" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="namedItem" type="tns:NamedItem" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="printSettingsName" type="xs:string" minOccurs="0"/>
+			<xs:element name="printSettings" type="tns:PrintSettings" minOccurs="0"/>
+			<xs:element name="printArea" type="tns:Area" minOccurs="0"/>
+			<xs:element name="repeatRows" type="tns:Area" minOccurs="0"/>
+			<xs:element name="repeatColumns" type="tns:Area" minOccurs="0"/>
+			<xs:element name="drawingDataSource" type="tns:DrawingsDataSource" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="groupsBackColor" type="ns2:Color" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="groupsColor" type="ns2:Color" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="headersBackColor" type="ns2:Color" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="headersColor" type="ns2:Color" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="saveViewSettings" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="viewSettings" type="tns:ViewSettings" minOccurs="0"/>
+			<xs:element name="embeddedTable" type="tns:EmbeddedTableItem" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="line" type="ns2:Line" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="font" type="ns2:Font" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="format" type="tns:Format" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="picture" type="tns:Picture" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="usedFileName" type="xs:string" minOccurs="0"/>
+			<xs:element name="output" type="ns2:UseOutput" minOccurs="0"/>
+			<xs:element name="nextInsertionRow" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="nextInsertionCol" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="readOnly" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="protection" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="baseSheet" type="tns:SpreadsheetDocument" minOccurs="0"/>
+			<xs:element name="extensionMethod" type="tns:SpreadsheetDocumentExtensionAlgorithm" minOccurs="0"/>
+			<xs:element name="isCompactMode" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="originalSheet" type="tns:SpreadsheetDocument" minOccurs="0"/>
+			<xs:element name="textDirection" type="ns2:TextDirection" minOccurs="0"/>
+			<xs:element name="savedPicturesDensity" type="tns:SpreadsheetDocumentSavedPicturesDensity" minOccurs="0"/>
+		</xs:choice>
+	</xs:complexType>
+	<xs:complexType name="ViewSettings">
+		<xs:sequence>
+			<xs:element name="currentColumn" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="currentRow" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="scale" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="showGrid" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="showHeaders" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="showNames" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="showGroups" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="showGroupsText" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="showPageBreaks" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="blackAndWhite" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="fixedColumn" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="fixedColumnRow" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="fixedRow" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="fixationPointColumn" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="fixationPointRow" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="topFixationPointColumn" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="topFixationPointRow" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="screenBeginPointColumn" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="screenBeginPointRow" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="showNamedRowsAndColumns" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="showNamedRowsAndColumnsText" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="currentLanguage" type="xs:string" minOccurs="0"/>
+			<xs:element name="showComments" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="selection" type="tns:Area" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="selectedDrawing" type="xs:decimal" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+</xs:schema>

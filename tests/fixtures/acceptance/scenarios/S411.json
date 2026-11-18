@@ -1,0 +1,116 @@
+{
+  "id": "S411",
+  "name": "common-module-rejects-duplicate-borrowing-identity",
+  "issue": 1304,
+  "area": "Навигация и чтение",
+  "task": "Отклонить чтение общего модуля и его методов при дубликате идентичности заимствования, сохранив исходные файлы",
+  "workspace": "tests/fixtures/acceptance/workspace-invalid-borrowing",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "ext:CommonModule.CorpusModule.Method"
+      },
+      "expect": [
+        "provider"
+      ],
+      "assertions": [
+        {
+          "pointer": "/ok",
+          "eq": false
+        },
+        {
+          "pointer": "/diagnostics/0/detailCode",
+          "eq": "source_unreadable"
+        }
+      ],
+      "captures": {
+        "unchanged1": {
+          "file": "src/CommonModules/CorpusModule/Ext/Module.bsl",
+          "kind": "sha256"
+        },
+        "unchanged2": {
+          "file": "src/CommonModules/CorpusModule.xml",
+          "kind": "sha256"
+        },
+        "unchanged3": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "unchanged4": {
+          "file": "src/Languages/Русский.xml",
+          "kind": "sha256"
+        },
+        "unchanged5": {
+          "file": "v8project.yaml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "ext:CommonModule.CorpusModule"
+      },
+      "expect": [
+        "provider"
+      ],
+      "assertions": [
+        {
+          "pointer": "/ok",
+          "eq": false
+        },
+        {
+          "pointer": "/diagnostics/0/detailCode",
+          "eq": "source_unreadable"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "ext:CommonModule.CorpusModule.Method.Проверка"
+      },
+      "expect": [
+        "provider"
+      ],
+      "assertions": [
+        {
+          "pointer": "/ok",
+          "eq": false
+        },
+        {
+          "pointer": "/diagnostics/0/detailCode",
+          "eq": "source_unreadable"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonModules/CorpusModule/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.unchanged1"
+        },
+        {
+          "path": "src/CommonModules/CorpusModule.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged2"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged3"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged4"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged5"
+        }
+      ]
+    }
+  ]
+}

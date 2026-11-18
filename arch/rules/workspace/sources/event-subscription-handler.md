@@ -1,8 +1,5 @@
 ---
 id: INV.APP.EVENT-BINDING
-check:
-  - crates/unica-metadata/src/event_subscription.rs::event_subscription_binding_requires_exact_case_presence_and_one_signature
-  - crates/unica-metadata/src/event_subscription.rs::event_subscription_binding_validates_the_complete_handler_contract
 gap: https://github.com/IngvarConsulting/unica/issues/931
 ---
 

@@ -8,7 +8,7 @@ use std::path::Path;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use unica_daemon::identity::DaemonStateDirectory;
+use unica_daemon_protocol::identity::DaemonStateDirectory;
 use unica_navigation::result_store::ViewCapacityObserver;
 use unica_process::process_peak_rss_bytes;
 use unica_workspace::state_fs::StateHandle as File;
@@ -25,8 +25,28 @@ const STAGING_NAME: &str = ".snapshot-v1.tmp";
 const WRITER_LOCK_NAME: &str = ".capacity-writer.lock";
 const SCHEMA_VERSION: u8 = 1;
 const BUCKETS: usize = 32;
+// resource-limit: capacity.flush-interval
+// class: step
+// unit: ms
+// scope: process
+// value: 60000
+// resource: Интервал записи снимка наблюдения ёмкости на диск.
+// status: unproven
+// origin: #1122
+// problem: неизвестно
+// on-reach: снимок записывается по интервалу и при остановке
 const FLUSH_INTERVAL: Duration = Duration::from_secs(60);
 const SHUTDOWN_FLUSH_WAIT: Duration = Duration::from_secs(2);
+// resource-limit: capacity.snapshot-bytes
+// class: retention
+// unit: bytes
+// scope: file
+// value: 16384
+// resource: Размер файла снимка локального наблюдения ёмкости (запись и чтение).
+// status: unproven
+// origin: e4ef94156 (#1122)
+// problem: неизвестно
+// on-reach: Ошибка InvalidData «capacity snapshot is too large»: снимок не пишется и не читается.
 pub(crate) const MAX_SNAPSHOT_BYTES: usize = 16 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -100,12 +120,12 @@ impl Default for CapacitySnapshot {
 }
 
 #[derive(Default)]
-pub(crate) struct CapacityObserver {
+pub struct CapacityObserver {
     data: Mutex<CapacitySnapshot>,
 }
 
 impl CapacityObserver {
-    pub(crate) fn record_find(&self, fact_bytes: u64, entries: u64, complete: bool) {
+    pub fn record_find(&self, fact_bytes: u64, entries: u64, complete: bool) {
         let mut data = self
             .data
             .lock()
@@ -245,9 +265,7 @@ pub(crate) fn read_existing_snapshot(
     read_snapshot(&directory)
 }
 
-pub(crate) fn read_existing_snapshot_json(
-    daemon_identity_path: &Path,
-) -> io::Result<Option<String>> {
+pub fn read_existing_snapshot_json(daemon_identity_path: &Path) -> io::Result<Option<String>> {
     read_existing_snapshot(daemon_identity_path)?
         .map(|snapshot| {
             let bytes = encode_snapshot(&snapshot)?;
@@ -300,7 +318,7 @@ enum CapacityFlushResult {
     Unauthorized,
 }
 
-pub(crate) struct CapacityWriterGuard {
+pub struct CapacityWriterGuard {
     stop: mpsc::Sender<()>,
     flushed: mpsc::Receiver<CapacityFlushResult>,
 }
@@ -319,7 +337,7 @@ impl Drop for CapacityWriterGuard {
     }
 }
 
-pub(crate) fn start_background_writer(
+pub fn start_background_writer(
     state: &DaemonStateDirectory,
     observer: Arc<CapacityObserver>,
     authority_valid: Arc<dyn Fn() -> bool + Send + Sync>,
@@ -328,7 +346,7 @@ pub(crate) fn start_background_writer(
         state,
         observer,
         authority_valid,
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         None,
     )
     .map(|(guard, _worker)| guard)
@@ -338,7 +356,9 @@ fn start_background_writer_inner(
     state: &DaemonStateDirectory,
     observer: Arc<CapacityObserver>,
     authority_valid: Arc<dyn Fn() -> bool + Send + Sync>,
-    #[cfg(test)] after_ack: Option<Box<dyn FnOnce(CapacityFlushResult) + Send>>,
+    #[cfg(any(test, feature = "test-support"))] after_ack: Option<
+        Box<dyn FnOnce(CapacityFlushResult) + Send>,
+    >,
 ) -> io::Result<(CapacityWriterGuard, thread::JoinHandle<()>)> {
     let retained = state
         .create_private_retained_subdirectory(DIRECTORY_NAME)
@@ -367,7 +387,7 @@ fn start_background_writer_inner(
                 writer_lock,
                 receiver,
                 flushed,
-                #[cfg(test)]
+                #[cfg(any(test, feature = "test-support"))]
                 after_ack,
             )
         })?;
@@ -387,7 +407,9 @@ fn background_flush_loop(
     writer_lock: File,
     receiver: mpsc::Receiver<()>,
     flushed: mpsc::Sender<CapacityFlushResult>,
-    #[cfg(test)] after_ack: Option<Box<dyn FnOnce(CapacityFlushResult) + Send>>,
+    #[cfg(any(test, feature = "test-support"))] after_ack: Option<
+        Box<dyn FnOnce(CapacityFlushResult) + Send>,
+    >,
 ) {
     let mut write_failure_reported = false;
     loop {
@@ -417,7 +439,7 @@ fn background_flush_loop(
             drop(retained);
             drop(writer_lock);
             let _ = flushed.send(result);
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             if let Some(after_ack) = after_ack {
                 after_ack(result);
             }
@@ -494,7 +516,7 @@ mod tests {
 
     #[test]
     fn snapshot_replacement_is_atomic_and_bounded() {
-        use unica_daemon::identity::CoreIdentity;
+        use unica_daemon_protocol::identity::CoreIdentity;
 
         let root = tempfile::tempdir().unwrap();
         let root = root.path().canonicalize().unwrap();
@@ -558,7 +580,7 @@ mod tests {
 
     #[test]
     fn report_reader_rejects_symlink_without_following_it() {
-        use unica_daemon::identity::CoreIdentity;
+        use unica_daemon_protocol::identity::CoreIdentity;
         use unica_workspace::test_support::{
             create_directory_link_fixture_for_test, FileLinkFixtureOutcome,
         };
@@ -593,7 +615,7 @@ mod tests {
 
     #[test]
     fn report_reader_rejects_linked_snapshot_and_storage_failure_is_fail_open() {
-        use unica_daemon::identity::CoreIdentity;
+        use unica_daemon_protocol::identity::CoreIdentity;
         use unica_workspace::test_support::{
             create_file_link_fixture_for_test, FileLinkFixtureOutcome,
         };
@@ -631,7 +653,7 @@ mod tests {
 
     #[test]
     fn short_lived_daemon_flushes_on_shutdown() {
-        use unica_daemon::identity::CoreIdentity;
+        use unica_daemon_protocol::identity::CoreIdentity;
 
         let root = tempfile::tempdir().unwrap();
         let root = root.path().canonicalize().unwrap();
@@ -648,7 +670,7 @@ mod tests {
 
     #[test]
     fn shutdown_without_authority_preserves_snapshot_and_reports_unauthorized() {
-        use unica_daemon::identity::CoreIdentity;
+        use unica_daemon_protocol::identity::CoreIdentity;
 
         let root = tempfile::tempdir().unwrap();
         let root = root.path().canonicalize().unwrap();
@@ -693,7 +715,7 @@ mod tests {
 
     #[test]
     fn one_state_directory_admits_only_one_capacity_writer() {
-        use unica_daemon::identity::CoreIdentity;
+        use unica_daemon_protocol::identity::CoreIdentity;
 
         let root = tempfile::tempdir().unwrap();
         let root = root.path().canonicalize().unwrap();
@@ -721,7 +743,7 @@ mod tests {
 
     #[test]
     fn acknowledged_shutdown_releases_ownership_before_the_worker_returns() {
-        use unica_daemon::identity::CoreIdentity;
+        use unica_daemon_protocol::identity::CoreIdentity;
 
         for expected in [
             CapacityFlushResult::Saved,
@@ -776,7 +798,7 @@ mod tests {
 
     #[test]
     fn unsupported_snapshot_version_is_preserved_and_disables_observation() {
-        use unica_daemon::identity::CoreIdentity;
+        use unica_daemon_protocol::identity::CoreIdentity;
 
         let root = tempfile::tempdir().unwrap();
         let root = root.path().canonicalize().unwrap();

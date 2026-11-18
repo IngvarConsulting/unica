@@ -1,0 +1,25 @@
+{
+  "area": "Код BSL",
+  "task": "Вставить служебный код после метода модуля",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.GoogleПереводчик.Method.ДоступныеЯзыки",
+        "ops": [
+          {
+            "op": "code.insert",
+            "args": {
+              "text": "// приёмочная вставка после ДоступныеЯзыки",
+              "position": "after"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S156"
+}

@@ -19,14 +19,97 @@ use unica_source_designer::module_layout::{module_relative, module_source_addres
 use unica_work_control::cancellation::CancellationToken;
 use unica_work_control::provider_deadline::ProviderDeadline;
 
+// resource-limit: find.source-set-count
+// class: corpus
+// unit: count
+// scope: workspace
+// value: 64
+// resource: Число наборов исходников, из которых строится каталог имён find.
+// status: unproven
+// origin: cec3ddf7c
+// problem: неизвестно
+// on-reach: Отказ provider_limit_exceeded «find source-set count exceeds the bounded workspace limit».
+// issue: #1119
+// review: снимается в #1119 PR2
 const MAX_SOURCE_SETS: usize = 64;
+// resource-limit: find.point-path-depth
+// class: format
+// unit: depth
+// scope: request
+// value: 7
+// resource: Число компонентов пути, по которому find сопоставляет точный путь ресурса.
+// status: unproven
+// origin: 4288eaccd (#1510)
+// problem: неизвестно
+// on-reach: тихо: путь глубже 7 компонентов не сопоставляется как точный ресурс.
 const MAX_POINT_PATH_DEPTH: usize = 7;
+// resource-limit: find.directory-documents
+// class: corpus
+// unit: count
+// scope: workspace
+// value: 65536
+// resource: Число документов каталога раскладки find (resolve по адресу, callGraph) по всему рабочему пространству. Поиск имён (search corpus=names) этот каталог больше не строит: он ранжирует документы во время обхода, и предел к нему не применяется. Он держит только limit + 1 кандидатов, ранжированных после последнего имени прошлой страницы (курсор sc3 несёт его оценку и адрес), счётчик и отпечаток всех совпадений, а при обходе — список одной коллекции; ближайшие имена ищутся вторым обходом, когда прямых совпадений нет. Каждая страница обходит раскладку заново — #2106. Предел остался у каталога раскладки, который держат разрешение адреса (resolve по адресу) и соседи callGraph.
+// status: unproven
+// origin: cec3ddf7c
+// problem: неизвестно
+// on-reach: Отказ provider_limit_exceeded «find directory exceeds the bounded workspace entry limit».
+// issue: #1119
+// evidence: Замер 25.10.2026 (Apple M3 Max, 14 ядер, macOS, git 2.54, релизная сборка ветки поверх main 07306a173, scripts/dev/measure-capacity.py, два прохода подряд, наблюдение ёмкости демона (--capacity-report)): наибольшее число документов каталога имён — 19 607 на выгрузке УТ 11 (48 159 файлов в индексе Git, 12 290 модулей BSL на 508 МБ, 31 009 XML на 692 МБ) (30% предела), 9 548 на синтетическом корпусе формы УТ из scripts/dev/synthetic-configuration.py (10 757 модулей BSL на 510 МБ, 14 546 XML на 69 МБ).
+// review: #1119 PR2 снял предел с поиска имён; каталог раскладки остаётся до снятия своих пределов
 const DEFAULT_MAX_DOCUMENTS: usize = 65_536;
+// resource-limit: find.directory-fact-bytes
+// class: corpus
+// unit: bytes
+// scope: workspace
+// value: 16777216
+// resource: Оценка суммарного объёма фактов каталога раскладки find (resolve по адресу, callGraph) (с псевдонимами путей модулей). Поиск имён (search corpus=names) этот каталог больше не строит: он ранжирует документы во время обхода, и предел к нему не применяется. Он держит только limit + 1 кандидатов, ранжированных после последнего имени прошлой страницы (курсор sc3 несёт его оценку и адрес), счётчик и отпечаток всех совпадений, а при обходе — список одной коллекции; ближайшие имена ищутся вторым обходом, когда прямых совпадений нет. Каждая страница обходит раскладку заново — #2106. Предел остался у каталога раскладки, который держат разрешение адреса (resolve по адресу) и соседи callGraph.
+// status: unproven
+// origin: cec3ddf7c
+// problem: неизвестно
+// on-reach: Отказ provider_limit_exceeded «find directory exceeds the bounded workspace byte budget».
+// issue: #1119
+// evidence: Замер 25.10.2026 (Apple M3 Max, 14 ядер, macOS, git 2.54, релизная сборка ветки поверх main 07306a173, scripts/dev/measure-capacity.py, два прохода подряд, наблюдение ёмкости демона (--capacity-report)): наибольшая оценка объёма фактов каталога имён — 8 834 518 байт на выгрузке УТ 11 (48 159 файлов в индексе Git, 12 290 модулей BSL на 508 МБ, 31 009 XML на 692 МБ) (52,7% предела), 2 258 617 байт на синтетическом корпусе формы УТ из scripts/dev/synthetic-configuration.py (10 757 модулей BSL на 510 МБ, 14 546 XML на 69 МБ); поиск имён завершился без неполноты.
+// review: #1119 PR2 снял предел с поиска имён; каталог раскладки остаётся до снятия своих пределов
 const DEFAULT_MAX_FACT_BYTES: usize = 16 * 1024 * 1024;
 /// Enough of a descriptor head to carry `Name` and `Synonym`. The directory
 /// never needs the rest of the file.
+// resource-limit: find.descriptor-head-bytes
+// class: corpus
+// unit: bytes
+// scope: file
+// value: 8192
+// resource: Начало файла дескриптора, читаемое каталогом find для Name и Synonym.
+// status: unproven
+// origin: #690
+// problem: Каталогу нужны только Name и Synonym (комментарий в v13_find.rs).
+// on-reach: имя за пределами первых 8 КиБ не доказано: адресный поиск отказывает invalid_source
+// issue: #1119
+// review: снимается в #1119 PR2
 const DESCRIPTOR_HEAD_BYTES: usize = 8 * 1024;
+// resource-limit: find.collection-entries
+// class: corpus
+// unit: count
+// scope: directory
+// value: 65536
+// resource: Число элементов одного каталога коллекции при построении каталога раскладки find (resolve по адресу, callGraph). Поиск имён (search corpus=names) этот каталог больше не строит: он ранжирует документы во время обхода, и предел к нему не применяется. Он держит только limit + 1 кандидатов, ранжированных после последнего имени прошлой страницы (курсор sc3 несёт его оценку и адрес), счётчик и отпечаток всех совпадений, а при обходе — список одной коллекции; ближайшие имена ищутся вторым обходом, когда прямых совпадений нет. Каждая страница обходит раскладку заново — #2106. Предел остался у каталога раскладки, который держат разрешение адреса (resolve по адресу) и соседи callGraph.
+// status: unproven
+// origin: e2f60abd5 (#690)
+// problem: неизвестно
+// on-reach: Отказ provider_limit_exceeded «find source collection exceeds the bounded entry limit».
+// issue: #1119
+// evidence: Замер 25.10.2026 (Apple M3 Max, 14 ядер, macOS, git 2.54, релизная сборка ветки поверх main 07306a173, scripts/dev/measure-capacity.py, два прохода подряд, наблюдение ёмкости демона (--capacity-report)): наибольший каталог коллекции — 5 424 элемента на выгрузке УТ 11 (48 159 файлов в индексе Git, 12 290 модулей BSL на 508 МБ, 31 009 XML на 692 МБ) (общие модули; 8% предела), 5 422 на синтетическом корпусе формы УТ из scripts/dev/synthetic-configuration.py (10 757 модулей BSL на 510 МБ, 14 546 XML на 69 МБ).
+// review: #1119 PR2 снял предел с поиска имён; каталог раскладки остаётся до снятия своих пределов
 const MAX_COLLECTION_ENTRIES: usize = 65_536;
+// resource-limit: find.omission-details
+// class: format
+// unit: count
+// scope: request
+// value: 20
+// resource: Число образцов пропущенных документов в деталях неполноты find.
+// status: unproven
+// origin: eed587b99 (#1024)
+// problem: неизвестно
+// on-reach: тихо: сверх 20 детали не добавляются; полное число сохраняется счётчиком total.
 const MAX_OMISSION_DETAILS: usize = 20;
 /// Physical child families an object owns as its own files or directories.
 const NESTED_FAMILIES: [(&str, NodeKind); 3] = [
@@ -41,6 +124,7 @@ enum AttachedPathResource {
     Form,
     FormModule,
     RoleModule,
+    WsDefinition,
 }
 
 impl AttachedPathResource {
@@ -52,10 +136,14 @@ impl AttachedPathResource {
             return match parts {
                 [_, "forms", _, "ext", "form.xml"] => Some(Self::Form),
                 [_, "forms", _, "ext", "form", "module.bsl"] => Some(Self::FormModule),
+                [_, "ext", "objectmodule.bsl"] | [_, "commands", _, "ext", "commandmodule.bsl"] => {
+                    Some(Self::RoleModule)
+                }
                 _ => None,
             };
         }
         match parts {
+            ["wsreferences", _, "ext", "wsdefinition.xml"] => Some(Self::WsDefinition),
             ["commonforms", _, "ext", "form.xml"] => Some(Self::Form),
             ["commonforms", _, "ext", "form", "module.bsl"] => Some(Self::FormModule),
             [_, _, "forms", _, "ext", "form.xml"] => Some(Self::Form),
@@ -70,20 +158,20 @@ impl AttachedPathResource {
 
 /// One admitted source-set root. The directory is read through the retained
 /// no-follow capability the actor owns; no path is reopened by name.
-pub(crate) struct LayoutFindSource<'a> {
+pub struct LayoutFindSource<'a> {
     name: &'a str,
     kind: SourceSetKind,
     root: &'a SourceDirectory,
 }
 
 impl<'a> LayoutFindSource<'a> {
-    pub(crate) const fn new(name: &'a str, kind: SourceSetKind, root: &'a SourceDirectory) -> Self {
+    pub const fn new(name: &'a str, kind: SourceSetKind, root: &'a SourceDirectory) -> Self {
         Self { name, kind, root }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct FindBuildError {
+pub struct FindBuildError {
     code: RefusalCode,
     detail: Option<RefusalDetail>,
     message: String,
@@ -106,11 +194,11 @@ impl FindBuildError {
         }
     }
 
-    pub(crate) const fn code(&self) -> RefusalCode {
+    pub const fn code(&self) -> RefusalCode {
         self.code
     }
 
-    pub(crate) const fn detail(&self) -> Option<RefusalDetail> {
+    pub const fn detail(&self) -> Option<RefusalDetail> {
         self.detail
     }
 
@@ -137,7 +225,7 @@ impl From<io::Error> for FindBuildError {
 /// Builds the two-way directory between qualified logical addresses and where
 /// objects live in the source layout. It reads that layout only: no typed
 /// projection, no module source, no revision lease.
-pub(crate) struct WorkspaceFindDirectoryBuilder {
+pub struct WorkspaceFindDirectoryBuilder {
     max_documents: usize,
     max_total_fact_bytes: usize,
     max_collection_entries: usize,
@@ -158,11 +246,11 @@ enum DescriptorHeadReadError {
 }
 
 /// The ranked names of one search and what its layout walk could not read.
-pub(crate) struct NameSearchOutcome {
-    pub(crate) names: RankedNames,
-    pub(crate) omissions: FindOmissions,
+pub struct NameSearchOutcome {
+    pub names: RankedNames,
+    pub omissions: FindOmissions,
     /// The watched addresses, such as the search scope, that exist.
-    pub(crate) present: HashSet<String>,
+    pub present: HashSet<String>,
 }
 
 #[derive(Debug)]
@@ -172,15 +260,15 @@ pub(crate) struct FindBuildOutcome {
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct FindOmissions {
-    pub(crate) total: usize,
-    pub(crate) details: Vec<FindOmission>,
+pub struct FindOmissions {
+    pub total: usize,
+    pub details: Vec<FindOmission>,
 }
 
 #[derive(Debug)]
-pub(crate) struct FindOmission {
-    pub(crate) source_set: String,
-    pub(crate) reason: &'static str,
+pub struct FindOmission {
+    pub source_set: String,
+    pub reason: &'static str,
 }
 
 impl Default for WorkspaceFindDirectoryBuilder {
@@ -228,19 +316,19 @@ impl WorkspaceFindDirectoryBuilder {
         }
     }
 
-    pub(crate) fn with_capacity_observer(mut self, observer: Arc<CapacityObserver>) -> Self {
+    pub fn with_capacity_observer(mut self, observer: Arc<CapacityObserver>) -> Self {
         self.capacity_observer = Some(observer);
         self
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn with_head_reader(mut self, reader: Arc<HeadReader>) -> Self {
         self.read_head = reader;
         self
     }
 
-    #[cfg(test)]
-    pub(crate) fn with_local_read_fault_for_test(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_local_read_fault_for_test(
         self,
         relative: &'static str,
         kind: io::ErrorKind,
@@ -254,23 +342,23 @@ impl WorkspaceFindDirectoryBuilder {
         }))
     }
 
-    #[cfg(test)]
-    pub(crate) fn with_document_limit(max_documents: usize) -> Self {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_document_limit(max_documents: usize) -> Self {
         Self::with_limits(max_documents, DEFAULT_MAX_FACT_BYTES)
     }
 
-    #[cfg(test)]
-    pub(crate) fn with_fact_byte_limit_for_test(max_fact_bytes: usize) -> Self {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_fact_byte_limit_for_test(max_fact_bytes: usize) -> Self {
         Self::with_limits(DEFAULT_MAX_DOCUMENTS, max_fact_bytes)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn with_collection_limit_for_test(mut self, max_collection_entries: usize) -> Self {
         self.max_collection_entries = max_collection_entries;
         self
     }
 
-    pub(crate) fn build(
+    pub fn build(
         &self,
         sources: &[LayoutFindSource<'_>],
         deadline: ProviderDeadline,
@@ -314,7 +402,7 @@ impl WorkspaceFindDirectoryBuilder {
         Ok(outcome.index)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn build_for_search(
         &self,
         sources: &[LayoutFindSource<'_>],
@@ -331,7 +419,7 @@ impl WorkspaceFindDirectoryBuilder {
     /// count nor its facts are budgeted. Nearest names take a second walk,
     /// only when nothing matched directly. Each page walks the layout again
     /// (#2106).
-    pub(crate) fn search_names(
+    pub fn search_names(
         &self,
         sources: &[LayoutFindSource<'_>],
         ranker: NameRanker,
@@ -426,7 +514,7 @@ impl WorkspaceFindDirectoryBuilder {
     /// Resolve only paths that could be the requested object. The name-search
     /// directory still owns its aggregate fact budget; a point lookup must not
     /// read unrelated descriptors or charge their facts before answering.
-    pub(crate) fn locate_path(
+    pub fn locate_path(
         &self,
         sources: &[LayoutFindSource<'_>],
         path: &str,
@@ -649,7 +737,7 @@ impl WorkspaceFindDirectoryBuilder {
                 for entry in
                     matching_names(source.root, name, physical_name(0), deadline, cancellation)?
                 {
-                    let Some(stem) = entry.to_str().and_then(|name| name.strip_suffix(".xml"))
+                    let Some(_stem) = entry.to_str().and_then(|name| name.strip_suffix(".xml"))
                     else {
                         continue;
                     };
@@ -666,25 +754,27 @@ impl WorkspaceFindDirectoryBuilder {
                             SourceEntry::RegularFile(file) => file,
                             _ => return Err(unsafe_layout_entry()),
                         };
-                    let (_, synonym) = require_target_identity(self.read_target_identity(
-                        &file,
-                        &relative,
-                        source,
-                        kind.as_str(),
-                        Some(stem),
-                        deadline,
-                        cancellation,
-                    )?)?;
+                    let (logical_name, synonym) =
+                        require_target_identity(self.read_target_identity(
+                            &file,
+                            &relative,
+                            source,
+                            kind.as_str(),
+                            None,
+                            deadline,
+                            cancellation,
+                        )?)?;
                     add_path_match(
                         located,
                         find_document(
                             source,
-                            &format!("{}:{}.{stem}", source.name, kind.as_str()),
+                            &format!("{}:{}.{}", source.name, kind.as_str(), logical_name),
                             kind.as_str(),
-                            stem,
+                            &logical_name,
                             synonym.as_deref(),
                             &relative,
-                        )?,
+                        )?
+                        .with_owner_descriptor(path_text(&relative)),
                     )?;
                 }
             }
@@ -869,13 +959,18 @@ impl WorkspaceFindDirectoryBuilder {
             return self.locate_role_module_path(source, tail, deadline, cancellation, located);
         }
         let (address_suffix, file_suffix, is_module) = match resource {
+            AttachedPathResource::WsDefinition => (".Definition", "/Ext/WSDefinition.xml", false),
             AttachedPathResource::Form => ("", "/Ext/Form.xml", false),
             AttachedPathResource::FormModule => (".Module.Form", "/Ext/Form/Module.bsl", true),
             AttachedPathResource::RoleModule => unreachable!("ветка обработана выше"),
         };
         let descriptor_parts = match source.kind {
             SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport => 3,
-            _ if tail.first() == Some(&"commonforms") => 2,
+            _ if tail.first() == Some(&"commonforms")
+                || resource == AttachedPathResource::WsDefinition =>
+            {
+                2
+            }
             _ => 4,
         };
         let descriptor_query = format!("{}.xml", tail[..descriptor_parts].join("/"));
@@ -891,13 +986,18 @@ impl WorkspaceFindDirectoryBuilder {
         };
         let descriptor_address =
             QualifiedAddress::parse(owner.at()).map_err(|_| unsafe_layout_entry())?;
-        let form_address = descriptor_address
-            .form_metadata_owner()
-            .ok_or_else(unsafe_layout_entry)?;
+        let form_address = if resource == AttachedPathResource::WsDefinition {
+            descriptor_address
+        } else {
+            descriptor_address
+                .form_metadata_owner()
+                .ok_or_else(unsafe_layout_entry)?
+        };
         let at = format!("{form_address}{address_suffix}");
         let address = QualifiedAddress::parse(&at).map_err(|_| unsafe_layout_entry())?;
+        // Вопрос к маршрутам модулей, а не к событиям: от линии не зависит.
         if is_module
-            && unica_bsl::profile::PlatformProfile::v8_3_27()
+            && unica_bsl::profile::PlatformProfile::for_line_or_base(None)
                 .module_capability(&address)
                 .is_none()
         {
@@ -917,16 +1017,24 @@ impl WorkspaceFindDirectoryBuilder {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
             Err(error) => return Err(child_read_error(error)),
         }
-        add_path_match(
-            located,
-            FindDocument::new(
-                at,
-                if is_module { "Module" } else { "Form" },
-                owner.at(),
-                Vec::new(),
-            )
-            .with_path(relative),
+        let descriptor_witness = owner.owner_descriptor().map(str::to_string);
+        let mut document = FindDocument::new(
+            at,
+            if is_module {
+                "Module"
+            } else if resource == AttachedPathResource::WsDefinition {
+                "Definition"
+            } else {
+                "Form"
+            },
+            owner.at(),
+            Vec::new(),
         )
+        .with_path(relative);
+        if let Some(descriptor) = descriptor_witness {
+            document = document.with_owner_descriptor(descriptor);
+        }
+        add_path_match(located, document)
     }
 
     fn locate_role_module_path(
@@ -964,13 +1072,38 @@ impl WorkspaceFindDirectoryBuilder {
         let owner_address =
             QualifiedAddress::parse(owner.at()).map_err(|_| unsafe_layout_entry())?;
         let owner_address = owner_address.form_metadata_owner().unwrap_or(owner_address);
+        let binding = if matches!(
+            source.kind,
+            SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
+        ) {
+            let root_owner = owner_address
+                .segments()
+                .first()
+                .and_then(|part| part.name())
+                .ok_or_else(unsafe_layout_entry)?;
+            let descriptor = owner
+                .owner_descriptor()
+                .or_else(|| owner.placed_path())
+                .ok_or_else(unsafe_layout_entry)?;
+            Some(
+                unica_source_designer::external_artifact::ExternalArtifactBinding::new(
+                    source.kind,
+                    root_owner,
+                    Path::new(descriptor),
+                )
+                .map_err(|_| unsafe_layout_entry())?,
+            )
+        } else {
+            None
+        };
         let branch = if owner.kind() == "Configuration" {
             format!("{}:Module", source.name)
         } else {
             format!("{owner_address}.Module")
         };
         let branch = QualifiedAddress::parse(&branch).map_err(|_| unsafe_layout_entry())?;
-        let profile = PlatformProfile::v8_3_27();
+        // Состав модулей ветки — маршруты модулей, от линии не зависят.
+        let profile = PlatformProfile::for_line_or_base(None);
         let requested = tail.join("/");
         let Some((expected, relative)) = profile
             .module_children(&branch)
@@ -983,7 +1116,11 @@ impl WorkspaceFindDirectoryBuilder {
                     child.capability().route_kind(),
                 )
                 .ok()?;
-                let relative = module_relative(&target, source.kind).ok()?;
+                let canonical = module_relative(&target, source.kind).ok()?;
+                let relative = match &binding {
+                    Some(binding) => binding.physical_path(&canonical).ok()?,
+                    None => canonical,
+                };
                 (normalize_layout_path(&relative.to_string_lossy()) == requested)
                     .then_some((child, relative))
             })
@@ -991,8 +1128,14 @@ impl WorkspaceFindDirectoryBuilder {
         else {
             return Ok(());
         };
+        let canonical = match &binding {
+            Some(binding) => binding
+                .logical_path(&relative)
+                .ok_or_else(unsafe_layout_entry)?,
+            None => relative.clone(),
+        };
         let Some(address) =
-            module_address_for_relative(source.name, source.kind, profile, &relative)
+            module_address_for_relative(source.name, source.kind, profile, &canonical)
         else {
             return Err(unsafe_layout_entry());
         };
@@ -1005,11 +1148,12 @@ impl WorkspaceFindDirectoryBuilder {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
             Err(error) => return Err(child_read_error(error)),
         }
-        add_path_match(
-            located,
-            FindDocument::new(address.to_string(), "Module", owner.at(), Vec::new())
-                .with_path(path_text(&relative)),
-        )
+        let mut document = FindDocument::new(address.to_string(), "Module", owner.at(), Vec::new())
+            .with_path(path_text(&relative));
+        if let Some(binding) = binding {
+            document = document.with_owner_descriptor(path_text(binding.descriptor()));
+        }
+        add_path_match(located, document)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1246,15 +1390,16 @@ impl WorkspaceFindDirectoryBuilder {
                         || PathBuf::from(&descriptor_name),
                         |(_, name)| PathBuf::from(name).join(&descriptor_name),
                     );
-                    require_target_identity(self.read_target_identity(
-                        &owner_file,
-                        &owner_descriptor_relative,
-                        source,
-                        owner_kind,
-                        Some(owner_name_text),
-                        deadline,
-                        cancellation,
-                    )?)?;
+                    let (logical_owner_name, _) =
+                        require_target_identity(self.read_target_identity(
+                            &owner_file,
+                            &owner_descriptor_relative,
+                            source,
+                            owner_kind,
+                            collection.map(|_| owner_name_text),
+                            deadline,
+                            cancellation,
+                        )?)?;
                     let owner_relative = collection.map_or_else(
                         || PathBuf::from(owner_name_text),
                         |(_, name)| PathBuf::from(name).join(owner_name_text),
@@ -1296,7 +1441,7 @@ impl WorkspaceFindDirectoryBuilder {
                         find_document(
                             source,
                             &format!(
-                                "{}:{owner_kind}.{owner_name_text}.{}.{nested_name}",
+                                "{}:{owner_kind}.{logical_owner_name}.{}.{nested_name}",
                                 source.name,
                                 family_kind.as_str()
                             ),
@@ -1304,7 +1449,8 @@ impl WorkspaceFindDirectoryBuilder {
                             nested_name,
                             synonym.as_deref(),
                             &relative,
-                        )?,
+                        )?
+                        .with_owner_descriptor(path_text(&owner_descriptor_relative)),
                     )?;
                 }
             }
@@ -1604,7 +1750,7 @@ impl WorkspaceFindDirectoryBuilder {
         Ok(())
     }
 
-    /// An external processor or report keeps its single owner descriptor at
+    /// An external processor or report keeps owner descriptors at
     /// the root of the source set.
     fn add_external_source(
         &self,
@@ -1618,6 +1764,7 @@ impl WorkspaceFindDirectoryBuilder {
         } else {
             NodeKind::ExternalReport
         };
+        let mut names = HashSet::new();
         for entry in immediate_names(
             source.root,
             self.collection_limit(build),
@@ -1629,7 +1776,7 @@ impl WorkspaceFindDirectoryBuilder {
             let Some(entry_name) = entry.to_str() else {
                 continue;
             };
-            let Some(stem) = entry_name.strip_suffix(".xml") else {
+            let Some(_) = entry_name.strip_suffix(".xml") else {
                 continue;
             };
             let file = match retain_enumerated_child(source.root, &entry, deadline, cancellation) {
@@ -1650,28 +1797,43 @@ impl WorkspaceFindDirectoryBuilder {
             else {
                 continue;
             };
-            if !declares_owner(&head, kind.as_str(), stem) {
+            let (Some(name), synonym) = descriptor_identity(&head) else {
+                continue;
+            };
+            if !declares_owner(&head, kind.as_str(), &name) {
                 continue;
             }
-            let synonym = descriptor_identity(&head).1;
+            let binding = unica_source_designer::external_artifact::ExternalArtifactBinding::new(
+                source.kind,
+                &name,
+                &relative,
+            )
+            .map_err(|message| FindBuildError::new(RefusalCode::InvalidSource, message))?;
+            if !names.insert(binding.name().to_string()) {
+                return Err(FindBuildError::new(
+                    RefusalCode::InvalidSource,
+                    "external owner name is ambiguous",
+                ));
+            }
+            let stem = binding.payload().as_os_str();
             self.push(
                 build,
                 source,
-                &format!("{}:{}.{stem}", source.name, kind.as_str()),
+                &format!("{}:{}.{}", source.name, kind.as_str(), binding.name()),
                 kind.as_str(),
-                stem,
+                binding.name(),
                 synonym.as_deref(),
                 &relative,
             )?;
-            match retain_optional_child(source.root, OsStr::new(stem), deadline, cancellation)? {
+            match retain_optional_child(source.root, stem, deadline, cancellation)? {
                 Some(SourceEntry::Directory(owner_root)) => {
                     self.add_nested_families(
                         source,
                         build,
                         &owner_root,
                         kind.as_str(),
-                        stem,
-                        &PathBuf::from(stem),
+                        binding.name(),
+                        binding.payload(),
                         deadline,
                         cancellation,
                     )?;
@@ -1962,10 +2124,12 @@ fn form_descriptor_location(document: FindDocument) -> Result<FindDocument, Find
     if address.form_metadata_owner().is_none() {
         return Err(unsafe_layout_entry());
     }
-    Ok(
-        FindDocument::new(address.to_string(), "Metadata", document.at(), Vec::new())
-            .with_path(document.placed_path().ok_or_else(unsafe_layout_entry)?),
-    )
+    let mut result = FindDocument::new(address.to_string(), "Metadata", document.at(), Vec::new())
+        .with_path(document.placed_path().ok_or_else(unsafe_layout_entry)?);
+    if let Some(descriptor) = document.owner_descriptor() {
+        result = result.with_owner_descriptor(descriptor);
+    }
+    Ok(result)
 }
 
 fn find_document(
@@ -2607,6 +2771,7 @@ mod tests {
         )
     }
 
+    /// rule: INV.SOURCE.FIND-IDENTITY-ONLY
     #[test]
     fn a_name_resolves_to_the_address_and_the_file_that_carries_it() {
         let index = Fixture::new().directory();
@@ -2664,6 +2829,8 @@ mod tests {
         assert!(index.locate_address("main:Catalog.Валют").is_none());
     }
 
+    /// rule: INV.SOURCE.FIND-IDENTITY-ONLY
+    /// rule: INV.SOURCE.RESOLVED-RESOURCE-IDENTITY
     #[test]
     fn a_common_module_file_resolves_to_its_owner_without_becoming_a_name_fact() {
         let fixture = Fixture::new();
@@ -2976,6 +3143,7 @@ mod tests {
         assert_eq!(failure.code(), RefusalCode::InvalidSource);
     }
 
+    /// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
     #[test]
     fn point_lookup_preserves_full_relative_paths_and_checks_every_source_before_not_found() {
         let fixture = Fixture::new();
@@ -3053,6 +3221,8 @@ mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.RESOLVED-RESOURCE-IDENTITY
+    /// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
     #[test]
     fn point_lookup_routes_owner_module_roles_through_the_platform_profile() {
         let fixture = Fixture::new();
@@ -3117,6 +3287,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
     #[test]
     fn point_lookup_common_module_file_requires_target_and_owner_without_full_directory() {
         let fixture = Fixture::new();
@@ -3171,6 +3342,7 @@ mod tests {
         assert_eq!(failure.code(), RefusalCode::InvalidSource);
     }
 
+    /// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
     #[test]
     fn absolute_common_module_path_skips_a_broken_alias_in_another_source() {
         let first = Fixture::new();
@@ -3212,6 +3384,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
     #[test]
     fn absolute_lookup_keeps_distinct_source_roots_with_different_case() {
         use std::ffi::OsStr;
@@ -3305,6 +3478,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
     #[test]
     fn absolute_lookup_accepts_a_physical_unicode_alias_of_the_source_root() {
         let temp = tempfile::tempdir().unwrap();
@@ -3365,6 +3539,7 @@ mod tests {
         assert_eq!(module.at(), "main:CommonModule.Main");
     }
 
+    /// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
     #[test]
     fn windows_drive_and_unc_prefixes_keep_the_same_root_anchor_shape() {
         if std::path::MAIN_SEPARATOR != '\\' {
@@ -3393,6 +3568,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
     #[test]
     fn absolute_lookup_refuses_a_replaced_requested_root_ancestor() {
         let temp = tempfile::tempdir().unwrap();
@@ -3431,6 +3607,7 @@ mod tests {
         assert_eq!(error.code(), RefusalCode::InvalidSource);
     }
 
+    /// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
     #[test]
     fn absolute_lookup_skips_a_foreign_root_at_the_target_files_depth() {
         let temp = tempfile::tempdir().unwrap();
@@ -3458,6 +3635,7 @@ mod tests {
         assert_eq!(found.at(), "main:Catalog.X");
     }
 
+    /// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
     #[test]
     fn absolute_lookup_distinguishes_a_file_from_a_case_folded_foreign_root() {
         let temp = tempfile::tempdir().unwrap();
@@ -3516,6 +3694,7 @@ mod tests {
         assert_eq!(still_found.at(), "main:Catalog.X");
     }
 
+    /// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
     #[test]
     fn absolute_lookup_does_not_open_a_damaged_case_distinct_foreign_parent() {
         let temp = tempfile::tempdir().unwrap();
@@ -3571,6 +3750,7 @@ mod tests {
         assert_eq!(found.at(), "main:Catalog.X");
     }
 
+    /// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
     #[test]
     fn relative_source_prefix_skips_linked_collections_in_another_source() {
         use unica_workspace::test_support::{
@@ -3646,6 +3826,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
     #[test]
     fn point_lookup_refuses_ambiguous_paths_across_admitted_sources() {
         let first = Fixture::new();
@@ -3666,6 +3847,7 @@ mod tests {
         assert_eq!(error.code(), RefusalCode::BadValue);
     }
 
+    /// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
     #[test]
     fn point_lookup_uses_the_full_layout_path_even_with_a_shorter_suffix() {
         let fixture = Fixture::new();
@@ -3710,6 +3892,7 @@ mod tests {
         assert!(missing.is_none(), "the requested catalog file is absent");
     }
 
+    /// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
     #[test]
     fn point_lookup_checks_the_owner_of_a_nested_object() {
         let fixture = Fixture::new();
@@ -3821,6 +4004,7 @@ mod tests {
         assert_eq!(error.code(), RefusalCode::InvalidSource);
     }
 
+    /// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
     #[test]
     fn point_lookup_refuses_an_existing_broken_target_descriptor() {
         let fixture = Fixture::new();
@@ -3844,6 +4028,7 @@ mod tests {
         assert_eq!(error.code(), RefusalCode::InvalidSource);
     }
 
+    /// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
     #[test]
     fn point_lookup_refuses_an_existing_broken_external_target_descriptor() {
         let fixture = tempfile::tempdir().unwrap();
@@ -3910,6 +4095,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
     #[test]
     fn point_lookup_refuses_when_target_name_is_outside_the_descriptor_sample() {
         let fixture = Fixture::new();
@@ -3943,6 +4129,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
     #[test]
     fn point_lookup_ignores_the_search_collection_entry_limit() {
         let fixture = Fixture::new();
@@ -3974,6 +4161,7 @@ mod tests {
         assert_eq!(entry.at(), "main:Catalog.Валюты");
     }
 
+    /// rule: INV.SOURCE.FIND-IDENTITY-ONLY
     #[test]
     fn large_configuration_descriptor_still_has_a_layout_address() {
         let fixture = Fixture::new();
@@ -4026,6 +4214,7 @@ mod tests {
         assert_eq!(refusal.code(), RefusalCode::InvalidSource);
     }
 
+    /// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
     #[test]
     fn point_lookup_nested_path_ignores_an_unrelated_linked_owner_directory() {
         use unica_workspace::test_support::{
@@ -4076,6 +4265,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SEARCH.NAMES-PARTIAL-RESULTS
     #[test]
     fn linked_nested_descriptor_refuses_instead_of_looking_complete() {
         use unica_workspace::test_support::{
@@ -4114,6 +4304,8 @@ mod tests {
         assert_eq!(refusal.code(), RefusalCode::InvalidSource);
     }
 
+    /// rule: INV.SEARCH.NAMES-PARTIAL-RESULTS
+    /// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
     #[test]
     fn linked_proven_owner_directory_refuses_instead_of_hiding_nested_names() {
         use unica_workspace::test_support::{
@@ -4164,6 +4356,7 @@ mod tests {
         assert_eq!(refusal.code(), RefusalCode::InvalidSource);
     }
 
+    /// rule: INV.SEARCH.NAMES-PARTIAL-RESULTS
     #[test]
     fn linked_command_directory_refuses_instead_of_looking_complete() {
         use unica_workspace::test_support::{
@@ -4201,6 +4394,7 @@ mod tests {
         assert_eq!(refusal.code(), RefusalCode::InvalidSource);
     }
 
+    /// rule: INV.SOURCE.FIND-IDENTITY-ONLY
     #[test]
     fn a_file_path_resolves_back_to_its_object_address() {
         let index = Fixture::new().directory();
@@ -4222,12 +4416,14 @@ mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.FIND-IDENTITY-ONLY
     #[test]
     fn a_synonym_resolves_to_its_object() {
         let index = Fixture::new().directory();
         assert_eq!(single(&index, "Валюты и курсы").0, "main:Catalog.Валюты");
     }
 
+    /// rule: INV.SEARCH.NAMES-PARTIAL-RESULTS
     #[test]
     fn unreadable_descriptor_makes_name_search_partial_but_resolve_refuses() {
         let fixture = Fixture::new();
@@ -4286,6 +4482,7 @@ mod tests {
         assert_eq!(refusal.code(), RefusalCode::ProviderUnavailable);
     }
 
+    /// rule: INV.SEARCH.NAMES-PARTIAL-RESULTS
     #[test]
     fn a_local_io_error_is_partial_but_handle_failure_is_a_refusal() {
         let fixture = Fixture::new();
@@ -4323,6 +4520,7 @@ mod tests {
         assert_eq!(refusal.code(), RefusalCode::ProviderUnavailable);
     }
 
+    /// rule: INV.SEARCH.NAMES-PARTIAL-RESULTS
     #[test]
     fn cancellation_during_a_failed_descriptor_read_refuses_instead_of_returning_partial() {
         let fixture = Fixture::new();
@@ -4412,6 +4610,7 @@ mod tests {
         assert!(snapshot.find_collection_entries.exact_count > 0);
     }
 
+    /// rule: INV.SEARCH.NAMES-PARTIAL-RESULTS
     #[test]
     fn many_owner_directories_do_not_exhaust_open_file_handles() {
         let fixture = Fixture::new();
@@ -4439,6 +4638,7 @@ mod tests {
         assert_eq!(single(&built.index, "Item399").0, "main:Catalog.Item399");
     }
 
+    /// rule: INV.SEARCH.NAMES-PARTIAL-RESULTS
     #[test]
     fn descriptor_identity_drift_remains_a_refusal() {
         let fixture = Fixture::new();
@@ -4468,6 +4668,7 @@ mod tests {
         assert_eq!(refusal.code(), RefusalCode::InvalidSource);
     }
 
+    /// rule: INV.SOURCE.FIND-IDENTITY-ONLY
     #[test]
     fn the_directory_holds_objects_and_never_code_symbols_or_inner_nodes() {
         let index = Fixture::new().directory();
@@ -4484,6 +4685,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.FIND-IDENTITY-ONLY
     #[test]
     fn the_directory_refuses_to_exceed_resource_bounds() {
         let fixture = Fixture::new();
@@ -4665,6 +4867,7 @@ mod tests {
         assert_eq!(searched.names.candidates[0].1.at(), "main:Catalog.Валюты");
     }
 
+    /// rule: INV.SOURCE.FIND-IDENTITY-ONLY
     #[test]
     fn the_directory_observes_cancellation() {
         let fixture = Fixture::new();
@@ -4685,6 +4888,8 @@ mod tests {
         assert_eq!(error.code().as_str(), "cancelled");
     }
 
+    /// rule: INV.SOURCE.FIND-IDENTITY-ONLY
+    /// rule: INV.SOURCE.RESOLVED-RESOURCE-IDENTITY
     #[test]
     fn an_external_root_publishes_its_owner_and_never_the_dump_sidecar() {
         let root = tempfile::tempdir().unwrap();
@@ -4783,6 +4988,190 @@ mod tests {
     }
 
     #[test]
+    fn external_alias_name_search_keeps_proven_neighbours_after_a_local_read_failure() {
+        let fixture = tempfile::tempdir().unwrap();
+        let path = fixture.path().canonicalize().unwrap();
+        write(
+            &path.join("source.xml"),
+            &owner("Actual", "ExternalDataProcessor", "Actual title", ""),
+        );
+        write(
+            &path.join("unreadable.xml"),
+            &owner("Hidden", "ExternalDataProcessor", "Hidden", ""),
+        );
+        let root = unica_workspace::read::open_source_directory(&path).unwrap();
+        let reader = Arc::new(
+            |file: &unica_source_contract::read::SourceFile, relative: &Path| {
+                if relative == Path::new("unreadable.xml") {
+                    Err(super::DescriptorHeadReadError::Local(
+                        io::ErrorKind::PermissionDenied,
+                    ))
+                } else {
+                    super::read_descriptor_head_prefix(file, relative)
+                }
+            },
+        );
+        let builder = WorkspaceFindDirectoryBuilder::default().with_head_reader(reader);
+        let sources = [LayoutFindSource::new(
+            "external",
+            SourceSetKind::ExternalProcessor,
+            &root,
+        )];
+        let result = builder
+            .build_for_search(
+                &sources,
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        assert_eq!(result.omissions.total, 1);
+        assert_eq!(result.omissions.details[0].reason, "descriptor_unreadable");
+        assert_eq!(
+            single(&result.index, "Actual").0,
+            "external:ExternalDataProcessor.Actual"
+        );
+        assert!(result
+            .index
+            .locate_address("external:ExternalDataProcessor.Hidden")
+            .is_none());
+    }
+
+    #[test]
+    fn external_alias_name_search_does_not_require_a_strict_native_inventory() {
+        use unica_process::test_support::{skip_without_host_capability, HostCapability};
+        let fixture = tempfile::tempdir().unwrap();
+        let path = fixture.path().canonicalize().unwrap();
+        write(
+            &path.join("source.xml"),
+            &owner("Actual", "ExternalDataProcessor", "Title", ""),
+        );
+        let unreadable = path.join("unreadable.xml");
+        write(
+            &unreadable,
+            &owner("Hidden", "ExternalDataProcessor", "Hidden", ""),
+        );
+        let root = unica_workspace::read::open_source_directory(&path).unwrap();
+        let permissions = fs::metadata(&unreadable).unwrap().permissions();
+        if !unica_workspace::test_support::set_unix_mode_for_test(&unreadable, 0).unwrap() {
+            skip_without_host_capability(
+                HostCapability::UnixPermissionBits,
+                "native denied-read control needs Unix permission bits",
+            );
+            return;
+        }
+        if fs::read(&unreadable).is_ok() {
+            fs::set_permissions(&unreadable, permissions).unwrap();
+            skip_without_host_capability(
+                HostCapability::EnforcedPermissionBits,
+                "privileged host bypasses denied permission bits",
+            );
+            return;
+        }
+        let result = WorkspaceFindDirectoryBuilder::default().build_for_search(
+            &[LayoutFindSource::new(
+                "external",
+                SourceSetKind::ExternalProcessor,
+                &root,
+            )],
+            ProviderDeadline::from_budget(Duration::from_secs(7)),
+            &CancellationToken::new(),
+        );
+        fs::set_permissions(&unreadable, permissions).unwrap();
+        let result = result.expect("a local file refusal must keep proven names");
+        assert_eq!(result.omissions.total, 1);
+        assert_eq!(
+            single(&result.index, "Actual").0,
+            "external:ExternalDataProcessor.Actual"
+        );
+    }
+
+    #[test]
+    fn external_alias_point_lookup_is_local_and_preserves_every_resource_path() {
+        for (source_kind, kind) in [
+            (SourceSetKind::ExternalProcessor, "ExternalDataProcessor"),
+            (SourceSetKind::ExternalReport, "ExternalReport"),
+        ] {
+            let fixture = tempfile::tempdir().unwrap();
+            let path = fixture.path().canonicalize().unwrap();
+            write(
+                &path.join("source.xml"),
+                &owner(
+                    "Actual",
+                    kind,
+                    "Title",
+                    "<Form>Main</Form><Command>Run</Command>",
+                ),
+            );
+            write(
+                &path.join("source/Forms/Main.xml"),
+                &owner("Main", "Form", "Main", ""),
+            );
+            write(&path.join("source/Forms/Main/Ext/Form.xml"), "<Form/>");
+            write(
+                &path.join("source/Forms/Main/Ext/Form/Module.bsl"),
+                "// form",
+            );
+            write(&path.join("source/Ext/ObjectModule.bsl"), "// object");
+            write(
+                &path.join("source/Commands/Run/Ext/CommandModule.bsl"),
+                "// command",
+            );
+            // A point lookup must never enumerate or parse this unrelated descriptor.
+            write(&path.join("broken.xml"), "<broken");
+            let retained = unica_workspace::read::open_source_directory(&path).unwrap();
+            let sources = [LayoutFindSource::new("external", source_kind, &retained)];
+            let builder = WorkspaceFindDirectoryBuilder::default();
+            for (physical, suffix) in [
+                ("source.xml", ""),
+                ("source/Ext/ObjectModule.bsl", ".Module.Object"),
+                ("source/Forms/Main.xml", ".Form.Main.Metadata"),
+                ("source/Forms/Main/Ext/Form.xml", ".Form.Main"),
+                (
+                    "source/Forms/Main/Ext/Form/Module.bsl",
+                    ".Form.Main.Module.Form",
+                ),
+                (
+                    "source/Commands/Run/Ext/CommandModule.bsl",
+                    ".Command.Run.Module.Command",
+                ),
+            ] {
+                let found = builder
+                    .locate_path(
+                        &sources,
+                        physical,
+                        ProviderDeadline::from_budget(Duration::from_secs(7)),
+                        &CancellationToken::new(),
+                    )
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(found.at(), format!("external:{kind}.Actual{suffix}"));
+                assert_eq!(found.placed_path(), Some(physical));
+                assert_eq!(found.owner_descriptor(), Some("source.xml"));
+            }
+            // Name search preserves proven neighbours; logical inventory remains strict.
+            let index = builder
+                .build(
+                    &sources,
+                    ProviderDeadline::from_budget(Duration::from_secs(7)),
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            assert_eq!(single(&index, "Actual").1, "source.xml");
+            fs::remove_file(path.join("broken.xml")).unwrap();
+            let index = builder
+                .build(
+                    &sources,
+                    ProviderDeadline::from_budget(Duration::from_secs(7)),
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            assert_eq!(single(&index, "Actual").1, "source.xml");
+            assert_eq!(single(&index, "Title").0, format!("external:{kind}.Actual"));
+        }
+    }
+
+    /// rule: INV.SOURCE.FIND-IDENTITY-ONLY
+    #[test]
     fn the_directory_observes_its_operation_deadline() {
         let fixture = Fixture::new();
         let root = unica_workspace::read::open_source_directory(&fixture.source).unwrap();
@@ -4800,6 +5189,7 @@ mod tests {
         assert_eq!(error.code().as_str(), "deadline_exceeded");
     }
 
+    /// rule: INV.SOURCE.FIND-IDENTITY-ONLY
     #[test]
     fn a_file_that_is_not_an_owner_descriptor_never_becomes_an_object() {
         let fixture = Fixture::new();
@@ -4848,6 +5238,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.FIND-IDENTITY-ONLY
     #[test]
     fn a_descriptor_whose_attributes_start_on_a_new_line_is_still_an_object() {
         let fixture = Fixture::new();

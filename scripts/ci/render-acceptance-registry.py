@@ -8,7 +8,7 @@ every added scenario, so a committed copy would make any two such changes
 conflict.  The site build publishes it as `acceptance-scenarios.html`.
 
 Besides the catalogue itself the document cross-references the closed `apply`
-registry (`crates/unica-coder/src/domain/apply.rs`) and the `check` profiles so
+registry (`crates/unica-domain/src/apply.rs`) and the `check` profiles so
 that a contributor can see which operations no scenario exercises yet and
 propose the missing developer task.
 
@@ -29,8 +29,8 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CORPUS_STORAGE = REPO_ROOT / "scripts/ci/acceptance_corpus.py"
-APPLY_REGISTRY = REPO_ROOT / "crates/unica-coder/src/domain/apply.rs"
-CHECK_PROFILES = REPO_ROOT / "crates/unica-coder/src/application/v13/check.rs"
+APPLY_REGISTRY = REPO_ROOT / "crates/unica-domain/src/apply.rs"
+CHECK_PROFILES = REPO_ROOT / "crates/unica-application/src/application/v13/check.rs"
 PAGE_NAME = "acceptance-scenarios.html"
 
 # Composition fixes registration order; each physical family owns the literal
@@ -335,9 +335,7 @@ def render(corpus: dict, registry: list[tuple[str, str, str, str]], implemented:
     agent_count = sum(s.get("profile") == "agent-evaluation" for s in scenarios)
     fault_count = sum(s.get("driver") == "analyzer-jsonl-fault" for s in scenarios)
     delivery_failure_count = sum(s.get("driver") == "analyzer-delivery-failure" for s in scenarios)
-    runtime_fault_count = sum(s.get("profile") == "runtime-fault" for s in scenarios)
-    out(f"Профили исполнения: `source` — {source_count} сценария; `delivery/bsl-analyzer` — {delivery_count}; `agent-evaluation/codex` — {agent_count}; `fault-injection/analyzer-jsonl-fault` — {fault_count}; `fault-injection/analyzer-delivery-failure` — {delivery_failure_count}; `runtime-fault/pull-validation-fault` — {runtime_fault_count}. "
-        "Runtime-fault запускается явно на POSIX с настоящей локальной платформой 8.3.27 для аттестации; управляемый provider проверяет отказы pull. Отсутствие платформы означает отказ, а не skip. Этот профиль не входит в обычный CI. "
+    out(f"Профили исполнения: `source` — {source_count} сценария; `delivery/bsl-analyzer` — {delivery_count}; `agent-evaluation/codex` — {agent_count}; `fault-injection/analyzer-jsonl-fault` — {fault_count}; `fault-injection/analyzer-delivery-failure` — {delivery_failure_count}. "
         "Delivery-драйвер скачивает закреплённый движок с проверкой SHA256 и выполняет MCP на отдельной "
         "синтетической фикстуре. Ошибка доставки или незавершённая задача проваливает прогон. "
         "По решению владельца агентный профиль не входит в CI: его запускают локально при изменении проверяемых навыков или поверхности. "
@@ -386,11 +384,11 @@ def render(corpus: dict, registry: list[tuple[str, str, str, str]], implemented:
     out("1. Откройте issue по форме [«Новая операция»](https://github.com/IngvarConsulting/unica/issues/new?template=new_operation.yml) ")
     out("   (она сама ставит метку `area:surface`): задача словами разработчика 1С и, если можете, провод ")
     out("   вызовов, которым её должно быть можно решить. Этого достаточно: сценарий допишем вместе.")
-    out("2. Или добавьте сценарий сами. Каждый новый сценарий — отдельный файл ")
-    out("   `tests/fixtures/acceptance/scenarios/<id>.json` с идентификатором `S-<issue>-<slug>`: ")
+    out("2. Или добавьте сценарий сами. Каждый сценарий — отдельный файл ")
+    out("   `tests/fixtures/acceptance/scenarios/<id>.json`; новый получает идентификатор `S-<issue>-<slug>`: ")
     out("   номер задачи и короткое имя латиницей через дефис. Сквозного номера нет, поэтому два ")
     out("   изменения со своими сценариями не правят одни и те же строки. Сценарии `S001`–`S440` ")
-    out("   сохраняют свои номера в `scenario-corpus.json`; этот блок закрыт для новых. ")
+    out("   сохраняют свои номера; этот блок закрыт для новых. ")
     out("   Файл держит один сценарий: область из списка ниже, задача одной фразой и провод шагов. ")
     out("   Шаг — это `tool`, `args` и `expect`.")
     out("3. Заморозьте шаги сценария в манифесте: ")

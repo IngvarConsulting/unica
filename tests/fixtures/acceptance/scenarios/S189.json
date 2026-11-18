@@ -1,0 +1,27 @@
+{
+  "area": "СКД",
+  "task": "Точечно поправить запрос",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Query",
+        "ops": [
+          {
+            "op": "query.patch",
+            "args": {
+              "values": {
+                "find": "1",
+                "replace": "2"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S189"
+}

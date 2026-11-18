@@ -5,7 +5,9 @@ import importlib.util
 import json
 import os
 import platform
+import re
 import shutil
+import subprocess
 import time
 from pathlib import Path
 
@@ -33,14 +35,16 @@ EXTERNAL_CHECK_ADDRESSES = {
     "epf:ExternalDataProcessor.Import.Form.Main.Module.Form",
     "erf:ExternalReport.Sales.Module.Object",
 }
-AGENT_EVALUATIONS = {"dcs-contract": DCS_WORKSPACE, "mxl-contract": MXL_WORKSPACE,
+AGENT_EVALUATIONS = {"event-data-visibility": "tests/fixtures/acceptance/workspace-event-data-visibility",
+                     "dcs-contract": DCS_WORKSPACE, "mxl-contract": MXL_WORKSPACE,
                      "props-contract": "tests/fixtures/acceptance/workspace",
                      "xdto-contract": "tests/fixtures/acceptance/workspace-xdto-contract"}
 ACCEPTANCE_ROOT = REPO / "tests/fixtures/acceptance"
 SOURCE_PROFILE_DIR = "source-profiles"
+HOST_CONTEXT_MISSING_WORKSPACE = "tests/fixtures/acceptance/workspace-host-context-missing"
 
 
-def load_source_workspaces(root: Path = ACCEPTANCE_ROOT) -> set[str]:
+def load_source_workspace_profiles(root: Path = ACCEPTANCE_ROOT) -> dict[str, dict]:
     """Explicit source-fixture registrations, one file per sibling workspace.
 
     Adding a fixture does not edit a shared Python set. Declarations stay
@@ -50,23 +54,128 @@ def load_source_workspaces(root: Path = ACCEPTANCE_ROOT) -> set[str]:
     directory = root / SOURCE_PROFILE_DIR
     if directory.is_symlink() or not directory.is_dir():
         raise ValueError(f"{directory}: source profiles need a regular directory")
-    workspaces = set()
+    workspaces = {}
     for declaration in sorted(directory.iterdir()):
         if declaration.name.startswith("."):
             continue
         if (declaration.suffix != ".json" or declaration.stem in {".", ".."}
                 or declaration.is_symlink() or not declaration.is_file()):
             raise ValueError(f"{declaration}: expected a regular <workspace>.json declaration")
-        if load_corpus(declaration) != {"profile": "source"}:
-            raise ValueError(f"{declaration}: expected exactly a source profile")
+        profile = load_corpus(declaration)
+        if (not isinstance(profile, dict) or profile.get("profile") != "source"
+                or set(profile) - {"profile", "git", "formats"}
+                or ("git" in profile and type(profile["git"]) is not bool)):
+            raise ValueError(f"{declaration}: expected a source profile with optional boolean git")
         workspace = root / declaration.stem
         if workspace.is_symlink() or not workspace.is_dir():
             raise ValueError(f"{declaration}: source fixture must be a regular sibling directory")
-        workspaces.add(f"tests/fixtures/acceptance/{workspace.name}")
+        if "formats" in profile:
+            validate_format_axis(declaration, profile["formats"], root, workspace)
+        workspaces[f"tests/fixtures/acceptance/{workspace.name}"] = profile
     return workspaces
 
 
-SOURCE_WORKSPACES = load_source_workspaces()
+def platform_corpus(root: Path = ACCEPTANCE_ROOT) -> Path:
+    """The platform reference exports beside the acceptance corpus."""
+    return Path(root).parent / "formats/platform_xml"
+
+
+def reference_tree(root: Path, export_format: str) -> Path:
+    """The pristine `all_kinds` export a platform wrote in `export_format`."""
+    return platform_corpus(root) / export_format / "all_kinds"
+
+
+def validate_format_axis(declaration: Path, formats, root: Path, workspace: Path) -> None:
+    """A format axis names export formats with an `all_kinds` reference each.
+
+    The fixture holds the project file only: each run takes `src` from the
+    reference export of its format, so one wire meets every format as the
+    platform itself wrote it."""
+    if (not isinstance(formats, list) or not formats
+            or not all(isinstance(item, str) and re.fullmatch(r"2\.[0-9]+", item) for item in formats)
+            or len(set(formats)) != len(formats)):
+        raise ValueError(f"{declaration}: formats must be distinct export formats such as \"2.20\"")
+    for export_format in formats:
+        source = reference_tree(root, export_format) / "src"
+        if source.is_symlink() or not source.is_dir():
+            raise ValueError(f"{declaration}: format {export_format} has no all_kinds reference at {source}")
+    if (workspace / "src").exists():
+        raise ValueError(f"{declaration}: a format-axis fixture takes src from the reference export")
+
+
+def load_source_workspaces(root: Path = ACCEPTANCE_ROOT) -> set[str]:
+    return set(load_source_workspace_profiles(root))
+
+
+SOURCE_WORKSPACE_PROFILES = load_source_workspace_profiles()
+SOURCE_WORKSPACES = set(SOURCE_WORKSPACE_PROFILES)
+
+
+def materialize_format(workspace: Path, export_format: str | None, root: Path = ACCEPTANCE_ROOT) -> None:
+    """Give a format-axis copy the reference `src` of the format it runs in."""
+    if export_format is None:
+        return
+    shutil.copytree(reference_tree(root, export_format) / "src", workspace / "src")
+
+
+def expand_format_axis(scenarios, default_workspace, profiles=None):
+    """One run per declared format of every scenario on a format-axis fixture.
+
+    A run is the scenario with `@<format>` added to its id and `format` set;
+    `formats` of the scenario narrows the fixture's list. The runs of one
+    fixture stay together, format by format, where its first scenario stood,
+    so one server serves neighbouring scenarios of one format."""
+    profiles = SOURCE_WORKSPACE_PROFILES if profiles is None else profiles
+    expanded, groups = [], {}
+    for scenario in scenarios:
+        workspace = scenario.get("workspace", default_workspace)
+        axis = (profiles.get(workspace) or {}).get("formats")
+        if axis is None:
+            if "formats" in scenario:
+                raise ValueError(f"{scenario['id']}: formats need a format-axis fixture")
+            expanded.append(scenario)
+            continue
+        narrowed = scenario.get("formats", axis)
+        if (not isinstance(narrowed, list) or not narrowed or len(set(narrowed)) != len(narrowed)
+                or any(item not in axis for item in narrowed)):
+            raise ValueError(f"{scenario['id']}: formats must be distinct formats of {workspace}")
+        if workspace not in groups:
+            groups[workspace] = []
+            expanded.append(groups[workspace])
+        groups[workspace].append((scenario, narrowed))
+    result = []
+    for entry in expanded:
+        if isinstance(entry, dict):
+            result.append(entry)
+            continue
+        workspace = entry[0][0].get("workspace", default_workspace)
+        for export_format in profiles[workspace]["formats"]:
+            for scenario, narrowed in entry:
+                if export_format in narrowed:
+                    run = {key: value for key, value in scenario.items() if key != "formats"}
+                    result.append({**run, "id": f"{scenario['id']}@{export_format}", "format": export_format})
+    return result
+
+
+def prepare_source_workspace(workspace: Path, profile: dict) -> None:
+    """Index only the disposable copy when its declaration requests Git."""
+    if not profile.get("git", False):
+        return
+    try:
+        (workspace / ".git").lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        raise ValueError(f"{workspace}: Git initialization refuses an existing .git entry")
+    environment = {
+        **{key: value for key, value in os.environ.items() if not key.startswith("GIT_")},
+        "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
+    }
+    git = ["git", "-c", "init.templateDir=", "-c", "core.autocrlf=false"]
+    for arguments in (["init", "--quiet"], ["add", "--all", "--", "."]):
+        subprocess.run([*git, *arguments], cwd=workspace, env=environment,
+                       check=True, capture_output=True)
+
 
 
 def helper_invalidation_step(step):
@@ -94,7 +203,7 @@ def helper_invalidation_step(step):
 
 
 def select_profile(corpus, profile):
-    if profile not in {"source", "delivery", "agent-evaluation", "fault-injection", "runtime-fault"}:
+    if profile not in {"source", "delivery", "agent-evaluation", "fault-injection"}:
         raise ValueError(f"profile {profile!r} has no executable driver")
     selected = []
     for scenario in corpus["scenarios"]:
@@ -109,15 +218,6 @@ def select_profile(corpus, profile):
             if any(step["tool"] in {"unica.run", "unica.task.get", "unica.task.result", "unica.task.cancel"}
                    for step in scenario["wire"]):
                 raise ValueError(f"{scenario['id']}: runtime operations need an executable runtime driver")
-        elif current == "runtime-fault":
-            from tests.ci.acceptance_pull_validation import WORKSPACE, CASES
-            if (driver != "pull-validation-fault" or workspace != WORKSPACE
-                    or scenario.get("evaluation") not in CASES
-                    or [step["args"] for step in scenario["wire"]] != [
-                        {"op": "pull", "args": {"sourceSet": "main", "force": True}, "dryRun": True},
-                        {"op": "pull", "args": {"sourceSet": "main", "force": True}, "dryRun": False}]
-                    or any(step["tool"] != "unica.run" for step in scenario["wire"])):
-                raise ValueError(f"{scenario['id']}: invalid runtime-fault fixture or pull wire")
         elif current == "delivery":
             if driver == "bsl-analyzer-external" and workspace == EXTERNAL_WORKSPACE:
                 if "evaluation" in scenario or any(
@@ -170,6 +270,12 @@ def select_profile(corpus, profile):
             raise ValueError(f"{scenario['id']}: profile {current!r} has no executable driver")
         if current == profile:
             selected.append(scenario)
+    if profile == "source":
+        # The runs of a format axis exist only in a run of the corpus; the
+        # selection keeps the scenarios themselves, as the registry names them.
+        expand_format_axis(selected, corpus["workspace"])
+    elif any("formats" in scenario for scenario in selected):
+        raise ValueError(f"profile {profile!r} has no format axis")
     return {**corpus, "scenarios": selected}
 
 
@@ -234,7 +340,18 @@ def isolated_environment(plugin, state):
     return environment
 
 
-def completed_delivery_call(server, tool, arguments, label):
+
+def missing_host_context_environment(environment=None):
+    """Start the controlled refusal case without any captured project alias."""
+    values = dict(os.environ if environment is None else environment)
+    contract = json.loads((REPO / "tests/fixtures/mcp/host-workspace-context.json").read_text())
+    for key in [*contract["projectEnvironment"], "UNICA_RUNTIME_MANIFEST"]:
+        values.pop(key, None)
+    values["UNICA_HOST_CONTEXT_REQUIRED"] = "1"
+    return values
+
+
+def completed_delivery_call(server, tool, arguments, label, *, retry_pending_index=True):
     """Observe Task identity; retry only the provider's typed pending index."""
     deadline = time.monotonic() + 120
     def invoke(next_tool, next_args):
@@ -256,6 +373,8 @@ def completed_delivery_call(server, tool, arguments, label):
             task_id = current
             next_tool, next_args = "unica.task.result", {"taskId": task_id, "waitMs": 7000}
         else:
+            if not retry_pending_index:
+                return response
             sections = (result.get("data") or {}).get("matches") or []
             if not (result.get("ok") is False and len(sections) == 1
                     and sections[0].get("role") == "symbol"

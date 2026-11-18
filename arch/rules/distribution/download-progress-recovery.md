@@ -1,6 +1,5 @@
 ---
 id: INV.PKG.DOWNLOAD-PROGRESS-RECOVERY
-check: []
 gap: https://github.com/IngvarConsulting/unica/issues/924
 ---
 

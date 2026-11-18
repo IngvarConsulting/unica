@@ -1,0 +1,313 @@
+{
+  "id": "S-1087-external-report-search",
+  "issue": 1087,
+  "area": "Поиск",
+  "task": "Перейти от внешнего отчёта к модулю, выполнить буквальный поиск без роли в владельце и модуле и открыть найденное тело метода. Область модуля исключает форму, область внешней обработки исключает соседнего владельца; покрытие поиска полное.",
+  "workspace": "tests/fixtures/acceptance/workspace-external",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "erf:ExternalReport.Sales"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "ExternalReport"
+        },
+        {
+          "pointer": "/data/branches/5/at",
+          "eq": "erf:ExternalReport.Sales.Module"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "erf:ExternalReport.Sales.Module.Object"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ownerKind",
+          "eq": "ExternalReport"
+        },
+        {
+          "pointer": "/data/props/role",
+          "eq": "Object"
+        }
+      ]
+    },
+    {
+      "tool": "unica.search",
+      "args": {
+        "query": "Выполнить",
+        "scope": "erf:ExternalReport.Sales"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/fileCoverage/complete",
+          "eq": true
+        },
+        {
+          "pointer": "/data/totals/matches",
+          "eq": 1
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "complete"
+        },
+        {
+          "pointer": "/data/matches/0/at",
+          "eq": "erf:ExternalReport.Sales.Module.Object.Method.ВыполнитьSales.Body#L1"
+        },
+        {
+          "pointer": "/data/matches/1",
+          "absent": true
+        }
+      ],
+      "captures": {
+        "found": {
+          "pointer": "/data/matches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.found"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Body"
+        }
+      ]
+    },
+    {
+      "tool": "unica.search",
+      "args": {
+        "query": "Выполнить",
+        "scope": "erf:ExternalReport.Sales.Module.Object"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/fileCoverage/complete",
+          "eq": true
+        },
+        {
+          "pointer": "/data/totals/matches",
+          "eq": 1
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "complete"
+        },
+        {
+          "pointer": "/data/matches/0/at",
+          "eq": "erf:ExternalReport.Sales.Module.Object.Method.ВыполнитьSales.Body#L1"
+        },
+        {
+          "pointer": "/data/matches/1",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.search",
+      "args": {
+        "query": "ПриОткрытии",
+        "scope": "erf:ExternalReport.Sales"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/fileCoverage/complete",
+          "eq": true
+        },
+        {
+          "pointer": "/data/totals/matches",
+          "eq": 1
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "complete"
+        },
+        {
+          "pointer": "/data/matches/0/at",
+          "eq": "erf:ExternalReport.Sales.Form.Main.Module.Form.Method.ПриОткрытии.Body#L2"
+        },
+        {
+          "pointer": "/data/matches/1",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.search",
+      "args": {
+        "query": "ПриОткрытии",
+        "scope": "erf:ExternalReport.Sales.Module.Object"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/fileCoverage/complete",
+          "eq": true
+        },
+        {
+          "pointer": "/data/totals/matches",
+          "eq": 0
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "complete"
+        },
+        {
+          "pointer": "/data/matches/0",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "epf:ExternalDataProcessor.Import"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "ExternalDataProcessor"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "epf:ExternalDataProcessor.Other"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "ExternalDataProcessor"
+        }
+      ]
+    },
+    {
+      "tool": "unica.search",
+      "args": {
+        "query": "Выполнить",
+        "scope": "epf:ExternalDataProcessor.Import"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/fileCoverage/complete",
+          "eq": true
+        },
+        {
+          "pointer": "/data/totals/matches",
+          "eq": 1
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "complete"
+        },
+        {
+          "pointer": "/data/matches/0/at",
+          "eq": "epf:ExternalDataProcessor.Import.Module.Object.Method.ВыполнитьImport.Body#L1"
+        },
+        {
+          "pointer": "/data/matches/1",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.search",
+      "args": {
+        "query": "Выполнить",
+        "scope": "epf:ExternalDataProcessor.Import.Module.Object"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/fileCoverage/complete",
+          "eq": true
+        },
+        {
+          "pointer": "/data/totals/matches",
+          "eq": 1
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "complete"
+        },
+        {
+          "pointer": "/data/matches/0/at",
+          "eq": "epf:ExternalDataProcessor.Import.Module.Object.Method.ВыполнитьImport.Body#L1"
+        },
+        {
+          "pointer": "/data/matches/1",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.search",
+      "args": {
+        "query": "ВыполнитьOther",
+        "scope": "epf:ExternalDataProcessor.Import"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/fileCoverage/complete",
+          "eq": true
+        },
+        {
+          "pointer": "/data/totals/matches",
+          "eq": 0
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "complete"
+        },
+        {
+          "pointer": "/data/matches/0",
+          "absent": true
+        }
+      ]
+    }
+  ]
+}

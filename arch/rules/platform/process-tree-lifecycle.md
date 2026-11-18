@@ -1,9 +1,5 @@
 ---
 id: INV.PLATFORM.PROCESS-TREE-LIFECYCLE
-check:
-  - crates/unica-process/src/platform/process.rs::managed_process_tree_lifecycle_is_bounded
-  - crates/unica-bootstrap/src/platform/process.rs::job::closing_the_bootstrap_job_terminates_the_runtime
-  - crates/unica-bootstrap/src/platform/process.rs::job::a_failed_assignment_terminates_the_suspended_runtime
 ---
 
 # Остановка управляемого запуска охватывает его дочерние процессы
@@ -15,4 +11,10 @@ check:
 
 На Windows дочерний процесс начинает работу только после включения в группу,
 которой владеет Unica (`Job Object`). Правило не относится к запуску,
-который был явно отделён от владельца через `detach`.
+который был явно отделён от владельца через `detach`, и к процессу, который
+сам вышел из-под владельца: на Windows запросил отделение от группы, на Unix
+открыл свой сеанс. Так раннер выводит живого агента Конфигуратора и служебную
+СУБД управляемого стенда. Группы Unica такое отделение разрешают, а сам
+процесс живёт по правилам раннера: уходит со смертью держателя или по простою.
+Потомок, который отделения не запросил, завершается вместе с группой, как
+прежде.

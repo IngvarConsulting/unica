@@ -2,9 +2,7 @@
 use super::layout::metadata_layout;
 use roxmltree::Document;
 use std::path::{Path, PathBuf};
-use unica_address::source_target::{
-    MetadataAddress, SourceTarget, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
-};
+use unica_address::source_target::{MetadataAddress, SourceTarget, TargetKind};
 use unica_bsl_parser::{first_exported_bsl_procedure, BslProcedureRequirement};
 
 use unica_metadata::{MetaDiagnostic, MetaDiagnosticCode, MetadataKind};
@@ -256,10 +254,9 @@ pub fn required_common_module_method<G>(
         let relative_path = PathBuf::from("CommonModules")
             .join(&module)
             .join("Ext/Module.bsl");
-        let Ok(module_address) = MetadataAddress::parse(
-            PLATFORM_XML_8_3_27_FORMAT_2_20,
-            &format!("CommonModule.{module}.Module"),
-        ) else {
+        let Ok(module_address) =
+            MetadataAddress::parse_logical(&format!("CommonModule.{module}.Module"))
+        else {
             continue;
         };
         let target = SourceTarget {
@@ -292,11 +289,8 @@ pub fn required_common_module_method<G>(
         else {
             continue;
         };
-        let module_target = MetadataAddress::parse(
-            PLATFORM_XML_8_3_27_FORMAT_2_20,
-            &format!("CommonModule.{module}"),
-        )
-        .expect("registered common module has a canonical logical address");
+        let module_target = MetadataAddress::parse_logical(&format!("CommonModule.{module}"))
+            .expect("registered common module has a canonical logical address");
         return Ok((
             module,
             method,
@@ -386,13 +380,12 @@ pub fn read_dependency<G>(
                 format!("metadata prerequisite `{tag}.{name}` image is unavailable"),
             ))
         })?;
-    let target = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &format!("{tag}.{name}"))
-        .map_err(|_| {
-            unica_metadata::request::MetaFailure::from(MetaDiagnostic::error(
-                MetaDiagnosticCode::ProviderUnavailable,
-                "metadata prerequisite identity is invalid",
-            ))
-        })?;
+    let target = MetadataAddress::parse_logical(&format!("{tag}.{name}")).map_err(|_| {
+        unica_metadata::request::MetaFailure::from(MetaDiagnostic::error(
+            MetaDiagnosticCode::ProviderUnavailable,
+            "metadata prerequisite identity is invalid",
+        ))
+    })?;
     let bytes = match &edit {
         Some(edit) => edit.apply(&preimage).map_err(|_| {
             unica_metadata::request::MetaFailure::from(MetaDiagnostic::error(
@@ -435,6 +428,10 @@ pub fn add_document_register_record(bytes: &[u8], register: &str) -> Result<Vec<
     let source = std::str::from_utf8(bytes)
         .map_err(|_| "document is not UTF-8".to_string())?
         .trim_start_matches('\u{feff}');
+    // The record is written in the default-namespace spelling; a prefixed
+    // document gets its prefix back below.
+    let (normalized, form) = unica_xml_format::prefix_form::PrefixForm::normalize(source)?;
+    let source = normalized.as_str();
     let escaped = unica_xml_format::text::escape_xml(register);
     let item = format!("<xr:Item xsi:type=\"xr:MDObjectRef\">{escaped}</xr:Item>");
     let empty = ["<RegisterRecords/>", "<RegisterRecords />"]
@@ -484,6 +481,7 @@ pub fn add_document_register_record(bytes: &[u8], register: &str) -> Result<Vec<
     } else {
         return Err("document has no RegisterRecords property".to_string());
     };
+    let updated = form.restore(&updated)?;
     let mut output = Vec::new();
     if has_bom {
         output.extend_from_slice(b"\xef\xbb\xbf");
@@ -643,7 +641,7 @@ pub fn minimal_auxiliary_files(
         MetadataKind::BusinessProcess => vec![(
             "Flowchart.xml",
             unica_metadata::validation_subject::MetadataAuxiliaryXmlKind::BusinessProcessFlowchart,
-            format!(
+            unica_source_designer::layout::declare_format_namespaces(format!(
                 "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n\
 <GraphicalSchema xmlns=\"http://v8.1c.ru/8.3/xcf/scheme\" xmlns:sch=\"http://v8.1c.ru/8.2/data/graphscheme\" xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\" xmlns:web=\"http://v8.1c.ru/8.1/data/ui/colors/web\" xmlns:win=\"http://v8.1c.ru/8.1/data/ui/colors/windows\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"{format_version}\">\r\n\
 \t<BackColor>style:FieldBackColor</BackColor>\r\n\
@@ -661,7 +659,7 @@ pub fn minimal_auxiliary_files(
 \t</PrintParameters>\r\n\
 \t<Items/>\r\n\
 </GraphicalSchema>\r\n"
-            ),
+            ), format_version),
         )],
         _ => Vec::new(),
     }
@@ -692,7 +690,7 @@ pub fn emit_meta_catalog_xml(
     lines.push("<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_string());
     lines.push(format!(
         "<MetaDataObject {} version=\"{}\">",
-        meta_xmlns_decl(),
+        meta_xmlns_decl(format_version),
         unica_xml_format::text::escape_xml(format_version)
     ));
     lines.push(format!("\t<Catalog uuid=\"{obj_uuid}\">"));
@@ -737,7 +735,7 @@ pub fn minimal_metadata_xml<G>(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_string(),
         format!(
             "<MetaDataObject {} version=\"{}\">",
-            meta_xmlns_decl(),
+            meta_xmlns_decl(format_version),
             unica_xml_format::text::escape_xml(format_version)
         ),
         format!("\t<{object_type} uuid=\"{obj_uuid}\">"),
@@ -828,12 +826,31 @@ pub fn minimal_metadata_xml<G>(
     lines.push("\t\t</Properties>".to_string());
     // Содержимое объекта задаёт вызывающий через `operations`: инструмент не
     // придумывает ресурсы, измерения и значения свойств за него.
-    if crate::format_contract::meta_8_3_27_kind_declares_child_objects(kind) {
+    if crate::format_contract::kind_declares_child_objects(kind) {
         lines.push("\t\t<ChildObjects/>".to_string());
     }
     lines.push(format!("\t</{object_type}>"));
     lines.push("</MetaDataObject>".to_string());
+    insert_format_object_properties(&mut lines, object_type, format_version);
     Ok((lines.join("\r\n"), obj_uuid))
+}
+
+/// Writes after their 2.20 neighbours the properties the export format of
+/// a new object adds (INV.SOURCE.WRITABLE-PROFILE).
+fn insert_format_object_properties(lines: &mut Vec<String>, kind: &str, format_version: &str) {
+    let dialect = crate::dialect::for_version(Some(format_version));
+    for (after, property) in (dialect.added_object_properties)(kind) {
+        let open = format!("<{after}>");
+        let empty = format!("<{after}/>");
+        let Some(at) = lines.iter().position(|line| {
+            let line = line.trim_start();
+            line.starts_with(&open) || line == empty
+        }) else {
+            continue;
+        };
+        let indent = lines[at][..lines[at].len() - lines[at].trim_start().len()].to_owned();
+        lines.insert(at + 1, format!("{indent}{property}"));
+    }
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -844,7 +861,7 @@ pub fn minimal_metadata_xml_for_tests(
     minimal_metadata_xml(
         kind,
         name,
-        "2.20",
+        crate::dialect::root_version::writable(),
         &MinimalTemplateContext::<()> {
             chart_of_accounts: None,
             chart_of_calculation_types: None,
@@ -860,8 +877,9 @@ pub fn minimal_metadata_xml_for_tests(
     )
 }
 
-pub fn meta_xmlns_decl() -> &'static str {
-    "xmlns=\"http://v8.1c.ru/8.3/MDClasses\" xmlns:app=\"http://v8.1c.ru/8.2/managed-application/core\" xmlns:cfg=\"http://v8.1c.ru/8.1/data/enterprise/current-config\" xmlns:cmi=\"http://v8.1c.ru/8.2/managed-application/cmi\" xmlns:ent=\"http://v8.1c.ru/8.1/data/enterprise\" xmlns:lf=\"http://v8.1c.ru/8.2/managed-application/logform\" xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\" xmlns:sys=\"http://v8.1c.ru/8.1/data/ui/fonts/system\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\" xmlns:web=\"http://v8.1c.ru/8.1/data/ui/colors/web\" xmlns:win=\"http://v8.1c.ru/8.1/data/ui/colors/windows\" xmlns:xen=\"http://v8.1c.ru/8.3/xcf/enums\" xmlns:xpr=\"http://v8.1c.ru/8.3/xcf/predef\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\""
+/// The namespace declarations of an MDClasses root in `format_version`.
+pub fn meta_xmlns_decl(format_version: &str) -> String {
+    unica_source_designer::layout::full_md_namespace_declarations(format_version)
 }
 
 pub fn metadata_generated_types_8_3_27(
@@ -1001,9 +1019,25 @@ pub fn metadata_generated_types_8_3_27(
             ("FilterCriterionList", "List"),
         ]),
         "SettingsStorage" => Some(&[("SettingsStorageManager", "Manager")]),
-        "Sequence" => Some(&[("SequenceRecordSet", "RecordSet")]),
+        // The platform writes these three for a sequence in its own export
+        // (`tests/fixtures/formats/platform_xml/<format>/all_kinds/src/
+        // Sequences/Probe.xml`, 2.20 to 2.22) and refuses to load a borrowed
+        // sequence without its record and manager.
+        "Sequence" => Some(&[
+            ("SequenceRecord", "Record"),
+            ("SequenceManager", "Manager"),
+            ("SequenceRecordSet", "RecordSet"),
+        ]),
+        // The platform writes the manager of a WS reference in its own export
+        // (`tests/fixtures/formats/platform_xml/<format>/all_kinds/src/
+        // WSReferences/Probe.xml`, 2.20 to 2.22) and refuses to load a
+        // borrowed WS reference without it.
+        "WSReference" => Some(&[("WSReferenceManager", "Manager")]),
         "IntegrationService" => Some(&[("IntegrationServiceManager", "Manager")]),
         "DefinedType" => Some(&[("DefinedType", "DefinedType")]),
+        // The queue of 8.5.4: its message is a record, its manager a manager.
+        // The platform refuses to import a queue descriptor without them.
+        "Queue" => Some(&[("QueueMessage", "Record"), ("QueueManager", "Manager")]),
         "Language"
         | "Subsystem"
         | "StyleItem"
@@ -1018,11 +1052,11 @@ pub fn metadata_generated_types_8_3_27(
         | "XDTOPackage"
         | "WebService"
         | "HTTPService"
-        | "WSReference"
         | "EventSubscription"
         | "ScheduledJob"
         | "FunctionalOption"
         | "FunctionalOptionsParameter"
+        | "PaletteColor"
         | "CommonCommand"
         | "CommandGroup"
         | "CommonForm"
@@ -3201,19 +3235,16 @@ pub fn minimal_object<G>(
         .with_field("name")
         .into());
     }
-    let metadata_path = MetadataAddress::parse(
-        PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &format!("{}.{name}", kind.as_str()),
-    )
-    .map_err(|_| {
-        unica_metadata::request::MetaFailure::from(
-            MetaDiagnostic::error(
-                MetaDiagnosticCode::InvalidArguments,
-                "metadata creation target is not a canonical logical address",
+    let metadata_path = MetadataAddress::parse_logical(&format!("{}.{name}", kind.as_str()))
+        .map_err(|_| {
+            unica_metadata::request::MetaFailure::from(
+                MetaDiagnostic::error(
+                    MetaDiagnosticCode::InvalidArguments,
+                    "metadata creation target is not a canonical logical address",
+                )
+                .with_field("name"),
             )
-            .with_field("name"),
-        )
-    })?;
+        })?;
     let context =
         MinimalTemplateContext::from_source(source, kind, name, overrides, source_set, language)?;
     let (xml, _) = minimal_metadata_xml(

@@ -49,12 +49,12 @@ impl RealExternalReaderFixture {
         write_external_artifact(&report, "ExternalReport", "Sales");
         write_external_artifact(&report, "ExternalReport", "Продажи");
         fs::copy(
-            fixture_path("platform_8_3_27/staged_dump_roots/ConfigDumpInfo.xml"),
+            fixture_path("formats/platform_xml/2.20/staged_dump_roots/ConfigDumpInfo.xml"),
             processor.join("ConfigDumpInfo.xml"),
         )
         .unwrap();
         fs::copy(
-            fixture_path("platform_8_3_27/staged_dump_roots/ConfigDumpInfo.xml"),
+            fixture_path("formats/platform_xml/2.20/staged_dump_roots/ConfigDumpInfo.xml"),
             report.join("ConfigDumpInfo.xml"),
         )
         .unwrap();
@@ -266,7 +266,7 @@ impl RealReaderFixture {
             )
             .unwrap();
         let catalog = with_root_version(&fixture_text(
-            "platform_8_3_27/meta_info/edge/catalog-child-kinds.xml",
+            "formats/platform_xml/2.20/meta_info/edge/catalog-child-kinds.xml",
         ))
         .replace(
             "<TabularSection><Properties><Name>Lines</Name></Properties><ChildObjects/></TabularSection>",
@@ -413,7 +413,7 @@ impl RealReaderFixture {
             write(
                 &source.join(relative),
                 &with_root_version(&fixture_text(&format!(
-                    "platform_8_3_27/meta_info/edge/{fixture}"
+                    "formats/platform_xml/2.20/meta_info/edge/{fixture}"
                 ))),
             );
         }
@@ -430,14 +430,14 @@ impl RealReaderFixture {
             r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Template uuid="10000000-0000-4000-8000-000000000032"><Properties><Name>Print</Name><TemplateType>SpreadsheetDocument</TemplateType></Properties></Template></MetaDataObject>"#,
         );
         copy_fixture(
-            "platform_8_3_27/mxl/Template.xml",
+            "formats/platform_xml/2.20/mxl/Template.xml",
             &source.join("Catalogs/Items/Templates/Print/Ext/Template.xml"),
         );
         write(
             &source.join("Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl"),
             "&AtClient\nProcedure CommandProcessing(CommandParameter, CommandExecuteParameters)\nEndProcedure\n",
         );
-        let report = fixture_text("unica_mcp_script_parity/form-remove/ParityReport.xml");
+        let report = crate_fixture_text("form-remove/ParityReport.xml");
         fs::create_dir_all(source.join("Reports")).unwrap();
         fs::write(
                 source.join("Reports/ParityReport.xml"),
@@ -447,8 +447,8 @@ impl RealReaderFixture {
                 ),
             )
             .unwrap();
-        copy_fixture(
-            "unica_mcp_script_parity/form-remove/ParityReport/Forms/MainForm.xml",
+        copy_crate_fixture(
+            "form-remove/ParityReport/Forms/MainForm.xml",
             &source.join("Reports/ParityReport/Forms/MainForm.xml"),
         );
         let form = r#"<?xml version="1.0" encoding="utf-8"?>
@@ -492,8 +492,8 @@ impl RealReaderFixture {
             "unica_mcp_script_parity/meta-remove/Subsystems/Sales/Ext/CommandInterface.xml",
             &source.join("Subsystems/Sales/Ext/CommandInterface.xml"),
         );
-        copy_fixture(
-            "unica_mcp_script_parity/template-remove/ParityReport/Templates/MainSchema.xml",
+        copy_crate_fixture(
+            "template-remove/ParityReport/Templates/MainSchema.xml",
             &source.join("Reports/ParityReport/Templates/MainSchema.xml"),
         );
         let dcs = fixture_text("unica_mcp_script_parity/dcs-validate/BadPrefix.xml")
@@ -509,16 +509,15 @@ impl RealReaderFixture {
             &source.join("Reports/ParityReport/Templates/MainSchema/Ext/Template.xml"),
             &dcs,
         );
-        let print_descriptor = fixture_text(
-            "unica_mcp_script_parity/template-remove/ParityReport/Templates/MainSchema.xml",
-        )
-        .replace("MainSchema", "Print")
-        .replace("DataCompositionSchema", "SpreadsheetDocument");
+        let print_descriptor =
+            crate_fixture_text("template-remove/ParityReport/Templates/MainSchema.xml")
+                .replace("MainSchema", "Print")
+                .replace("DataCompositionSchema", "SpreadsheetDocument");
         write(
             &source.join("Reports/ParityReport/Templates/Print.xml"),
             &print_descriptor,
         );
-        let mxl = fixture_text("platform_8_3_27/mxl/Template.xml")
+        let mxl = fixture_text("formats/platform_xml/2.20/mxl/Template.xml")
             .replace(
                 "\n\t<templateMode>true</templateMode>",
                 "\n\t<namedItem xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:type=\"NamedItemCells\"><name>Header</name><area><type>Rows</type><beginRow>0</beginRow><endRow>0</endRow><beginColumn>-1</beginColumn><endColumn>-1</endColumn></area></namedItem>\n\t<templateMode>true</templateMode>",
@@ -540,11 +539,11 @@ impl RealReaderFixture {
             &source.join("XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin"),
         );
         copy_fixture(
-            "platform_8_3_27/support-edit-bin-only/src/CommonModules/РеактивныйСервер.xml",
+            "formats/platform_xml/2.20/support-edit-bin-only/src/CommonModules/РеактивныйСервер.xml",
             &source.join("CommonModules/РеактивныйСервер.xml"),
         );
         copy_fixture(
-                "platform_8_3_27/support-edit-bin-only/src/CommonModules/РеактивныйСервер/Ext/Module.bsl",
+                "formats/platform_xml/2.20/support-edit-bin-only/src/CommonModules/РеактивныйСервер/Ext/Module.bsl",
                 &source.join("CommonModules/РеактивныйСервер/Ext/Module.bsl"),
             );
         let common_module_path = source.join("CommonModules/РеактивныйСервер/Ext/Module.bsl");
@@ -710,7 +709,7 @@ impl RealReaderFixture {
         );
         write_metadata_owner(&self.source, "Constants", "Constant", "ОсновнаяВалюта", "");
         let common = fixture_text(
-            "platform_8_3_27/support-edit-bin-only/src/CommonModules/РеактивныйСервер.xml",
+            "formats/platform_xml/2.20/support-edit-bin-only/src/CommonModules/РеактивныйСервер.xml",
         )
         .replace("РеактивныйСервер", "ЗаказыСервер");
         write(&self.source.join("CommonModules/ЗаказыСервер.xml"), &common);
@@ -812,8 +811,8 @@ impl RealReaderFixture {
 <Rights xmlns="http://v8.1c.ru/8.2/roles" version="2.20"><object><name>Catalog.Товары</name><right><name>Read</name><value>true</value><restrictionByCondition><condition>Товары.Владелец = &amp;ТекущийПользователь</condition></restrictionByCondition></right></object></Rights>"#,
         );
 
-        let report = fixture_text("unica_mcp_script_parity/form-remove/ParityReport.xml")
-            .replace("ParityReport", "Продажи");
+        let report =
+            crate_fixture_text("form-remove/ParityReport.xml").replace("ParityReport", "Продажи");
         write(
             &self.source.join("Reports/Продажи.xml"),
             &replace_child_objects(
@@ -821,10 +820,9 @@ impl RealReaderFixture {
                 "<Template>ОсновнаяСхема</Template><Template>Печать</Template>",
             ),
         );
-        let schema_descriptor = fixture_text(
-            "unica_mcp_script_parity/template-remove/ParityReport/Templates/MainSchema.xml",
-        )
-        .replace("MainSchema", "ОсновнаяСхема");
+        let schema_descriptor =
+            crate_fixture_text("template-remove/ParityReport/Templates/MainSchema.xml")
+                .replace("MainSchema", "ОсновнаяСхема");
         write(
             &self
                 .source
@@ -855,7 +853,7 @@ impl RealReaderFixture {
             &self.source.join("Reports/Продажи/Templates/Печать.xml"),
             &print_descriptor,
         );
-        let mxl = fixture_text("platform_8_3_27/mxl/Template.xml")
+        let mxl = fixture_text("formats/platform_xml/2.20/mxl/Template.xml")
             .replace(
                 "\n\t<templateMode>true</templateMode>",
                 "\n\t<namedItem xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:type=\"NamedItemCells\"><name>Шапка</name><area><type>Rows</type><beginRow>0</beginRow><endRow>0</endRow><beginColumn>-1</beginColumn><endColumn>-1</endColumn></area></namedItem>\n\t<templateMode>true</templateMode>",
@@ -881,6 +879,21 @@ pub(super) fn fixture_path(relative: &str) -> PathBuf {
 
 pub(super) fn fixture_text(relative: &str) -> String {
     fs::read_to_string(fixture_path(relative)).unwrap()
+}
+
+fn crate_fixture_path(relative: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(relative)
+}
+
+pub(super) fn crate_fixture_text(relative: &str) -> String {
+    fs::read_to_string(crate_fixture_path(relative)).unwrap()
+}
+
+fn copy_crate_fixture(relative: &str, destination: &Path) {
+    fs::create_dir_all(destination.parent().unwrap()).unwrap();
+    fs::copy(crate_fixture_path(relative), destination).unwrap();
 }
 
 pub(super) fn copy_fixture(relative: &str, destination: &Path) {
@@ -916,9 +929,11 @@ fn with_root_version(document: &str) -> String {
 /// читает ровно ту форму, которую выгрузила платформа.
 pub(super) fn platform_borrow_fixture(name: &str) -> String {
     use sha2::{Digest, Sha256};
-    let manifest: serde_json::Value =
-        serde_json::from_str(&fixture_text("platform_8_3_27/cfe_borrow/manifest.json")).unwrap();
-    let text = fixture_text(&format!("platform_8_3_27/cfe_borrow/{name}"));
+    let manifest: serde_json::Value = serde_json::from_str(&fixture_text(
+        "formats/platform_xml/2.20/cfe_borrow/manifest.json",
+    ))
+    .unwrap();
+    let text = fixture_text(&format!("formats/platform_xml/2.20/cfe_borrow/{name}"));
     let digest = Sha256::digest(text.as_bytes())
         .iter()
         .map(|byte| format!("{byte:02x}"))

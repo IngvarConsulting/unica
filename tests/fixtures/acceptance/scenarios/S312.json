@@ -1,0 +1,30 @@
+{
+  "id": "S312",
+  "area": "Формы",
+  "task": "Повторно добавить существующую форму элемента — отказ без дубля регистрации",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [
+          {
+            "op": "form.add",
+            "args": {
+              "items": [
+                {
+                  "name": "ФормаЭлемента",
+                  "type": "ObjectForm"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_state: form `ФормаЭлемента` already exists on `Catalog.Валюты`"
+    }
+  ]
+}

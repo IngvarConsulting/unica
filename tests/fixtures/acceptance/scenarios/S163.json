@@ -1,0 +1,25 @@
+{
+  "area": "Код BSL",
+  "task": "Изучить словарь операций модуля",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.GoogleПереводчик"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/can",
+          "contains": {
+            "op": "code.insert",
+            "args": "text"
+          }
+        }
+      ]
+    }
+  ],
+  "id": "S163"
+}

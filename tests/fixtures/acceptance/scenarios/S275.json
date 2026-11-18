@@ -1,0 +1,28 @@
+{
+  "id": "S275",
+  "area": "Свойства объектов",
+  "task": "Изменить комментарий справочника в выгрузке 2.23 — отказ по формату новее профиля",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "newer:Catalog.Валюты",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Ведём по классификатору"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_source: Configuration.xml: export format 2.23 is newer than the newest writable format 2.22 for 1C 8.5.4; Unica does not edit this export yet"
+    }
+  ],
+  "workspace": "tests/fixtures/acceptance/workspace-format"
+}

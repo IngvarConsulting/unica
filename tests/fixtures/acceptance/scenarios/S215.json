@@ -1,0 +1,26 @@
+{
+  "area": "XDTO и обмены",
+  "task": "Добавить объектный тип в пакет",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.EnterpriseData_1_17_3",
+        "ops": [
+          {
+            "op": "objectType.add",
+            "args": {
+              "values": {
+                "name": "Валюта"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S215"
+}

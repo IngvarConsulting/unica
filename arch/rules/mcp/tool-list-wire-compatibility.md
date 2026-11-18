@@ -1,10 +1,5 @@
 ---
 id: INV.WIRE.TOOL-LIST-COMPATIBILITY
-check:
-  - crates/unica-coder/src/interfaces/mcp.rs::modern_direct_first_tools_list_pages_through_the_full_registry
-  - crates/unica-coder/src/interfaces/mcp.rs::modern_tools_list_rejects_a_cursor_the_server_never_issued
-  - crates/unica-coder/src/interfaces/mcp.rs::tools_list_rejects_any_presented_cursor
-  - crates/unica-coder/src/interfaces/mcp.rs::modern_meta_inside_legacy_session_keeps_the_session_model
 ---
 
 # Обход каталога инструментов зависит от версии запроса

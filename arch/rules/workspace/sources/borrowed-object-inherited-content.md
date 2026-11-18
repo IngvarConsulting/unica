@@ -1,18 +1,5 @@
 ---
 id: INV.SOURCE.BORROWED-OBJECT-INHERITED-CONTENT
-check:
-  - crates/unica-coder/src/infrastructure/v13_read/tests/form.rs::inherited_form_metadata_is_local_without_claiming_a_local_form_payload
-  - crates/unica-coder/src/infrastructure/v13_read/tests/form.rs::borrowed_form_with_its_own_form_xml_reads_as_local_content
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::borrowed_objects_without_companion_files_read_their_content_as_inherited
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::missing_companion_file_stays_a_source_error_outside_borrowing
-  - crates/unica-coder/src/infrastructure/metadata_operations.rs::borrowed_children_of_a_borrowed_owner_validate_without_payload
-  - crates/unica-coder/src/application/v13/check.rs::every_node_kind_owns_its_validators_without_a_caller_choice
-  - crates/unica-coder/src/infrastructure/native_operations/apply_families/inherited_content_tests.rs::writes_into_inherited_content_refuse_with_the_way_to_the_parent
-  - crates/unica-coder/src/infrastructure/native_operations/apply_families/inherited_content_tests.rs::inherited_refusal_needs_a_borrowed_object_without_its_file
-  - crates/unica-coder/src/domain/apply.rs::content_writers_name_the_companion_file_they_write
-  - crates/unica-coder/src/infrastructure/daemon/v13_read_modes.rs::inherited_node_can_hides_content_writers
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::unknown_facts_of_borrowed_objects_are_named_as_node_limits
-  - tests/ci/test_acceptance_scenarios.py::AcceptanceCorpusRunTests.test_every_wire_answers_its_frozen_classes
 ---
 
 # Заимствованный объект без своего содержимого читается по описанию

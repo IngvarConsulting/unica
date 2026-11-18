@@ -344,6 +344,7 @@ mod tests {
         LineEndingProfile, SnapshotError, SourceTextSnapshot, Utf8Bom,
     };
 
+    /// rule: INV.SOURCE.OBSERVED-BYTES
     #[test]
     fn snapshot_preserves_raw_bytes_and_excludes_one_bom_from_text() {
         let raw = b"\xef\xbb\xbfProcedure Run()\r\nEndProcedure\r\n";
@@ -367,6 +368,7 @@ mod tests {
         assert_eq!(snapshot.text(), snapshot.decoded_text());
     }
 
+    /// rule: INV.SOURCE.OBSERVED-BYTES
     #[test]
     fn snapshot_treats_only_the_first_bom_as_preamble() {
         let raw = b"\xef\xbb\xbf\xef\xbb\xbfProcedure Run()\nEndProcedure\n";
@@ -389,11 +391,13 @@ mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.OBSERVED-BYTES
     #[test]
     fn snapshot_classifies_no_line_endings() {
         assert_line_endings("", LineEndingProfile::None, None);
     }
 
+    /// rule: INV.SOURCE.OBSERVED-BYTES
     #[test]
     fn snapshot_classifies_uniform_lf_and_terminal_newline() {
         assert_line_endings(
@@ -403,6 +407,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.OBSERVED-BYTES
     #[test]
     fn snapshot_classifies_uniform_crlf_and_terminal_newline() {
         assert_line_endings(
@@ -412,6 +417,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.OBSERVED-BYTES
     #[test]
     fn snapshot_classifies_uniform_cr_and_terminal_newline() {
         assert_line_endings(
@@ -421,6 +427,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.OBSERVED-BYTES
     #[test]
     fn snapshot_classifies_mixed_endings_with_exact_counts() {
         assert_line_endings(
@@ -434,6 +441,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.OBSERVED-BYTES
     #[test]
     fn snapshot_reports_missing_terminal_newline() {
         assert_line_endings("A\nB", LineEndingProfile::Uniform(LineEnding::Lf), None);
@@ -453,6 +461,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.OBSERVED-BYTES
     #[test]
     fn preserve_prefers_local_context_for_mixed_source() {
         let snapshot = SourceTextSnapshot::from_bytes(b"A\r\nB\n").unwrap();
@@ -487,6 +496,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.OBSERVED-BYTES
     #[test]
     fn observed_resolution_serves_no_eol_source_with_explicit_lf() {
         let snapshot = SourceTextSnapshot::from_bytes(b"A").unwrap();
@@ -497,6 +507,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.OBSERVED-BYTES
     #[test]
     fn observed_resolution_preserves_uniform_profile_and_prefers_local() {
         let uniform = SourceTextSnapshot::from_bytes(b"A\r\nB\r\n").unwrap();
@@ -512,6 +523,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.OBSERVED-BYTES
     #[test]
     fn observed_resolution_rejects_mixed_profile_without_local_context() {
         let mixed = SourceTextSnapshot::from_bytes(b"A\r\nB\n").unwrap();

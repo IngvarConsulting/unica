@@ -39,13 +39,17 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import allure_results  # noqa: E402
+import rule_marks  # noqa: E402
 from site_fetch import fetch  # noqa: E402
 
 # Имена джоб в workflow: сайт читает их отсюда, а страж сверяет с workflow —
 # переименование в одном месте красит тест. Linux исполняет всё в `Unica CI`,
 # остальные ОС — каждая в своей джобе `Rust (<runner>)`.
+REPO_ROOT = Path(__file__).resolve().parents[2]
+MAIN_LINE = "main"
 GATE_JOB = "Unica CI"
 OS_JOB = "Rust ({runner})"
+# The report also reads retained artifacts from before the vendor lane was retired.
 RUST_LANES = ("ordinary", "receipt", "vendor")
 PYTHON_JOB = GATE_JOB
 
@@ -112,7 +116,8 @@ def job_conclusions(jobs: Path | None) -> dict[str, str]:
     if isinstance(total, int) and total > len(listed.get("jobs", [])):
         # Обрезанный список — исходы недошедших джоб стали бы «unknown» молча.
         raise SystemExit(f"список джоб обрезан: {len(listed['jobs'])} из {total}; читайте страницу целиком")
-    return {job["name"]: (job.get("conclusion") or job.get("status") or "unknown") for job in listed.get("jobs", [])}
+    # В вызванном workflow API отдаёт имя `Вызов / Джоба`; отчёт знает только джобу.
+    return {job["name"].rsplit(" / ", 1)[-1]: (job.get("conclusion") or job.get("status") or "unknown") for job in listed.get("jobs", [])}
 
 
 def rust_lane(run: dict) -> str | None:
@@ -398,7 +403,7 @@ def fill_python_gaps(plan_dir: Path, run: dict, seen: set[str], out: Path, concl
 def stored_rust_records(site: str, line: str, profile: str, runner: str, work: Path, lane: str | None) -> tuple[list[dict], dict] | None:
     """Записи Rust этого раннера из последнего хранимого прогона профиля на сайте."""
     archive = work / f"{line}-{profile}.tar.gz"
-    if not fetch(f"{site}/data/{line}/results/{profile}.tar.gz", archive):
+    if not fetch(site, f"data/{line}/results/{profile}.tar.gz", archive):
         return None
     unpacked = work / line / profile
     with tarfile.open(archive) as bundle:
@@ -628,6 +633,17 @@ def collect(artifacts: Path, out_root: Path, jobs: Path | None, fallback_line: s
                 by_line[key[0]]["filled"] += fill_from_site(
                     site, key[0], run, set(), out_root / key[0], conclusions, Path(work), routing_skip=skip,
                 )
+    # Тест сам называет правило пометкой `rule: <ID>`. Сайт собирается из
+    # дерева main, поэтому метку `rule` получают только результаты линии
+    # main: у релизных линий пометки могли разойтись с main. Неизвестное
+    # правило останавливает сбор.
+    if MAIN_LINE in by_line:
+        index = rule_marks.RuleIndex.cached(REPO_ROOT)
+        if index.unknown:
+            raise SystemExit(
+                "пометки rule называют правила, которых нет в arch/rules:\n" + "\n".join(index.unknown)
+            )
+        rule_marks.label_rules(out_root / MAIN_LINE, index)
     for line, stats in by_line.items():
         stats["runners"] = sorted(stats["runners"])
         run = dict(stats.pop("run"))

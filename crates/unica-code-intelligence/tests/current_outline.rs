@@ -154,6 +154,7 @@ fn a_path_outside_the_source_root_is_rejected_before_reading() {
     );
 }
 
+/// rule: INV.RUNTIME.TIMERS-PRESERVE-WORK
 #[test]
 fn no_deadline_outline_reads_source_but_preserves_scope_and_explicit_cancel() {
     let workspace = workspace(

@@ -1,0 +1,64 @@
+{
+  "id": "S-3126-addressable-region-contents",
+  "issue": 3126,
+  "area": "Навигация и чтение",
+  "task": "Пройти от области к непосредственной вложенной области и открыть метод по исходному адресу.",
+  "workspace": "tests/fixtures/acceptance/workspace-resolve",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {"at": "main:CommonModule.Probe.Region.A"},
+      "expect": ["ok"],
+      "assertions": [
+        {"pointer": "/data/props/children", "eq": ["main:CommonModule.Probe.Region.A.Region.Inner"]},
+        {"pointer": "/data/props/methods", "eq": []},
+        {"pointer": "/data/items", "eq": [{"at": "main:CommonModule.Probe.Region.A.Region.Inner", "kind": "Region"}]}
+      ],
+      "captures": {
+        "child": {"pointer": "/data/items/0/at"}
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {"at": "$capture.child"},
+      "expect": ["ok"],
+      "assertions": [
+        {"pointer": "/data/at", "eq": "$capture.child"},
+        {"pointer": "/data/props/methods", "eq": ["main:CommonModule.Probe.Method.Ping"]},
+        {"pointer": "/data/items", "eq": [{"at": "main:CommonModule.Probe.Method.Ping", "kind": "Method"}]}
+      ],
+      "captures": {
+        "method": {"pointer": "/data/items/0/at"}
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {"at": "$capture.method"},
+      "expect": ["ok"],
+      "assertions": [
+        {"pointer": "/data/at", "eq": "main:CommonModule.Probe.Method.Ping"},
+        {"pointer": "/data/kind", "eq": "Method"}
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {"at": "main:CommonModule.Probe.Region.B"},
+      "expect": ["ok"],
+      "assertions": [
+        {"pointer": "/data/items", "eq": [{"at": "main:CommonModule.Probe.Region.B.Region.Inner", "kind": "Region"}]}
+      ],
+      "captures": {
+        "empty": {"pointer": "/data/items/0/at"}
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {"at": "$capture.empty"},
+      "expect": ["ok"],
+      "assertions": [
+        {"pointer": "/data/at", "eq": "main:CommonModule.Probe.Region.B.Region.Inner"},
+        {"pointer": "/data/items", "eq": []}
+      ]
+    }
+  ]
+}

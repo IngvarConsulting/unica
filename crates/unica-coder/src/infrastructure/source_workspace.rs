@@ -6,18 +6,16 @@ use std::sync::Arc;
 use unica_source_contract::read::{
     BoundSourceArtifactPolicy, RevisionArtifactDisposition, SourceArtifactClassifier,
 };
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_source_contract::workspace::WorkspaceContext;
 use unica_source_contract::{SourceFormat, SourceProfile, SourceSetKind};
 use unica_source_designer::project_sources::ActorSourceMapDiscovery;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_workspace::actor::WorkspaceIdentity;
 use unica_workspace::policies::WorkspacePolicies;
 
-pub(crate) type WorkspaceActor<R = ()> =
-    unica_workspace::actor::WorkspaceActor<R, RegistrationCache>;
-pub(crate) type WorkspaceActorRegistry =
-    unica_workspace::actor::WorkspaceActorRegistry<RegistrationCache>;
+pub type WorkspaceActor<R = ()> = unica_workspace::actor::WorkspaceActor<R, RegistrationCache>;
+pub type WorkspaceActorRegistry = unica_workspace::actor::WorkspaceActorRegistry<RegistrationCache>;
 
 struct SourceArtifacts;
 
@@ -48,19 +46,19 @@ pub(crate) fn policies() -> WorkspacePolicies {
     )
 }
 
-pub(crate) fn actor_registry() -> WorkspaceActorRegistry {
+pub fn actor_registry() -> WorkspaceActorRegistry {
     WorkspaceActorRegistry::with_policies(policies())
 }
 
-#[cfg(test)]
-pub(crate) fn new_actor(
+#[cfg(any(test, feature = "test-support"))]
+pub fn new_actor(
     identity: WorkspaceIdentity,
     context: WorkspaceContext,
 ) -> Result<WorkspaceActor, String> {
     WorkspaceActor::new(identity, context).map(|actor| actor.with_policies(policies()))
 }
 
-pub(crate) fn discover_project_source_admission(
+pub fn discover_project_source_admission(
     workspace: &Path,
     checkpoint: &mut dyn FnMut() -> Result<(), String>,
 ) -> Result<unica_workspace::selection_evidence::ResolvedProjectSourceAdmission, String> {

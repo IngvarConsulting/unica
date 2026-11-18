@@ -1,9 +1,5 @@
 ---
 id: INV.PKG.RUNTIME-TOOL-CLOSURE
-check:
-  - tests/ci/test_package_unica_runtime.py::PackageUnicaRuntimeTests.test_runtime_packager_rejects_missing_extra_and_metadata_drift
-  - tests/ci/test_package_unica_runtime.py::PackageUnicaRuntimeTests.test_runtime_packager_rejects_mode_drift
-  - tests/ci/test_package_unica_runtime.py::PackageUnicaRuntimeTests.test_runtime_packager_rejects_duplicate_and_out_of_closure_tool_paths
 ---
 
 # Упаковщик сверяет файлы сборки с их описанием

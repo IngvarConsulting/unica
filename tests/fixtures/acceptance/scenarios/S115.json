@@ -1,0 +1,44 @@
+{
+  "area": "Создание и удаление объектов",
+  "task": "Добавить и убрать основание создания одним пакетом (обратимость связи, превью)",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [
+          {
+            "op": "relation.add",
+            "args": {
+              "values": {
+                "relation": "basedOn",
+                "targets": [
+                  {
+                    "metadataPath": "Document.АктОбУничтоженииПерсональныхДанных"
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "op": "relation.remove",
+            "args": {
+              "values": {
+                "relation": "basedOn",
+                "targets": [
+                  {
+                    "metadataPath": "Document.АктОбУничтоженииПерсональныхДанных"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S115"
+}

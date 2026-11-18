@@ -24,3 +24,8 @@ windows-sys.workspace = true
 [dev-dependencies]
 uuid.workspace = true
 tempfile.workspace = true
+
+[package.metadata.unica]
+component = "service"
+file-io = "owned"
+inputs = ["tests/fixtures/analyzer/private-failure-producer.rs"]

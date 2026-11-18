@@ -66,26 +66,6 @@ pub fn remapped_names_and_profiles_do_not_share_index_or_coordination_state(
         direct_index, actor_index,
         "legacy adapter moved the v0.12 index/provider namespace"
     );
-    if let Some((first, second)) =
-        crate::platform::filesystem::distinct_non_unicode_paths_for_test()
-    {
-        let identity = |source_root| WorkspaceIdentity {
-            workspace_root: PathBuf::from("/workspace"),
-            source_sets: vec![super::WorkspaceSourceSetIdentity {
-                name: "main".to_string(),
-                root: source_root,
-                kind: SourceSetKind::Configuration,
-                source_format: SourceFormat::PlatformXml,
-                source_profile: SourceProfile::platform_xml_8_3_27_format_2_20(),
-            }],
-            provider_profile: "profile".to_string(),
-        };
-        assert_ne!(
-            identity(first).state_scope_digest().unwrap(),
-            identity(second).state_scope_digest().unwrap(),
-            "distinct native path identities collapsed actor state"
-        );
-    }
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -109,4 +89,34 @@ pub fn actor_bound_index_session_rejects_another_source_set_root(
         "{error}"
     );
     fixture.cleanup();
+}
+
+pub fn native_path_identities_do_not_share_actor_state(
+) -> Result<(), crate::test_support::CapabilitySkip> {
+    let Some((first, second)) = crate::platform::filesystem::distinct_non_unicode_paths_for_test()
+    else {
+        return Err(crate::test_support::CapabilitySkip {
+            capability: "non-utf8-file-names",
+            reason: "distinct native path identities require non-Unicode path fixtures",
+        });
+    };
+    {
+        let identity = |source_root| WorkspaceIdentity {
+            workspace_root: PathBuf::from("/workspace"),
+            source_sets: vec![super::WorkspaceSourceSetIdentity {
+                name: "main".to_string(),
+                root: source_root,
+                kind: SourceSetKind::Configuration,
+                source_format: SourceFormat::PlatformXml,
+                source_profile: SourceProfile::platform_xml_8_3_27_format_2_20(),
+            }],
+            provider_profile: "profile".to_string(),
+        };
+        assert_ne!(
+            identity(first).state_scope_digest().unwrap(),
+            identity(second).state_scope_digest().unwrap(),
+            "distinct native path identities collapsed actor state"
+        );
+    }
+    Ok(())
 }

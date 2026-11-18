@@ -358,6 +358,7 @@ fn closing_token_anchor_matches_crlf_and_repeats_as_noop() {
     fs::remove_dir_all(&context.workspace_root).unwrap();
 }
 
+/// rule: INV.SOURCE.IDEMPOTENT-PRECHECK
 #[test]
 fn patch_rejects_content_that_would_break_anchor_idempotence() {
     let before = b"Procedure Run()\n    Target();\nEndProcedure\n";
@@ -387,6 +388,7 @@ fn patch_rejects_content_that_would_break_anchor_idempotence() {
     fixture.cleanup();
 }
 
+/// rule: INV.SOURCE.IDEMPOTENT-PRECHECK
 #[test]
 fn patch_rejects_content_that_duplicates_the_selected_method() {
     let before = b"Procedure Run()\nEndProcedure\n";
@@ -492,6 +494,7 @@ fn code_patch_replaces_one_method_and_leaves_its_neighbours_untouched() {
     fs::remove_dir_all(&context.workspace_root).unwrap();
 }
 
+/// rule: INV.SOURCE.IDEMPOTENT-PRECHECK
 #[test]
 fn code_patch_replace_that_consumes_its_selector_cannot_apply_twice() {
     let fixture = staged_code_fixture(
@@ -556,6 +559,7 @@ fn code_patch_replace_keeps_an_anchor_edit_inline() {
     fs::remove_dir_all(&context.workspace_root).unwrap();
 }
 
+/// rule: INV.SOURCE.CODE-PATCH-EOL
 #[test]
 fn code_patch_without_any_source_eol_uses_lf_for_preview_apply_and_repeat_noop() {
     let before = "Процедура Тест() КонецПроцедуры";
@@ -636,6 +640,7 @@ fn code_patch_preserves_two_leading_boms_for_preview_apply_and_repeat_noop() {
     fs::remove_dir_all(&context.workspace_root).unwrap();
 }
 
+/// rule: INV.SOURCE.CODE-PATCH-EOL
 #[test]
 fn mixed_eol_apply_preserves_untouched_bytes_and_uses_target_eol() {
     let before = b"Procedure First()\r\nEndProcedure\r\nProcedure Second()\nEndProcedure\n";
@@ -665,6 +670,8 @@ fn mixed_eol_apply_preserves_untouched_bytes_and_uses_target_eol() {
 /// Модуль сам версии не задаёт; формат ему задают корень набора и описание
 /// общего модуля. Устаревшая или неточная версия любого из них блокирует
 /// канонический `code.insert` до записи.
+/// rule: INV.SOURCE.EXACT-VERSION
+/// rule: INV.SOURCE.WRITABLE-PROFILE
 #[test]
 fn canonical_code_insert_inside_older_source_set_is_refused_without_writes() {
     for relative in ["Configuration.xml", "CommonModules/Sample.xml"] {
@@ -736,12 +743,12 @@ fn canonical_code_insert_inside_older_source_set_is_refused_without_writes() {
                             "{case}: {error}"
                         );
                         // The refusal names the owner file, the version it
-                        // records, the writable profile and the remedy.
+                        // records, the writable formats and the remedy.
                         let message = error.to_string();
                         for part in [
                             relative,
                             version,
-                            "2.20 for 1C 8.3.27",
+                            "2.20",
                             "re-export the sources with the platform",
                         ] {
                             assert!(message.contains(part), "{case}: {part}: {message}");
@@ -783,6 +790,54 @@ fn object_and_manager_modules_report_owner_and_role() {
         assert_eq!(target.owner, "Catalog.Items");
         assert_eq!(target.module_role, role);
     }
+    fs::remove_dir_all(&context.workspace_root).unwrap();
+}
+
+/// Модуль менеджера очереди правится по общему маршруту прямых модулей,
+/// а модуля объекта у очереди нет: отсутствующий файл не считается
+/// пропущенным пустым и остаётся неадресуемым.
+/// rule: INV.SOURCE.PLATFORM-CAPABILITY-EXISTENCE
+#[test]
+fn the_queue_manager_module_is_patched_and_its_object_module_is_unaddressable() {
+    let context = temp_context("queue-module-roles");
+    let src = context.workspace_root.join("src");
+    fs::write(
+            src.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.22"><Configuration/></MetaDataObject>"#,
+        )
+        .unwrap();
+    fs::create_dir_all(src.join("Queues/Probe/Ext")).unwrap();
+    fs::write(
+            src.join("Queues/Probe.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.22"><Queue><Properties><Name>Probe</Name></Properties></Queue></MetaDataObject>"#,
+        )
+        .unwrap();
+    let module = src.join("Queues/Probe/Ext/ManagerModule.bsl");
+    fs::write(&module, "Procedure Run()\nEndProcedure\n").unwrap();
+
+    let args = patch_args(
+        "main",
+        "Queue.Probe.ManagerModule",
+        "Run",
+        "Procedure Added()\nEndProcedure",
+    );
+    let preview = patch_inner(&args, &context, PatchMode::Preview);
+    assert!(preview.outcome.ok, "{:?}", preview.outcome.errors);
+    let target = preview.data.unwrap().affected_target;
+    assert_eq!(target.owner, "Queue.Probe");
+    assert_eq!(target.module_role, "ManagerModule");
+
+    let refused = patch_inner(
+        &tail_args(
+            "main",
+            "Queue.Probe.ObjectModule",
+            "Procedure Run()\nEndProcedure",
+        ),
+        &context,
+        PatchMode::Apply,
+    );
+    assert!(!refused.outcome.ok);
+    assert!(!src.join("Queues/Probe/Ext/ObjectModule.bsl").exists());
     fs::remove_dir_all(&context.workspace_root).unwrap();
 }
 
@@ -899,6 +954,7 @@ fn code_patch_requires_descriptor_evidence_and_a_proven_module_role() {
 /// The resolver also answers metadata object addresses for the read-only
 /// surface. `code.patch` must keep refusing them by declaration, so a
 /// descriptor can never become a write target.
+/// rule: INV.SOURCE.WRITE-TARGET-KIND
 #[test]
 fn code_patch_refuses_a_metadata_object_address() {
     let context = temp_context("object-address");
@@ -1077,6 +1133,7 @@ fn code_patch_invalid_postimage_returns_failed_validation_without_writing() {
     fs::remove_dir_all(&context.workspace_root).unwrap();
 }
 
+/// rule: INV.SOURCE.CODE-INSERT-POSITION
 #[test]
 pub(crate) fn code_patch_without_a_selector_appends_to_the_end_and_proves_the_repeat() {
     let before = "Procedure Run()\nEndProcedure\n";
@@ -1184,6 +1241,7 @@ pub(crate) fn code_patch_refuses_a_module_role_the_metadata_kind_never_owns() {
     fs::remove_dir_all(&context.workspace_root).unwrap();
 }
 
+/// rule: INV.SOURCE.TAIL-INSERT
 #[test]
 pub(crate) fn code_patch_writes_the_first_body_of_an_empty_or_bom_only_module() {
     for (label, before, expected) in [
@@ -1270,7 +1328,7 @@ fn code_patch_separates_an_appended_method_from_a_module_without_a_trailing_eol(
     fs::remove_dir_all(&context.workspace_root).unwrap();
 }
 
-/// #420. The writer must not be the source of a dirty diff: content that
+/// The writer must not be the source of a dirty diff: content that
 /// carries no trailing whitespace must not gain any on the way in, and the
 /// separator the writer adds itself is a bare EOL, never an indented blank
 /// line. What the caller wrote is preserved verbatim — the writer neither
@@ -1389,7 +1447,7 @@ fn code_patch_rolls_back_if_v8project_changes_the_owner_source_set_before_commit
     fs::write(&module, before).unwrap();
     fs::write(
             context.workspace_root.join("src/CommonModules.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.21"><ExternalDataProcessor/></MetaDataObject>"#,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.23"><ExternalDataProcessor/></MetaDataObject>"#,
         )
         .unwrap();
     let args = patch_args(
@@ -1419,6 +1477,7 @@ fn code_patch_rolls_back_if_v8project_changes_the_owner_source_set_before_commit
     fs::remove_dir_all(&context.workspace_root).unwrap();
 }
 
+/// rule: INV.SOURCE.BOUND-PREIMAGES
 #[test]
 pub(crate) fn code_patch_rolls_back_if_owner_descriptor_changes_before_commit() {
     let context = temp_context("owner-descriptor-race");
@@ -1528,6 +1587,7 @@ fn code_patch_rolls_back_if_absent_support_state_appears_before_commit() {
     fs::remove_dir_all(&context.workspace_root).unwrap();
 }
 
+/// rule: INV.SOURCE.INSERTED-METHOD-SPACING
 #[test]
 fn inserted_method_spacing_covers_positions_eol_eof_and_repeat() {
     for eol in ["\n", "\r\n"] {
@@ -1555,6 +1615,7 @@ fn inserted_method_spacing_covers_positions_eol_eof_and_repeat() {
 /// Модуль, где метод уже стоит вплотную к соседу (написан вручную или прежней
 /// версией вставки), повтор той же вставки не дублирует: проверка присутствия
 /// принимает и текст без добавленных разделителей.
+/// rule: INV.SOURCE.INSERTED-METHOD-SPACING
 #[test]
 fn inserted_method_spacing_recognizes_an_existing_method_without_separators() {
     for eol in ["\n", "\r\n"] {
@@ -1593,7 +1654,7 @@ fn inserted_method_spacing_recognizes_an_existing_method_without_separators() {
 }
 
 /// Модуль кончается вставляемым методом без перевода строки: повтор вставки
-/// в конец модуля его не дублирует (#1911). Комментарий в том же положении —
+/// в конец модуля его не дублирует. Комментарий в том же положении —
 /// тоже повтор, а чужой хвост, лишь кончающийся теми же байтами, — нет.
 #[test]
 fn a_repeat_into_an_unterminated_module_end_is_a_noop() {
@@ -1631,6 +1692,7 @@ fn a_repeat_into_an_unterminated_module_end_is_a_noop() {
     }
 }
 
+/// rule: INV.SOURCE.INSERTED-METHOD-SPACING
 #[test]
 fn inserted_method_spacing_preserves_empty_bom_payload_and_mixed_bytes() {
     for (before, content, selector, expected) in [
@@ -1807,6 +1869,7 @@ fn staged_code_dry_run_and_real_apply_share_postimages_and_effect_receipt() {
     real.cleanup();
 }
 
+/// rule: INV.SOURCE.BOUND-PREIMAGES
 #[test]
 fn staged_code_reuses_actor_revision_and_race_fences() {
     use unica_workspace::actor::ApplyPublicationErrorKind;
@@ -1956,6 +2019,45 @@ fn staged_addressed_method_body_preserves_signature_neighbors_and_repeat() {
 }
 
 #[test]
+fn method_replacement_owns_supplied_documentation_and_repeats_without_duplicates() {
+    for eol in ["\n", "\r\n"] {
+        for bom in ["", "\u{feff}"] {
+            for (old, supplied, expected_doc) in [
+                ("// Old.\n// Old.\n", "// New.\n", "// New.\n"),
+                ("// Same.\n// Same.\n", "// Same.\n", "// Same.\n"),
+                ("", "// New.\n", "// New.\n"),
+                ("// Keep.\n", "", "// Keep.\n"),
+            ] {
+                let prefix =
+                    format!("{bom}// Module comment.\n\n#Region Methods\n#If Server Then\n");
+                let suffix =
+                    "#EndIf\n#EndRegion\n\n// Neighbor doc.\nProcedure Neighbor()\nEndProcedure\n";
+                let before = format!("{prefix}{old}&AtServer\nProcedure Base()\n    Value = 1;\nEndProcedure\n{suffix}").replace('\n', eol);
+                let input = format!(
+                    "{supplied}&AtServer\nProcedure Base()\n    Value = 2;\nEndProcedure\n"
+                );
+                let expected = format!("{prefix}{expected_doc}&AtServer\nProcedure Base()\n    Value = 2;\nEndProcedure\n{suffix}").replace('\n', eol);
+                let operation = CodePlanOperation::Replace(CodeReplaceArgs {
+                    if_rev: None,
+                    at: unica_address::address::QualifiedAddress::parse(
+                        "main:CommonModule.Sample.Method.Base",
+                    )
+                    .unwrap(),
+                    anchor: None,
+                    text: input,
+                });
+                let post = plan_code_postimage(before.as_bytes(), &operation, 0).unwrap();
+                assert_eq!(post.after, expected.as_bytes());
+                let repeat = plan_code_postimage(&post.after, &operation, 0).unwrap();
+                assert!(repeat.no_op);
+                assert_eq!(repeat.after, post.after);
+            }
+        }
+    }
+}
+
+/// rule: INV.SOURCE.MODULE-COMPILATION-AND-BODY
+#[test]
 fn method_body_text_read_by_view_replaces_the_same_span_and_repeats_as_noop() {
     // `view …Method.Base.Body` отдаёт комментарий, директиву, объявление,
     // тело и окончание; тот же текст с правкой заменяет ровно этот участок.
@@ -2021,6 +2123,7 @@ fn framed_method_body_text_replaces_its_closing_comment_and_repeats_as_noop() {
                 let before = format!("{read}{neighbor}");
                 let edited = read.replace("1;", "2;");
                 let operation = CodePlanOperation::Replace(CodeReplaceArgs {
+                    if_rev: None,
                     at: unica_address::address::QualifiedAddress::parse(
                         "main:CommonModule.Sample.Method.Base.Body",
                     )
@@ -2045,6 +2148,7 @@ fn method_body_replacement_keeps_executable_tail_on_its_closing_line() {
         let before =
             format!("Procedure Base() EndProcedure Procedure Neighbor() EndProcedure{eol}");
         let operation = CodePlanOperation::Replace(CodeReplaceArgs {
+            if_rev: None,
             at: unica_address::address::QualifiedAddress::parse(
                 "main:CommonModule.Sample.Method.Base.Body",
             )
@@ -2067,6 +2171,7 @@ fn method_body_replacement_keeps_executable_tail_on_its_closing_line() {
     }
 }
 
+/// rule: INV.SOURCE.MODULE-COMPILATION-AND-BODY
 #[test]
 fn method_text_that_does_not_parse_is_refused_as_the_input_text() {
     let before = "Procedure Base()\n    Value = 1;\nEndProcedure\n";
@@ -2086,7 +2191,7 @@ fn method_text_that_does_not_parse_is_refused_as_the_input_text() {
         .expect_err("a broken method text must not reach the module");
     assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue);
     assert_eq!(error.path(), Some("ops[0].args.text"));
-    // #2229: the refusal names the place of the error in the sent text.
+    // The refusal names the place of the error in the sent text.
     assert!(error.to_string().contains("of text"), "{error}");
     // The parser stops at `;` of `Value = 2;`; the method opens the module,
     // so the text and the module agree on the place.
@@ -2107,10 +2212,11 @@ fn method_text_that_does_not_parse_is_refused_as_the_input_text() {
     fixture.cleanup();
 }
 
-/// #2229: a text that breaks a parsing module is refused as the call's
+/// A text that breaks a parsing module is refused as the call's
 /// value, at its path; the message names the first error, and every error
 /// follows with its place in the module and in the sent text. Nothing is
 /// written.
+/// rule: INV.SOURCE.CODE-TEXT-SYNTAX-ERRORS
 #[test]
 fn a_text_that_breaks_the_module_names_every_syntax_error_by_its_place() {
     let before = "Procedure Base()\n    Value = 1;\nEndProcedure\n";
@@ -2163,7 +2269,7 @@ fn a_text_that_breaks_the_module_names_every_syntax_error_by_its_place() {
     fixture.cleanup();
 }
 
-/// #2229: an inserted method the planner separates from its neighbour with
+/// An inserted method the planner separates from its neighbour with
 /// blank lines is still found in the module: its errors keep their place in
 /// the sent text.
 #[test]
@@ -2189,8 +2295,9 @@ fn an_inserted_text_keeps_its_error_places_across_added_blank_lines() {
     fixture.cleanup();
 }
 
-/// #2229: a module that did not parse before the patch stays the source's/// #2229: a module that did not parse before the patch stays the source's
+/// A module that did not parse before the patch stays the source's//: a module that did not parse before the patch stays the source's
 /// fault, and names its errors the same way, without a place in the text.
+/// rule: INV.SOURCE.CODE-TEXT-SYNTAX-ERRORS
 #[test]
 fn a_module_that_did_not_parse_names_its_errors_as_the_source() {
     let before = "Procedure Base()\n    Если Истина Тогда\nEndProcedure\n";
@@ -2217,6 +2324,7 @@ fn a_module_that_did_not_parse_names_its_errors_as_the_source() {
     fixture.cleanup();
 }
 
+/// rule: INV.SOURCE.MODULE-COMPILATION-AND-BODY
 #[test]
 fn method_body_text_with_a_preprocessor_wrapper_is_refused_in_wrapped_and_plain_modules() {
     for (before, name) in [
@@ -2264,6 +2372,8 @@ fn method_body_text_with_a_preprocessor_wrapper_is_refused_in_wrapped_and_plain_
     }
 }
 
+/// rule: INV.SOURCE.CODE-INSERT-POSITION
+/// rule: INV.SOURCE.INSERTED-METHOD-SPACING
 #[test]
 fn a_comment_inserted_before_a_method_joins_its_head_and_repeats_as_noop() {
     let fixture = staged_code_fixture("comment-head", b"Procedure Base()\nEndProcedure\n");
@@ -2405,14 +2515,12 @@ fn addressed_replacement_refuses_missing_ambiguous_and_nonwritable_nodes() {
     duplicate.cleanup();
 }
 
-/// Метод целиком задаёт адрес `…Method.M`: селектор метода у замены снят
-/// и отказывает в своём поле, называя адрес (#1353). Якорь остаётся.
+/// Метод целиком задаёт адрес `…Method.M`, селектор у замены — только якорь:
+/// другой ключ селектора — неизвестный аргумент в своём поле. Якорь остаётся.
+/// rule: INV.WIRE.OPERATION-TARGET-ADDRESS
 #[test]
-fn code_replace_refuses_a_method_selector_and_names_the_method_address() {
-    let fixture = staged_code_fixture(
-        "retired-method-selector",
-        b"Procedure Base()\nEndProcedure\n",
-    );
+fn code_replace_refuses_a_method_selector_as_an_unknown_argument() {
+    let fixture = staged_code_fixture("method-selector", b"Procedure Base()\nEndProcedure\n");
     let error = parse_code_plan_operation(
             "code.replace",
             &json!({"at":"main:CommonModule.Sample", "selector":{"method":"Base"}, "text":"Procedure Base()\nEndProcedure"}),
@@ -2423,10 +2531,7 @@ fn code_replace_refuses_a_method_selector_and_names_the_method_address() {
     assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue);
     assert_eq!(error.path(), Some("ops[0].args.selector.method"));
     let message = error.to_string();
-    assert!(
-        message.contains("`main:CommonModule.Sample.Method.Base`"),
-        "{message}"
-    );
+    assert!(message.contains("unknown argument"), "{message}");
     let anchored = parse_code_plan_operation(
             "code.replace",
             &json!({"at":"main:CommonModule.Sample", "selector":{"anchor":"EndProcedure"}, "text":"EndProcedure"}),
@@ -2444,9 +2549,10 @@ fn code_replace_refuses_a_method_selector_and_names_the_method_address() {
     fixture.cleanup();
 }
 
+/// rule: INV.SOURCE.IDEMPOTENT-PRECHECK
 #[test]
 fn whole_method_replacement_extracts_helpers_and_repeats_as_noop() {
-    // #895: the "extract method" refactor replaces a method with itself
+    // The "extract method" refactor replaces a method with itself
     // plus new helpers; the repeat finds the method and its helpers in
     // place instead of planning the helpers a second time.
     let target = "Function Target()\r\n    Return 1 + 2;\r\nEndFunction\r\n";
@@ -2606,6 +2712,7 @@ fn conditional_compilation_twins_are_not_redeclarations() {
     fixture.cleanup();
 }
 
+/// rule: INV.SOURCE.IDEMPOTENT-PRECHECK
 #[test]
 fn inline_tail_after_the_method_is_not_a_fixed_point() {
     // The method ends mid-line, so the text after it is not whole lines:
@@ -2659,9 +2766,10 @@ fn code_patch_replace_with_extracted_helpers_repeats_as_noop() {
     fs::remove_dir_all(&context.workspace_root).unwrap();
 }
 
-/// Метод, названный адресом, — место вставки до или после него (#1354):
+/// Метод, названный адресом, — место вставки до или после него:
 /// текст встаёт рядом с методом, повтор ничего не меняет, а
 /// отсутствующий метод отвечает `not_found` по адресу.
+/// rule: INV.SOURCE.CODE-INSERT-POSITION
 #[test]
 fn insertion_around_an_addressed_method_needs_a_position_and_the_method() {
     let before = "Procedure First()\nEndProcedure\n\nProcedure Second()\nEndProcedure\n";
@@ -2714,6 +2822,8 @@ fn insertion_around_an_addressed_method_needs_a_position_and_the_method() {
     assert_eq!(error.path(), Some("ops[0].args.at"));
 }
 
+/// rule: INV.SOURCE.CODE-INSERT-POSITION
+/// rule: INV.SOURCE.INSERTED-METHOD-SPACING
 #[test]
 fn insertion_around_a_method_keeps_its_head_together_and_respects_its_preprocessor() {
     let fixture = staged_code_fixture("around-head", b"Procedure Base()\nEndProcedure\n");
@@ -2815,6 +2925,7 @@ fn insertion_around_a_method_keeps_its_head_together_and_respects_its_preprocess
     fixture.cleanup();
 }
 
+/// rule: INV.SOURCE.CODE-INSERT-POSITION
 #[test]
 fn staged_code_args_report_exact_paths_and_reject_legacy_fields() {
     let fixture = staged_code_fixture("args", b"Procedure Base()\nEndProcedure\n");
@@ -2913,7 +3024,7 @@ fn staged_code_args_report_exact_paths_and_reject_legacy_fields() {
             json!({"at": "main:CommonModule.Sample", "text": "x", "selector": {"anchor": "Run"}}),
             "ops[1].args.position",
         ),
-        // Метод называет адрес (#1354): селектор метода снят, а у
+        // Метод называет адрес: селектор метода снят, а у
         // адресованного метода место — обязательная `position`.
         (
             "code.insert",
@@ -3083,10 +3194,12 @@ fn staged_code_rejects_raw_policy_and_same_root_foreign_binding_substitution() {
     writer.cleanup();
 }
 
-/// #955: a registered owner's module exists logically without its file.
+/// A registered owner's module exists logically without its file.
 /// A dumped empty common module keeps an empty `Ext/` without the file;
 /// `object.borrow` registers a common module without its directory.
 /// The first write materializes the missing chain on publication only.
+/// rule: INV.SOURCE.EVENT-IMPLEMENTATION-PAIR
+/// rule: INV.SOURCE.TAIL-INSERT
 #[test]
 fn staged_code_first_body_materializes_a_missing_module_chain() {
     for (name, missing) in [
@@ -3156,6 +3269,8 @@ fn staged_code_first_body_materializes_a_missing_module_chain() {
 
 /// A module chain that appears after planning belongs to someone else:
 /// publication refuses and keeps the foreign file instead of overwriting it.
+/// rule: INV.SOURCE.EVENT-IMPLEMENTATION-PAIR
+/// rule: INV.SOURCE.TAIL-INSERT
 #[test]
 fn staged_code_missing_module_chain_keeps_a_foreign_appearance() {
     let fixture = staged_code_fixture("foreign-chain", b"Procedure Base()\nEndProcedure\n");
@@ -3350,6 +3465,8 @@ fn staged_code_selector_kind_does_not_depend_on_error_message_words() {
     }
 }
 
+/// rule: INV.SOURCE.BOUND-PREIMAGES
+/// rule: INV.SOURCE.WRITE-TARGET-KIND
 #[test]
 fn staged_code_preserves_module_owner_support_format_and_preimage_guards() {
     let valid = staged_code_fixture("guards-valid", b"Procedure Base()\nEndProcedure\n");
@@ -3502,6 +3619,28 @@ fn staged_code_preserves_module_owner_support_format_and_preimage_guards() {
     }
     replaced_root.cleanup();
 
+    let generated = staged_code_fixture("guards-generated", b"Procedure Base()\nEndProcedure\n");
+    let mut staged = staged_code_admission(&generated, true)
+        .staged_state()
+        .unwrap();
+    assert_eq!(
+        staged
+            .read(Path::new(".build/unica/foreign"))
+            .unwrap_err()
+            .kind(),
+        ApplyStagingErrorKind::ContainmentIdentity
+    );
+    generated.cleanup();
+}
+
+#[test]
+fn staged_code_rejects_module_link() {
+    let operation = [staged_insert(
+        "main:CommonModule.Sample",
+        "Procedure Added()\nEndProcedure",
+        None,
+        None,
+    )];
     let linked = staged_code_fixture("guards-link", b"Procedure Base()\nEndProcedure\n");
     let link_admission = staged_code_admission(&linked, true);
     let module = linked.source.join("CommonModules/Sample/Ext/Module.bsl");
@@ -3509,7 +3648,16 @@ fn staged_code_preserves_module_owner_support_format_and_preimage_guards() {
         .source
         .join("CommonModules/Sample/Ext/RealModule.bsl");
     fs::rename(&module, &real).unwrap();
-    if create_file_link_fixture_for_test(&real, &module).unwrap() == FileLinkFixtureOutcome::Created
+    if !(create_file_link_fixture_for_test(&real, &module).unwrap()
+        == FileLinkFixtureOutcome::Created)
+    {
+        linked.cleanup();
+        unica_process::test_support::skip_without_host_capability(
+            unica_process::test_support::HostCapability::Symlink,
+            "staged code fixture needs file links",
+        );
+        return;
+    }
     {
         let error = plan_admitted_code(&link_admission, &linked.binding, &operation).unwrap_err();
         assert!(
@@ -3524,15 +3672,32 @@ fn staged_code_preserves_module_owner_support_format_and_preimage_guards() {
         );
     }
     linked.cleanup();
+}
 
+#[test]
+fn staged_code_rejects_support_marker_link() {
+    let operation = [staged_insert(
+        "main:CommonModule.Sample",
+        "Procedure Added()\nEndProcedure",
+        None,
+        None,
+    )];
     let linked_support =
         staged_code_fixture("guards-support-link", b"Procedure Base()\nEndProcedure\n");
     let support_admission = staged_code_admission(&linked_support, true);
     let real_support = linked_support.root.join("retained-support-marker.bin");
     fs::write(&real_support, b"short marker").unwrap();
     let support_marker = linked_support.source.join("Ext/ParentConfigurations.bin");
-    if create_file_link_fixture_for_test(&real_support, &support_marker).unwrap()
-        == FileLinkFixtureOutcome::Created
+    if !(create_file_link_fixture_for_test(&real_support, &support_marker).unwrap()
+        == FileLinkFixtureOutcome::Created)
+    {
+        linked_support.cleanup();
+        unica_process::test_support::skip_without_host_capability(
+            unica_process::test_support::HostCapability::Symlink,
+            "staged code fixture needs file links",
+        );
+        return;
+    }
     {
         let error = plan_admitted_code(&support_admission, &linked_support.binding, &operation)
             .unwrap_err();
@@ -3549,19 +3714,6 @@ fn staged_code_preserves_module_owner_support_format_and_preimage_guards() {
         assert!(!linked_support.root.join(".build/unica/state.json").exists());
     }
     linked_support.cleanup();
-
-    let generated = staged_code_fixture("guards-generated", b"Procedure Base()\nEndProcedure\n");
-    let mut staged = staged_code_admission(&generated, true)
-        .staged_state()
-        .unwrap();
-    assert_eq!(
-        staged
-            .read(Path::new(".build/unica/foreign"))
-            .unwrap_err()
-            .kind(),
-        ApplyStagingErrorKind::ContainmentIdentity
-    );
-    generated.cleanup();
 }
 
 #[test]
@@ -3767,7 +3919,7 @@ fn staged_code_v12_parity_rejects_malformed_postimage_and_owner_evidence() {
         )],
     )
     .unwrap_err();
-    // #2229: the sent text broke the module; the call is what to fix.
+    // The sent text broke the module; the call is what to fix.
     assert_eq!(c1.kind(), ApplyPlanErrorKind::BadValue);
     assert_eq!(c1.path(), Some("ops[0].args.text"));
     malformed_v12.cleanup();
@@ -3789,7 +3941,7 @@ fn staged_code_v12_parity_rejects_malformed_postimage_and_owner_evidence() {
                 "malformed" => fs::write(descriptor, b"<not-xml").unwrap(),
                 "wrong-format" => {
                     let before = fs::read_to_string(&descriptor).unwrap();
-                    fs::write(descriptor, before.replace("2.20", "2.21")).unwrap();
+                    fs::write(descriptor, before.replace("2.20", "2.23")).unwrap();
                 }
                 _ => unreachable!(),
             }
@@ -3916,6 +4068,30 @@ fn staged_code_effects_omit_a_module_restored_to_its_original_preimage() {
 
     assert!(state.planned_changes().is_empty());
     assert!(effects.events().is_empty());
+    fixture.cleanup();
+}
+
+/// rule: INV.SOURCE.CODE-REPLACE-TEXT-REVISION
+#[test]
+fn a_replacement_with_an_old_text_revision_preserves_an_external_edit() {
+    let original = b"Procedure Base()\nEndProcedure\n";
+    let fixture = staged_code_fixture("stale-text-revision", original);
+    let module = fixture.source.join("CommonModules/Sample/Ext/Module.bsl");
+    let old_revision = unica_source_contract::read::module_text_revision(original);
+    let external = b"Procedure Base()\r\nEndProcedure\r\n";
+    fs::write(&module, external).unwrap();
+    let args = json!({
+        "at": "main:CommonModule.Sample.Body",
+        "text": "Procedure Edited()\nEndProcedure\n",
+        "ifRev": old_revision,
+    });
+    let guarded = parse_code_plan_operation("code.replace", &args, 0, "main").unwrap();
+    let admission = staged_code_admission(&fixture, true);
+    let error = plan_admitted_code(&admission, &fixture.binding, &[guarded]).unwrap_err();
+    assert_eq!(error.kind(), ApplyPlanErrorKind::Conflict);
+    assert_eq!(error.path(), Some("ops[0].args.ifRev"));
+    assert_eq!(fs::read(&module).unwrap(), external);
+    drop(admission);
     fixture.cleanup();
 }
 
@@ -4398,6 +4574,7 @@ fn staged_insert(
 
 fn staged_replace(at: &str, text: &str, anchor: Option<&str>) -> CodePlanOperation {
     CodePlanOperation::Replace(CodeReplaceArgs {
+        if_rev: None,
         at: unica_address::address::QualifiedAddress::parse(at).unwrap(),
         text: text.to_string(),
         anchor: anchor.map(str::to_string),

@@ -1,7 +1,5 @@
 ---
 id: CTR.SOURCE.EMPTY-BRANCHES
-check:
-  - tests/ci/test_acceptance_scenarios.py::AcceptanceCorpusRunTests.test_every_wire_answers_its_frozen_classes
 gap:
   - https://github.com/IngvarConsulting/unica/issues/2223
   - https://github.com/IngvarConsulting/unica/issues/2224

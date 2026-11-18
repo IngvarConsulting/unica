@@ -1,19 +1,23 @@
 ---
 id: INV.SOURCE.SUPPORT-SEPARATE-APPLY
-check:
-  - crates/unica-coder/src/infrastructure/native_operations/apply_families/mod.rs::support_state_classification_preserves_names_across_targets_and_profiles
-  - crates/unica-coder/src/infrastructure/native_operations/apply_families/mod.rs::support_and_ordinary_edits_require_separate_batches_under_every_policy
-  - crates/unica-coder/src/infrastructure/native_operations/apply_families/mod.rs::support_removal_and_object_removal_require_separate_batches_under_every_policy
-  - crates/unica-coder/src/infrastructure/native_operations/apply_families/mod.rs::locked_vendor_objects_refuse_every_family_before_staging
-  - tests/ci/test_acceptance_scenarios.py::AcceptanceCorpusRunTests.test_every_wire_answers_its_frozen_classes
 ---
 
-# Поддержка меняется отдельным применением
+# Поддержка меняется отдельным применением, если человек не выбрал иное
 
 Операции изменения поддержки не смешиваются с обычными правками в одном
-`apply`, даже если человек согласовал обе части. Если правка требует снятия
-запрета, сначала отдельно применяется изменение поддержки, затем — правка
-объекта. Отказ этой правки не отменяет уже применённого изменения поддержки.
+`apply`, который составила модель. Если правка требует снятия запрета,
+сначала отдельно применяется изменение поддержки, затем — правка объекта.
+Отказ этой правки не отменяет уже применённого изменения поддержки.
+
+Исключение — план, который Unica готовит по выбору человека в
+[вопросе о запрете](../support-locked-owner.md). Изменение поддержки
+объекта, о котором спрашивали, и правка входят в один план и публикуются
+вместе: если правка не проходит, поддержка тоже не меняется. Другие объекты
+и операции поддержки в запросе модели это исключение не открывает.
+Ответ снимает только тот запрет, о котором спрашивали: остальные цели того же
+запроса проверяются по поддержке, которую оставляют данные ответы. Запрет
+на любой из них задаёт свой вопрос, а изменения поддержки по всем ответам
+и правка входят в один план.
 
 Это ограничение состава запроса действует независимо от `deny`, `warn`
 и `off`; сама [политика реакции на запрет](../support-policy.md) сохраняется.

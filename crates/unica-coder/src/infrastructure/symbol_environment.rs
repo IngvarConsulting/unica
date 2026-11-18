@@ -9,9 +9,9 @@ use crate::infrastructure::v13_read::LogicalViewReadAuthority;
 /// Field kinds a provider names with one `attribute`, in the order tried.
 const FIELD_KINDS: [&str; 4] = ["Attribute", "Dimension", "Resource", "StandardAttribute"];
 
-pub(crate) struct ReaderSymbolEnvironment<'a, 'b> {
-    pub(crate) authority: &'a LogicalViewReadAuthority<'b>,
-    pub(crate) source_set: &'a str,
+pub struct ReaderSymbolEnvironment<'a, 'b> {
+    pub authority: &'a LogicalViewReadAuthority<'b>,
+    pub source_set: &'a str,
 }
 
 impl ReaderSymbolEnvironment<'_, '_> {

@@ -1,0 +1,24 @@
+{
+  "area": "Код BSL",
+  "task": "Реализовать обработчик события объекта в модуле объекта",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [
+          {
+            "op": "event.implement",
+            "args": {
+              "at": "main:Catalog.Валюты.Event.ПриЗаписи"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S158"
+}

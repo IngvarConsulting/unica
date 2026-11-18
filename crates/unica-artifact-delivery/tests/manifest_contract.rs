@@ -66,6 +66,7 @@ fn valid_manifest_selects_the_requested_target() {
     );
 }
 
+/// rule: INV.PKG.MANIFEST-ARTIFACT-ROLES
 #[test]
 fn loading_a_manifest_rejects_an_unknown_artifact_role() {
     for role in ["core", "engine", "future-resource"] {
@@ -180,20 +181,20 @@ fn manifest_has_exactly_three_named_targets() {
 fn engine_target(target: &str) -> serde_json::Value {
     serde_json::json!({
         "asset": {
-            "name": format!("rlm-tools-bsl-{target}.tar.gz"),
+            "name": format!("archive-tools-{target}.tar.gz"),
             "url": format!(
-                "https://github.com/IngvarConsulting/unica-toolchain/releases/download/rlm-tools-bsl-v1.33.0-build.3/rlm-tools-bsl-{target}.tar.gz"
+                "https://github.com/IngvarConsulting/unica-toolchain/releases/download/archive-tools-v1.33.0-build.3/archive-tools-{target}.tar.gz"
             ),
             "mediaType": "application/gzip",
             "sha256": HASH
         },
-        "files": [{"path": "rlm-bsl-index", "sha256": HASH, "executable": true}]
+        "files": [{"path": "archive-tool-index", "sha256": HASH, "executable": true}]
     })
 }
 
 fn fixture_with_engine() -> serde_json::Value {
     let mut manifest = fixture();
-    manifest["artifacts"]["rlm-tools-bsl"] = serde_json::json!({
+    manifest["artifacts"]["archive-tools"] = serde_json::json!({
         "version": "1.33.0",
         "role": "engine",
         "targets": {
@@ -242,6 +243,7 @@ fn fixture_with_maintained_runner() -> serde_json::Value {
     manifest
 }
 
+/// rule: INV.PKG.ENGINE-RELEASE-SOURCES
 #[test]
 fn an_engine_is_accepted_from_the_toolchain_release() {
     // Тулчейн уже публикует по архиву на инструмент, с суммами и
@@ -254,6 +256,7 @@ fn an_engine_is_accepted_from_the_toolchain_release() {
         .expect("toolchain origin is approved");
 }
 
+/// rule: INV.PKG.ENGINE-RELEASE-SOURCES
 #[test]
 fn a_maintained_engine_source_is_approved_without_opening_other_origins() {
     parse(fixture_with_maintained_runner())
@@ -273,8 +276,8 @@ fn a_maintained_engine_source_is_approved_without_opening_other_origins() {
         ),
         (
             fixture_with_engine(),
-            "rlm-tools-bsl",
-            "https://github.com/IngvarConsulting/v8-runner-rust/releases/download/v1.33.0/rlm-tools-bsl-linux-x64.tar.gz",
+            "archive-tools",
+            "https://github.com/IngvarConsulting/v8-runner-rust/releases/download/v1.33.0/archive-tools-linux-x64.tar.gz",
         ),
     ] {
         value["artifacts"][artifact]["targets"]["linux-x64"]["asset"]["url"] =
@@ -289,8 +292,8 @@ fn a_maintained_engine_source_is_approved_without_opening_other_origins() {
 #[test]
 fn an_engine_target_may_not_declare_a_core_entrypoint() {
     let mut value = fixture_with_engine();
-    value["artifacts"]["rlm-tools-bsl"]["targets"]["linux-x64"]["entrypoint"] =
-        serde_json::json!("rlm-bsl-index");
+    value["artifacts"]["archive-tools"]["targets"]["linux-x64"]["entrypoint"] =
+        serde_json::json!("archive-tool-index");
 
     let error = parse(value)
         .validate("0.7.0")
@@ -304,10 +307,10 @@ fn a_missing_artifact_is_a_configuration_failure_everywhere() {
     let manifest = parse(fixture());
 
     let direct = manifest
-        .artifact("rlm-tools-bsl")
+        .artifact("archive-tools")
         .expect_err("missing artifact");
     let target = manifest
-        .artifact_target("rlm-tools-bsl", HostTarget::LinuxX64)
+        .artifact_target("archive-tools", HostTarget::LinuxX64)
         .expect_err("missing artifact target");
 
     assert_eq!(direct.failure(), Failure::Configuration);
@@ -315,24 +318,26 @@ fn a_missing_artifact_is_a_configuration_failure_everywhere() {
     assert_eq!(direct.to_string(), target.to_string());
 }
 
+/// rule: INV.PKG.ENGINE-RELEASE-SOURCES
 #[test]
 fn an_engine_from_an_unapproved_origin_is_refused() {
     let mut value = fixture_with_engine();
-    value["artifacts"]["rlm-tools-bsl"]["targets"]["linux-x64"]["asset"]["url"] =
-        serde_json::json!("https://example.com/rlm-tools-bsl-linux-x64.tar.gz");
+    value["artifacts"]["archive-tools"]["targets"]["linux-x64"]["asset"]["url"] =
+        serde_json::json!("https://example.com/archive-tools-linux-x64.tar.gz");
 
     let error = parse(value).validate("0.7.0").unwrap_err();
 
     assert!(error.to_string().contains("release origin"), "{error}");
 }
 
+/// rule: INV.PKG.ENGINE-RELEASE-SOURCES
 #[test]
 fn an_engine_may_not_borrow_the_core_origin() {
     // Ядро собирается здесь, движок — нет. Смешать источники значит потерять
     // то, ради чего они названы поимённо.
     let mut value = fixture_with_engine();
-    value["artifacts"]["rlm-tools-bsl"]["targets"]["linux-x64"]["asset"]["url"] = serde_json::json!(
-        "https://github.com/IngvarConsulting/unica/releases/download/v0.7.0/rlm-tools-bsl-linux-x64.tar.gz"
+    value["artifacts"]["archive-tools"]["targets"]["linux-x64"]["asset"]["url"] = serde_json::json!(
+        "https://github.com/IngvarConsulting/unica/releases/download/v0.7.0/archive-tools-linux-x64.tar.gz"
     );
 
     let error = parse(value).validate("0.7.0").unwrap_err();
@@ -358,11 +363,11 @@ fn an_engine_asset_name_is_not_forced_into_the_core_shape() {
     // выдуманное нами `<артефакт>-runtime-<цель>`.
     let manifest = parse(fixture_with_engine());
     let asset = &manifest
-        .artifact_target("rlm-tools-bsl", HostTarget::LinuxX64)
+        .artifact_target("archive-tools", HostTarget::LinuxX64)
         .expect("engine target")
         .asset;
 
-    assert_eq!(asset.name, "rlm-tools-bsl-linux-x64.tar.gz");
+    assert_eq!(asset.name, "archive-tools-linux-x64.tar.gz");
 }
 
 /// Артефакт, изданный одним файлом: `bsl-analyzer` и `v8-runner` лежат голыми
@@ -400,6 +405,7 @@ fn fixture_with_file_artifact() -> serde_json::Value {
     manifest
 }
 
+/// rule: INV.PKG.ARTIFACT-DELIVERY-FORM
 #[test]
 fn an_artifact_delivered_as_one_file_is_accepted() {
     parse(fixture_with_file_artifact())
@@ -407,6 +413,7 @@ fn an_artifact_delivered_as_one_file_is_accepted() {
         .expect("a bare asset is a delivery form, not a defect");
 }
 
+/// rule: INV.PKG.ARTIFACT-DELIVERY-FORM
 #[test]
 fn a_one_file_artifact_declares_exactly_the_file_it_delivers() {
     // Форма «один файл» ничего не распаковывает, поэтому перечислять больше
@@ -422,6 +429,7 @@ fn a_one_file_artifact_declares_exactly_the_file_it_delivers() {
     assert!(error.to_string().contains("single file"), "{error}");
 }
 
+/// rule: INV.PKG.ARTIFACT-DELIVERY-FORM
 #[test]
 fn the_core_is_still_required_to_arrive_as_an_archive() {
     // Ядро несёт бинарь и его окружение: одним файлом оно не бывает, а его

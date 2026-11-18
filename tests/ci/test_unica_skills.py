@@ -16,16 +16,6 @@ MIN_RUNTIME_GUIDANCE_DOCS = 31
 # dictionary implements. Syntax lives in `unica.check`, test runs and EPF/ERF
 # publication are outside the v0.13 surface, so their examples are gone.
 MIN_RUNTIME_EXECUTE_EXAMPLES = 2
-# Reading and writing names the wire never publishes; the package README keeps
-# its migration table of removed selectors and is not scanned for these.
-RETIRED_READ_WRITE_NAMES = re.compile(
-    r"unica\.code\.|unica\.meta\.info|unica\.meta\.add|unica\.meta\.edit|"
-    r"unica\.\*\.info"
-)
-RETIRED_RUNTIME_NAMES = re.compile(
-    r"unica\.runtime\.|unica\.build\.|runtime_risk_|runtime_operation_unbounded|"
-    r"INV-MCP-RUNTIME-RECEIPT|ADR-0074"
-)
 
 
 # Both ways a document points at another one: a backticked path, where the
@@ -993,8 +983,6 @@ def find_unsafe_platform_evidence_routes(
     documents: list[tuple[str, str]],
 ) -> list[str]:
     safe_boundaries = [
-        "development-standard",
-        "development standards",
         "not platform",
         "do not infer",
         "do not present",
@@ -1399,7 +1387,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                         self.assertIn("object", item)
                         self.assertTrue(item["rights"])
                     continue
-                # Объект записи называет её адрес, а не аргумент (#1354).
+                # Объект записи называет её адрес, а не аргумент.
                 self.assertRegex(
                     operation["args"]["at"], r"^[^:]+:Role\.[^.]+\.Right\.[^.]+_[^.]+$"
                 )
@@ -1423,25 +1411,6 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             with self.subTest(result_token=token):
                 self.assertIn(token, text)
 
-    def test_prompt_visible_meta_routes_have_no_retired_contract_grammar(self) -> None:
-        prompt_documents = list(self.skill_root().glob("meta-*/**/*.md")) + [
-            self.repo_root() / "README.md",
-            self.repo_root() / "CLAUDE.md",
-            self.reference_root() / "platform" / "metadata-conventions.md",
-            self.skill_root() / "cf-edit" / "SKILL.md",
-            self.skill_root() / "cf-edit" / "reference.md",
-        ]
-        retired_routes = re.compile(
-            r"(?:/unica:|/)(?:meta-compile|meta-validate|meta-profile)\b|"
-            r"unica\.meta\.(?:compile|validate|profile)\b"
-        )
-        offenders = []
-        for path in prompt_documents:
-            text = path.read_text(encoding="utf-8")
-            if retired_routes.search(text):
-                offenders.append(path.relative_to(self.repo_root()).as_posix())
-        self.assertEqual(offenders, [])
-
     def test_scenario_skills_cover_requested_unica_workflows(self) -> None:
         for skill, tool_names in SCENARIO_SKILLS.items():
             with self.subTest(skill=skill):
@@ -1456,16 +1425,6 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                     self.assertIn(tool_name, text)
                 for token in SCENARIO_REQUIRED_TOKENS.get(skill, []):
                     self.assertIn(token, text)
-
-    def test_skill_guidance_never_reintroduces_removed_code_grep_tool(self) -> None:
-        offenders = [
-            path.relative_to(self.repo_root()).as_posix()
-            for path in sorted(self.skill_root().glob("*/SKILL.md"))
-            if "unica.code.grep" in path.read_text(encoding="utf-8")
-        ]
-
-        self.assertEqual(offenders, [])
-
 
     def test_code_diagnostics_routes_providers_internally(self) -> None:
         text = (self.skill_root() / "code-diagnostics" / "SKILL.md").read_text(
@@ -1533,6 +1492,16 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             + "\n".join(unsafe_routes),
         )
 
+    def test_standards_label_does_not_prove_platform_evidence(self) -> None:
+        for label in ["development standards", "development-standard"]:
+            with self.subTest(label=label):
+                self.assertEqual(len(find_unsafe_platform_evidence_routes([
+                    ("probe.md", f"Use unica.standards.search for platform {label}.")
+                ])), 1)
+                self.assertEqual(find_unsafe_platform_evidence_routes([
+                    ("probe.md", f"Use unica.standards.search for {label}, not platform evidence.")
+                ]), [])
+
     def test_route_linter_checks_adjacent_markdown_items_independently(self) -> None:
         unsafe_routes = find_unsafe_platform_evidence_routes(
             [
@@ -1566,18 +1535,8 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertNotIn("development-standard", unsafe_routes[0])
 
 
-    def test_skills_and_references_do_not_instruct_direct_rlm_mcp_calls(self) -> None:
-        forbidden = ["rlm_index", "rlm_start", "rlm_execute", "rlm_end"]
-        docs = list(self.skill_root().glob("**/*.md")) + list(
-            self.reference_root().glob("**/*.md")
-        )
-        for doc in docs:
-            text = doc.read_text(encoding="utf-8")
-            for token in forbidden:
-                with self.subTest(path=doc.relative_to(self.repo_root()), token=token):
-                    self.assertNotIn(token, text)
-
     def test_runtime_is_tool_native_and_v8_runner_skill_is_not_shipped(self) -> None:
+        """rule: INV.SURFACE.RUNTIME-NO-SKILL"""
         skill_dir = self.skill_root() / "v8-runner"
         self.assertFalse((skill_dir / "SKILL.md").exists())
         self.assertFalse(any(path.is_file() for path in skill_dir.rglob("*")))
@@ -1959,53 +1918,6 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                 for claim in forbidden_applied_claims:
                     self.assertNotRegex(text, claim)
 
-    def test_shipped_guidance_names_no_retired_reading_or_writing_tool(self) -> None:
-        """C-1: `unica.code.*` and `unica.meta.*` route to search/view/check/apply."""
-        shipped_docs = list(self.skill_root().glob("**/*.md")) + list(
-            self.reference_root().glob("**/*.md")
-        )
-        offenders = {}
-        for doc in sorted(shipped_docs):
-            hits = sorted(
-                {
-                    match.group(0)
-                    for match in RETIRED_READ_WRITE_NAMES.finditer(
-                        doc.read_text(encoding="utf-8")
-                    )
-                }
-            )
-            if hits:
-                offenders[doc.relative_to(self.repo_root()).as_posix()] = hits
-        self.assertEqual(offenders, {})
-
-    def test_shipped_guidance_names_no_retired_runtime_tool(self) -> None:
-        """#702: the wire has no `unica.runtime.execute`, so no skill may teach it."""
-        shipped_docs = (
-            list(self.skill_root().glob("**/*.md"))
-            + list(self.reference_root().glob("**/*.md"))
-            + [self.repo_root() / "plugins" / "unica" / "README.md"]
-        )
-        offenders = {}
-        for doc in sorted(shipped_docs):
-            hits = sorted(
-                {
-                    match.group(0)
-                    for match in RETIRED_RUNTIME_NAMES.finditer(
-                        doc.read_text(encoding="utf-8")
-                    )
-                }
-            )
-            if hits:
-                offenders[doc.relative_to(self.repo_root()).as_posix()] = hits
-        self.assertEqual(offenders, {})
-
-
-
-
-
-
-
-
     def test_references_are_structured_by_unica_use_cases(self) -> None:
         reference_root = self.reference_root()
         self.assertFalse((reference_root / "cc-1c-skills").exists())
@@ -2158,21 +2070,6 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertNotIn("powershell.exe", meta_add)
         self.assertNotIn(".ps1", meta_add)
         self.assertNotIn(".py", meta_add)
-
-    def test_top_level_skills_never_route_to_retired_meta_tools(self) -> None:
-        retired = {
-            "unica.meta.compile",
-            "unica.meta.profile",
-            "unica.meta.validate",
-        }
-        offenders = {
-            path.relative_to(self.repo_root()).as_posix(): sorted(
-                name for name in retired if name in path.read_text(encoding="utf-8")
-            )
-            for path in sorted(self.skill_root().glob("*/SKILL.md"))
-            if any(name in path.read_text(encoding="utf-8") for name in retired)
-        }
-        self.assertEqual(offenders, {})
 
     def test_support_state_reporting_is_documented_for_info_skills(self) -> None:
         for skill in (

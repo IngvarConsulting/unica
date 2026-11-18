@@ -1,36 +1,5 @@
 ---
 id: INV.APP.CODE-SEARCH-RESULT-EVIDENCE
-check:
-  - crates/unica-coder/tests/platform/workspace_services_integration.rs::real_index_queue_and_worker_state_reach_serialized_search_and_navigation
-  - crates/unica-coder/tests/platform/workspace_services_integration.rs::maintenance_queue_execution_and_failure_keep_the_published_index_readable
-  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::maintenance_transition_invalidates_the_cursor_for_the_previous_answer
-  - crates/unica-code-intelligence/src/coordinator.rs::coordinator_preserves_the_replaceable_provider_identity_for_a_role
-  - crates/unica-code-intelligence/src/coordinator.rs::coordinator_preserves_provider_local_ranks_and_limit_claim
-  - crates/unica-code-intelligence/src/model/mod.rs::search_section_serializes_role_provenance_completeness_and_logical_location
-  - crates/unica-code-intelligence/src/model/mod.rs::timed_out_section_serializes_a_machine_readable_terminal_reason
-  - crates/unica-code-intelligence/src/model/mod.rs::section_rejects_an_invalid_terminal_reason_contract
-  - crates/unica-code-intelligence/src/model/mod.rs::partial_section_requires_proven_hits_and_diagnostics
-  - crates/unica-code-intelligence/src/coordinator.rs::malformed_provider_subset_remains_useful_without_claiming_complete_coverage
-  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::public_role_search_surfaces_partial_provider_warning_and_hit
-  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::canonical_role_search_preserves_typed_failure_without_private_provider_text
-  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::provider_search_failure_requires_one_selected_section_and_yields_to_cancellation
-  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::provider_limit_remains_visible_after_the_last_received_page
-  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::provider_search_pages_all_received_hits_and_rejects_changed_answers
-  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::late_oversized_provider_hit_refuses_before_first_cursor
-  - crates/unica-coder/tests/platform/code_intelligence_integration.rs::bsl_analyzer_at_requested_limit_does_not_claim_exhaustion
-  - crates/unica-coder/tests/platform/code_intelligence_integration.rs::bsl_analyzer_at_its_internal_cap_does_not_claim_exhaustion
-  - crates/unica-coder/tests/platform/code_intelligence_integration.rs::bsl_analyzer_output_budget_truncation_does_not_claim_exhaustion
-  - crates/unica-coder/tests/platform/code_intelligence_integration.rs::bsl_analyzer_empty_results_with_index_ready_footer_are_empty
-  - crates/unica-coder/tests/platform/code_intelligence_integration.rs::bsl_analyzer_empty_marker_does_not_hide_untrusted_tail
-  - crates/unica-coder/tests/platform/code_intelligence_integration.rs::bsl_analyzer_busy_or_building_index_is_a_retryable_wait_not_an_empty_answer
-  - crates/unica-coder/tests/platform/code_intelligence_integration.rs::bsl_analyzer_empty_marker_with_a_queued_or_running_index_is_pending
-  - crates/unica-coder/tests/platform/code_intelligence_integration.rs::rlm_at_requested_limit_does_not_claim_exhaustion
-  - crates/unica-coder/tests/platform/code_intelligence_integration.rs::rlm_at_one_source_quota_does_not_claim_exhaustion
-  - crates/unica-coder/tests/platform/code_intelligence_integration.rs::bsl_analyzer_does_not_claim_complete_when_one_header_is_unreadable
-  - crates/unica-coder/tests/platform/code_intelligence_integration.rs::rlm_parser_keeps_valid_rows_and_reports_malformed_siblings
-  - crates/unica-coder/tests/platform/code_intelligence_integration.rs::git_grep_keeps_valid_hits_but_reports_malformed_siblings_as_partial
-  - crates/unica-process/src/platform/process.rs::completed_line_drain_keeps_stop_only_for_successful_children
-  - crates/unica-coder/tests/platform/code_intelligence_integration.rs::cancelled_projection_is_not_reported_as_a_malformed_search_result
 ---
 
 # Результат поиска сохраняет источник и пределы достоверности
@@ -41,7 +10,7 @@ check:
 Если поставщик вернул ровно запрошенное число результатов без признака конца,
 секция сообщает о достижении предела и даёт нижнюю оценку числа совпадений.
 Учитывается и меньший внутренний предел поставщика: 50 результатов у
-`bsl-analyzer`, квота на каждую из шести категорий у RLM. Сообщение
+`bsl-analyzer`. Сообщение
 `bsl-analyzer` об усечении по бюджету вывода также не считается полным ответом.
 Если поставщик завершил поиск, но отдельный результат нельзя разобрать,
 остальные проверенные совпадения сохраняются, а секция получает статус
@@ -61,9 +30,8 @@ check:
 Уточнение ожидания индекса передаётся только для известных состояний
 `buildingIndex`, `updatingIndex` и `indexQueued`; неизвестное уточнение не отменяет
 типизированную причину ожидания и возможность повтора.
-Состояние [обслуживания RLM](rlm-maintenance-status.md) передаётся отдельно
-от причины завершения поиска. Сохранённая сборка и
-[актуальность данных](rlm-stale-results.md) также различаются.
+Состояние обслуживания индекса передаётся отдельно от причины завершения
+поиска. Сохранённая сборка и актуальность данных также различаются.
 
 Проверки подтверждают форму секции и передачу данных координатором.
 Выбор поставщика на публичном входе `unica.search` проверен отдельно в #960.
@@ -87,7 +55,7 @@ check:
 оценку. Ранжирующие роли получают окно не более 200 результатов.
 При 200 полученных результатах ответ рекомендует уточнить запрос.
 Если окно неполно, он не обещает выдачу его хвоста. Меньшие внутренние квоты
-`bsl-analyzer` и RLM остаются видимой неполнотой, но сами по себе не означают,
+поставщика остаются видимой неполнотой, но сами по себе не означают,
 что запрос слишком широк. Буквальный поиск без роли окна не имеет: его
 выдача продолжается до последнего совпадения по
 [своему правилу](literal-search.md).

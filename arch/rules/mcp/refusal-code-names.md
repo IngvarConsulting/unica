@@ -1,7 +1,5 @@
 ---
 id: INV.WIRE.REFUSAL-CODE-NAMES
-check:
-  - crates/unica-refusal/src/lib.rs::the_dictionary_keeps_no_synonym_of_a_code_it_already_carries
 ---
 
 # Снятые имена отказов не возвращаются в публичный словарь
