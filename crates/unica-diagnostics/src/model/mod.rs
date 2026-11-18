@@ -385,6 +385,25 @@ pub enum DiagnosticReadinessState {
 pub struct DiagnosticReadiness {
     pub state: DiagnosticReadinessState,
     pub retryable: bool,
+    /// What the provider tells of its build, when it tells anything.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progress: Option<DiagnosticBuildProgress>,
+}
+
+/// The facts a provider gives about building its database. Each is absent
+/// when the provider does not tell it; none is a percentage it lacks.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagnosticBuildProgress {
+    /// Modules served once the database is ready.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub files: Option<usize>,
+    /// Failed builds in a row the current one retries.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attempts: Option<u32>,
+    /// Milliseconds since the current build started.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub elapsed_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -486,29 +505,13 @@ impl DiagnosticProviderDescriptor {
     }
 }
 
-/// A provider finding in Unica's own words, for surfaces that must not show
-/// the provider (the editor, #2176): a Unica code and a fixed Unica message.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct EditorFinding {
-    pub code: &'static str,
-    pub message: &'static str,
-}
-
-impl EditorFinding {
-    /// The code of a finding Unica has no word for yet.
-    pub const GENERIC_CODE: &'static str = "bsl.finding";
-
-    /// A finding Unica has no word for: only its severity is told.
-    pub fn generic(severity: DiagnosticSeverity) -> Self {
-        Self {
-            code: Self::GENERIC_CODE,
-            message: match severity {
-                DiagnosticSeverity::Error => "Ошибка, найденная анализом кода",
-                DiagnosticSeverity::Warning => "Предупреждение анализа кода",
-                DiagnosticSeverity::Info => "Замечание анализа кода",
-                DiagnosticSeverity::Hint => "Подсказка анализа кода",
-            },
-        }
+/// Unica's neutral wording for a diagnostic rule without a mapped message.
+pub fn generic_editor_message(severity: DiagnosticSeverity) -> &'static str {
+    match severity {
+        DiagnosticSeverity::Error => "Ошибка, найденная анализом кода",
+        DiagnosticSeverity::Warning => "Предупреждение анализа кода",
+        DiagnosticSeverity::Info => "Замечание анализа кода",
+        DiagnosticSeverity::Hint => "Подсказка анализа кода",
     }
 }
 
@@ -523,11 +526,9 @@ pub trait DiagnosticProvider: Send + Sync {
         cancellation: &CancellationToken,
     ) -> DiagnosticProviderOutcome;
 
-    /// The Unica code and message of one of this provider's findings. A
-    /// provider without its own table answers generically.
-    fn editor_finding(&self, code: &str, severity: DiagnosticSeverity) -> EditorFinding {
-        let _ = code;
-        EditorFinding::generic(severity)
+    /// The Unica message for an editor finding. The rule code is carried separately.
+    fn editor_message(&self, _code: &str, severity: DiagnosticSeverity) -> &'static str {
+        generic_editor_message(severity)
     }
 }
 
@@ -715,9 +716,7 @@ mod tests {
     use serde_json::{json, Value};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
-    use unica_address::source_target::{
-        MetadataAddress, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
-    };
+    use unica_address::source_target::{MetadataAddress, TargetKind};
 
     const BSL_LANGUAGE_SERVER_PROVIDER: DiagnosticProviderId =
         DiagnosticProviderId::new_const("bsl-language-server");
@@ -796,7 +795,7 @@ mod tests {
     }
 
     fn metadata_address(value: &str) -> MetadataAddress {
-        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, value).unwrap()
+        MetadataAddress::parse_logical(value).unwrap()
     }
 
     #[test]

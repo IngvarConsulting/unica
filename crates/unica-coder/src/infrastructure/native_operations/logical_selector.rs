@@ -22,7 +22,6 @@ use crate::infrastructure::project_sources::discover_project_source_map;
 use unica_address::address::QualifiedAddress;
 use unica_address::source_target::{
     MetadataAddress, ResolvedTarget, SourceTarget, SourceTargetErrorCode, TargetKind,
-    PLATFORM_XML_8_3_27_FORMAT_2_20,
 };
 use unica_navigation::source_navigation::{LocateRejection, SourceLocateRequest};
 use unica_source_contract::workspace::WorkspaceContext;
@@ -143,7 +142,7 @@ pub(crate) fn typed_reader_metadata_target(
         parts.push(segment.kind().as_str());
         parts.push(segment.name()?);
     }
-    let target = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &parts.join(".")).ok()?;
+    let target = MetadataAddress::parse_logical(&parts.join(".")).ok()?;
     ensure_kind_is_read_by_this_tool(&target, accepted_kinds).ok()?;
     Some(target)
 }
@@ -164,8 +163,7 @@ fn resolve(
         .to_string();
     let metadata_path = match unica_operation_contract::input::string_arg(args, &["metadataPath"]) {
         Some(raw) => Some(
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw)
-                .map_err(|error| selector_failure(error.code))?,
+            MetadataAddress::parse_logical(raw).map_err(|error| selector_failure(error.code))?,
         ),
         None => None,
     };
@@ -452,10 +450,6 @@ fn selector_failure(code: SourceTargetErrorCode) -> LogicalSelectorFailure {
         SourceTargetErrorCode::ContainmentDenied => LogicalSelectorFailure::new(
             RefusalCode::ContainmentDenied,
             "the logical target failed its containment checks",
-        ),
-        SourceTargetErrorCode::AddressProfileUnsupported => LogicalSelectorFailure::new(
-            RefusalCode::ProfileUnsupported,
-            "the logical address profile is unsupported",
         ),
         SourceTargetErrorCode::SourceRootNotAddressable => LogicalSelectorFailure::new(
             RefusalCode::ProviderUnavailable,
@@ -1045,12 +1039,13 @@ mod medium_tests {
         let planted = src.join("planted.xml");
         fs::write(&planted, "<Rights/>").unwrap();
         fs::remove_file(src.join("Roles/Sales/Ext/Rights.xml")).unwrap();
-        let created = unica_workspace::test_support::create_file_symlink_for_test(
+        if !crate::infrastructure::test_fixtures::file_link_or_skip(
             &planted,
             src.join("Roles/Sales/Ext/Rights.xml"),
-        )
-        .expect("symlink fixtures exist on Unix and Windows");
-        created.unwrap();
+        ) {
+            cleanup(&context);
+            return;
+        }
 
         let failure = selection(&context, "Role.Sales", AttachedResource::Rights, &["Role"])
             .expect_err("a symlinked resource is not a direct regular file");

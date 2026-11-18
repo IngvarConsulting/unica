@@ -2,11 +2,12 @@ use super::test_support::*;
 use super::*;
 
 pub fn warm_registry_reuses_the_same_actor_across_sequential_admissions() {
-    let root = temp_root("warm-reuse");
+    let directory = retention_test_directory("warm-reuse");
+    let root = directory.path();
     std::fs::create_dir_all(root.join("src")).unwrap();
     let registry = registry_for_test();
     assert_eq!(registry.warm_ttl, Duration::from_secs(600));
-    let context = context(&root);
+    let context = context(root);
     let first = registry
         .get_or_create(&context, [source_input("main", root.join("src"))], "p")
         .unwrap();
@@ -62,10 +63,11 @@ pub fn warm_registry_reuses_the_same_actor_across_sequential_admissions() {
 }
 
 pub fn warm_actor_expires_after_the_idle_ttl_and_is_rebuilt() {
-    let root = temp_root("warm-ttl");
+    let directory = retention_test_directory("warm-ttl");
+    let root = directory.path();
     std::fs::create_dir_all(root.join("src")).unwrap();
     let registry = idle_registry_for_test(Duration::ZERO);
-    let context = context(&root);
+    let context = context(root);
     let first = registry
         .get_or_create(&context, [source_input("main", root.join("src"))], "p")
         .unwrap();
@@ -98,10 +100,11 @@ pub fn warm_actor_expires_after_the_idle_ttl_and_is_rebuilt() {
 }
 
 pub fn warm_actor_whose_named_root_was_replaced_is_rebuilt() {
-    let root = temp_root("warm-replaced-root");
+    let directory = retention_test_directory("warm-replaced-root");
+    let root = directory.path();
     std::fs::create_dir_all(root.join("src")).unwrap();
     let registry = registry_for_test();
-    let context = context(&root);
+    let context = context(root);
     let first = registry
         .get_or_create(&context, [source_input("main", root.join("src"))], "p")
         .unwrap();
@@ -128,10 +131,11 @@ pub fn warm_actor_whose_named_root_was_replaced_is_rebuilt() {
 }
 
 pub fn a_held_actor_whose_named_root_was_replaced_is_temporarily_unavailable() {
-    let root = temp_root("held-replaced-root");
+    let directory = retention_test_directory("held-replaced-root");
+    let root = directory.path();
     std::fs::create_dir_all(root.join("src")).unwrap();
     let registry = registry_for_test();
-    let context = context(&root);
+    let context = context(root);
     let held = registry
         .get_or_create(&context, [source_input("main", root.join("src"))], "p")
         .unwrap();
@@ -155,7 +159,8 @@ pub fn a_held_actor_whose_named_root_was_replaced_is_temporarily_unavailable() {
 }
 
 pub fn warm_actors_do_not_block_a_distinct_identity() {
-    let root = temp_root("warm-capacity");
+    let directory = retention_test_directory("warm-capacity");
+    let root = directory.path();
     let registry = registry_for_test();
     let mut actors = Vec::new();
     for index in 0..3 {
@@ -177,4 +182,45 @@ pub fn warm_actors_do_not_block_a_distinct_identity() {
         actors[2].upgrade().is_some(),
         "the newest admission stays warm alongside earlier idle actors"
     );
+}
+
+fn retention_test_directory(name: &str) -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix(&format!("unica-workspace-actor-{name}-"))
+        .tempdir()
+        .expect("actor retention test directory")
+}
+
+#[cfg(test)]
+#[test]
+fn retention_test_directory_is_removed_after_return_and_unwind() {
+    for should_panic in [false, true] {
+        let mut observed_root = None;
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let directory = retention_test_directory("warm-cleanup");
+            let root = directory.path();
+            observed_root = Some(root.to_path_buf());
+            std::fs::create_dir_all(root.join("src")).unwrap();
+            std::fs::write(root.join("src/Module.bsl"), "// fixture").unwrap();
+            let registry = registry_for_test();
+            let actor = registry
+                .get_or_create(
+                    &context(root),
+                    [source_input("main", root.join("src"))],
+                    "p",
+                )
+                .unwrap();
+            assert!(actor.retains_named_roots().unwrap());
+            if should_panic {
+                panic!("controlled actor fixture panic");
+            }
+        }));
+        assert_eq!(outcome.is_err(), should_panic);
+        let root = observed_root.expect("the fixture was created before the panic");
+        assert!(
+            !root.exists(),
+            "actor fixture directory remains: {}",
+            root.display()
+        );
+    }
 }

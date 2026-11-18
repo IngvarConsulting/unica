@@ -50,6 +50,8 @@ impl std::fmt::Display for Outcome {
 pub enum RefusalCode {
     /// `concurrent_change`
     ConcurrentChange,
+    /// `conflict`
+    Conflict,
     /// `source_selection_changed`
     SourceSelectionChanged,
     /// `deadline_exceeded`
@@ -139,6 +141,7 @@ impl RefusalCode {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::ConcurrentChange => "concurrent_change",
+            Self::Conflict => "conflict",
             Self::SourceSelectionChanged => "source_selection_changed",
             Self::DeadlineExceeded => "deadline_exceeded",
             Self::TaskTransportFailed => "task_transport_failed",
@@ -195,6 +198,7 @@ impl RefusalCode {
     pub const fn outcome(self) -> Outcome {
         match self {
             Self::ConcurrentChange => Outcome::RetryAsIs,
+            Self::Conflict => Outcome::FixCall,
             Self::SourceSelectionChanged => Outcome::RetryAsIs,
             Self::DeadlineExceeded => Outcome::RetryAsIs,
             Self::TaskTransportFailed => Outcome::RetryAsIs,
@@ -247,8 +251,9 @@ impl RefusalCode {
     }
 
     /// Весь словарь — для проверок полноты и порождения ведомостей.
-    pub const ALL: [Self; 42] = [
+    pub const ALL: [Self; 43] = [
         Self::ConcurrentChange,
+        Self::Conflict,
         Self::SourceSelectionChanged,
         Self::DeadlineExceeded,
         Self::TaskTransportFailed,

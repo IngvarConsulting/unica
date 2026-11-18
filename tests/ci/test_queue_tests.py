@@ -20,7 +20,7 @@ queue = importlib.util.module_from_spec(SPEC)
 sys.modules["queue_tests"] = queue
 SPEC.loader.exec_module(queue)
 
-DIRS = {"crates/a": "unica-a", "crates/b": "unica-b", "crates/coder": "unica-coder", "vendor/ureq": "ureq"}
+DIRS = {"crates/a": "unica-a", "crates/b": "unica-b", "crates/coder": "unica-coder"}
 DEPENDENTS = {"unica-a": {"unica-b", "unica-coder"}, "unica-b": {"unica-coder"}}
 
 
@@ -53,7 +53,7 @@ class ChoiceTests(unittest.TestCase):
 
     def test_the_dependent_filter_keeps_integration_targets_without_the_ledger(self) -> None:
         self.assertEqual(queue.DEPENDENT_FILTER, "kind(test) & not binary(daemon_receipt_ledger)")
-        runner = mock.Mock(LEDGER_FEATURE_SELECTION=("ledger",), UREQ_RECYCLING_SELECTION=("ureq",))
+        runner = mock.Mock(LEDGER_FEATURE_SELECTION=("ledger",))
         runner.rust_command.side_effect = lambda profile, selection: [profile, *selection]
         planned = queue.commands(("unica-a",), runner, ("unica-coder",))
         self.assertEqual(planned[-1], [
@@ -65,6 +65,14 @@ class ChoiceTests(unittest.TestCase):
         for path in ("Cargo.lock", "Cargo.toml", "rust-toolchain.toml", ".cargo/config.toml"):
             with self.subTest(path=path):
                 self.assertTrue(choose([path, "crates/a/src/lib.rs"]).full)
+
+    def test_the_whole_build_rule_is_one_function(self) -> None:
+        # Его же спрашивает гейт готовности (`scripts/dev/pre-ready-check.py`).
+        self.assertEqual(queue.whole_build(["crates/a/src/lib.rs", "Cargo.lock"]), "Cargo.lock")
+        self.assertIsNone(queue.whole_build(["Cargo.lock"], lock_is_internal=True))
+        self.assertEqual(queue.whole_build(["Cargo.lock", "rust-toolchain.toml"], lock_is_internal=True),
+                         "rust-toolchain.toml")
+        self.assertIsNone(queue.whole_build(["crates/a/Cargo.toml", "docs/x.md"]))
 
     def test_a_lock_changed_only_for_workspace_crates_selects_by_crate(self) -> None:
         choice = choose(["Cargo.lock", "crates/a/Cargo.toml", "crates/a/src/lib.rs"], lock_is_internal=True)
@@ -116,7 +124,8 @@ class ChoiceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ, {"GITHUB_OUTPUT": str(Path(directory) / "o")}):
             with mock.patch.object(queue, "workspace", return_value=(DIRS, DEPENDENTS)), mock.patch.object(queue.subprocess, "check_output", side_effect=["Cargo.lock\n", subprocess.CalledProcessError(128, "git")]):
                 self.assertEqual(queue.main(["--base", "a", "--head", "b", "--dry-run"]), 0)
-            self.assertEqual((Path(directory) / "o").read_text(encoding="utf-8"), "full=true\n")
+            # Полный набор исполняет приёмку сам: отдельное задание не нужно.
+            self.assertEqual((Path(directory) / "o").read_text(encoding="utf-8"), "full=true\nacceptance=false\n")
 
     def test_paths_rust_tests_read_select_the_crates_that_mention_them(self) -> None:
         for path in ("tests/fixtures/xdto/a.xml", "scripts/dev/x.py"):
@@ -154,7 +163,7 @@ class ChoiceTests(unittest.TestCase):
 
     def test_every_crate_selected_runs_the_full_set_in_the_real_workspace(self) -> None:
         directories, dependents = queue.workspace()
-        members = [path for path, name in directories.items() if name != "ureq"]
+        members = list(directories)
         choice = queue.choose([f"{path}/Cargo.toml" for path in members], directories, dependents)
         self.assertTrue(choice.full, choice.reason)
         # Один незатронутый крейт оставляет обычный выбор.
@@ -163,23 +172,23 @@ class ChoiceTests(unittest.TestCase):
         self.assertNotIn(directories[members[0]], choice.packages)
 
     def test_small_runs_everywhere_and_selected_crates_are_not_run_twice(self) -> None:
-        runner = mock.Mock(LEDGER_FEATURE_SELECTION=("ledger",), UREQ_RECYCLING_SELECTION=("ureq",))
+        runner = mock.Mock(LEDGER_FEATURE_SELECTION=("ledger",))
         runner.rust_command.side_effect = lambda profile, selection: [profile, *selection]
         self.assertEqual(queue.commands((), runner), [["pr", "--workspace", "--no-tests=pass"]])
         self.assertEqual(queue.commands(("unica-a", "unica-b"), runner), [
             ["pr", "--workspace", "-E", "not (package(unica-a) | package(unica-b))", "--no-tests=pass"],
             ["queue", "--workspace", "-E", "package(unica-a) | package(unica-b)", "--no-tests=pass"],
         ])
-        planned = queue.commands(("unica-daemon", "ureq"), runner)
+        planned = queue.commands(("unica-daemon",), runner)
         self.assertEqual(planned[1], ["queue", "--workspace", "-E", "package(unica-daemon)", "--no-tests=pass"])
-        self.assertEqual(planned[2:], [["queue", "ledger"], ["queue", "ureq"]])
+        self.assertEqual(planned[2:], [["queue", "ledger"]])
         # Фасад журнала живёт в демоне: правка нижнего слоя его не запускает.
         self.assertNotIn(["queue", "ledger"], queue.commands(("unica-coder",), runner))
 
     def test_every_workspace_call_builds_the_same_package_set(self) -> None:
         # С `-p` или `--exclude` Cargo объединяет признаки по другому набору
         # пакетов и пересобирает общие зависимости в следующем вызове.
-        runner = mock.Mock(LEDGER_FEATURE_SELECTION=("ledger",), UREQ_RECYCLING_SELECTION=("ureq",))
+        runner = mock.Mock(LEDGER_FEATURE_SELECTION=("ledger",))
         runner.rust_command.side_effect = lambda profile, selection: [profile, *selection]
         planned = queue.commands(("unica-a", "unica-coder"), runner, ("unica-b",))
         self.assertEqual(len(planned), 3)
@@ -189,25 +198,63 @@ class ChoiceTests(unittest.TestCase):
                 self.assertNotIn("-p", command)
                 self.assertNotIn("--exclude", command)
 
-    def test_a_vendored_patch_is_selected_in_the_real_workspace(self) -> None:
-        directories, dependents = queue.workspace()
-        self.assertEqual(directories["vendor/ureq"], "ureq")
-        choice = queue.choose(["vendor/ureq/src/stream.rs"], directories, dependents)
-        self.assertFalse(choice.full)
-        self.assertEqual(choice.packages, ("ureq",))
-        # Cargo не принимает `-p` для пакета вне рабочей области.
-        runner = queue.load_runner()
-        planned = queue.commands(choice.packages, runner, choice.dependents)
-        self.assertIn(runner.rust_command("queue", runner.UREQ_RECYCLING_SELECTION), planned)
-        for command in planned:
-            self.assertNotIn(["-p", "ureq"], [command[index:index + 2] for index in range(len(command) - 1)], command)
-            self.assertNotIn(["--exclude", "ureq"], [command[index:index + 2] for index in range(len(command) - 1)], command)
-
     def test_a_failed_diff_runs_everything(self) -> None:
         with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ, {"GITHUB_OUTPUT": str(Path(directory) / "o")}):
             with mock.patch.object(queue.subprocess, "check_output", side_effect=OSError("no git")):
                 self.assertEqual(queue.main(["--base", "a", "--head", "b", "--dry-run"]), 0)
-            self.assertEqual((Path(directory) / "o").read_text(encoding="utf-8"), "full=true\n")
+            # Полный набор исполняет приёмку сам: отдельное задание не нужно.
+            self.assertEqual((Path(directory) / "o").read_text(encoding="utf-8"), "full=true\nacceptance=false\n")
+
+
+# Правка #2793 (739d5b265): диалекты 2.21 и 2.22 и подготовка рабочей области `newer`.
+RECORD_2793 = [
+    "crates/unica-coder/src/infrastructure/format_guard.rs",
+    "crates/unica-metadata-designer/src/dialect/v2_21.rs",
+    "crates/unica-metadata/src/info_properties.rs",
+    "crates/unica-source-designer/src/format_profile.rs",
+    "tests/ci/test_acceptance_scenarios.py",
+    "tests/fixtures/acceptance/scenarios/S267.json",
+    "tests/fixtures/formats/platform_xml/2.20/meta_info/manifest.json",
+]
+
+
+class AcceptanceTests(unittest.TestCase):
+    """Запись, меняющая замороженные ответы продукта или саму приёмку, запускает её (#2831)."""
+
+    PRODUCT_DIRS = {**DIRS, "crates/product": "unica-product", "crates/tests": "unica-x-integration-tests"}
+    PRODUCT_DEPENDENTS = {"unica-a": {"unica-b"}, "unica-b": {"unica-product"}, "unica-coder": {"unica-x-integration-tests"}}
+
+    def needs(self, paths):
+        return queue.needs_acceptance(paths, self.PRODUCT_DIRS, self.PRODUCT_DEPENDENTS)
+
+    def test_the_product_closure_is_transitive(self) -> None:
+        self.assertEqual(queue.product_crates(self.PRODUCT_DEPENDENTS), {"unica-product", "unica-b", "unica-a"})
+
+    def test_a_crate_the_product_is_built_from_or_the_acceptance_itself_needs_it(self) -> None:
+        for path in ("crates/a/src/lib.rs", "crates/product/src/main.rs", "tests/fixtures/acceptance/scenarios/S1.json",
+                     "tests/ci/acceptance_profiles.py", "tests/ci/test_acceptance_scenarios.py"):
+            with self.subTest(path=path):
+                self.assertTrue(self.needs([path]))
+
+    def test_a_crate_outside_the_product_and_other_paths_do_not(self) -> None:
+        for path in ("crates/coder/src/lib.rs", "crates/tests/tests/t.rs", "docs/pages/index.md",
+                     "tests/ci/test_queue_tests.py", "tests/fixtures/formats/platform_xml/2.20/x.xml"):
+            with self.subTest(path=path):
+                self.assertFalse(self.needs([path]))
+
+    def test_the_2793_record_runs_the_acceptance_in_the_real_workspace(self) -> None:
+        directories, dependents = queue.workspace()
+        self.assertTrue(queue.needs_acceptance(RECORD_2793, directories, dependents))
+        choice = queue.choose(RECORD_2793, directories, dependents)
+        self.assertFalse(choice.full, "the record resolves by crates; the separate job carries the acceptance")
+
+    def test_a_resolved_choice_writes_the_acceptance_output(self) -> None:
+        real = queue.workspace()
+        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ, {"GITHUB_OUTPUT": str(Path(directory) / "o")}):
+            with mock.patch.object(queue.subprocess, "check_output", return_value="\n".join(RECORD_2793) + "\n"), \
+                    mock.patch.object(queue, "workspace", return_value=real):
+                self.assertEqual(queue.main(["--base", "a", "--head", "b", "--dry-run"]), 0)
+            self.assertEqual((Path(directory) / "o").read_text(encoding="utf-8"), "full=false\nacceptance=true\n")
 
 
 class GuardTests(unittest.TestCase):
@@ -286,6 +333,34 @@ class WorkflowTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 calls = (Path(tmp) / "calls.txt").read_text(encoding="utf-8").split()
                 self.assertEqual(set(calls), {runner})
+
+
+class AcceptanceJobTests(unittest.TestCase):
+    """Задание «Приёмка» идёт в очереди параллельно тестам Rust и только по выходу выбора."""
+
+    def setUp(self) -> None:
+        jobs = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))["jobs"]
+        self.job = jobs["queue-acceptance"]
+
+    def test_the_job_is_a_queue_job_parallel_to_the_rust_tests(self) -> None:
+        self.assertEqual(self.job["name"], "Приёмка")
+        self.assertEqual(self.job["needs"], "admission")
+        self.assertIn("github.event_name == 'merge_group'", self.job["if"])
+        self.assertIn("needs.admission.outputs.kept != 'true'", self.job["if"])
+
+    def test_the_choice_gates_the_build_and_the_source_acceptance(self) -> None:
+        steps = {step.get("id") or step.get("name"): step for step in self.job["steps"]}
+        choice = steps["choice"]
+        self.assertIn("queue-tests.py", choice["run"])
+        self.assertIn("--dry-run", choice["run"])
+        for name in ("Продукт для приёмки", "Приёмка source"):
+            self.assertEqual(steps[name]["if"], "${{ steps.choice.outputs.acceptance == 'true' }}")
+        self.assertIn("prepared_binary.py build", steps["Продукт для приёмки"]["run"])
+        self.assertIn("UNICA_PREPARED_BINARY_MANIFEST", steps["Продукт для приёмки"]["run"])
+        self.assertIn(
+            "test_acceptance_scenarios.AcceptanceCorpusRunTests.test_every_wire_answers_its_frozen_classes",
+            steps["Приёмка source"]["run"],
+        )
 
 
 class MemoryTempTests(unittest.TestCase):

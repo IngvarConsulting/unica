@@ -101,6 +101,8 @@ DOMAIN_FLOOR = frozenset({
 FILE_IO_FLOOR = frozenset({
     "unica-operations", "unica-navigation", "unica-diagnostics",
     "unica-code-intelligence", "unica-code-model", "unica-xml-format", "unica-work-control",
+    # Editor protocol doors receive source data through their injected ports.
+    "unica-lsp", "unica-dap",
 })
 DESIGNER_CODEC_PACKAGE = re.compile(r"unica-[a-z0-9-]+-designer")
 DOMAIN_COMPONENTS = DOMAIN_FLOOR | crate_declarations.packages(crate_declarations.repository(), file_io="domain")

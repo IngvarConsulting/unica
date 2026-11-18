@@ -1,6 +1,6 @@
 //! Typed references for an owner's existing default-form slots.
 use unica_address::address::{NodeKind, QualifiedAddress};
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 
 #[derive(Debug, Clone)]
 pub enum FormSlotTarget {
@@ -51,7 +51,7 @@ impl FormSlotTarget {
             if !common_form_slot(kind, property) {
                 return Err("CommonForm is supported only by Report defaultForm/defaultSettingsForm/defaultVariantForm and Constant defaultForm".into());
             }
-            return MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &at.logical_path())
+            return MetadataAddress::parse_logical(&at.logical_path())
                 .map(Self::Common)
                 .map_err(|error| error.to_string());
         }

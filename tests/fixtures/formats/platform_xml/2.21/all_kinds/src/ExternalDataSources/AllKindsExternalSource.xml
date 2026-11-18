@@ -1,0 +1,28 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:pal="http://v8.1c.ru/8.1/data/ui/colors/palette" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.21">
+	<ExternalDataSource uuid="be05a1ec-2f25-54df-816a-7baed4264299">
+		<InternalInfo>
+			<xr:GeneratedType name="ExternalDataSourceManager.AllKindsExternalSource" category="Manager">
+				<xr:TypeId>619b50ba-6e90-566e-941e-b25c7e585059</xr:TypeId>
+				<xr:ValueId>5e083f64-162c-56e0-8699-54e6df3955a0</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="ExternalDataSourceTablesManager.AllKindsExternalSource" category="TablesManager">
+				<xr:TypeId>5d40e335-b576-5acd-a1a2-a4a235f83b30</xr:TypeId>
+				<xr:ValueId>3f3702a3-c129-50fb-8180-a8901ae7f479</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="ExternalDataSourceCubesManager.AllKindsExternalSource" category="CubesManager">
+				<xr:TypeId>e7a32830-9f18-5b3a-984d-f0395de56536</xr:TypeId>
+				<xr:ValueId>09073da5-38d2-5462-a060-52404e93c7a9</xr:ValueId>
+			</xr:GeneratedType>
+		</InternalInfo>
+		<Properties>
+			<Name>AllKindsExternalSource</Name>
+			<Synonym/>
+			<Comment/>
+			<DataLockControlMode>Automatic</DataLockControlMode>
+		</Properties>
+		<ChildObjects>
+			<Table>Items</Table>
+		</ChildObjects>
+	</ExternalDataSource>
+</MetaDataObject>

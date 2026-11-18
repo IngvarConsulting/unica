@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-FIXTURE = REPO_ROOT / "tests/fixtures/platform_8_3_27/external_artifacts"
+FIXTURE = REPO_ROOT / "tests/fixtures/formats/platform_xml/2.20/external_artifacts"
 
 
 def fixture_files() -> dict[str, bytes]:

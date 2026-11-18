@@ -6,9 +6,7 @@ use crate::contracts::{
 use crate::*;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
-use unica_address::source_target::{
-    metadata_address_kind_spellings, MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20,
-};
+use unica_address::source_target::{metadata_address_kind_spellings, MetadataAddress};
 use unica_operation_contract::ArgumentShape;
 const INFO_SECTIONS: &[(&str, MetaInfoSection)] = &[
     ("roles", MetaInfoSection::Roles),
@@ -714,6 +712,14 @@ pub fn parse_property_changes(
             MetaPropertyValueKind::Type => {
                 MetaPropertyValue::Type(parse_metadata_type(value, &field)?)
             }
+            MetaPropertyValueKind::String if spec.key == crate::MetaPropertyKey::Synonym => {
+                let text = value
+                    .as_str()
+                    .ok_or_else(|| invalid(&field, crate::LOCALIZED_VALUE_FORM))?;
+                MetaPropertyValue::Localized(
+                    crate::parse_nstr(text).map_err(|message| invalid(&field, message))?,
+                )
+            }
             MetaPropertyValueKind::String => value
                 .as_str()
                 .map(|value| MetaPropertyValue::String(value.to_string()))
@@ -783,7 +789,7 @@ pub fn parse_element_input(
     })?;
     Ok(MetaElementInput {
         name: reader.read("name", required_string_at)?,
-        synonym: reader.read("synonym", optional_string_at)?,
+        synonym: reader.read("synonym", optional_localized_at)?,
         comment: reader.read("comment", optional_string_at)?,
         r#type: reader.read("type", |object, key, field| {
             object
@@ -834,14 +840,16 @@ pub fn parse_element_update(
         MetadataArgumentReader::new(object, metadata_element_input_schema(true, false), field);
     reader.reject_unknown()?;
     Ok(MetaElementUpdateInput {
+        tool_tip: reader.read("toolTip", optional_localized_at)?,
         indexing: reader.read("indexing", optional_string_at)?,
         master: reader.read("master", optional_bool_at)?,
         main_filter: reader.read("mainFilter", optional_bool_at)?,
         deny_incomplete_values: reader.read("denyIncompleteValues", optional_bool_at)?,
         type_reduction_mode: reader.read("typeReductionMode", optional_string_at)?,
+        color: reader.read("color", optional_string_at)?,
         name: reader.read("name", required_string_at)?,
         new_name: reader.read("newName", optional_string_at)?,
-        synonym: reader.read("synonym", optional_string_at)?,
+        synonym: reader.read("synonym", optional_localized_at)?,
         comment: reader.read("comment", optional_string_at)?,
         r#type: reader.read("type", |object, key, field| {
             object
@@ -1256,7 +1264,7 @@ pub fn required_metadata_path(
     parse_address(&raw, field)
 }
 pub fn parse_address(raw: &str, field: &str) -> Result<MetadataAddress, MetaDiagnostic> {
-    MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw).map_err(|error| {
+    MetadataAddress::parse_logical(raw).map_err(|error| {
         invalid(
             field,
             format!("invalid logical metadata address: {}", error.message),
@@ -1296,6 +1304,22 @@ pub fn nonempty_string(value: &Value, field: &str) -> Result<String, MetaDiagnos
         ));
     }
     Ok(value.to_string())
+}
+/// An optional multilingual field in NStr form (#2163).
+pub fn optional_localized_at(
+    object: &Map<String, Value>,
+    key: &str,
+    field: &str,
+) -> Result<Option<Vec<crate::LocalizedItem>>, MetaDiagnostic> {
+    object
+        .get(key)
+        .map(|value| {
+            let text = value
+                .as_str()
+                .ok_or_else(|| invalid(field, crate::LOCALIZED_VALUE_FORM))?;
+            crate::parse_nstr(text).map_err(|message| invalid(field, message))
+        })
+        .transpose()
 }
 pub fn optional_string_at(
     object: &Map<String, Value>,

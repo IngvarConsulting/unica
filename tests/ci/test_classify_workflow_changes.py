@@ -296,8 +296,6 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
         for path in (
             "crates/unica-domain/src/cache.rs",
             "crates/unica-application/src/application/metadata.rs",
-            "vendor/ureq/src/response.rs",
-            "vendor/ureq/src/completed_response_recycling.rs",
         ):
             with self.subTest(path=path):
                 self.assert_classification([path], rust_changed=True, release_required=True)
@@ -340,9 +338,6 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
             "rust-toolchain.toml",
             ".config/nextest.toml",
             "scripts/ci/python_sizes.py",
-            "vendor/ureq/Cargo.toml",
-            "vendor/ureq/Cargo.lock",
-            "vendor/ureq/.config/nextest.toml",
         ):
             with self.subTest(path=path):
                 self.assert_classification(
@@ -354,11 +349,6 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
                     release_required=True,
                     assessment_required=True,
                 )
-
-    def test_vendor_routing_is_scoped_to_the_patched_dependency_build_inputs(self) -> None:
-        for path in ("vendor/other/src/response.rs", "vendor/ureq/README.md", "vendor/ureq/Cargo.toml.orig"):
-            with self.subTest(path=path):
-                self.assert_classification([path])
 
     def test_search_mechanism_changes_route_the_long_integration_test(self) -> None:
         for path in (
@@ -379,7 +369,7 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
             "crates/unica-coder/src/infrastructure/platform_xml_source_targets.rs",
             "crates/unica-coder/src/infrastructure/source_roots.rs",
             "crates/unica-coder/src/infrastructure/workspace_services.rs",
-            "crates/unica-daemon/src/interfaces/mcp.rs",
+            "crates/unica-mcp/src/lib.rs",
         ):
             with self.subTest(path=path):
                 platform_changed = (

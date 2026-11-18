@@ -20,15 +20,147 @@ pub enum MetaPropertyValueKind {
 pub enum MetaPropertyValue {
     Type(MetadataType),
     String(String),
+    /// Every language of a multilingual property, as `view` reads it at
+    /// `<node>.Props.<name>` (#2163).
+    Localized(Vec<LocalizedItem>),
     Boolean(bool),
     UnsignedInteger(u32),
+}
+
+/// One language of a multilingual value: `{"language", "content"}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LocalizedItem {
+    pub language: String,
+    pub content: String,
+}
+
+impl LocalizedItem {
+    pub fn new(language: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            language: language.into(),
+            content: content.into(),
+        }
+    }
+}
+
+/// The JSON Schema of a multilingual property: one string in the NStr form
+/// of 1C, `ru = 'Валюты'; en = 'Currencies'`.
+pub fn localized_value_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "string",
+        "pattern": NSTR_PATTERN,
+        "description": "Every language of the value in NStr form: ru = 'Валюты'; en = 'Currencies'. A quote inside the text is doubled. Languages not listed are removed; an empty string clears the value."
+    })
+}
+
+/// The NStr grammar `parse_nstr` reads; language codes are ASCII. A repeated
+/// code is refused by the parser alone.
+pub const NSTR_PATTERN: &str = r"^\s*(?:[A-Za-z0-9_-]+\s*=\s*'(?:[^']|'')*'\s*(?:;\s*[A-Za-z0-9_-]+\s*=\s*'(?:[^']|'')*'\s*)*;?\s*)?$";
+
+/// The hint a refused multilingual value carries.
+pub const LOCALIZED_VALUE_FORM: &str =
+    "a multilingual value is a string in NStr form: ru = 'Валюты'; en = 'Currencies'";
+
+fn is_xml_text_character(ch: char) -> bool {
+    matches!(ch, '\t' | '\n' | '\r' | '\u{20}'..='\u{D7FF}' | '\u{E000}'..='\u{FFFD}' | '\u{10000}'..='\u{10FFFF}')
+}
+
+/// Every language of an NStr-form string: `code = 'text'` pairs separated by
+/// `;`, a doubled quote standing for one quote. An empty or blank string has
+/// no languages. Codes are distinct.
+pub fn parse_nstr(value: &str) -> Result<Vec<LocalizedItem>, String> {
+    let mut items: Vec<LocalizedItem> = Vec::new();
+    let mut rest = value.trim_start();
+    while !rest.is_empty() {
+        let code_end = rest
+            .find(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_' || ch == '-'))
+            .unwrap_or(rest.len());
+        let language = &rest[..code_end];
+        if language.is_empty() {
+            return Err(format!(
+                "{LOCALIZED_VALUE_FORM}; a language code is missing"
+            ));
+        }
+        rest = rest[code_end..].trim_start();
+        rest = rest
+            .strip_prefix('=')
+            .ok_or_else(|| format!("{LOCALIZED_VALUE_FORM}; `=` must follow `{language}`"))?
+            .trim_start();
+        rest = rest.strip_prefix('\'').ok_or_else(|| {
+            format!("{LOCALIZED_VALUE_FORM}; the text of `{language}` must be quoted")
+        })?;
+        let mut content = String::new();
+        loop {
+            let quote = rest.find('\'').ok_or_else(|| {
+                format!("{LOCALIZED_VALUE_FORM}; the text of `{language}` is not closed")
+            })?;
+            content.push_str(&rest[..quote]);
+            rest = &rest[quote + 1..];
+            match rest.strip_prefix('\'') {
+                Some(after) => {
+                    content.push('\'');
+                    rest = after;
+                }
+                None => break,
+            }
+        }
+        if !content.chars().all(is_xml_text_character) {
+            return Err(format!("{LOCALIZED_VALUE_FORM}; the text of `{language}` must contain only XML 1.0 characters"));
+        }
+        if items
+            .iter()
+            .any(|item| item.language.eq_ignore_ascii_case(language))
+        {
+            return Err(format!(
+                "{LOCALIZED_VALUE_FORM}; language `{language}` is listed twice"
+            ));
+        }
+        items.push(LocalizedItem {
+            language: language.to_string(),
+            content,
+        });
+        rest = rest.trim_start();
+        if rest.is_empty() {
+            break;
+        }
+        rest = rest
+            .strip_prefix(';')
+            .ok_or_else(|| format!("{LOCALIZED_VALUE_FORM}; `;` separates the languages"))?
+            .trim_start();
+    }
+    Ok(items)
+}
+
+/// The NStr form of `items`, as `view` writes a multilingual value. Items an
+/// NStr string cannot carry — a code outside the grammar or a repeated code —
+/// have no form, so a reader never publishes what a write would refuse.
+pub fn format_nstr(items: &[LocalizedItem]) -> Option<String> {
+    let mut seen: Vec<&str> = Vec::with_capacity(items.len());
+    let mut pairs = Vec::with_capacity(items.len());
+    for item in items {
+        let code = item.language.as_str();
+        if code.is_empty()
+            || !code
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+            || seen
+                .iter()
+                .any(|previous| previous.eq_ignore_ascii_case(code))
+            || !item.content.chars().all(is_xml_text_character)
+        {
+            return None;
+        }
+        seen.push(code);
+        pairs.push(format!("{code} = '{}'", item.content.replace('\'', "''")));
+    }
+    Some(pairs.join("; "))
 }
 
 impl MetaPropertyValue {
     fn kind(&self) -> MetaPropertyValueKind {
         match self {
             Self::Type(_) => MetaPropertyValueKind::Type,
-            Self::String(_) => MetaPropertyValueKind::String,
+            Self::String(_) | Self::Localized(_) => MetaPropertyValueKind::String,
             Self::Boolean(_) => MetaPropertyValueKind::Boolean,
             Self::UnsignedInteger(_) => MetaPropertyValueKind::UnsignedInteger,
         }
@@ -59,6 +191,7 @@ pub struct MetadataPropertySpec {
     pub allowed_kinds: &'static [MetadataKind],
     pub enum_values: &'static [&'static str],
     pub string_pattern: Option<&'static str>,
+    pub string_max_length: Option<usize>,
     /// Owners whose existing enum element `props.set` rewrites in place.
     pub in_place: InPlace,
 }
@@ -107,6 +240,7 @@ const fn property(
         allowed_kinds,
         enum_values: &[],
         string_pattern: None,
+        string_max_length: None,
         in_place: InPlace::Never,
     }
 }
@@ -152,6 +286,7 @@ const fn enum_property(
         allowed_kinds,
         enum_values,
         string_pattern: None,
+        string_max_length: None,
         in_place: InPlace::Never,
     }
 }
@@ -170,6 +305,7 @@ const fn patterned_string_property(
         allowed_kinds,
         enum_values: &[],
         string_pattern: Some(string_pattern),
+        string_max_length: None,
         in_place: InPlace::Never,
     }
 }
@@ -263,6 +399,27 @@ impl MetaPropertyChanges {
                 .with_field(&field));
             }
             if let MetaPropertyValue::String(value) = &input.value {
+                if spec
+                    .string_max_length
+                    .is_some_and(|max| value.chars().count() > max)
+                {
+                    return Err(MetaDiagnostic::error(
+                        MetaDiagnosticCode::InvalidArguments,
+                        format!(
+                            "property `{}` exceeds its maximum length of {} characters",
+                            input.name,
+                            spec.string_max_length.unwrap()
+                        ),
+                    )
+                    .with_field(&field));
+                }
+                if spec.key == MetaPropertyKey::Key && !value.chars().all(is_xml_text_character) {
+                    return Err(MetaDiagnostic::error(
+                        MetaDiagnosticCode::InvalidArguments,
+                        "Key must contain only XML 1.0 characters",
+                    )
+                    .with_field(&field));
+                }
                 match spec.key {
                     MetaPropertyKey::Event
                         if value.is_empty()
@@ -278,18 +435,14 @@ impl MetaPropertyChanges {
                         )
                         .with_field(&field));
                     }
-                    MetaPropertyKey::Handler => {
-                        let parts = value.split('.').collect::<Vec<_>>();
-                        if !matches!(parts.as_slice(), ["CommonModule", module, procedure]
-                            if crate::identifier::is_1c_identifier(module)
-                                && crate::identifier::is_1c_identifier(procedure))
-                        {
-                            return Err(MetaDiagnostic::error(
-                                MetaDiagnosticCode::InvalidArguments,
-                                "Handler must use CommonModule.<Module>.<Procedure>",
-                            )
-                            .with_field(&field));
-                        }
+                    MetaPropertyKey::Handler
+                        if crate::event_subscription::platform_handler_parts(value).is_none() =>
+                    {
+                        return Err(MetaDiagnostic::error(
+                            MetaDiagnosticCode::InvalidArguments,
+                            "Handler must identify a common module method",
+                        )
+                        .with_field(&field));
                     }
                     _ => {}
                 }
@@ -324,8 +477,119 @@ impl MetaPropertyChanges {
 
 #[cfg(test)]
 mod tests {
+    /// #2163: the NStr form of a multilingual value, read and written alike.
+    /// rule: INV.SOURCE.LOCALIZED-STRING-NSTR
+    #[test]
+    fn nstr_round_trips_quotes_and_rejects_text_without_a_language() {
+        let items = super::parse_nstr(" ru = 'Товары ''склада''' ;en='Goods'; ").unwrap();
+        assert_eq!(
+            items,
+            [
+                super::LocalizedItem {
+                    language: "ru".into(),
+                    content: "Товары 'склада'".into()
+                },
+                super::LocalizedItem {
+                    language: "en".into(),
+                    content: "Goods".into()
+                },
+            ]
+        );
+        assert_eq!(
+            super::format_nstr(&items).unwrap(),
+            "ru = 'Товары ''склада'''; en = 'Goods'"
+        );
+        assert_eq!(
+            super::parse_nstr(&super::format_nstr(&items).unwrap()).unwrap(),
+            items
+        );
+        for unwritable in [" custom ", "", "ru"] {
+            let mut items = items.clone();
+            items.push(super::LocalizedItem::new(unwritable, "x"));
+            assert_eq!(super::format_nstr(&items), None, "{unwritable:?}");
+        }
+        assert!(super::parse_nstr("").unwrap().is_empty());
+        assert!(super::parse_nstr("  ").unwrap().is_empty());
+        assert_eq!(
+            super::parse_nstr("ru = 'строка;\nдругая'").unwrap()[0].content,
+            "строка;\nдругая"
+        );
+        for invalid in [
+            "Товары",
+            "ru 'А'",
+            "ru = А",
+            "ru = 'А",
+            "ru = 'А' en = 'B'",
+            "ru = 'А'; ru = 'Б'",
+            "ru = 'А'; RU = 'Б'",
+            "ru = 'А\u{1}Б'",
+            "= 'А'",
+        ] {
+            assert!(super::parse_nstr(invalid).is_err(), "{invalid}");
+        }
+    }
+
     use super::*;
     use crate::{MetaDiagnosticCode, MetadataKind};
+
+    #[test]
+    fn scheduled_job_key_validation_matches_the_published_bounded_string() {
+        let schema = crate::metadata_property_schemas(Some(MetadataKind::ScheduledJob));
+        assert_eq!(schema["Key"]["maxLength"], 128);
+        let validator = jsonschema::validator_for(&schema["Key"]).unwrap();
+        for value in [
+            "".to_string(),
+            "я".repeat(128),
+            "😀".repeat(128),
+            " a\r\nb\t<&> ".to_string(),
+        ] {
+            assert!(validator.is_valid(&serde_json::json!(value)));
+            assert!(MetaPropertyChanges::convert(
+                MetadataKind::ScheduledJob,
+                vec![MetaPropertyInput::new(
+                    "Key",
+                    MetaPropertyValue::String(value)
+                ),]
+            )
+            .is_ok());
+        }
+        for value in [
+            "я".repeat(129),
+            "😀".repeat(129),
+            "bad\0key".to_string(),
+            "bad\u{b}key".to_string(),
+            "bad\u{fffe}key".to_string(),
+        ] {
+            assert!(!validator.is_valid(&serde_json::json!(value)));
+            assert!(MetaPropertyChanges::convert(
+                MetadataKind::ScheduledJob,
+                vec![MetaPropertyInput::new(
+                    "Key",
+                    MetaPropertyValue::String(value)
+                ),]
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn scheduled_job_key_is_a_closed_string_property() {
+        assert_property_kind_matrix(
+            "Key",
+            MetaPropertyValue::String("Обмен & очереди".into()),
+            &[MetadataKind::ScheduledJob],
+        );
+        for value in [
+            MetaPropertyValue::Boolean(true),
+            MetaPropertyValue::UnsignedInteger(1),
+        ] {
+            assert!(MetaPropertyChanges::convert(
+                MetadataKind::ScheduledJob,
+                vec![MetaPropertyInput::new("Key", value)],
+            )
+            .is_err());
+        }
+    }
 
     #[test]
     fn in_place_writes_only_confirmed_enum_elements_of_allowed_owners() {
@@ -372,6 +636,27 @@ mod tests {
                 "{property_name} for {}",
                 kind.as_str()
             );
+        }
+    }
+
+    #[test]
+    fn document_sequence_filling_has_a_closed_enum_and_owner() {
+        for value in ["AutoFill", "AutoFillOff"] {
+            assert_property_kind_matrix(
+                "SequenceFilling",
+                MetaPropertyValue::String(value.into()),
+                &[MetadataKind::Document],
+            );
+        }
+        for value in [
+            MetaPropertyValue::String("Automatic".into()),
+            MetaPropertyValue::Boolean(false),
+        ] {
+            assert!(MetaPropertyChanges::convert(
+                MetadataKind::Document,
+                vec![MetaPropertyInput::new("SequenceFilling", value)]
+            )
+            .is_err());
         }
     }
 

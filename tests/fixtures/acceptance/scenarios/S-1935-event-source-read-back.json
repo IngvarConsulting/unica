@@ -74,6 +74,12 @@
                 "kind": "family",
                 "sourceClass": "catalogObject"
               }
+            },
+            {
+              "relation": "handler",
+              "title": "Handler",
+              "at": "main:CommonModule.EventHandlers.Method.OnBeforeWrite",
+              "kind": "Method"
             }
           ]
         }
@@ -189,6 +195,12 @@
                 "metadataPath": "Constant.Sample",
                 "sourceClass": "constantValueManager"
               }
+            },
+            {
+              "relation": "handler",
+              "title": "Handler",
+              "at": "main:CommonModule.EventHandlers.Method.OnBeforeWrite",
+              "kind": "Method"
             }
           ]
         }

@@ -223,20 +223,20 @@ fn project_health_reports_case_variant_build_path_from_index() {
     assert!(result.ok, "{:?}", result.errors);
     let data = result.data.unwrap();
     assert_repository_check_status(&data, "repository.generated_paths", None, "failed");
-    assert_repository_check_status(
-        &data,
-        "repository.generated_paths",
-        Some("main"),
-        "failed",
+    assert_repository_check_status(&data, "repository.generated_paths", Some("main"), "failed");
+    assert!(
+        data["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|diagnostic| {
+                diagnostic["code"] == "git.generated_path_tracked"
+                    && diagnostic["paths"].as_array().is_some_and(|paths| {
+                        paths.iter().any(|path| path == "src/.BUILD/generated.bin")
+                    })
+            }),
+        "{data}"
     );
-    assert!(data["diagnostics"].as_array().unwrap().iter().any(|diagnostic| {
-        diagnostic["code"] == "git.generated_path_tracked"
-            && diagnostic["paths"].as_array().is_some_and(|paths| {
-                paths
-                    .iter()
-                    .any(|path| path == "src/.BUILD/generated.bin")
-            })
-    }), "{data}");
     let _ = fs::remove_dir_all(root);
 }
 
@@ -351,19 +351,22 @@ fn project_health_does_not_apply_a_host_alias_gitignore_to_another_git_path() {
     let paths = diagnostic["paths"].as_array().unwrap();
     assert!(paths.iter().any(|path| path == "A/.gitignore"), "{data}");
     assert!(
-        paths.iter().any(|path| path
-            .as_str()
-            .is_some_and(|path| path.starts_with("a/src/"))),
+        paths
+            .iter()
+            .any(|path| path.as_str().is_some_and(|path| path.starts_with("a/src/"))),
         "{data}"
     );
-    assert!(diagnostic["evidence"]
-        .as_array()
-        .is_some_and(|evidence| evidence.iter().any(|item| {
-            item.as_str().is_some_and(|text| {
-                text.contains("staged ignore policy")
-                    && text.contains("required ignore candidate")
-            })
-        })), "{data}");
+    assert!(
+        diagnostic["evidence"]
+            .as_array()
+            .is_some_and(|evidence| evidence.iter().any(|item| {
+                item.as_str().is_some_and(|text| {
+                    text.contains("staged ignore policy")
+                        && text.contains("required ignore candidate")
+                })
+            })),
+        "{data}"
+    );
     assert!(diagnostic["remediation"]["commands"]
         .as_array()
         .is_some_and(Vec::is_empty));
@@ -407,19 +410,21 @@ fn project_health_uses_staged_external_descriptor_for_repository_resource_policy
     let data = result.data.unwrap();
     assert_eq!(data["repositoryReady"], false, "{data}");
     assert_repository_check_status(&data, "repository.attributes", None, "failed");
-    assert_repository_check_status(
-        &data,
-        "repository.attributes",
-        Some("reports"),
-        "failed",
+    assert_repository_check_status(&data, "repository.attributes", Some("reports"), "failed");
+    assert!(
+        data["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|diagnostic| {
+                diagnostic["code"] == "git.text_policy_missing"
+                    && diagnostic["sourceSet"] == "reports"
+                    && diagnostic["paths"]
+                        .as_array()
+                        .is_some_and(|paths| paths.iter().any(|path| path == "reports/Report.xml"))
+            }),
+        "{data}"
     );
-    assert!(data["diagnostics"].as_array().unwrap().iter().any(|diagnostic| {
-        diagnostic["code"] == "git.text_policy_missing"
-            && diagnostic["sourceSet"] == "reports"
-            && diagnostic["paths"].as_array().is_some_and(|paths| {
-                paths.iter().any(|path| path == "reports/Report.xml")
-            })
-    }), "{data}");
     let _ = fs::remove_dir_all(root);
 }
 
@@ -524,21 +529,23 @@ fn project_health_uses_staged_config_dump_descriptor_for_repository_resource_pol
     let data = result.data.unwrap();
     assert_eq!(data["repositoryReady"], false, "{data}");
     assert_repository_check_status(&data, "repository.attributes", None, "failed");
-    assert_repository_check_status(
-        &data,
-        "repository.attributes",
-        Some("reports"),
-        "failed",
+    assert_repository_check_status(&data, "repository.attributes", Some("reports"), "failed");
+    assert!(
+        data["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|diagnostic| {
+                diagnostic["code"] == "git.text_policy_missing"
+                    && diagnostic["sourceSet"] == "reports"
+                    && diagnostic["paths"].as_array().is_some_and(|paths| {
+                        paths
+                            .iter()
+                            .any(|path| path == "reports/ConfigDumpInfo.xml")
+                    })
+            }),
+        "{data}"
     );
-    assert!(data["diagnostics"].as_array().unwrap().iter().any(|diagnostic| {
-        diagnostic["code"] == "git.text_policy_missing"
-            && diagnostic["sourceSet"] == "reports"
-            && diagnostic["paths"].as_array().is_some_and(|paths| {
-                paths
-                    .iter()
-                    .any(|path| path == "reports/ConfigDumpInfo.xml")
-            })
-    }), "{data}");
     let _ = fs::remove_dir_all(root);
 }
 
@@ -578,22 +585,32 @@ fn project_health_does_not_emit_resource_derivatives_for_inconclusive_config_dum
 
     assert!(result.ok, "{:?}", result.errors);
     let data = result.data.unwrap();
-    assert!(data["diagnostics"].as_array().unwrap().iter().any(|diagnostic| {
-        diagnostic["code"] == "git.config_dump_info_unclassified"
-            && diagnostic["paths"].as_array().is_some_and(|paths| {
-                paths
-                    .iter()
-                    .any(|path| path == "src/ConfigDumpInfo.xml")
-            })
-    }), "{data}");
-    assert!(data["diagnostics"].as_array().unwrap().iter().all(|diagnostic| {
-        diagnostic["code"] == "git.config_dump_info_unclassified"
-            || !diagnostic["paths"].as_array().is_some_and(|paths| {
-                paths
-                    .iter()
-                    .any(|path| path == "src/ConfigDumpInfo.xml")
-            })
-    }), "{data}");
+    assert!(
+        data["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|diagnostic| {
+                diagnostic["code"] == "git.config_dump_info_unclassified"
+                    && diagnostic["paths"].as_array().is_some_and(|paths| {
+                        paths.iter().any(|path| path == "src/ConfigDumpInfo.xml")
+                    })
+            }),
+        "{data}"
+    );
+    assert!(
+        data["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|diagnostic| {
+                diagnostic["code"] == "git.config_dump_info_unclassified"
+                    || !diagnostic["paths"].as_array().is_some_and(|paths| {
+                        paths.iter().any(|path| path == "src/ConfigDumpInfo.xml")
+                    })
+            }),
+        "{data}"
+    );
     let _ = fs::remove_dir_all(root);
 }
 
@@ -639,10 +656,7 @@ fn project_health_rejects_cross_kind_staged_config_dump_descriptors() {
                 "update-index",
                 "--add",
                 "--cacheinfo",
-                &format!(
-                    "100644,{},external/ConfigDumpInfo.xml",
-                    oid.trim()
-                ),
+                &format!("100644,{},external/ConfigDumpInfo.xml", oid.trim()),
             ],
         );
 
@@ -651,12 +665,7 @@ fn project_health_rejects_cross_kind_staged_config_dump_descriptors() {
         assert!(result.ok, "{case}: {:?}", result.errors);
         let data = result.data.unwrap();
         assert_eq!(data["repositoryReady"], false, "{case}: {data}");
-        assert_repository_check_status(
-            &data,
-            "repository.config_dump_info",
-            None,
-            "failed",
-        );
+        assert_repository_check_status(&data, "repository.config_dump_info", None, "failed");
         assert_repository_check_status(
             &data,
             "repository.config_dump_info",
@@ -664,21 +673,24 @@ fn project_health_rejects_cross_kind_staged_config_dump_descriptors() {
             "failed",
         );
         assert_repository_check_status(&data, "repository.attributes", None, "notRun");
-        assert_repository_check_status(
-            &data,
-            "repository.attributes",
-            Some("external"),
-            "notRun",
+        assert_repository_check_status(&data, "repository.attributes", Some("external"), "notRun");
+        assert!(
+            data["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|diagnostic| {
+                    diagnostic["code"] == "git.config_dump_info_unclassified"
+                        && diagnostic["sourceSet"] == "external"
+                        && diagnostic["evidence"].as_array().is_some_and(|evidence| {
+                            evidence.iter().any(|item| {
+                                item.as_str()
+                                    .is_some_and(|item| item.contains("does not match"))
+                            })
+                        })
+                }),
+            "{case}: {data}"
         );
-        assert!(data["diagnostics"].as_array().unwrap().iter().any(|diagnostic| {
-            diagnostic["code"] == "git.config_dump_info_unclassified"
-                && diagnostic["sourceSet"] == "external"
-                && diagnostic["evidence"].as_array().is_some_and(|evidence| {
-                    evidence
-                        .iter()
-                        .any(|item| item.as_str().is_some_and(|item| item.contains("does not match")))
-                })
-        }), "{case}: {data}");
         let _ = fs::remove_dir_all(root);
     }
 }
@@ -747,8 +759,16 @@ fn project_health_platform_xml_resource_roles_are_exact() {
     create_platform_workspace(&root, "src");
     fs::create_dir_all(root.join("src/XDTOPackages/Sales/Ext")).unwrap();
     fs::create_dir_all(root.join("src/Templates/Blob/Ext")).unwrap();
-    fs::write(root.join("src/XDTOPackages/Sales/Ext/Package.bin"), "text\n").unwrap();
-    fs::write(root.join("src/Templates/Blob/Ext/Template.bin"), [0_u8, 1, 2]).unwrap();
+    fs::write(
+        root.join("src/XDTOPackages/Sales/Ext/Package.bin"),
+        "text\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("src/Templates/Blob/Ext/Template.bin"),
+        [0_u8, 1, 2],
+    )
+    .unwrap();
     fs::write(
         root.join(".gitignore"),
         "**/.build/\nConfigDumpInfo.xml\nDumpFilesIndex.txt\n",
@@ -765,10 +785,16 @@ fn project_health_platform_xml_resource_roles_are_exact() {
     assert!(result.ok, "{:?}", result.errors);
     let data = result.data.unwrap();
     assert_eq!(data["repositoryReady"], false, "{data}");
-    assert!(data["diagnostics"].as_array().is_some_and(|items| items.iter().any(|item| {
-        item["code"] == "git.text_resource_marked_binary"
-            && item["paths"] == serde_json::json!(["src/XDTOPackages/Sales/Ext/Package.bin"])
-    })), "{data}");
+    assert!(
+        data["diagnostics"]
+            .as_array()
+            .is_some_and(|items| items.iter().any(|item| {
+                item["code"] == "git.text_resource_marked_binary"
+                    && item["paths"]
+                        == serde_json::json!(["src/XDTOPackages/Sales/Ext/Package.bin"])
+            })),
+        "{data}"
+    );
 
     fs::write(
         root.join(".gitattributes"),
@@ -813,23 +839,32 @@ fn project_health_mixed_platform_and_nested_edt_publish_profile_specific_checks(
         "repository.working_eol",
         "repository.lfs",
     ] {
-        assert!(data["checks"].as_array().unwrap().iter().any(|row| {
-            row["id"] == check
-                && row["sourceSet"] == "designer"
-                && row["status"] == "passed"
-        }), "{check}/designer: {data}");
-        assert!(data["checks"].as_array().unwrap().iter().any(|row| {
-            row["id"] == check
-                && row["sourceSet"] == "edt"
-                && row["status"] == "notApplicable"
-        }), "{check}/edt: {data}");
+        assert!(
+            data["checks"].as_array().unwrap().iter().any(|row| {
+                row["id"] == check && row["sourceSet"] == "designer" && row["status"] == "passed"
+            }),
+            "{check}/designer: {data}"
+        );
+        assert!(
+            data["checks"].as_array().unwrap().iter().any(|row| {
+                row["id"] == check && row["sourceSet"] == "edt" && row["status"] == "notApplicable"
+            }),
+            "{check}/edt: {data}"
+        );
     }
-    assert!(!data["diagnostics"].as_array().unwrap().iter().any(|diagnostic| {
-        diagnostic["code"] == "git.text_policy_missing"
-            && diagnostic["paths"].as_array().is_some_and(|paths| {
-                paths.iter().any(|path| path == "src/edt/Foo.xml")
-            })
-    }), "{data}");
+    assert!(
+        !data["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|diagnostic| {
+                diagnostic["code"] == "git.text_policy_missing"
+                    && diagnostic["paths"]
+                        .as_array()
+                        .is_some_and(|paths| paths.iter().any(|path| path == "src/edt/Foo.xml"))
+            }),
+        "{data}"
+    );
     let _ = fs::remove_dir_all(root);
 }
 
@@ -865,38 +900,44 @@ fn project_health_checks_a_proven_platform_root_when_a_sibling_format_is_unknown
     ] {
         assert!(
             data["checks"].as_array().unwrap().iter().any(|row| {
-                row["id"] == check
-                    && row["sourceSet"] == "good"
-                    && row["status"] == "passed"
+                row["id"] == check && row["sourceSet"] == "good" && row["status"] == "passed"
             }),
             "{check}/good: {data}"
         );
         assert!(
             data["checks"].as_array().unwrap().iter().any(|row| {
-                row["id"] == check
-                    && row["sourceSet"] == "unknown"
-                    && row["status"] == "notRun"
+                row["id"] == check && row["sourceSet"] == "unknown" && row["status"] == "notRun"
             }),
             "{check}/unknown: {data}"
         );
     }
-    assert!(data["checks"].as_array().unwrap().iter().any(|row| {
-        row["id"] == "repository.attributes"
-            && row.get("sourceSet").is_none()
-            && row["status"] == "notRun"
-    }), "aggregate attributes must remain incomplete: {data}");
+    assert!(
+        data["checks"].as_array().unwrap().iter().any(|row| {
+            row["id"] == "repository.attributes"
+                && row.get("sourceSet").is_none()
+                && row["status"] == "notRun"
+        }),
+        "aggregate attributes must remain incomplete: {data}"
+    );
     assert_repository_check_status(&data, "repository.ignore", None, "failed");
     assert_repository_check_status(&data, "repository.ignore", Some("good"), "passed");
     assert_repository_check_status(&data, "repository.ignore", Some("unknown"), "notRun");
-    assert!(data["diagnostics"].as_array().unwrap().iter().any(|diagnostic| {
-        diagnostic["code"] == "git.ignore_rule_missing"
-            && diagnostic.get("sourceSet").is_none()
-            && diagnostic["paths"].as_array().is_some_and(|paths| {
-                paths
-                    .iter()
-                    .any(|path| path.as_str().is_some_and(|path| path.contains(".build")))
-            })
-    }), "{data}");
+    assert!(
+        data["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|diagnostic| {
+                diagnostic["code"] == "git.ignore_rule_missing"
+                    && diagnostic.get("sourceSet").is_none()
+                    && diagnostic["paths"].as_array().is_some_and(|paths| {
+                        paths
+                            .iter()
+                            .any(|path| path.as_str().is_some_and(|path| path.contains(".build")))
+                    })
+            }),
+        "{data}"
+    );
     let _ = fs::remove_dir_all(root);
 }
 
@@ -923,23 +964,35 @@ fn project_health_workspace_root_rejection_suppresses_source_derived_git_facts()
     assert!(result.ok, "{:?}", result.errors);
     let data = result.data.unwrap();
     assert_eq!(data["ready"], false, "{data}");
-    assert!(data["diagnostics"].as_array().unwrap().iter().any(|diagnostic| {
-        diagnostic["code"] == "source_set.root_is_workspace"
-    }), "{data}");
+    assert!(
+        data["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|diagnostic| { diagnostic["code"] == "source_set.root_is_workspace" }),
+        "{data}"
+    );
     assert_eq!(snapshot_files(&root), before);
-    assert!(!data["diagnostics"].as_array().unwrap().iter().any(|diagnostic| {
-        diagnostic["sourceSet"] == "main"
-            && matches!(
-                diagnostic["code"].as_str(),
-                Some(
-                    "git.ignore_rule_missing"
-                        | "git.ignore_rule_local_only"
-                        | "git.generated_path_tracked"
-                        | "git.runtime_sidecar_tracked"
-                        | "git.config_dump_info_unclassified"
-                )
-            )
-    }), "{data}");
+    assert!(
+        !data["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|diagnostic| {
+                diagnostic["sourceSet"] == "main"
+                    && matches!(
+                        diagnostic["code"].as_str(),
+                        Some(
+                            "git.ignore_rule_missing"
+                                | "git.ignore_rule_local_only"
+                                | "git.generated_path_tracked"
+                                | "git.runtime_sidecar_tracked"
+                                | "git.config_dump_info_unclassified"
+                        )
+                    )
+            }),
+        "{data}"
+    );
     for check in [
         "repository.ignore",
         "repository.generated_paths",
@@ -949,11 +1002,12 @@ fn project_health_workspace_root_rejection_suppresses_source_derived_git_facts()
         "repository.working_eol",
         "repository.lfs",
     ] {
-        assert!(data["checks"].as_array().unwrap().iter().any(|row| {
-            row["id"] == check
-                && row["sourceSet"] == "main"
-                && row["status"] == "notRun"
-        }), "{check}/main: {data}");
+        assert!(
+            data["checks"].as_array().unwrap().iter().any(|row| {
+                row["id"] == check && row["sourceSet"] == "main" && row["status"] == "notRun"
+            }),
+            "{check}/main: {data}"
+        );
     }
     for check in [
         "repository.ignore",
@@ -983,19 +1037,32 @@ fn project_health_preserves_an_independent_cache_ignore_failure_for_a_rejected_r
     let data = result.data.unwrap();
     assert_repository_check_status(&data, "repository.ignore", None, "failed");
     assert_repository_check_status(&data, "repository.ignore", Some("main"), "notRun");
-    assert!(data["diagnostics"].as_array().unwrap().iter().any(|diagnostic| {
-        diagnostic["code"] == "git.ignore_rule_missing"
-            && diagnostic.get("sourceSet").is_none()
-            && diagnostic["paths"].as_array().is_some_and(|paths| {
-                paths
-                    .iter()
-                    .any(|path| path.as_str().is_some_and(|path| path.contains(".build")))
-            })
-    }), "{data}");
-    assert!(!data["diagnostics"].as_array().unwrap().iter().any(|diagnostic| {
-        diagnostic["code"] == "git.ignore_rule_missing"
-            && diagnostic["sourceSet"] == "main"
-    }), "{data}");
+    assert!(
+        data["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|diagnostic| {
+                diagnostic["code"] == "git.ignore_rule_missing"
+                    && diagnostic.get("sourceSet").is_none()
+                    && diagnostic["paths"].as_array().is_some_and(|paths| {
+                        paths
+                            .iter()
+                            .any(|path| path.as_str().is_some_and(|path| path.contains(".build")))
+                    })
+            }),
+        "{data}"
+    );
+    assert!(
+        !data["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|diagnostic| {
+                diagnostic["code"] == "git.ignore_rule_missing" && diagnostic["sourceSet"] == "main"
+            }),
+        "{data}"
+    );
     let _ = fs::remove_dir_all(root);
 }
 
@@ -1031,16 +1098,18 @@ fn project_health_checks_a_proven_root_when_a_sibling_route_is_unsafe() {
         "repository.working_eol",
         "repository.lfs",
     ] {
-        assert!(data["checks"].as_array().unwrap().iter().any(|row| {
-            row["id"] == check
-                && row["sourceSet"] == "good"
-                && row["status"] == "passed"
-        }), "{check}/good: {data}");
-        assert!(data["checks"].as_array().unwrap().iter().any(|row| {
-            row["id"] == check
-                && row["sourceSet"] == "unsafe"
-                && row["status"] == "notRun"
-        }), "{check}/unsafe: {data}");
+        assert!(
+            data["checks"].as_array().unwrap().iter().any(|row| {
+                row["id"] == check && row["sourceSet"] == "good" && row["status"] == "passed"
+            }),
+            "{check}/good: {data}"
+        );
+        assert!(
+            data["checks"].as_array().unwrap().iter().any(|row| {
+                row["id"] == check && row["sourceSet"] == "unsafe" && row["status"] == "notRun"
+            }),
+            "{check}/unsafe: {data}"
+        );
     }
     let _ = fs::remove_dir_all(root);
 }
@@ -1090,31 +1159,41 @@ fn project_health_keeps_resource_policy_independent_between_source_sets() {
         "repository.working_eol",
         "repository.lfs",
     ] {
-        assert!(data["checks"].as_array().unwrap().iter().any(|row| {
-            row["id"] == check
-                && row.get("sourceSet").is_none()
-                && row["status"] == "notRun"
-        }), "{check}/aggregate: {data}");
-        assert!(data["checks"].as_array().unwrap().iter().any(|row| {
-            row["id"] == check
-                && row["sourceSet"] == "good"
-                && row["status"] == "passed"
-        }), "{check}/good: {data}");
-        assert!(data["checks"].as_array().unwrap().iter().any(|row| {
-            row["id"] == check
-                && row["sourceSet"] == "bad"
-                && row["status"] == "notRun"
-        }), "{check}/bad: {data}");
+        assert!(
+            data["checks"].as_array().unwrap().iter().any(|row| {
+                row["id"] == check && row.get("sourceSet").is_none() && row["status"] == "notRun"
+            }),
+            "{check}/aggregate: {data}"
+        );
+        assert!(
+            data["checks"].as_array().unwrap().iter().any(|row| {
+                row["id"] == check && row["sourceSet"] == "good" && row["status"] == "passed"
+            }),
+            "{check}/good: {data}"
+        );
+        assert!(
+            data["checks"].as_array().unwrap().iter().any(|row| {
+                row["id"] == check && row["sourceSet"] == "bad" && row["status"] == "notRun"
+            }),
+            "{check}/bad: {data}"
+        );
     }
-    assert!(data["diagnostics"].as_array().unwrap().iter().any(|diagnostic| {
-        diagnostic["code"] == "git.inspection_incomplete"
-            && diagnostic["sourceSet"] == "bad"
-            && diagnostic["evidence"].as_array().is_some_and(|evidence| {
-                evidence.iter().any(|item| item.as_str().is_some_and(|text| {
-                    text.contains("bad/B.xml")
-                }))
-            })
-    }), "{data}");
+    assert!(
+        data["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|diagnostic| {
+                diagnostic["code"] == "git.inspection_incomplete"
+                    && diagnostic["sourceSet"] == "bad"
+                    && diagnostic["evidence"].as_array().is_some_and(|evidence| {
+                        evidence.iter().any(|item| {
+                            item.as_str().is_some_and(|text| text.contains("bad/B.xml"))
+                        })
+                    })
+            }),
+        "{data}"
+    );
     let _ = fs::remove_dir_all(root);
 }
 
@@ -1174,15 +1253,23 @@ fn project_health_keeps_working_eol_errors_scoped_to_the_source_set() {
     assert_repository_check_status(&data, "repository.working_eol", None, "notRun");
     assert_repository_check_status(&data, "repository.working_eol", Some("good"), "passed");
     assert_repository_check_status(&data, "repository.working_eol", Some("bad"), "notRun");
-    assert!(data["diagnostics"].as_array().unwrap().iter().any(|diagnostic| {
-        diagnostic["code"] == "git.inspection_incomplete"
-            && diagnostic["sourceSet"] == "bad"
-            && diagnostic["evidence"].as_array().is_some_and(|evidence| {
-                evidence.iter().any(|item| item.as_str().is_some_and(|text| {
-                    text.contains("bad/Extra.xml")
-                }))
-            })
-    }), "{data}");
+    assert!(
+        data["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|diagnostic| {
+                diagnostic["code"] == "git.inspection_incomplete"
+                    && diagnostic["sourceSet"] == "bad"
+                    && diagnostic["evidence"].as_array().is_some_and(|evidence| {
+                        evidence.iter().any(|item| {
+                            item.as_str()
+                                .is_some_and(|text| text.contains("bad/Extra.xml"))
+                        })
+                    })
+            }),
+        "{data}"
+    );
     let _ = fs::remove_dir_all(root);
 }
 
@@ -1229,15 +1316,23 @@ fn project_health_keeps_lfs_errors_scoped_to_the_source_set() {
     assert_repository_check_status(&data, "repository.lfs", None, "notRun");
     assert_repository_check_status(&data, "repository.lfs", Some("good"), "passed");
     assert_repository_check_status(&data, "repository.lfs", Some("bad"), "notRun");
-    assert!(data["diagnostics"].as_array().unwrap().iter().any(|diagnostic| {
-        diagnostic["code"] == "git.inspection_incomplete"
-            && diagnostic["sourceSet"] == "bad"
-            && diagnostic["evidence"].as_array().is_some_and(|evidence| {
-                evidence.iter().any(|item| item.as_str().is_some_and(|text| {
-                    text.contains("bad/Picture.bin")
-                }))
-            })
-    }), "{data}");
+    assert!(
+        data["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|diagnostic| {
+                diagnostic["code"] == "git.inspection_incomplete"
+                    && diagnostic["sourceSet"] == "bad"
+                    && diagnostic["evidence"].as_array().is_some_and(|evidence| {
+                        evidence.iter().any(|item| {
+                            item.as_str()
+                                .is_some_and(|text| text.contains("bad/Picture.bin"))
+                        })
+                    })
+            }),
+        "{data}"
+    );
     let _ = fs::remove_dir_all(root);
 }
 
@@ -1251,11 +1346,7 @@ fn project_health_reports_index_eol_even_when_text_policy_is_missing() {
         "**/.build/\nConfigDumpInfo.xml\nDumpFilesIndex.txt\n",
     )
     .unwrap();
-    fs::write(
-        root.join("src/Configuration.xml"),
-        "<MetaDataObject/>\r\n",
-    )
-    .unwrap();
+    fs::write(root.join("src/Configuration.xml"), "<MetaDataObject/>\r\n").unwrap();
     git(&root, &["add", "."]);
     let crlf_blob_output = git_with_input(
         &root,
@@ -1285,9 +1376,14 @@ fn project_health_reports_index_eol_even_when_text_policy_is_missing() {
     let data = result.data.unwrap();
     assert_repository_check_status(&data, "repository.attributes", Some("main"), "failed");
     assert_repository_check_status(&data, "repository.index_eol", Some("main"), "failed");
-    assert!(data["diagnostics"].as_array().unwrap().iter().any(|diagnostic| {
-        diagnostic["code"] == "git.index_eol_not_lf"
-    }), "{data}");
+    assert!(
+        data["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|diagnostic| { diagnostic["code"] == "git.index_eol_not_lf" }),
+        "{data}"
+    );
     let _ = fs::remove_dir_all(root);
 }
 
@@ -1315,9 +1411,14 @@ fn project_health_reports_working_eol_even_when_text_policy_is_local_only() {
     let data = result.data.unwrap();
     assert_repository_check_status(&data, "repository.attributes", Some("main"), "failed");
     assert_repository_check_status(&data, "repository.working_eol", Some("main"), "failed");
-    assert!(data["diagnostics"].as_array().unwrap().iter().any(|diagnostic| {
-        diagnostic["code"] == "git.mixed_eol"
-    }), "{data}");
+    assert!(
+        data["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|diagnostic| { diagnostic["code"] == "git.mixed_eol" }),
+        "{data}"
+    );
     let _ = fs::remove_dir_all(root);
 }
 
@@ -1340,21 +1441,24 @@ fn project_health_does_not_execute_configured_fsmonitor_hook() {
     let hook = root.join("fsmonitor-hook.sh");
     fs::write(
         &hook,
-        format!("#!/bin/sh\nprintf ran >> '{}'\nprintf '0\\n'\n", marker.display()),
+        format!(
+            "#!/bin/sh\nprintf ran >> '{}'\nprintf '0\\n'\n",
+            marker.display()
+        ),
     )
     .unwrap();
     let mut permissions = fs::metadata(&hook).unwrap().permissions();
     permissions.set_mode(0o700);
     fs::set_permissions(&hook, permissions).unwrap();
-    git(
-        &root,
-        &["config", "core.fsmonitor", hook.to_str().unwrap()],
-    );
+    git(&root, &["config", "core.fsmonitor", hook.to_str().unwrap()]);
 
     let result = status(&root);
 
     assert!(result.ok, "{:?}", result.errors);
-    assert!(!marker.exists(), "fsmonitor hook was executed by project health");
+    assert!(
+        !marker.exists(),
+        "fsmonitor hook was executed by project health"
+    );
     let _ = fs::remove_dir_all(root);
 }
 
@@ -1392,7 +1496,13 @@ fn project_health_full_portable_linked_worktree_is_ready_and_read_only() {
     let linked = root.join("linked");
     git(
         &repository,
-        &["worktree", "add", "--detach", linked.to_str().unwrap(), "HEAD"],
+        &[
+            "worktree",
+            "add",
+            "--detach",
+            linked.to_str().unwrap(),
+            "HEAD",
+        ],
     );
     let before = snapshot_files(&linked);
     let git_before = snapshot_files(&repository.join(".git"));
@@ -1472,12 +1582,21 @@ fn project_health_handles_a_real_index_past_the_generic_capture_limit() {
         "notRun",
         "{data}"
     );
-    assert!(!data["diagnostics"].as_array().unwrap().iter().any(|diagnostic| {
-        diagnostic["code"] == "git.inspection_incomplete"
-            && diagnostic["evidence"].as_array().is_some_and(|evidence| {
-                evidence.iter().any(|item| item.as_str().is_some_and(|text| text.contains("truncated")))
-            })
-    }), "{data}");
+    assert!(
+        !data["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|diagnostic| {
+                diagnostic["code"] == "git.inspection_incomplete"
+                    && diagnostic["evidence"].as_array().is_some_and(|evidence| {
+                        evidence.iter().any(|item| {
+                            item.as_str().is_some_and(|text| text.contains("truncated"))
+                        })
+                    })
+            }),
+        "{data}"
+    );
     let _ = fs::remove_dir_all(root);
 }
 
@@ -1488,8 +1607,11 @@ fn project_health_bounds_equal_root_resource_ownership_composition() {
     fs::create_dir_all(root.join("src")).unwrap();
     fs::write(root.join("src/Configuration.xml"), "<MetaDataObject/>\n").unwrap();
     for index in 0..63 {
-        fs::write(root.join(format!("src/Module{index}.bsl")), "Процедура P()\nКонецПроцедуры\n")
-            .unwrap();
+        fs::write(
+            root.join(format!("src/Module{index}.bsl")),
+            "Процедура P()\nКонецПроцедуры\n",
+        )
+        .unwrap();
     }
     // Every owner classifies the same 64 files, so the composition's cost is
     // `owners x files` and the whole call has to fit the interactive invocation
@@ -1520,18 +1642,8 @@ fn project_health_bounds_equal_root_resource_ownership_composition() {
     assert!(result.ok, "{:?}", result.errors);
     let data = result.data.unwrap();
     assert_repository_check_status(&data, "repository.attributes", None, "notRun");
-    assert_repository_check_status(
-        &data,
-        "repository.attributes",
-        Some("owner-0000"),
-        "notRun",
-    );
-    assert_repository_check_status(
-        &data,
-        "repository.attributes",
-        Some("owner-0255"),
-        "notRun",
-    );
+    assert_repository_check_status(&data, "repository.attributes", Some("owner-0000"), "notRun");
+    assert_repository_check_status(&data, "repository.attributes", Some("owner-0255"), "notRun");
     let owner_diagnostic = data["diagnostics"]
         .as_array()
         .unwrap()
@@ -1707,7 +1819,10 @@ fn root_answer(workspace: &Path, tool: &str) -> StatusResult {
     let mut child = Command::new(env!("CARGO_BIN_EXE_unica"))
         .arg("mcp")
         .current_dir(workspace)
-        .env("UNICA_PROVIDER_STATE_DIR", fs::canonicalize(&state).unwrap())
+        .env(
+            "UNICA_PROVIDER_STATE_DIR",
+            fs::canonicalize(&state).unwrap(),
+        )
         // Демон переживает MCP: без назначенной паузы он остаётся на
         // четверть часа, и к концу прогона их набирается столько же,
         // сколько было тестов.
@@ -1814,11 +1929,14 @@ fn assert_repository_check_status(
     source_set: Option<&str>,
     expected: &str,
 ) {
-    assert!(data["checks"].as_array().unwrap().iter().any(|row| {
-        row["id"] == check
-            && row.get("sourceSet").and_then(Value::as_str) == source_set
-            && row["status"] == expected
-    }), "{check}/{source_set:?} expected {expected}: {data}");
+    assert!(
+        data["checks"].as_array().unwrap().iter().any(|row| {
+            row["id"] == check
+                && row.get("sourceSet").and_then(Value::as_str) == source_set
+                && row["status"] == expected
+        }),
+        "{check}/{source_set:?} expected {expected}: {data}"
+    );
 }
 
 fn create_platform_workspace(root: &Path, source_path: &str) {

@@ -90,7 +90,11 @@ pub fn launch_runtime(
     )))
 }
 
-fn runtime_command(entrypoint: &Path, args: &[String], handoff: &RuntimeHandoff<'_>) -> Command {
+pub(crate) fn runtime_command(
+    entrypoint: &Path,
+    args: &[String],
+    handoff: &RuntimeHandoff<'_>,
+) -> Command {
     let mut command = Command::new(entrypoint);
     command
         .args(args)

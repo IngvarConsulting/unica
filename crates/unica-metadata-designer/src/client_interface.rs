@@ -431,7 +431,7 @@ mod tests {
     use super::*;
 
     const NATIVE_EMPTY: &str = include_str!(
-        "../../../tests/fixtures/platform_8_3_27/empty_configuration/src/Ext/ClientApplicationInterface.xml"
+        "../../../tests/fixtures/formats/platform_xml/2.20/empty_configuration/src/Ext/ClientApplicationInterface.xml"
     );
 
     #[test]

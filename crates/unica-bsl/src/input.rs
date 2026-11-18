@@ -23,6 +23,9 @@ pub struct CodeInsertArgs {
     pub position: Option<CodePosition>,
 }
 
+pub(crate) const MODULE_TEXT_REVISION_HEX_LEN: usize = 64;
+pub(crate) const MODULE_TEXT_REVISION_PATTERN: &str = r"^[0-9a-f]{64}$";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodeReplaceArgs {
     pub at: unica_address::address::QualifiedAddress,
@@ -30,6 +33,7 @@ pub struct CodeReplaceArgs {
     /// Текстовый якорь внутри модуля. Метод целиком задаётся адресом
     /// `…Method.M`, а не селектором (#1353).
     pub anchor: Option<String>,
+    pub if_rev: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,7 +54,7 @@ pub fn parse_code_plan_operation(
         .ok_or_else(|| bad_code_arg(&base, "code operation args must be an object"))?;
     let allowed = match operation {
         "code.insert" => &["at", "text", "selector", "position"][..],
-        "code.replace" => &["at", "text", "selector"][..],
+        "code.replace" => &["at", "text", "selector", "ifRev"][..],
         _ => {
             return Err(bad_code_arg(
                 &base,
@@ -150,10 +154,32 @@ pub fn parse_code_plan_operation(
             if anchor.is_none() && addressed.is_none() {
                 return Err(bad_code_arg(&selector_path, "selector.anchor is required for a module address; address its Body or a Method instead"));
             }
+            let if_rev = object
+                .get("ifRev")
+                .map(|value| {
+                    let path = format!("{base}.ifRev");
+                    value
+                        .as_str()
+                        .filter(|value| {
+                            value.len() == MODULE_TEXT_REVISION_HEX_LEN
+                                && value.bytes().all(|byte| {
+                                    byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
+                                })
+                        })
+                        .map(str::to_owned)
+                        .ok_or_else(|| {
+                            bad_code_arg(
+                                path,
+                                "ifRev must be a module text revision returned by a read",
+                            )
+                        })
+                })
+                .transpose()?;
             Ok(CodePlanOperation::Replace(CodeReplaceArgs {
                 at,
                 text,
                 anchor,
+                if_rev,
             }))
         }
         _ => unreachable!("closed operation checked above"),

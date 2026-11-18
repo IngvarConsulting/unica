@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location("ci_lane_runner", Path(__file__).with_name("run-tests.py"))
 runner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runner)
-LANES = ("ordinary", "receipt", "vendor")
+LANES = ("ordinary", "receipt")
 LINUX = "ubuntu-latest"
 HOSTS = (LINUX, "macos-15", "windows-latest")
 # The queue runs on Linux only: a merge group never waits for a macOS runner.
@@ -42,19 +42,18 @@ HISTORICAL_PLATFORM_ONLY = {("queue", "macos-15"), ("queue", "macos-14")}
 
 
 def lanes(profile: str, host: str | None = None) -> tuple[str, ...]:
-    """Configurations one runner builds and executes for a gate profile.
-
-    Vendor's ureq fault cases run with the complete suites only (nightly,
-    release): the queue keeps ordinary and Receipt (owner's decision, #1813).
-    """
+    """Configurations one runner builds and executes for a gate profile."""
     if not set(ADMITTED[profile]) & {"medium", "large"}:
         return ("ordinary",)
-    return LANES if "large" in ADMITTED[profile] else ("ordinary", "receipt")
+    return LANES
 
 
 def profile_hosts(profile: str, *, full_matrix: bool = True) -> list[str]:
-    """Runners of a gate profile; a pull request adds macOS only with `ci:full`."""
-    if profile == "large":
+    """Runners of a gate profile; a pull request adds macOS only with `ci:full`.
+
+    A release runs every runner the night runs: its inventory is compared with
+    the night's, and a tag is checked as fully as the slice it was cut from."""
+    if profile in ("large", "release"):
         return list(HOSTS)
     if profile == "queue" or (profile == "pr" and not full_matrix):
         return [LINUX]
@@ -62,8 +61,7 @@ def profile_hosts(profile: str, *, full_matrix: bool = True) -> list[str]:
 
 
 def selection(lane: str) -> tuple[str, ...]:
-    return {"ordinary": ("--workspace",), "receipt": runner.LEDGER_FEATURE_SELECTION,
-            "vendor": runner.UREQ_RECYCLING_SELECTION}[lane]
+    return {"ordinary": ("--workspace",), "receipt": runner.LEDGER_FEATURE_SELECTION}[lane]
 
 
 def shards(profile: str, lane: str, host: str | None = None) -> int:
@@ -167,7 +165,6 @@ def extracted_target(root: Path) -> Path:
 
 
 def reuse_command(action: str, root: Path, archive: Path, lane: str, profile: str, partition: str | None = None, *, candidate: str | None = None, host: str | None = None) -> list[str]:
-    workspace = root / "vendor/ureq" if lane == "vendor" else root
     selected_filters = filters(lane)
     if candidate is not None:
         if selected_filters:
@@ -178,10 +175,8 @@ def reuse_command(action: str, root: Path, archive: Path, lane: str, profile: st
             candidate = f"({selected_filters[1]}) & ({candidate})"
         selected_filters = ["-E", candidate]
     command = ["cargo", "nextest", action, "--archive-file", str(archive),
-               "--extract-to", str(root), "--extract-overwrite", "--workspace-remap", str(workspace),
+               "--extract-to", str(root), "--extract-overwrite", "--workspace-remap", str(root),
                "--profile", nextest_profile(profile, lane, host), *selected_filters]
-    if lane == "vendor":
-        command += ["--config-file", str(workspace / ".config/nextest.toml")]
     if partition:
         command += ["--partition", partition]
     if action == "list":
@@ -614,8 +609,7 @@ def run_archive(root: Path, prepared: Path, destination: Path, lane: str, profil
         # not take the doctest outcome out of the report.
         allure_results.write(destination, doctest_record(document, profile, host))
     nextest_profile = document["nextestProfile"]
-    candidates = {extracted_target(root) / "nextest" / nextest_profile / "junit.xml",
-                  root / "vendor" / "ureq" / "target" / "nextest" / nextest_profile / "junit.xml"}  # cargo-target: extracted archive
+    candidates = {extracted_target(root) / "nextest" / nextest_profile / "junit.xml"}
     for path in candidates:
         path.unlink(missing_ok=True)
     command = reuse_command("run", root, archive, lane, profile, f"hash:{index}/{len(document['shards'])}", host=host)
@@ -1019,6 +1013,11 @@ def compare_inventory(baseline: dict, current: dict) -> tuple[list[str], dict]:
         same_profile = same_selection(previous.get("profile"), current["profile"], key[0])
         new = present.get(transitions.get(key, key))
         if new is None:
+            # Historical full inventories include the retired dependency lane.
+            # Require an explicit target removal before accepting its absence.
+            if old["lane"] == "vendor" and old["binaries"] == ["ureq"] and "ureq" in removed:
+                drift["removedCases"][label] = sorted(old["cases"])
+                continue
             if same_profile or old["lane"] not in lanes(previous["profile"], key[0]):
                 problems.append(f"{label}: configuration and its results disappeared since the previous inventory")
             continue

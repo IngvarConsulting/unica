@@ -5,7 +5,7 @@ use super::{
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use unica_address::address::NodeKind;
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 use unica_forms::facts::{FormInfoData, FormSupportDetails, FormSupportRuleReason};
 use unica_forms_designer::codec::parse_form_info_xml;
 use unica_metadata::support_state::ObjectSupportState;
@@ -41,15 +41,17 @@ impl ProviderReadAuthority {
     pub(crate) fn form_payload(
         &self,
         target: &MetadataAddress,
+        platform_line: Option<unica_source_contract::format_identity::PlatformLine>,
         checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
     ) -> Result<Value, ViewError> {
-        serde_json::to_value(self.form_data(target, checkpoint)?)
+        serde_json::to_value(self.form_data(target, platform_line, checkpoint)?)
             .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))
     }
 
     pub(crate) fn form_data(
         &self,
         target: &MetadataAddress,
+        platform_line: Option<unica_source_contract::format_identity::PlatformLine>,
         checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
     ) -> Result<FormInfoData, ViewError> {
         let descriptor = self.metadata_descriptor(target)?;
@@ -81,11 +83,9 @@ impl ProviderReadAuthority {
         let owner_support = if object_context.is_empty() {
             None
         } else {
-            let owner =
-                MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &parts[..2].join("."))
-                    .map_err(|error| {
-                        ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
-                    })?;
+            let owner = MetadataAddress::parse_logical(&parts[..2].join(".")).map_err(|error| {
+                ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+            })?;
             let owner_descriptor = self.metadata_descriptor(&owner)?;
             let owner_rule = form_support_rule(state.as_deref(), &owner_descriptor)?;
             Some(object_support_from_state(state.as_deref(), owner_rule))
@@ -109,7 +109,7 @@ impl ProviderReadAuthority {
                 Some(_) => FormSupportRuleReason::RuleAbsent,
             })
         };
-        let mut data = parse_form_info_xml(text, form_name, object_context, support)
+        let mut data = parse_form_info_xml(text, form_name, object_context, support, platform_line)
             .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
         data.support_details = Some(FormSupportDetails {
             support_rule: own_rule,
@@ -122,6 +122,7 @@ impl ProviderReadAuthority {
     pub(crate) fn form_validation_input(
         &self,
         target: &MetadataAddress,
+        platform_line: Option<unica_source_contract::format_identity::PlatformLine>,
         checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
     ) -> Result<FormValidationInput, ViewError> {
         let wrapper = self.metadata_descriptor(target)?;
@@ -142,11 +143,9 @@ impl ProviderReadAuthority {
             NodeKind::parse(parts[0]).ok()
         };
         let source_relative = if self.is_external_source_set() {
-            let owner =
-                MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &parts[..2].join("."))
-                    .map_err(|error| {
-                        ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
-                    })?;
+            let owner = MetadataAddress::parse_logical(&parts[..2].join(".")).map_err(|error| {
+                ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+            })?;
             self.metadata_descriptor_relative(&owner)?
         } else {
             PathBuf::from("Configuration.xml")
@@ -173,6 +172,7 @@ impl ProviderReadAuthority {
         let module = if crate::infrastructure::form_composition::form_validation_requires_module(
             &text,
             metadata_owner,
+            platform_line,
         ) {
             let module_target = unica_source_designer::module_layout::form_module_target(target)
                 .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
@@ -188,6 +188,7 @@ impl ProviderReadAuthority {
             module,
             config_context: !self.is_external_source_set(),
             metadata_owner,
+            platform_line,
             format_guard,
         })
     }

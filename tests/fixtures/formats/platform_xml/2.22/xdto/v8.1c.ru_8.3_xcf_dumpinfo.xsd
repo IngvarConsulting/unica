@@ -1,0 +1,25 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:ns1="http://v8.1c.ru/8.3/xcf/enums" xmlns:tns="http://v8.1c.ru/8.3/xcf/dumpinfo" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://v8.1c.ru/8.3/xcf/dumpinfo" attributeFormDefault="unqualified" elementFormDefault="qualified">
+	<xs:import namespace="http://v8.1c.ru/8.3/xcf/enums"/>
+	<xs:element name="ConfigDumpInfo" type="tns:ConfigDumpInfo"/>
+	<xs:complexType name="ConfigDumpInfo">
+		<xs:sequence>
+			<xs:element name="ConfigVersions" type="tns:ConfigVersions"/>
+		</xs:sequence>
+		<xs:attribute name="format" type="xs:string"/>
+		<xs:attribute name="version" type="ns1:FormatVersion"/>
+	</xs:complexType>
+	<xs:complexType name="ConfigVersions">
+		<xs:sequence>
+			<xs:element name="Metadata" type="tns:MetadataVersion"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="MetadataVersion">
+		<xs:sequence>
+			<xs:element name="Metadata" type="tns:MetadataVersion" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="name" type="xs:string" use="required"/>
+		<xs:attribute name="id" type="xs:string" use="required"/>
+		<xs:attribute name="configVersion" type="xs:string"/>
+	</xs:complexType>
+</xs:schema>

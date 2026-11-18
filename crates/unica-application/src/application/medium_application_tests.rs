@@ -4,9 +4,9 @@ use serde_json::{json, Value};
 use std::path::PathBuf;
 use unica_code_intelligence::model::CodeIntelligenceReadRequest;
 use unica_code_intelligence::model::SearchRequest;
+use unica_execution::runner::admission as runtime_admission;
 use unica_execution_contract::adapter_outcome::AdapterOutcome;
 use unica_navigation::deferred_delivery;
-use unica_runner::admission as runtime_admission;
 use unica_source_contract::events::{DomainEvent, DomainEventKind};
 use unica_source_contract::workspace::WorkspaceContext;
 use unica_work_control::cancellation::CancellationToken;
@@ -303,6 +303,7 @@ impl unica_diagnostics::model::DiagnosticProvider for DiagnosticsBoundaryProvide
                 .then_some(unica_diagnostics::model::DiagnosticReadiness {
                     state: unica_diagnostics::model::DiagnosticReadinessState::Ready,
                     retryable: false,
+                    progress: None,
                 }),
             error: None,
             suppressions: Vec::new(),

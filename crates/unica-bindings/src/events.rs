@@ -11,9 +11,7 @@ use unica_bsl::event_text::RequiredEventDirective;
 use unica_bsl::profile::{ModuleCapability, PlatformProfile};
 use unica_bsl::projection::{EventProjection, EventState, MethodKind, ModuleProjectionSet};
 use unica_forms::event_targets::{PropertyEventOwner, PropertyEventOwnerKind};
-use unica_forms::events::{
-    form_event_handler_signature_8_3_27, FormDefinitionKind, FormElementKind,
-};
+use unica_forms::events::{form_event_handler_signature, FormDefinitionKind, FormElementKind};
 use unica_forms::facts::{FormEventEvidence, FormInfoElement, FormInfoEvent};
 use unica_metadata::event::FormCallType;
 use unica_metadata::event_catalog::PlatformEventSpec;
@@ -87,18 +85,21 @@ pub struct EventImplementationShape {
     pub implementation_at: String,
     pub signature: String,
     pub directive: RequiredEventDirective,
-    pub region: &'static str,
+    /// Область обработчиков по стандарту 455, русское имя.
+    pub region: String,
 }
 
 pub fn project_platform_event_implementation(
     event_at: &QualifiedAddress,
     module_at: &QualifiedAddress,
+    platform: PlatformProfile,
     capability: ModuleCapability,
     module_text: Option<&str>,
 ) -> Result<EventImplementationShape, EventProjectionError> {
     let record = project_module_event_record(
         ModuleProjectionRequest {
             at: module_at,
+            platform,
             capability,
             title: String::new(),
             rev: "",
@@ -123,6 +124,7 @@ pub fn project_platform_event_implementation(
         record.projection,
         EventImplementationOwner::Platform,
         None,
+        None,
         module_at,
         EventDirectiveOwner::Platform(capability),
         record.spec,
@@ -143,11 +145,14 @@ pub fn project_property_event_implementation(
         .map(unica_address::address::AddressSegment::kind);
     let inputs = form_semantic_inputs(&form_at.to_string(), &evidence);
     validate_owner_chain(owner_chain, &inputs)?;
-    let capability = PlatformProfile::v8_3_27()
+    // Линия набора уже установлена в контексте формы: профиль берётся по ней.
+    let platform = PlatformProfile::for_line_or_base(evidence.context.platform_line);
+    let capability = platform
         .module_capability(module_at)
         .ok_or_else(|| EventProjectionError::unavailable("form module capability is absent"))?;
     let module = project_module(ModuleProjectionRequest {
         at: module_at,
+        platform,
         capability,
         title: String::new(),
         rev: "",
@@ -216,6 +221,7 @@ pub fn project_property_event_implementation(
         record.projection,
         implementation_owner,
         Some(canonical_handler),
+        owning_form_table(owner_chain),
         module_at,
         EventDirectiveOwner::Property(record.owner),
         record.spec,
@@ -250,6 +256,7 @@ fn shape_from_spec(
     projection: EventProjection,
     owner: EventImplementationOwner,
     handler: Option<String>,
+    form_table: Option<&str>,
     module_at: &QualifiedAddress,
     directive_owner: EventDirectiveOwner,
     spec: &PlatformEventSpec,
@@ -270,20 +277,13 @@ fn shape_from_spec(
     let catalog_signature = match directive_owner {
         EventDirectiveOwner::Platform(_) => spec.signature_ru.clone(),
         EventDirectiveOwner::Property(owner) => {
-            form_event_handler_signature_8_3_27(owner.catalog_owner(), spec)
+            form_event_handler_signature(owner.catalog_owner(), spec)
         }
     };
     let signature = substitute_catalog_handler(&catalog_signature, &spec.handler_ru, &handler)?;
     let directive = required_event_directive(directive_owner, spec)
         .map_err(|error| EventProjectionError::unavailable(error.to_string()))?;
-    let region = match owner {
-        EventImplementationOwner::Platform => "ОбработчикиСобытий",
-        EventImplementationOwner::Form => "ОбработчикиСобытийФормы",
-        EventImplementationOwner::Element
-        | EventImplementationOwner::Table
-        | EventImplementationOwner::Column => "ОбработчикиСобытийЭлементовФормы",
-        EventImplementationOwner::Command => "ОбработчикиКомандФормы",
-    };
+    let region = handler_region(owner, form_table);
     Ok(EventImplementationShape {
         projection,
         owner,
@@ -294,6 +294,35 @@ fn shape_from_spec(
         directive,
         region,
     })
+}
+
+/// Область обработчика по стандарту 455: своя у событий модуля, формы,
+/// элементов шапки, каждой таблицы формы с её колонками и элементами и у
+/// команд формы.
+fn handler_region(owner: EventImplementationOwner, form_table: Option<&str>) -> String {
+    use unica_bsl::event_text::standard_region as region;
+    match owner {
+        EventImplementationOwner::Platform => region::EVENT_HANDLERS.to_string(),
+        EventImplementationOwner::Form => region::FORM_EVENT_HANDLERS.to_string(),
+        EventImplementationOwner::Command => region::FORM_COMMANDS_EVENT_HANDLERS.to_string(),
+        EventImplementationOwner::Element
+        | EventImplementationOwner::Table
+        | EventImplementationOwner::Column => match form_table {
+            Some(table) => format!("{}{table}", region::FORM_TABLE_ITEMS_EVENT_HANDLERS),
+            None => region::FORM_HEADER_ITEMS_EVENT_HANDLERS.to_string(),
+        },
+    }
+}
+
+/// Таблица формы, которой принадлежит владелец события: ближайшая таблица в
+/// цепочке владельцев, включая его самого. Элемент вне таблиц — элемент шапки.
+fn owning_form_table(owner_chain: &[PropertyEventOwner]) -> Option<&str> {
+    owner_chain
+        .iter()
+        .rev()
+        .find(|owner| owner.kind == PropertyEventOwnerKind::Table)
+        .and_then(|owner| owner.at.segments().last())
+        .and_then(unica_address::address::AddressSegment::name)
 }
 
 fn substitute_catalog_handler(
@@ -315,11 +344,13 @@ fn substitute_catalog_handler(
 pub fn project_platform_event(
     event_at: &QualifiedAddress,
     module_at: &QualifiedAddress,
+    platform: PlatformProfile,
     capability: ModuleCapability,
     module_text: Option<&str>,
 ) -> Result<EventProjection, EventProjectionError> {
     let projection = project_module(ModuleProjectionRequest {
         at: module_at,
+        platform,
         capability,
         title: String::new(),
         rev: "",
@@ -358,12 +389,14 @@ pub fn project_property_events(
 ) -> Result<Vec<EventProjection>, EventProjectionError> {
     let module_at = QualifiedAddress::parse(&format!("{form_at}.Module.Form"))
         .map_err(|error| EventProjectionError::unavailable(error.to_string()))?;
-    let capability = PlatformProfile::v8_3_27()
+    let platform = PlatformProfile::for_line_or_base(evidence.context.platform_line);
+    let capability = platform
         .module_capability(&module_at)
         .ok_or_else(|| EventProjectionError::unavailable("form module capability is absent"))?;
     let inputs = form_semantic_inputs(&form_at.to_string(), evidence);
     let module = project_module(ModuleProjectionRequest {
         at: &module_at,
+        platform,
         capability,
         title: String::new(),
         rev: "",

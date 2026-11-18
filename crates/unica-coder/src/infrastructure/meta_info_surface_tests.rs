@@ -15,7 +15,7 @@ use crate::infrastructure::support_state::{
 use crate::infrastructure::test_fixtures;
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 use unica_forms_designer::root::require_form_root;
 use unica_metadata::request::MetaInfoRequest;
 use unica_metadata::validation_subject::MetadataSubsystemEvidence;
@@ -111,8 +111,7 @@ fn read_info(
     };
     let request = MetaInfoRequest {
         source_set: "main".to_string(),
-        metadata_path: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, metadata_path)
-            .unwrap(),
+        metadata_path: MetadataAddress::parse_logical(metadata_path).unwrap(),
         sections: Vec::new(),
         limit: 0,
     };
@@ -325,7 +324,7 @@ fn info_without_sections_is_local_only() {
     assert_eq!(data["kind"], "Catalog");
     assert_eq!(data["details"], serde_json::json!({}));
     assert_eq!(data["name"], "Inspectable");
-    assert_eq!(data["synonym"], "Inspectable synonym");
+    assert_eq!(data["synonym"], "ru = 'Inspectable synonym'");
     assert_eq!(data["support"], "supported");
     assert!(!data["properties"].as_array().unwrap().is_empty());
     assert!(data["relations"]["owners"].as_array().unwrap().is_empty());
@@ -1286,7 +1285,7 @@ fn info_observes_every_typed_mutation_field() {
         {"op": "setProperties", "values": {"Comment": "Observed comment"}},
         {"op": "add", "collection": "attributes", "elements": [{
             "name": "Added",
-            "synonym": "Added synonym",
+            "synonym": "ru = 'Added synonym'",
             "comment": "Added comment",
             "type": {"variants": [{"kind": "string", "length": 12, "allowedLength": "fixed"}]},
             "required": true,
@@ -1295,17 +1294,17 @@ fn info_observes_every_typed_mutation_field() {
         }]},
         {"op": "add", "collection": "tabularSections", "elements": [{
             "name": "Rows",
-            "synonym": "Rows synonym",
+            "synonym": "ru = 'Rows synonym'",
             "comment": "Rows comment",
             "attributes": [
                 {"name": "LineText", "type": {"variants": [{"kind": "string", "length": 20, "allowedLength": "variable"}]}, "required": true},
-                {"name": "LineNumber", "type": {"variants": [{"kind": "number", "digits": 10, "fraction": 2, "sign": "nonNegative"}]}, "required": false, "position": {"before": "LineText"}}
+                {"name": "LineQuantity", "type": {"variants": [{"kind": "number", "digits": 10, "fraction": 2, "sign": "nonNegative"}]}, "required": false, "position": {"before": "LineText"}}
             ]
         }]},
         {"op": "update", "collection": "attributes", "elements": [{
             "name": "Existing",
             "newName": "Renamed",
-            "synonym": "Renamed synonym",
+            "synonym": "ru = 'Renamed synonym'",
             "comment": "Renamed comment",
             "type": {"variants": [{"kind": "number", "digits": 6, "fraction": 2, "sign": "any"}]},
             "required": true,
@@ -1396,7 +1395,7 @@ fn info_observes_every_typed_mutation_field() {
         vec!["Renamed", "First", "Added", "Last"]
     );
     let renamed = &data["collections"]["attributes"][0];
-    assert_eq!(renamed["synonym"], "Renamed synonym");
+    assert_eq!(renamed["synonym"], "ru = 'Renamed synonym'");
     assert_eq!(renamed["comment"], "Renamed comment");
     assert_eq!(renamed["required"], true);
     assert_eq!(
@@ -1406,7 +1405,7 @@ fn info_observes_every_typed_mutation_field() {
     assert_eq!(renamed["type"]["variants"][0]["kind"], "number");
     assert_eq!(renamed["type"]["mutationCapability"], "editable");
     let rows = &data["collections"]["tabularSections"][0];
-    assert_eq!(rows["synonym"], "Rows synonym");
+    assert_eq!(rows["synonym"], "ru = 'Rows synonym'");
     assert_eq!(rows["comment"], "Rows comment");
     assert_eq!(
         rows["attributes"]
@@ -1415,7 +1414,7 @@ fn info_observes_every_typed_mutation_field() {
             .iter()
             .map(|element| element["name"].as_str().unwrap())
             .collect::<Vec<_>>(),
-        vec!["LineNumber", "LineText"]
+        vec!["LineQuantity", "LineText"]
     );
     assert_eq!(rows["attributes"][0]["required"], false);
     assert_eq!(rows["attributes"][1]["required"], true);

@@ -35,10 +35,10 @@ HELPER_REASON = "helper process"
 # исследовательское место. Перечень только сокращается — переехавший тест
 # убирается отсюда, новый сюда не добавляется.
 IGNORE_DEBT = frozenset({
-    ("crates/unica-bsl-types/src/tests.rs", "the_catalog_of_an_installation"),
     ("crates/unica-coder/tests/platform/persistent_provider_cwd.rs", "helper_inherited_cwd_subprocess_fixture"),
     ("crates/unica-daemon/src/infrastructure/daemon/lsp_workspaces/tests.rs",
      "a_large_common_module_comes_whole_in_one_request"),
+    ("crates/unica-documentation-sources/src/platform_help/platform_types.rs", "the_catalog_of_an_installation"),
     ("crates/unica-documentation-sources/src/platform_help/provider.rs", "an_installation_lists_its_global_context"),
     ("crates/unica-documentation-sources/src/platform_help/real_installation.rs",
      "real_installation_answers_navigation_link_question"),
@@ -49,7 +49,7 @@ IGNORE_DEBT = frozenset({
     ("crates/unica-documentation-sources/src/platform_help/retrieval_gate.rs",
      "retrieval_gate_finds_every_golden_query_within_budget"),
     ("crates/unica-documentation-sources/tests/platform/platform_help_oracle.rs",
-     "checked_platform_event_catalog_matches_complete_8_3_27_vendor_oracle"),
+     "checked_platform_event_catalog_matches_the_complete_vendor_oracle_of_its_line"),
     ("crates/unica-documentation-sources/tests/platform/platform_help_oracle.rs",
      "vendor_oracle_rejects_a_matching_hbk_from_the_wrong_installation_version"),
     ("crates/unica-documentation-sources/tests/platform/platform_help_oracle.rs",

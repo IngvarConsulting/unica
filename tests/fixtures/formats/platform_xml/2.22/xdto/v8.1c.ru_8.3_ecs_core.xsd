@@ -1,0 +1,105 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:ns1="http://v8.1c.ru/8.1/data/core" xmlns:tns="http://v8.1c.ru/8.3/ecs/core" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://v8.1c.ru/8.3/ecs/core" attributeFormDefault="unqualified" elementFormDefault="qualified">
+	<xs:import namespace="http://v8.1c.ru/8.1/data/core"/>
+	<xs:simpleType name="ApplicationID">
+		<xs:restriction base="xs:string"/>
+	</xs:simpleType>
+	<xs:simpleType name="BackupID">
+		<xs:restriction base="xs:string"/>
+	</xs:simpleType>
+	<xs:simpleType name="BotID">
+		<xs:restriction base="xs:string"/>
+	</xs:simpleType>
+	<xs:simpleType name="CollaborationSystemDataDumpStatus">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Creating"/>
+			<xs:enumeration value="Loading"/>
+			<xs:enumeration value="Restoring"/>
+			<xs:enumeration value="Done"/>
+			<xs:enumeration value="Error"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="CollaborationSystemFromDataDumpRestoreStatus">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Success"/>
+			<xs:enumeration value="Error"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="CollaborationSystemMessageButtonPanelButtonAction">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="ProcessByBot"/>
+			<xs:enumeration value="ProcessOnClient"/>
+			<xs:enumeration value="SendMessage"/>
+			<xs:enumeration value="SendMessageWithData"/>
+			<xs:enumeration value="GotoURL"/>
+			<xs:enumeration value="RequestPhone"/>
+			<xs:enumeration value="RequestLocation"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="CollaborationSystemMessageButtonPanelButtonType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="UsualButton"/>
+			<xs:enumeration value="Hyperlink"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ConferenceID">
+		<xs:restriction base="xs:string"/>
+	</xs:simpleType>
+	<xs:simpleType name="ConferenceInfoID">
+		<xs:restriction base="xs:string"/>
+	</xs:simpleType>
+	<xs:simpleType name="ConversationID">
+		<xs:restriction base="xs:string"/>
+	</xs:simpleType>
+	<xs:simpleType name="IntegrationID">
+		<xs:restriction base="xs:string"/>
+	</xs:simpleType>
+	<xs:simpleType name="MessageID">
+		<xs:restriction base="xs:string"/>
+	</xs:simpleType>
+	<xs:simpleType name="MessageTemplateID">
+		<xs:restriction base="xs:string"/>
+	</xs:simpleType>
+	<xs:simpleType name="RegistrationData">
+		<xs:restriction/>
+	</xs:simpleType>
+	<xs:simpleType name="UserID">
+		<xs:restriction base="xs:string"/>
+	</xs:simpleType>
+	<xs:complexType name="Backup">
+		<xs:sequence>
+			<xs:element name="description" type="xs:string" minOccurs="0"/>
+		</xs:sequence>
+		<xs:attribute name="id" type="tns:BackupID"/>
+		<xs:attribute name="creationDate" type="xs:dateTime"/>
+		<xs:attribute name="status" type="tns:CollaborationSystemDataDumpStatus"/>
+		<xs:attribute name="downloadAvailable" type="xs:boolean"/>
+		<xs:attribute name="restoreStatus" type="tns:CollaborationSystemFromDataDumpRestoreStatus"/>
+	</xs:complexType>
+	<xs:complexType name="BindParams">
+		<xs:attribute name="clientId" type="xs:string" use="required"/>
+		<xs:attribute name="server" type="xs:string" use="required"/>
+		<xs:attribute name="serverKey" type="xs:string" use="required"/>
+	</xs:complexType>
+	<xs:complexType name="MessageTemplate">
+		<xs:sequence>
+			<xs:element name="name" type="xs:string" minOccurs="0"/>
+			<xs:element name="lang" type="xs:string" minOccurs="0"/>
+			<xs:element name="descr" type="xs:string" minOccurs="0"/>
+			<xs:element name="text" type="xs:string" minOccurs="0"/>
+			<xs:element name="phDescr" type="xs:string" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="id" type="tns:MessageTemplateID"/>
+	</xs:complexType>
+	<xs:complexType name="PreBindResponse">
+		<xs:attribute name="clientId" type="xs:string" use="required"/>
+		<xs:attribute name="clientKey" type="xs:string" use="required"/>
+	</xs:complexType>
+	<xs:complexType name="Status">
+		<xs:attribute name="bound" type="xs:boolean"/>
+		<xs:attribute name="clientId" type="xs:string"/>
+		<xs:attribute name="server" type="xs:string"/>
+		<xs:attribute name="admin" type="xs:boolean"/>
+		<xs:attribute name="userChoiceForm" type="xs:string"/>
+	</xs:complexType>
+</xs:schema>

@@ -1,0 +1,331 @@
+{
+  "id": "S-2874-module-variables",
+  "issue": 2874,
+  "area": "Код BSL",
+  "task": "Прочитать переменные модуля отдельно для каждого имени, экспорт, директивы формы, строку и адрес ближайшей области",
+  "workspace": "tests/fixtures/acceptance/workspace-module-variables",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Probe.Variable"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "at": "main:CommonModule.Probe.Variable.Первый",
+              "kind": "Variable",
+              "title": "Первый",
+              "props": {
+                "name": "Первый",
+                "export": true,
+                "line": 2,
+                "region": "main:CommonModule.Probe.Region.ОписаниеПеременных"
+              }
+            },
+            {
+              "at": "main:CommonModule.Probe.Variable.Второй",
+              "kind": "Variable",
+              "title": "Второй",
+              "props": {
+                "name": "Второй",
+                "export": false,
+                "line": 2,
+                "region": "main:CommonModule.Probe.Region.ОписаниеПеременных"
+              }
+            },
+            {
+              "at": "main:CommonModule.Probe.Variable.Third",
+              "kind": "Variable",
+              "title": "Third",
+              "props": {
+                "name": "Third",
+                "export": false,
+                "line": 4,
+                "region": "main:CommonModule.Probe.Region.ОписаниеПеременных.Region.Вложенная"
+              }
+            },
+            {
+              "at": "main:CommonModule.Probe.Variable.Fourth",
+              "kind": "Variable",
+              "title": "Fourth",
+              "props": {
+                "name": "Fourth",
+                "export": true,
+                "line": 4,
+                "region": "main:CommonModule.Probe.Region.ОписаниеПеременных.Region.Вложенная"
+              }
+            },
+            {
+              "at": "main:CommonModule.Probe.Variable.ВнеОбласти",
+              "kind": "Variable",
+              "title": "ВнеОбласти",
+              "props": {
+                "name": "ВнеОбласти",
+                "export": false,
+                "line": 8
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Probe.Variable.Первый"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props",
+          "eq": {
+            "name": "Первый",
+            "export": true,
+            "line": 2,
+            "region": "main:CommonModule.Probe.Region.ОписаниеПеременных"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Probe.Variable.Второй"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props",
+          "eq": {
+            "name": "Второй",
+            "export": false,
+            "line": 2,
+            "region": "main:CommonModule.Probe.Region.ОписаниеПеременных"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Probe.Variable.Third"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props",
+          "eq": {
+            "name": "Third",
+            "export": false,
+            "line": 4,
+            "region": "main:CommonModule.Probe.Region.ОписаниеПеременных.Region.Вложенная"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Probe.Variable.Fourth"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props",
+          "eq": {
+            "name": "Fourth",
+            "export": true,
+            "line": 4,
+            "region": "main:CommonModule.Probe.Region.ОписаниеПеременных.Region.Вложенная"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Probe.Variable.ВнеОбласти"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props",
+          "eq": {
+            "name": "ВнеОбласти",
+            "export": false,
+            "line": 8
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:DataProcessor.Processor.Form.Main.Module.Form.Variable"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "at": "main:DataProcessor.Processor.Form.Main.Module.Form.Variable.Клиентская",
+              "kind": "Variable",
+              "title": "Клиентская",
+              "props": {
+                "name": "Клиентская",
+                "export": false,
+                "line": 3,
+                "directive": "&НаКлиенте",
+                "region": "main:DataProcessor.Processor.Form.Main.Module.Form.Region.ОписаниеПеременных"
+              }
+            },
+            {
+              "at": "main:DataProcessor.Processor.Form.Main.Module.Form.Variable.Общая",
+              "kind": "Variable",
+              "title": "Общая",
+              "props": {
+                "name": "Общая",
+                "export": true,
+                "line": 3,
+                "directive": "&НаКлиенте",
+                "region": "main:DataProcessor.Processor.Form.Main.Module.Form.Region.ОписаниеПеременных"
+              }
+            },
+            {
+              "at": "main:DataProcessor.Processor.Form.Main.Module.Form.Variable.Серверная",
+              "kind": "Variable",
+              "title": "Серверная",
+              "props": {
+                "name": "Серверная",
+                "export": false,
+                "line": 6,
+                "directive": "&НаСервере",
+                "region": "main:DataProcessor.Processor.Form.Main.Module.Form.Region.ОписаниеПеременных.Region.Серверные"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:DataProcessor.Processor.Form.Main.Module.Form.Variable.Клиентская"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props",
+          "eq": {
+            "name": "Клиентская",
+            "export": false,
+            "line": 3,
+            "directive": "&НаКлиенте",
+            "region": "main:DataProcessor.Processor.Form.Main.Module.Form.Region.ОписаниеПеременных"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:DataProcessor.Processor.Form.Main.Module.Form.Variable.Общая"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props",
+          "eq": {
+            "name": "Общая",
+            "export": true,
+            "line": 3,
+            "directive": "&НаКлиенте",
+            "region": "main:DataProcessor.Processor.Form.Main.Module.Form.Region.ОписаниеПеременных"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:DataProcessor.Processor.Form.Main.Module.Form.Variable.Серверная"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props",
+          "eq": {
+            "name": "Серверная",
+            "export": false,
+            "line": 6,
+            "directive": "&НаСервере",
+            "region": "main:DataProcessor.Processor.Form.Main.Module.Form.Region.ОписаниеПеременных.Region.Серверные"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "at": "main:DataProcessor.Processor.Form.Main.Module.Form.Variable.Серверная"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Variable"
+        },
+        {
+          "pointer": "/data/lines",
+          "eq": {
+            "state": "range",
+            "from": 5,
+            "to": 6
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Probe.Region.ОписаниеПеременных"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:CommonModule.Probe.Region.ОписаниеПеременных"
+        }
+      ]
+    }
+  ]
+}
