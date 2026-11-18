@@ -269,6 +269,15 @@ struct Frame {
     variable_paths: HashMap<u64, Vec<String>>,
     evaluated_children: HashMap<u64, Vec<ContextVariable>>,
     collection_paths: HashSet<u64>,
+    snapshots: HashMap<u64, SnapshotNode>,
+}
+
+struct SnapshotNode {
+    source: Arc<str>,
+    suffix: String,
+    indexed: bool,
+    children: Option<Arc<[ContextVariable]>>,
+    child_references: HashMap<String, u64>,
 }
 
 struct Session {
@@ -401,7 +410,17 @@ impl Session {
             "evaluate" => self.evaluate(args, events)?,
             "setExpression" => self.set_expression(args, events)?,
             "variables" => {
-                let variables = self.variables(number(args, "variablesReference")?, events)?;
+                let reference = number(args, "variablesReference")?;
+                let variables = if self
+                    .targets
+                    .values()
+                    .flat_map(|target| &target.frames)
+                    .any(|frame| frame.snapshots.contains_key(&reference))
+                {
+                    self.snapshot_variables(reference, args, events)?
+                } else {
+                    self.variables(reference, events)?
+                };
                 json!({"variables":variables})
             }
             "next" | "stepIn" | "stepOut" | "continue" => {
@@ -609,12 +628,168 @@ impl Session {
         }) {
             return Err("Выражение содержит недопустимый символ".into());
         }
+        if args["unicaSnapshot"] == true {
+            return self.evaluate_snapshot(frame_id, target, level, expression, events);
+        }
         let path = vec![expression.to_owned()];
         let evaluation = Uuid::new_v4();
         let reply = self.rdbg.variables(target, level, evaluation, &path)?;
         let (value, children) =
             self.wait_for_calculation(reply, evaluation, events, read_expression)?;
         self.calculation_response(frame_id, path, value, children, "result")
+    }
+
+    fn evaluate_snapshot(
+        &mut self,
+        frame_id: u64,
+        target: Uuid,
+        level: usize,
+        expression: &str,
+        events: &mut Vec<Value>,
+    ) -> Result<Value> {
+        let evaluation = Uuid::new_v4();
+        let expression = format!("ЗначениеВСтрокуВнутр({expression})");
+        let reply = self
+            .rdbg
+            .variables(target, level, evaluation, &[expression])?;
+        let source: Arc<str> = self
+            .wait_for_calculation(reply, evaluation, events, read_snapshot)?
+            .into();
+        self.frame(frame_id)?;
+        let evaluation = Uuid::new_v4();
+        let path = [snapshot_expression(&source, "")];
+        let reply = self.rdbg.variables(target, level, evaluation, &path)?;
+        let (value, children) =
+            self.wait_for_calculation(reply, evaluation, events, read_expression)?;
+        self.frame(frame_id)?;
+        let mut body =
+            json!({"result":value.summary,"type":value.type_name,"variablesReference":0});
+        if value.expandable || value.indexed {
+            self.next_id += 1;
+            let id = self.next_id;
+            let frame = self
+                .targets
+                .values_mut()
+                .flat_map(|t| &mut t.frames)
+                .find(|frame| frame.id == frame_id)
+                .ok_or("unknown or expired frame")?;
+            frame.snapshots.insert(
+                id,
+                SnapshotNode {
+                    source,
+                    suffix: String::new(),
+                    indexed: value.indexed,
+                    children: (!value.indexed).then(|| children.into()),
+                    child_references: HashMap::new(),
+                },
+            );
+            body["variablesReference"] = json!(id);
+            if let Some(count) = value.indexed_count.filter(|_| value.indexed) {
+                body["indexedVariables"] = json!(count);
+            }
+        }
+        Ok(body)
+    }
+
+    fn snapshot_variables(
+        &mut self,
+        reference: u64,
+        args: &Value,
+        events: &mut Vec<Value>,
+    ) -> Result<Vec<Value>> {
+        let (target, frame_id, level, source, suffix, indexed, cached) = self
+            .targets
+            .values()
+            .find_map(|target| {
+                target.frames.iter().find_map(|frame| {
+                    frame.snapshots.get(&reference).map(|node| {
+                        (
+                            target.id,
+                            frame.id,
+                            frame.level,
+                            Arc::clone(&node.source),
+                            node.suffix.clone(),
+                            node.indexed,
+                            node.children.clone(),
+                        )
+                    })
+                })
+            })
+            .ok_or("unknown or expired variable reference")?;
+        if (indexed && args["filter"] == "named") || (!indexed && args["filter"] == "indexed") {
+            return Ok(Vec::new());
+        }
+        let start = args["start"].as_u64().unwrap_or(0) as usize;
+        let count = args["count"]
+            .as_u64()
+            .filter(|count| *count > 0)
+            .map_or(usize::MAX, |count| count as usize);
+        let values: Arc<[ContextVariable]> = if let Some(cached) = cached {
+            cached
+        } else {
+            let evaluation = Uuid::new_v4();
+            let path = [snapshot_expression(&source, &suffix)];
+            let rows = if indexed {
+                let reply = self.rdbg.collection(target, level, evaluation, &path)?;
+                self.wait_for_calculation(reply, evaluation, events, read_collection)?
+            } else {
+                let reply = self.rdbg.variables(target, level, evaluation, &path)?;
+                self.wait_for_calculation(reply, evaluation, events, read_context)?
+            };
+            rows.into()
+        };
+        let frame = self
+            .targets
+            .values_mut()
+            .flat_map(|t| &mut t.frames)
+            .find(|frame| frame.id == frame_id)
+            .ok_or("unknown or expired variable reference")?;
+        frame
+            .snapshots
+            .get_mut(&reference)
+            .ok_or("unknown or expired variable reference")?
+            .children = Some(Arc::clone(&values));
+        let mut rows = Vec::new();
+        for value in values.iter().skip(start).take(count) {
+            let mut row = json!({"name":value.name,"value":value.summary,"type":value.type_name,"variablesReference":0});
+            if (value.expandable || value.indexed) && (indexed || is_identifier(&value.name)) {
+                let existing = frame.snapshots[&reference]
+                    .child_references
+                    .get(&value.name)
+                    .copied();
+                let id = existing.unwrap_or_else(|| {
+                    let suffix = if indexed {
+                        format!("{suffix}{}", value.name)
+                    } else {
+                        format!("{suffix}.{}", value.name)
+                    };
+                    self.next_id += 1;
+                    frame.snapshots.insert(
+                        self.next_id,
+                        SnapshotNode {
+                            source: Arc::clone(&source),
+                            suffix,
+                            indexed: value.indexed,
+                            children: None,
+                            child_references: HashMap::new(),
+                        },
+                    );
+                    frame
+                        .snapshots
+                        .get_mut(&reference)
+                        .expect("snapshot exists")
+                        .child_references
+                        .insert(value.name.clone(), self.next_id);
+                    self.next_id
+                });
+                row["variablesReference"] = json!(id);
+                if let Some(count) = value.indexed_count.filter(|_| value.indexed) {
+                    row["indexedVariables"] = json!(count);
+                }
+            }
+            rows.push(row);
+        }
+        Ok(rows)
     }
 
     fn set_expression(&mut self, args: &Value, events: &mut Vec<Value>) -> Result<Value> {
@@ -652,6 +827,7 @@ impl Session {
                     .variable_paths
                     .retain(|id, _| !frame.evaluated_children.contains_key(id));
                 frame.evaluated_children.clear();
+                frame.snapshots.clear();
             }
         }
         let reply = self
@@ -1010,7 +1186,7 @@ impl Session {
                     body["source"] = json!({"name":address,"path":address});
                 }
             }
-            Ok(Frame { id, level, body, variable_paths: HashMap::new(), evaluated_children: HashMap::new(), collection_paths: HashSet::new() })
+            Ok(Frame { id, level, body, variable_paths: HashMap::new(), evaluated_children: HashMap::new(), collection_paths: HashSet::new(), snapshots: HashMap::new() })
         }).collect()
     }
 }
@@ -1064,6 +1240,27 @@ fn read_calculation<T>(
         return Ok(None);
     };
     parse(result).map(Some)
+}
+
+fn snapshot_expression(source: &str, suffix: &str) -> String {
+    format!("ЗначениеИзСтрокиВнутр(ПолучитьСтрокуИзДвоичныхДанных(Base64Значение(\"{source}\"), КодировкаТекста.UTF8)){suffix}")
+}
+
+fn read_snapshot(result: Node<'_, '_>) -> Result<String> {
+    // Preserve the raw string bytes returned by RDBG, independent of display
+    // quoting, newline handling and localization.
+    let (value, _) = read_expression(result)?;
+    if value.type_name.is_empty() {
+        return Err("1С не вернула снимок выражения".into());
+    }
+    let raw = child(result, "resultValueInfo")
+        .and_then(|value| field(value, "valueString"))
+        .ok_or("1С не вернула строку снимка целиком")?;
+    let raw: String = raw.chars().filter(|ch| !ch.is_ascii_whitespace()).collect();
+    if raw.is_empty() || STANDARD.decode(&raw).is_err() {
+        return Err("1С вернула повреждённую строку снимка".into());
+    }
+    Ok(raw)
 }
 
 fn read_modified_value(result: Node<'_, '_>) -> Result<(ContextVariable, Vec<ContextVariable>)> {
