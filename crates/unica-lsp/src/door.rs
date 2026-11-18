@@ -112,7 +112,9 @@ pub fn serve(
 }
 
 /// Обслужить тестовый stdio-поток с управляемой границей завершения worker.
-#[cfg(any(test, feature = "test-support"))]
+/// Вызывают только тесты `unica-daemon` через `test_support`; в собственных
+/// тестах крейта её нет, поэтому `cfg(test)` сделал бы её мёртвым кодом.
+#[cfg(feature = "test-support")]
 pub fn serve_with_worker_hook(
     input: impl BufRead,
     output: impl Write + Send + 'static,
