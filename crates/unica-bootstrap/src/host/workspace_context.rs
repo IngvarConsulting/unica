@@ -83,6 +83,10 @@ pub enum RootsFallback {
 }
 
 /// Which channel chose the directory a call was resolved to.
+///
+/// `selected` says the model chose the directory with the `workspace`
+/// argument inside the set the channel allows; `available` lists that set
+/// for `unica.view {}`, so the model learns what it may choose.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     tag = "channel",
@@ -92,21 +96,58 @@ pub enum RootsFallback {
 )]
 pub enum WorkspaceOrigin {
     /// Per-call host metadata under this capability.
-    RequestMetadata { capability: String },
-    /// The first root the client listed for this call. A struct variant, so
-    /// that strict decoding refuses fields it does not carry.
-    ClientRoots {},
+    RequestMetadata {
+        capability: String,
+        #[serde(default, skip_serializing_if = "is_false")]
+        selected: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        available: Option<Vec<AllowedDirectory>>,
+    },
+    /// A root the client listed for this call: the first one, or the one
+    /// holding the selected directory.
+    ClientRoots {
+        root: String,
+        #[serde(default, skip_serializing_if = "is_false")]
+        selected: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        available: Option<Vec<AllowedDirectory>>,
+    },
     /// The project variable captured when the frontend started.
     StartupEnvironment {
         variable: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         roots: Option<RootsFallback>,
+        #[serde(default, skip_serializing_if = "is_false")]
+        selected: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        available: Option<Vec<AllowedDirectory>>,
     },
     /// The directory the frontend was started in.
     LaunchCwd {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         roots: Option<RootsFallback>,
+        #[serde(default, skip_serializing_if = "is_false")]
+        selected: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        available: Option<Vec<AllowedDirectory>>,
     },
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+/// One directory the host allows for this call, as `unica.view {}` shows it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AllowedDirectory {
+    pub directory: String,
+    /// `v8project.yaml` lies directly in the directory.
+    pub project_file: bool,
+    /// Subdirectories, relative and `/`-separated, that hold their own
+    /// `v8project.yaml`: workspaces the model may select inside this one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workspaces: Vec<String>,
 }
 
 impl WorkspaceOrigin {
@@ -117,6 +158,31 @@ impl WorkspaceOrigin {
             self,
             Self::StartupEnvironment { .. } | Self::LaunchCwd { .. }
         )
+    }
+
+    fn choose(&mut self, explicit: bool, listed: Option<Vec<AllowedDirectory>>) {
+        let (Self::RequestMetadata {
+            selected,
+            available,
+            ..
+        }
+        | Self::ClientRoots {
+            selected,
+            available,
+            ..
+        }
+        | Self::StartupEnvironment {
+            selected,
+            available,
+            ..
+        }
+        | Self::LaunchCwd {
+            selected,
+            available,
+            ..
+        }) = self;
+        *selected = explicit;
+        *available = listed;
     }
 }
 
@@ -133,7 +199,11 @@ impl ResolvedWorkspace {
     pub fn launch_cwd(directory: impl Into<String>) -> Self {
         Self {
             directory: directory.into(),
-            origin: WorkspaceOrigin::LaunchCwd { roots: None },
+            origin: WorkspaceOrigin::LaunchCwd {
+                roots: None,
+                selected: false,
+                available: None,
+            },
         }
     }
 }
@@ -163,16 +233,38 @@ pub struct HostRequest {
     pub roots: ClientRoots,
     /// Сколько байтов ответа этот клиент передаёт модели целиком.
     pub response_budget: super::ResponseBudget,
+    /// The `workspace` argument of the call: a directory the model chose
+    /// inside the set the host allows. The door takes it off the arguments.
+    pub selection: Option<String>,
+    /// List the allowed set in the origin (`unica.view {}`).
+    pub list_allowed: bool,
 }
 
 impl HostRequest {
     pub fn from_metadata(metadata: Map<String, Value>) -> Self {
         Self {
             metadata,
-            roots: ClientRoots::NotDeclared,
-            response_budget: super::ResponseBudget::default(),
+            ..Self::default()
         }
     }
+}
+
+/// Name of the tool argument that selects a directory inside the host's set.
+pub const WORKSPACE_ARGUMENT: &str = "workspace";
+
+/// The workspace root of `directory`: the nearest ancestor (the directory
+/// itself included) holding `v8project.yaml`, or a linked worktree's `.git`
+/// file, which bounds the search. The one owner of this walk: the daemon
+/// discovers workspaces with it, the door bounds a selection with it.
+pub fn find_workspace_root(directory: &Path) -> Option<PathBuf> {
+    directory
+        .ancestors()
+        .find(|base| is_workspace_root(base))
+        .map(Path::to_path_buf)
+}
+
+fn is_workspace_root(base: &Path) -> bool {
+    base.join("v8project.yaml").is_file() || base.join(".git").is_file()
 }
 
 /// Whether a call with this metadata still needs the client's roots: a
@@ -229,10 +321,34 @@ impl HostWorkspaceContext {
             .map(|resolved| resolved.directory)
     }
 
-    /// Precedence: per-call host metadata, then the first client root, then
-    /// the launch context. The first root is the session's project in the
-    /// order Claude Code lists it; the MCP specification does not order roots.
+    /// The channel decides the set of directories this call may use: request
+    /// metadata and the launch context allow one, client roots allow all
+    /// listed roots. Without a selection the call uses the first of the set,
+    /// as before; with one, the selected directory must exist and lie inside
+    /// a member of the set after symlinks and junctions are resolved. A
+    /// selection outside the set is refused, never replaced by another
+    /// directory.
     pub fn resolve_request(&self, request: &HostRequest) -> Result<ResolvedWorkspace, String> {
+        let (allowed, mut origin) = self.allowed_set(request)?;
+        let listed = request.list_allowed.then(|| list_allowed(&allowed));
+        let Some(selection) = request.selection.as_deref() else {
+            origin.choose(false, listed);
+            return Ok(ResolvedWorkspace {
+                directory: allowed[0].clone(),
+                origin,
+            });
+        };
+        let (directory, index) = select_directory(&allowed, selection)?;
+        if let WorkspaceOrigin::ClientRoots { root, .. } = &mut origin {
+            root.clone_from(&allowed[index]);
+        }
+        origin.choose(true, listed);
+        Ok(ResolvedWorkspace { directory, origin })
+    }
+
+    /// The set of directories the host allows for this call, first the one a
+    /// call without selection uses, and the channel that supplied it.
+    fn allowed_set(&self, request: &HostRequest) -> Result<(Vec<String>, WorkspaceOrigin), String> {
         let metadata = &request.metadata;
         let mut request_directory: Option<(PathBuf, &'static str)> = None;
         for channel in KNOWN.iter().filter_map(|host| host.workspace_metadata) {
@@ -260,30 +376,45 @@ impl HostWorkspaceContext {
             }
         }
         if let Some((directory, capability)) = request_directory {
-            return Ok(ResolvedWorkspace {
-                directory: absolute_directory(&directory)?,
-                origin: WorkspaceOrigin::RequestMetadata {
+            return Ok((
+                vec![absolute_directory(&directory)?],
+                WorkspaceOrigin::RequestMetadata {
                     capability: capability.to_owned(),
+                    selected: false,
+                    available: None,
                 },
-            });
+            ));
         }
-        let roots = match &request.roots {
-            ClientRoots::Listed(roots) => match roots.first() {
-                Some(root) => {
-                    return Ok(ResolvedWorkspace {
-                        directory: existing_directory(&parse_root_uri(root)?)?,
-                        origin: WorkspaceOrigin::ClientRoots {},
-                    })
-                }
-                None => Some(RootsFallback::Empty),
-            },
-            ClientRoots::Unavailable(failure) => Some(match failure {
-                RootsFailure::Error => RootsFallback::Error,
-                RootsFailure::Timeout => RootsFallback::Timeout,
-                RootsFailure::Closed => RootsFallback::Closed,
-            }),
-            ClientRoots::NotDeclared => None,
-        };
+        let roots =
+            match &request.roots {
+                ClientRoots::Listed(roots) => match roots.split_first() {
+                    Some((first, others)) => {
+                        // The first root is the session's project: a malformed
+                        // one is refused as before. Another root that is not a
+                        // usable directory cannot be selected and is left out.
+                        let first = existing_directory(&parse_root_uri(first)?)?;
+                        let mut allowed = vec![first.clone()];
+                        allowed.extend(others.iter().filter_map(|root| {
+                            existing_directory(&parse_root_uri(root).ok()?).ok()
+                        }));
+                        return Ok((
+                            allowed,
+                            WorkspaceOrigin::ClientRoots {
+                                root: first,
+                                selected: false,
+                                available: None,
+                            },
+                        ));
+                    }
+                    None => Some(RootsFallback::Empty),
+                },
+                ClientRoots::Unavailable(failure) => Some(match failure {
+                    RootsFailure::Error => RootsFallback::Error,
+                    RootsFailure::Timeout => RootsFallback::Timeout,
+                    RootsFailure::Closed => RootsFallback::Closed,
+                }),
+                ClientRoots::NotDeclared => None,
+            };
         let launch = self
             .launch_directory
             .as_ref()
@@ -297,11 +428,158 @@ impl HostWorkspaceContext {
             Some(variable) => WorkspaceOrigin::StartupEnvironment {
                 variable: variable.to_owned(),
                 roots,
+                selected: false,
+                available: None,
             },
-            None => WorkspaceOrigin::LaunchCwd { roots },
+            None => WorkspaceOrigin::LaunchCwd {
+                roots,
+                selected: false,
+                available: None,
+            },
         };
-        Ok(ResolvedWorkspace { directory, origin })
+        Ok((vec![directory], origin))
     }
+}
+
+/// The directory a selection names and the index of the allowed directory
+/// holding it. Checked on the resolved path: a symlink or junction inside an
+/// allowed directory that leads outside it does not pass. The daemon gets the
+/// resolved path too, so what was checked is what it reads.
+fn select_directory(allowed: &[String], selection: &str) -> Result<(String, usize), String> {
+    validate_path_text(selection)?;
+    let candidate = if selection.starts_with("file:") {
+        parse_root_uri(selection)?
+    } else {
+        // An absolute path stays itself; a relative one is read from the
+        // first allowed directory, the one a call without selection uses.
+        Path::new(&allowed[0]).join(selection)
+    };
+    let canonical = candidate.canonicalize().map_err(|error| {
+        format!("Selected workspace `{selection}` is not an accessible directory: {error}")
+    })?;
+    if !canonical.is_dir() {
+        return Err(format!(
+            "Selected workspace `{selection}` is not a directory"
+        ));
+    }
+    let containing = allowed
+        .iter()
+        .enumerate()
+        .filter_map(|(index, directory)| {
+            let root = Path::new(directory).canonicalize().ok()?;
+            canonical.starts_with(&root).then_some((index, root))
+        })
+        // Nested allowed directories: the innermost one holds the selection.
+        .max_by_key(|(_, root)| root.components().count());
+    let Some((index, root)) = containing else {
+        return Err(format!(
+            "Selected workspace `{selection}` is outside the directories the host allows for this call ({}). Choose one of them or a directory inside one; unica.view {{}} lists them.",
+            allowed.join("; ")
+        ));
+    };
+    // The project file of the selection must not come from above the allowed
+    // directory: the person did not open that directory to the agent.
+    let within = canonical
+        .ancestors()
+        .take_while(|base| base.starts_with(&root))
+        .any(is_workspace_root);
+    if !within {
+        if let Some(outer) = root.parent().and_then(find_workspace_root) {
+            if outer.join("v8project.yaml").is_file() {
+                return Err(format!(
+                    "Selected workspace `{selection}` has no v8project.yaml up to its allowed directory {}; the nearest one lies above it, in {}, which the host has not allowed. Select a directory with its own v8project.yaml, or ask the person to open {} to the session.",
+                    allowed[index],
+                    display_path(&outer),
+                    display_path(&outer)
+                ));
+            }
+        }
+    }
+    let directory = display_path(&canonical);
+    validate_path_text(&directory)?;
+    Ok((directory, index))
+}
+
+/// A resolved path without the Windows verbatim prefix, which tools that
+/// read the workspace (the platform among them) do not accept.
+fn display_path(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    if let Some(unc) = text.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{unc}");
+    }
+    text.strip_prefix(r"\\?\").unwrap_or(&text).to_owned()
+}
+
+// resource-limit: host.allowed-workspace-scan
+// class: count
+// unit: directories
+// scope: request
+// value: 2000
+// resource: Сколько каталогов читает перечень разрешённых папок `unica.view {}` в поиске вложенных v8project.yaml.
+// status: unproven
+// origin: прототип IngvarConsulting/unica#1420
+// problem: Перечень обходит диск на каждый `unica.view {}`; большая или сетевая папка не должна его задерживать.
+// on-reach: Поиск вложенных рабочих областей останавливается; найденное до предела выдаётся.
+const ALLOWED_SCAN_DIRECTORIES: usize = 2000;
+const ALLOWED_SCAN_DEPTH: usize = 2;
+const ALLOWED_SCAN_SKIPPED: &[&str] = &["node_modules", "target"];
+
+/// The allowed set as `unica.view {}` shows it: each directory, whether it
+/// holds `v8project.yaml`, and its subdirectories that hold their own.
+fn list_allowed(allowed: &[String]) -> Vec<AllowedDirectory> {
+    allowed
+        .iter()
+        .map(|directory| {
+            let root = Path::new(directory);
+            let mut workspaces = Vec::new();
+            let mut budget = ALLOWED_SCAN_DIRECTORIES;
+            let mut level = vec![root.to_path_buf()];
+            for _ in 0..ALLOWED_SCAN_DEPTH {
+                let mut next = Vec::new();
+                for parent in &level {
+                    let Ok(entries) = std::fs::read_dir(parent) else {
+                        continue;
+                    };
+                    for entry in entries.flatten() {
+                        if budget == 0 {
+                            break;
+                        }
+                        let name = entry.file_name();
+                        let name = name.to_string_lossy();
+                        if name.starts_with('.') || ALLOWED_SCAN_SKIPPED.contains(&name.as_ref()) {
+                            continue;
+                        }
+                        // A symlink or junction is not followed: it may lead
+                        // outside the allowed directory.
+                        if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                            continue;
+                        }
+                        budget -= 1;
+                        let path = entry.path();
+                        if path.join("v8project.yaml").is_file() {
+                            if let Ok(relative) = path.strip_prefix(root) {
+                                workspaces.push(
+                                    relative
+                                        .components()
+                                        .map(|part| part.as_os_str().to_string_lossy())
+                                        .collect::<Vec<_>>()
+                                        .join("/"),
+                                );
+                            }
+                        }
+                        next.push(path);
+                    }
+                }
+                level = next;
+            }
+            workspaces.sort();
+            AllowedDirectory {
+                directory: directory.clone(),
+                project_file: root.join("v8project.yaml").is_file(),
+                workspaces,
+            }
+        })
+        .collect()
 }
 
 fn capture_with(
@@ -553,7 +831,11 @@ mod tests {
             Path::new(&selected.directory),
             &fixture.project()
         ));
-        assert_eq!(selected.origin, WorkspaceOrigin::ClientRoots {});
+        assert!(matches!(
+            &selected.origin,
+            WorkspaceOrigin::ClientRoots { root, selected: false, available: None }
+                if same_directory(Path::new(root), &fixture.project())
+        ));
 
         let selected = context
             .resolve_request(&with_roots(
@@ -565,7 +847,9 @@ mod tests {
         assert_eq!(
             selected.origin,
             WorkspaceOrigin::RequestMetadata {
-                capability: "codex/sandbox-state-meta".to_owned()
+                capability: "codex/sandbox-state-meta".to_owned(),
+                selected: false,
+                available: None,
             }
         );
 
@@ -587,7 +871,9 @@ mod tests {
                 resolved.origin,
                 WorkspaceOrigin::StartupEnvironment {
                     variable: "CLAUDE_PROJECT_DIR".to_owned(),
-                    roots: fallback
+                    roots: fallback,
+                    selected: false,
+                    available: None,
                 }
             );
             assert!(resolved.origin.can_be_stale());
@@ -597,7 +883,11 @@ mod tests {
             .unwrap();
         assert_eq!(
             launch_cwd.origin,
-            WorkspaceOrigin::LaunchCwd { roots: None }
+            WorkspaceOrigin::LaunchCwd {
+                roots: None,
+                selected: false,
+                available: None,
+            }
         );
         assert_eq!(
             serde_json::to_value(&launch_cwd.origin).unwrap(),
@@ -869,7 +1159,13 @@ mod tests {
                 ClientRoots::Listed(vec![root_uri(&fixture.project())]),
             ))
             .unwrap();
-        assert_eq!(selected.origin, WorkspaceOrigin::ClientRoots {});
+        assert!(matches!(
+            selected.origin,
+            WorkspaceOrigin::ClientRoots {
+                selected: false,
+                ..
+            }
+        ));
         assert_eq!(
             context
                 .resolve_request(&HostRequest::default())
@@ -981,5 +1277,190 @@ mod tests {
             Path::new(&context.resolve(&Map::new()).unwrap()),
             &launch
         ));
+    }
+
+    fn selecting(roots: ClientRoots, metadata: Map<String, Value>, selection: &str) -> HostRequest {
+        HostRequest {
+            metadata,
+            roots,
+            selection: Some(selection.to_owned()),
+            ..HostRequest::default()
+        }
+    }
+
+    /// A link inside an allowed directory that leads outside it: a junction
+    /// on Windows, a symbolic link elsewhere.
+    fn link_directory(link: &Path, target: &Path) {
+        #[cfg(windows)]
+        {
+            let status = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(link)
+                .arg(target)
+                .stdout(std::process::Stdio::null())
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, link).unwrap();
+    }
+
+    /// Хост задаёт множество папок, модель выбирает внутри него: каждая папка
+    /// из roots, вложенная в неё папка, но не папка вне множества и не выход
+    /// наружу через ссылку. Канал с одной папкой разрешает только её.
+    /// rule: INV.WORKSPACE.HOST-CONTEXT
+    #[test]
+    fn a_selection_stays_inside_the_set_the_channel_allows() {
+        let fixture = Fixture::new();
+        let first = fixture.project();
+        let second = fixture.0.join("второй проект");
+        let foreign = fixture.0.join("чужой");
+        for directory in [&second, &foreign, &first.join("sub")] {
+            std::fs::create_dir_all(directory).unwrap();
+        }
+        let context = HostWorkspaceContext::from_directory(first.clone());
+        let roots = ClientRoots::Listed(vec![root_uri(&first), root_uri(&second)]);
+
+        for selection in [
+            second.to_str().unwrap().to_owned(),
+            root_uri(&second),
+            "../второй проект".to_owned(),
+        ] {
+            let chosen = context
+                .resolve_request(&selecting(roots.clone(), Map::new(), &selection))
+                .unwrap();
+            assert!(
+                same_directory(Path::new(&chosen.directory), &second),
+                "{selection}"
+            );
+            assert!(
+                matches!(&chosen.origin, WorkspaceOrigin::ClientRoots { root, selected: true, .. }
+                    if same_directory(Path::new(root), &second)),
+                "{:?}",
+                chosen.origin
+            );
+        }
+        let refused = context
+            .resolve_request(&selecting(
+                roots.clone(),
+                Map::new(),
+                foreign.to_str().unwrap(),
+            ))
+            .unwrap_err();
+        assert!(refused.contains("outside the directories"), "{refused}");
+        assert!(context
+            .resolve_request(&selecting(roots.clone(), Map::new(), "../чужой"))
+            .is_err());
+
+        // Codex names one directory per call: only it and its subdirectories.
+        let codex = metadata(serde_json::json!({"sandboxCwd": first}));
+        assert!(context
+            .resolve_request(&selecting(
+                roots.clone(),
+                codex.clone(),
+                second.to_str().unwrap()
+            ))
+            .is_err());
+        let inner = context
+            .resolve_request(&selecting(roots.clone(), codex, "sub"))
+            .unwrap();
+        assert!(same_directory(
+            Path::new(&inner.directory),
+            &first.join("sub")
+        ));
+        // The startup project alone, when the client lists no roots.
+        assert!(context
+            .resolve_request(&selecting(
+                ClientRoots::NotDeclared,
+                Map::new(),
+                second.to_str().unwrap()
+            ))
+            .is_err());
+
+        link_directory(&first.join("ссылка"), &foreign);
+        let escaped = context
+            .resolve_request(&selecting(roots.clone(), Map::new(), "ссылка"))
+            .unwrap_err();
+        assert!(escaped.contains("outside the directories"), "{escaped}");
+    }
+
+    /// Выбранная папка не получает файл проекта из каталога выше разрешённого:
+    /// человек его агенту не открывал. Граница worktree действует как у демона.
+    /// rule: INV.WORKSPACE.HOST-CONTEXT
+    #[test]
+    fn a_selected_workspace_does_not_borrow_a_project_file_above_its_root() {
+        let fixture = Fixture::new();
+        let root = fixture.project();
+        let nested = root.join("sub");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(fixture.0.join("v8project.yaml"), "format: DESIGNER\n").unwrap();
+        let context = HostWorkspaceContext::from_directory(root.clone());
+        let roots = ClientRoots::Listed(vec![root_uri(&root)]);
+
+        let refused = context
+            .resolve_request(&selecting(roots.clone(), Map::new(), "sub"))
+            .unwrap_err();
+        assert!(refused.contains("lies above"), "{refused}");
+        // Without a selection the session keeps today's discovery.
+        assert!(context
+            .resolve_request(&with_roots(Map::new(), roots.clone()))
+            .is_ok());
+
+        for (marker, contents) in [
+            (".git", "gitdir: elsewhere\n"),
+            ("v8project.yaml", "format: DESIGNER\n"),
+        ] {
+            std::fs::write(nested.join(marker), contents).unwrap();
+            assert!(
+                context
+                    .resolve_request(&selecting(roots.clone(), Map::new(), "sub"))
+                    .is_ok(),
+                "{marker}"
+            );
+            std::fs::remove_file(nested.join(marker)).unwrap();
+        }
+    }
+
+    /// `unica.view {}` lists every allowed directory and the workspaces it
+    /// holds, without following links or entering hidden directories.
+    #[test]
+    fn the_allowed_set_names_project_files_and_nested_workspaces() {
+        let fixture = Fixture::new();
+        let repository = fixture.project();
+        let other = fixture.0.join("other");
+        for (directory, project) in [
+            (repository.join("smb"), true),
+            (repository.join("acc/main"), true),
+            (repository.join(".hidden/x"), true),
+            (repository.join("docs"), false),
+            (other.clone(), true),
+        ] {
+            std::fs::create_dir_all(&directory).unwrap();
+            if project {
+                std::fs::write(directory.join("v8project.yaml"), "format: DESIGNER\n").unwrap();
+            }
+        }
+        let request = HostRequest {
+            roots: ClientRoots::Listed(vec![root_uri(&repository), root_uri(&other)]),
+            list_allowed: true,
+            ..HostRequest::default()
+        };
+        let resolved = HostWorkspaceContext::from_directory(repository.clone())
+            .resolve_request(&request)
+            .unwrap();
+        let WorkspaceOrigin::ClientRoots {
+            available: Some(available),
+            selected: false,
+            ..
+        } = resolved.origin
+        else {
+            panic!("{:?}", resolved.origin)
+        };
+        assert_eq!(available.len(), 2);
+        assert!(!available[0].project_file);
+        assert_eq!(available[0].workspaces, vec!["acc/main", "smb"]);
+        assert!(available[1].project_file);
+        assert!(available[1].workspaces.is_empty());
     }
 }

@@ -43,17 +43,17 @@ use rmcp::model::{
     CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, CancelTaskParams,
     ClientJsonRpcMessage, ClientNotification, ClientRequest, ContentBlock, DiscoverResult,
     ErrorCode, ErrorData, GetMeta, GetTaskParams, GetTaskResult, Implementation,
-    InitializeRequestParams, InitializeResult, ListPromptsResult, ListResourceTemplatesResult,
-    ListResourcesResult, ListToolsResult, NotificationMetaObject, PaginatedRequestParams,
-    ProgressNotificationParam, ProgressToken, ProtocolVersion, RequestMetaObject,
-    ServerCapabilities, ServerConfig, ServerJsonRpcMessage, ServerResult, Tool, UpdateTaskParams,
-    TASKS_EXTENSION_ID,
+    InitializeRequestParams, InitializeResult, InputRequest, InputRequests, InputRequiredResult,
+    InputResponses, ListPromptsResult, ListResourceTemplatesResult, ListResourcesResult,
+    ListToolsResult, NotificationMetaObject, PaginatedRequestParams, ProgressNotificationParam,
+    ProgressToken, ProtocolVersion, RequestMetaObject, ServerCapabilities, ServerConfig,
+    ServerJsonRpcMessage, ServerResult, Tool, UpdateTaskParams, TASKS_EXTENSION_ID,
 };
 use rmcp::service::{NotificationContext, RequestContext, ServerInitializeError};
 use rmcp::transport::Transport;
 use rmcp::{RoleServer, ServerHandler, ServiceExt};
 use serde_json::{Map, Value};
-use server::{AnsweredTask, UnicaServer};
+use server::{AnsweredTask, TaskHost, UnicaServer};
 use std::collections::HashSet;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -209,6 +209,7 @@ impl UnicaServer {
             router: SurfaceToolRouter::LegacyV12(handler),
             in_flight: Arc::new(InFlightRegistry::default()),
             answered_tasks: Arc::default(),
+            task_hosts: Arc::default(),
             manual_calls: Arc::new(ManualCalls::default()),
             structured_tools: crate::application::tools()
                 .into_iter()
@@ -284,6 +285,7 @@ impl UnicaServer {
             }),
             in_flight: Arc::new(InFlightRegistry::default()),
             answered_tasks: Arc::default(),
+            task_hosts: Arc::default(),
             manual_calls: Arc::new(ManualCalls::default()),
             structured_tools: HashSet::new(),
             startup_notice: None,
@@ -301,6 +303,7 @@ impl UnicaServer {
             router: SurfaceToolRouter::CanonicalV13(router),
             in_flight: Arc::new(InFlightRegistry::default()),
             answered_tasks: Arc::default(),
+            task_hosts: Arc::default(),
             manual_calls: Arc::new(ManualCalls::default()),
             structured_tools: HashSet::new(),
             startup_notice,
@@ -405,6 +408,45 @@ impl UnicaServer {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(task_id.to_string(), answered);
     }
+
+    fn task_host(&self, task_id: &str) -> Option<TaskHost> {
+        self.task_hosts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(task_id)
+            .cloned()
+    }
+
+    /// A call that selected its directory and became a Task: the answer to a
+    /// later question of that Task runs in the same directory.
+    fn remember_task_host(&self, response: &CallToolResponse, host: &unica_bootstrap::HostRequest) {
+        if host.selection.is_none() {
+            return;
+        }
+        let task_id = match response {
+            CallToolResponse::Task(created) => Some(created.task.task_id.clone()),
+            CallToolResponse::Complete(result) => result
+                .structured_content
+                .as_ref()
+                // A compatibility Task answers its identifier in `data.task`.
+                .and_then(|content| content.pointer("/data/task/taskId"))
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            _ => None,
+        };
+        if let Some(task_id) = task_id {
+            self.task_hosts
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(
+                    task_id,
+                    TaskHost {
+                        selection: host.selection.clone(),
+                        roots: host.roots.clone(),
+                    },
+                );
+        }
+    }
 }
 
 /// Сборка сервера двери для тестов демона: маршрутизатор к живому демону
@@ -416,6 +458,7 @@ impl UnicaServer {
             router: SurfaceToolRouter::CanonicalV13(router),
             in_flight: Arc::new(InFlightRegistry::default()),
             answered_tasks: Arc::default(),
+            task_hosts: Arc::default(),
             manual_calls: Arc::new(ManualCalls::default()),
             structured_tools: HashSet::new(),
             startup_notice: None,
@@ -732,7 +775,7 @@ fn v13_tool_definitions(profile: V13TaskProfile) -> &'static [Tool] {
                 v13_tool_definition(
                     contract.name,
                     Some(contract.description),
-                    contract.input_schema,
+                    with_workspace_selection(contract.input_schema),
                 )
             })
             .collect::<Vec<_>>();
@@ -755,6 +798,32 @@ fn v13_tool_definitions(profile: V13TaskProfile) -> &'static [Tool] {
         V13TaskProfile::Native => NATIVE.get_or_init(build),
         V13TaskProfile::Compatibility => COMPATIBILITY.get_or_init(build),
     }
+}
+
+/// The `workspace` argument of every subject tool. It is host context the
+/// door takes off before routing (INV.WORKSPACE.HOST-CONTEXT), so the door,
+/// not the domain catalog, publishes it, in every branch of the schema.
+fn with_workspace_selection(mut schema: Value) -> Value {
+    let field = serde_json::json!({
+        "type": "string",
+        "description": "Directory to work in, chosen among those the host opened to this session (unica.view {} lists them): absolute path, file URI, or relative to the session project. Omit for the session project."
+    });
+    for branch in [None, Some("then"), Some("else")] {
+        let target = match branch {
+            None => Some(&mut schema),
+            Some(key) => schema.get_mut(key),
+        };
+        if let Some(properties) = target
+            .and_then(|target| target.get_mut("properties"))
+            .and_then(Value::as_object_mut)
+        {
+            properties.insert(
+                unica_bootstrap::WORKSPACE_ARGUMENT.to_owned(),
+                field.clone(),
+            );
+        }
+    }
+    schema
 }
 
 fn v13_tool_definition(name: &str, description: Option<&str>, schema: Value) -> Tool {
@@ -1014,21 +1083,56 @@ impl ServerHandler for UnicaServer {
         if let Some(request_meta) = request.meta.as_ref() {
             metadata.extend(request_meta.0 .0.clone());
         }
+        let subject = matches!(self.router, SurfaceToolRouter::CanonicalV13(_))
+            && V5ToolIdentity::from_wire_name(&request.name).is_some();
+        // The directory the model selects inside the host's set is host
+        // context, not a tool argument: the door takes it off before routing
+        // and keeps it with the host request, so a person's answer to a
+        // question runs in the same directory.
+        let mut arguments = request.arguments.unwrap_or_default();
+        let selection = if subject {
+            take_workspace_selection(&mut arguments)?
+        } else {
+            None
+        };
+        let list_allowed =
+            subject && selection.is_none() && request.name == "unica.view" && arguments.is_empty();
+        let input_responses = request.input_responses;
         // Asked before the call is admitted: until then the call owns no
         // daemon work, so a transport closing during this exchange cannot
         // strand accepted work.
-        let roots = if matches!(self.router, SurfaceToolRouter::CanonicalV13(_))
-            && V5ToolIdentity::from_wire_name(&request.name).is_some()
-        {
-            client_roots(&context, &metadata).await
-        } else {
+        let mut roots_from_input = false;
+        let roots = if !subject {
             unica_bootstrap::ClientRoots::NotDeclared
+        } else if modern_peer(&context) {
+            // From 2026-07-28 roots travel as an input request, which costs
+            // the client a retry: ask only when the call needs the whole set.
+            if selection.is_some() || list_allowed {
+                match modern_client_roots(&context, &metadata, input_responses.as_ref()) {
+                    ModernRoots::Answered(roots) => {
+                        roots_from_input = true;
+                        roots
+                    }
+                    ModernRoots::Ask => {
+                        return Ok(CallToolResponse::from(with_roots_request(
+                            InputRequiredResult::new(None, None),
+                        )))
+                    }
+                    ModernRoots::NotDeclared => unica_bootstrap::ClientRoots::NotDeclared,
+                }
+            } else {
+                unica_bootstrap::ClientRoots::NotDeclared
+            }
+        } else {
+            client_roots(&context, &metadata).await
         };
         let response_budget = client_response_budget(&context, &metadata);
         let host = unica_bootstrap::HostRequest {
             metadata,
             roots,
             response_budget,
+            selection,
+            list_allowed,
         };
         let progress_token = request
             .meta
@@ -1038,7 +1142,7 @@ impl ServerHandler for UnicaServer {
         let name = request.name.to_string();
         // Only the door confirms a call, from a person's answer; a call that
         // brings a confirmation of its own would skip the question.
-        if let Some(key) = human_choice::carried_answer_key(request.arguments.as_ref()) {
+        if let Some(key) = human_choice::carried_answer_key(Some(&arguments)) {
             return Err(ErrorData::invalid_params(
                 format!(
                     "`{key}` is set only from a person's answer to a question; a call does not carry it"
@@ -1046,13 +1150,20 @@ impl ServerHandler for UnicaServer {
                 None,
             ));
         }
-        let input_responses = request.input_responses;
         let request_state = request.request_state;
+        let task_argument = (!subject)
+            .then(|| {
+                arguments
+                    .get("taskId")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
+            .flatten();
         let outcome = invoke_surface_tool(
             self,
             SurfaceInvocation {
                 name: name.clone(),
-                arguments: request.arguments.unwrap_or_default(),
+                arguments,
                 host: host.clone(),
                 progress_token: progress_token.clone(),
                 received_at,
@@ -1060,6 +1171,9 @@ impl ServerHandler for UnicaServer {
             &context,
         )
         .await;
+        // A question of a compatibility Task is answered in the directory of
+        // the call that started the Task, not in the default one.
+        let mut host = host;
         let (mut refusal, mut choice) = match outcome {
             Ok(SurfaceToolOutcome::Choice { refusal, choice }) => (refusal, choice),
             // A Task that ended in a refusal with a question asks it when the
@@ -1069,6 +1183,13 @@ impl ServerHandler for UnicaServer {
                 result: CompatibilityTaskResult::Snapshot(result),
                 timing,
             }) if !result.ok && result.human_choice.is_some() => {
+                if let Some(started) = task_argument
+                    .as_deref()
+                    .and_then(|task| self.task_host(task))
+                {
+                    host.selection = started.selection;
+                    host.roots = started.roots;
+                }
                 let mut choice = result.human_choice.clone().expect("checked above");
                 // Only a person answers a question of a Task: a client that
                 // cannot ask gets the stored refusal, nothing runs unasked.
@@ -1084,7 +1205,10 @@ impl ServerHandler for UnicaServer {
                 (refusal, choice)
             }
             outcome => {
-                return project_surface_outcome(self, &name, outcome, response_budget, received_at)
+                let response =
+                    project_surface_outcome(self, &name, outcome, response_budget, received_at)?;
+                self.remember_task_host(&response, &host);
+                return Ok(response);
             }
         };
         // The refusal offers a choice: ask the person when the client can ask.
@@ -1117,9 +1241,14 @@ impl ServerHandler for UnicaServer {
                                 .iter()
                                 .map(|(question, answer)| (question.as_ref(), answer))
                                 .collect::<Vec<_>>();
-                            return Ok(CallToolResponse::from(human_choice::input_required_after(
-                                &choice, &before,
-                            )));
+                            let asked = human_choice::input_required_after(&choice, &before);
+                            // The retry must bring the roots again: the door
+                            // keeps nothing between the two exchanges.
+                            return Ok(CallToolResponse::from(if roots_from_input {
+                                with_roots_request(asked)
+                            } else {
+                                asked
+                            }));
                         }
                     }
                 }
@@ -1265,10 +1394,14 @@ impl ServerHandler for UnicaServer {
             metadata.extend(request_meta.0 .0.clone());
         }
         let response_budget = client_response_budget(&context, &metadata);
+        // The answer runs in the directory of the call that started the Task.
+        let started = self.task_host(&request.task_id).unwrap_or_default();
         let host = unica_bootstrap::HostRequest {
             metadata,
-            roots: unica_bootstrap::ClientRoots::NotDeclared,
+            roots: started.roots,
             response_budget,
+            selection: started.selection,
+            list_allowed: false,
         };
         let answered = match self
             .run_chosen(&option, &host, None, &context, response_budget)
@@ -1329,6 +1462,76 @@ impl ServerHandler for UnicaServer {
 // problem: Хост отвечает из памяти; остаток окна передачи принадлежит вызову демона (комментарий в mcp.rs).
 // on-reach: Ответ roots/list не получен, рабочая папка из roots не берётся.
 const CLIENT_ROOTS_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Key of the roots request in `inputRequests` and `inputResponses`.
+const ROOTS_INPUT_KEY: &str = "unica/roots";
+
+/// Take the `workspace` selection off the arguments of a subject call.
+/// Omitted or null is no selection; any other non-string value is refused.
+fn take_workspace_selection(
+    arguments: &mut Map<String, Value>,
+) -> Result<Option<String>, ErrorData> {
+    match arguments.remove(unica_bootstrap::WORKSPACE_ARGUMENT) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(selection)) if !selection.is_empty() => Ok(Some(selection)),
+        Some(_) => Err(ErrorData::invalid_params(
+            "`workspace` must be a non-empty path: absolute, a file URI, or relative to the session project",
+            None,
+        )),
+    }
+}
+
+/// Roots of a 2026-07-28 client for a call that needs the allowed set.
+enum ModernRoots {
+    /// The client declared no roots, or request metadata already names the
+    /// one directory of this call.
+    NotDeclared,
+    /// Not answered yet: ask with an input request and wait for the retry.
+    Ask,
+    Answered(unica_bootstrap::ClientRoots),
+}
+
+fn modern_client_roots(
+    context: &RequestContext<RoleServer>,
+    metadata: &Map<String, Value>,
+    responses: Option<&InputResponses>,
+) -> ModernRoots {
+    let declared = context
+        .client_capabilities()
+        .is_some_and(|capabilities| capabilities.roots.is_some());
+    if !declared || !unica_bootstrap::request_needs_client_roots(metadata) {
+        return ModernRoots::NotDeclared;
+    }
+    let Some(answer) = responses.and_then(|responses| responses.get(ROOTS_INPUT_KEY)) else {
+        return ModernRoots::Ask;
+    };
+    let listed = serde_json::to_value(answer)
+        .ok()
+        .and_then(|answer| answer.get("roots").cloned())
+        .and_then(|roots| roots.as_array().cloned())
+        .map(|roots| {
+            roots
+                .iter()
+                .filter_map(|root| root.get("uri").and_then(Value::as_str).map(str::to_owned))
+                .collect::<Vec<_>>()
+        });
+    ModernRoots::Answered(match listed {
+        Some(uris) => unica_bootstrap::ClientRoots::Listed(uris),
+        None => unica_bootstrap::ClientRoots::Unavailable(unica_bootstrap::RootsFailure::Error),
+    })
+}
+
+/// Add the roots request to an `input_required` result.
+#[allow(deprecated)] // SEP-2577 retires roots only in the modern era.
+fn with_roots_request(mut result: InputRequiredResult) -> InputRequiredResult {
+    let request = serde_json::from_value(serde_json::json!({"method": "roots/list"}))
+        .expect("roots/list is a valid input request");
+    result
+        .input_requests
+        .get_or_insert_with(InputRequests::new)
+        .insert(ROOTS_INPUT_KEY.to_owned(), InputRequest::ListRoots(request));
+    result
+}
 
 /// Roots of a client that declared them, asked for this call only.
 ///

@@ -20,7 +20,8 @@ pub use skill_package::verify_installed_skill_package;
 pub use tool_deadline::host_tool_deadline;
 
 pub use workspace_context::{
-    capture_host_workspace_context, host_workspace_capabilities, host_workspace_environment_keys,
-    request_needs_client_roots, ClientRoots, HostRequest, HostWorkspaceContext, ResolvedWorkspace,
-    RootsFailure, RootsFallback, WorkspaceOrigin,
+    capture_host_workspace_context, find_workspace_root, host_workspace_capabilities,
+    host_workspace_environment_keys, request_needs_client_roots, AllowedDirectory, ClientRoots,
+    HostRequest, HostWorkspaceContext, ResolvedWorkspace, RootsFailure, RootsFallback,
+    WorkspaceOrigin, WORKSPACE_ARGUMENT,
 };

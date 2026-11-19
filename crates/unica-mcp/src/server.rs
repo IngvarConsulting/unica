@@ -24,10 +24,20 @@ pub struct UnicaServer {
     /// this door restarts (INV.MCP.HUMAN-CHOICE).
     pub(crate) answered_tasks:
         Arc<std::sync::Mutex<std::collections::HashMap<String, AnsweredTask>>>,
+    /// The directory selection and roots of a call that became a Task, by the
+    /// Task's identifier: the answer to its question runs there too.
+    pub(crate) task_hosts: Arc<std::sync::Mutex<std::collections::HashMap<String, TaskHost>>>,
     /// Тестовый каталог вместо канонического: постраничный обход `tools/list`
     /// проверяется на каталоге больше одной страницы.
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) listed_tools_for_test: Option<Arc<Vec<Tool>>>,
+}
+
+/// Host context of a call that became a Task, kept for its question.
+#[derive(Clone, Default)]
+pub(crate) struct TaskHost {
+    pub(crate) selection: Option<String>,
+    pub(crate) roots: unica_bootstrap::ClientRoots,
 }
 
 /// What a person's answer to the question of a Task made of it.
