@@ -775,3 +775,53 @@ async fn a_modern_client_answers_questions_in_turn_by_retrying() {
         client.shutdown().await;
     }
 }
+
+/// A `2026-07-28` call without Tasks waits for the Task it became (#3220);
+/// a Task that ended in a refusal with a question asks it the way a direct
+/// refusal asks: an `input_required` result, never a Task receipt.
+#[tokio::test]
+async fn an_awaited_task_asks_its_question_as_input_required() {
+    use unica_execution_contract::invocation::{InvocationStatus, TaskId};
+
+    let task_id = TaskId::new();
+    let call: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _, _| {
+        Ok(CanonicalCallOutcome::Task(canonical_snapshot(
+            task_id,
+            InvocationStatus::Working,
+            None,
+        )))
+    });
+    let get: Arc<CanonicalTaskHandler> = Arc::new(move |_, _| {
+        let mut refusal = DomainResult::canonical_rejection(
+            None,
+            unica_refusal::RefusalCode::InvalidState,
+            REFUSAL,
+        );
+        refusal.human_choice = Some(Box::new(choice()));
+        Ok(canonical_snapshot(
+            task_id,
+            InvocationStatus::Completed,
+            Some(refusal),
+        ))
+    });
+    let server = UnicaServer::with_canonical_v13_tasks(call, Arc::clone(&get), get);
+    let (mut client, _) = spawn_unica_server(server);
+    client
+        .send(json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {
+                "name": "unica.run",
+                "arguments": push_call(false),
+                "_meta": modern_elicitation_meta()
+            }
+        }))
+        .await;
+    let asked = client.receive().await;
+    assert_eq!(asked["result"]["resultType"], "input_required", "{asked}");
+    let request = &asked["result"]["inputRequests"][human_choice::CHOICE_INPUT_KEY];
+    assert_eq!(
+        request["params"]["message"],
+        human_choice::question_text(&choice())
+    );
+    client.shutdown().await;
+}

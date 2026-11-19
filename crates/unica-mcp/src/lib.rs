@@ -444,7 +444,7 @@ fn execute_surface_tool(
     cancellation: impl Into<CanonicalCancellation>,
     progress: Arc<dyn ProgressSink>,
     deadline: FrontendInvocationDeadline,
-    client_supports_tasks: bool,
+    delivery: TaskDelivery,
 ) -> Result<SurfaceToolOutcome, ErrorData> {
     let cancellation = cancellation.into();
     let SurfaceToolCall {
@@ -463,9 +463,9 @@ fn execute_surface_tool(
             if let Some(request) =
                 crate::application::v13::task_tools::parse_task_tool_call(name, arguments)
             {
-                if client_supports_tasks {
+                if delivery != TaskDelivery::Receipt {
                     return Err(ErrorData::invalid_params(
-                        "compatibility task tools are unavailable when native Tasks is active",
+                        "compatibility task tools serve only protocol revisions before 2026-07-28",
                         None,
                     ));
                 }
@@ -483,17 +483,24 @@ fn execute_surface_tool(
             let tool = V5ToolIdentity::from_wire_name(name).ok_or_else(|| {
                 ErrorData::invalid_params("tool is not in the canonical v0.13 profile", None)
             })?;
-            match (router.call)(tool, arguments, host, deadline, cancellation)? {
+            match (router.call)(tool, arguments, host, deadline, cancellation.clone())? {
                 CanonicalCallOutcome::Direct(result) => Ok(SurfaceToolOutcome::Direct(result)),
                 CanonicalCallOutcome::Choice { refusal, choice } => {
                     Ok(SurfaceToolOutcome::Choice { refusal, choice })
                 }
-                CanonicalCallOutcome::Task(snapshot) if client_supports_tasks => {
-                    Ok(SurfaceToolOutcome::Task(snapshot))
-                }
-                CanonicalCallOutcome::Task(snapshot) => Ok(SurfaceToolOutcome::Canonical(
-                    project_compatibility_snapshot(&snapshot, CompatibilityProjection::State),
-                )),
+                CanonicalCallOutcome::Task(snapshot) => match delivery {
+                    TaskDelivery::Native => Ok(SurfaceToolOutcome::Task(snapshot)),
+                    TaskDelivery::Awaited => await_task_result(
+                        router,
+                        snapshot,
+                        &cancellation,
+                        progress.as_ref(),
+                        host.response_budget,
+                    ),
+                    TaskDelivery::Receipt => Ok(SurfaceToolOutcome::Canonical(
+                        project_compatibility_snapshot(&snapshot, CompatibilityProjection::State),
+                    )),
+                },
             }
         }
     }
@@ -502,6 +509,85 @@ fn execute_surface_tool(
 use crate::application::v13::task_tools::{
     CompatibilityProjection, CompatibilityTaskSnapshot, TaskToolAction, TaskToolError,
 };
+
+/// Meta key of the progress a call publishes while it waits for its Task.
+const TASK_WAIT_PROGRESS_META_KEY: &str = "unica/taskWait";
+
+/// A 2026-07-28 call without Tasks in its own request cannot take a Task
+/// (#3220): the call waits for the Task to end and answers with its result,
+/// the same result `unica.task.result` returns. Each wait lasts one handoff
+/// window and publishes progress for a client that gave a progressToken. A
+/// cancellation of the call has already asked the daemon to cancel the
+/// Task through the call's own control; the wait asks once more and ends
+/// with the cancelled Task. A question the Task ended with is asked the way
+/// a direct refusal asks it: only a person answers it.
+fn await_task_result(
+    router: &CanonicalDaemonRouter,
+    mut snapshot: V5DaemonTaskSnapshot,
+    cancellation: &CanonicalCancellation,
+    progress: &dyn ProgressSink,
+    budget: unica_bootstrap::ResponseBudget,
+) -> Result<SurfaceToolOutcome, ErrorData> {
+    use unica_execution_contract::invocation::InvocationStatus;
+
+    let task_id = snapshot.task_id();
+    let wait_ms = u64::try_from(unica_execution::invocation::INVOCATION_HANDOFF_WINDOW.as_millis())
+        .unwrap_or(u64::MAX);
+    let mut waits = 0_u32;
+    let mut cancel_sent = false;
+    while matches!(
+        snapshot.status(),
+        InvocationStatus::Queued | InvocationStatus::Working
+    ) {
+        let deadline = FrontendInvocationDeadline::new(Instant::now(), None);
+        if cancellation.requested() && !cancel_sent {
+            cancel_sent = true;
+            let _ = (router.cancel)(task_id, deadline);
+        }
+        waits = waits.saturating_add(1);
+        progress.publish(ProgressEvent {
+            meta_key: TASK_WAIT_PROGRESS_META_KEY,
+            payload: serde_json::json!({"status": snapshot.status()}),
+            progress: f64::from(waits),
+            total: 0.0,
+            message: "Waiting for the operation to finish".to_string(),
+        });
+        snapshot = match (router.wait)(task_id, wait_ms, deadline, CanonicalCancellation::default())
+        {
+            Ok(next) if next.task_id() == task_id => next,
+            Ok(_) => {
+                return Ok(SurfaceToolOutcome::Canonical(
+                    crate::application::v13::task_tools::task_tool_error_result(
+                        TaskToolError::TaskProtocolFailed,
+                    ),
+                ))
+            }
+            Err(error) => {
+                if let V5TaskExchangeError::Transport(observation) = &error {
+                    log_task_observation(observation, deadline.received_at(), Instant::now());
+                }
+                return Ok(SurfaceToolOutcome::Canonical(
+                    crate::application::v13::task_tools::task_tool_error_result(
+                        compatibility_task_exchange_error(error),
+                    ),
+                ));
+            }
+        };
+    }
+    if let Some(choice) = task_question(&snapshot) {
+        let refusal = crate::task_projection::call_tool_result(
+            snapshot
+                .completed_result()
+                .expect("a question comes with a result"),
+            budget,
+        )
+        .map_err(crate::task_projection::projection_error)?;
+        return Ok(SurfaceToolOutcome::Choice { refusal, choice });
+    }
+    Ok(SurfaceToolOutcome::Canonical(
+        project_compatibility_snapshot(&snapshot, CompatibilityProjection::TerminalResult),
+    ))
+}
 
 enum CompatibilityTaskResult {
     Snapshot(unica_execution_contract::invocation::DomainResult),
@@ -921,7 +1007,10 @@ impl ServerHandler for UnicaServer {
         let (all, modern) = match &self.router {
             SurfaceToolRouter::LegacyV12(_) => (all_tool_definitions(), modern_peer(&context)),
             SurfaceToolRouter::CanonicalV13(_) => {
-                let profile = if native_task_capability(&context) {
+                // The catalog follows the protocol revision, not one request's
+                // Tasks declaration: a 2026-07-28 client may declare Tasks in
+                // `tools/list` and not in `tools/call` (#3220).
+                let profile = if modern_protocol_authority(&context) {
                     V13TaskProfile::Native
                 } else {
                     V13TaskProfile::Compatibility
@@ -1366,6 +1455,28 @@ async fn client_roots(
     }
 }
 
+/// How a call that became a Task reaches its client.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TaskDelivery {
+    /// 2026-07-28 with Tasks declared in this request: a native Task.
+    Native,
+    /// 2026-07-28 without Tasks in this request: the call waits for the
+    /// Task to end and answers with its result.
+    Awaited,
+    /// A session before 2026-07-28: a receipt read by `unica.task.*`.
+    Receipt,
+}
+
+fn task_delivery(context: &RequestContext<RoleServer>) -> TaskDelivery {
+    if native_task_capability(context) {
+        TaskDelivery::Native
+    } else if modern_protocol_authority(context) {
+        TaskDelivery::Awaited
+    } else {
+        TaskDelivery::Receipt
+    }
+}
+
 fn native_task_capability(context: &RequestContext<RoleServer>) -> bool {
     // Request metadata is allowed to shape one response, but it cannot replace
     // the protocol authority established by initialize. A direct-first request
@@ -1510,7 +1621,7 @@ async fn invoke_surface_tool(
         progress_token,
         received_at,
     } = invocation;
-    let client_supports_tasks = native_task_capability(context);
+    let delivery = task_delivery(context);
     let admission = server
         .in_flight
         .admit()
@@ -1590,7 +1701,7 @@ async fn invoke_surface_tool(
             cancellation,
             progress,
             deadline,
-            client_supports_tasks,
+            delivery,
         )
     })
     .await;
@@ -1710,8 +1821,12 @@ fn progress_notification(
     meta.0
         .insert(event.meta_key.to_string(), event.payload.clone());
     let mut notification = ProgressNotificationParam::new(progress_token, event.progress)
-        .with_total(event.total)
         .with_message(event.message.clone());
+    // A zero total is no total: a wait knows how long it has waited, not
+    // how long the operation takes.
+    if event.total > 0.0 {
+        notification = notification.with_total(event.total);
+    }
     notification.meta = Some(meta);
     notification
 }

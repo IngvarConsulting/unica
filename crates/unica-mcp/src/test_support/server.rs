@@ -433,7 +433,8 @@ pub async fn surface_profiles_case() {
     assert_v13_profile_names(&listed_tool_names(&mut modern_compat, 1, None).await, false);
     modern_compat.shutdown().await;
 
-    // Direct-first requests select independently per request.
+    // Direct-first 2026-07-28 requests get the eight tools whether or not
+    // the request declares Tasks: the catalog follows the protocol revision.
     let (mut direct, _) = spawn_unica_server(canonical_profile_server());
     assert_v13_profile_names(
         &listed_tool_names(&mut direct, 1, Some(modern_tasks_meta())).await,
@@ -441,7 +442,7 @@ pub async fn surface_profiles_case() {
     );
     assert_v13_profile_names(
         &listed_tool_names(&mut direct, 2, Some(modern_meta())).await,
-        false,
+        true,
     );
     direct.shutdown().await;
 }
@@ -479,12 +480,13 @@ pub async fn compatibility_receipts_case() {
     });
     let (mut client, _) =
         spawn_unica_server(UnicaServer::with_canonical_v13_tasks(call, get, cancel));
+    client.initialize().await;
 
     client
         .send(json!({
             "jsonrpc":"2.0", "id":1, "method":"tools/call",
             "params":{
-                "name":"unica.check", "arguments":{}, "_meta":modern_meta()
+                "name":"unica.check", "arguments":{}
             }
         }))
         .await;
@@ -509,7 +511,6 @@ pub async fn compatibility_receipts_case() {
             "params":{
                 "name":"unica.task.get",
                 "arguments":{"taskId":task_id.to_string()},
-                "_meta":modern_meta()
             }
         }))
         .await;
@@ -526,7 +527,6 @@ pub async fn compatibility_receipts_case() {
                 "params":{
                     "name":"unica.task.cancel",
                     "arguments":{"taskId":task_id.to_string()},
-                    "_meta":modern_meta()
                 }
             }))
             .await;
@@ -718,41 +718,13 @@ pub async fn compatibility_terminal_result_case() {
         } else {
             assert_eq!(direct["result"]["content"], json!([]));
         }
+        // A 2026-07-28 call without Tasks waits for the Task it became and
+        // answers with the same bytes as the direct answer (#3220).
         client
             .send(json!({
                 "jsonrpc":"2.0", "id":2, "method":"tools/call",
                 "params":{
                     "name":"unica.check", "arguments":{}, "_meta":meta.clone()
-                }
-            }))
-            .await;
-        let initial = client.receive().await;
-        assert_eq!(
-            initial["result"]["structuredContent"]["data"]["task"]["taskId"],
-            task_id.to_string()
-        );
-        client
-            .send(json!({
-                "jsonrpc":"2.0", "id":3, "method":"tools/call",
-                "params":{
-                    "name":"unica.task.result",
-                    "arguments":{"taskId":task_id.to_string(), "waitMs":0},
-                    "_meta":meta.clone()
-                }
-            }))
-            .await;
-        let still_working = client.receive().await;
-        assert_eq!(
-            still_working["result"]["structuredContent"]["data"]["task"]["status"], "working",
-            "{still_working}"
-        );
-        client
-            .send(json!({
-                "jsonrpc":"2.0", "id":4, "method":"tools/call",
-                "params":{
-                    "name":"unica.task.result",
-                    "arguments":{"taskId":task_id.to_string()},
-                    "_meta":meta.clone()
                 }
             }))
             .await;
@@ -764,13 +736,8 @@ pub async fn compatibility_terminal_result_case() {
         assert_eq!(executions.load(Ordering::SeqCst), 2);
         {
             let waits = waits.lock().unwrap();
-            assert_eq!(waits.len(), 2);
-            assert_eq!(waits[0], 0);
-            assert!(waits[1] <= 7_000);
-            assert!(
-                waits[1] > 0,
-                "default result wait must not become immediate"
-            );
+            assert_eq!(waits.len(), 1);
+            assert!(waits[0] > 0, "the wait must not become immediate");
         }
         client.shutdown().await;
     }
@@ -824,6 +791,7 @@ pub async fn compatibility_closed_errors_case() {
         Arc::clone(&wait),
         Arc::clone(&cancel),
     ));
+    compat.initialize().await;
 
     for (id, name, arguments, expected) in [
         (
@@ -854,7 +822,7 @@ pub async fn compatibility_closed_errors_case() {
         compat
             .send(json!({
                 "jsonrpc":"2.0", "id":id, "method":"tools/call",
-                "params":{"name":name, "arguments":arguments, "_meta":modern_meta()}
+                "params":{"name":name, "arguments":arguments}
             }))
             .await;
         let response = compat.receive().await;
@@ -932,12 +900,12 @@ pub async fn compatibility_wait_single_deadline_case() {
             fake.owner(),
             "/workspace".to_string(),
         ));
+        mcp.initialize().await;
         mcp.send(json!({
             "jsonrpc":"2.0", "id":1, "method":"tools/call",
             "params":{
                 "name":"unica.task.result",
                 "arguments":{"taskId":task_id.to_string(), "waitMs":requested_wait_ms},
-                "_meta":modern_meta()
             }
         }))
         .await;
@@ -1156,6 +1124,7 @@ pub async fn compatibility_hostile_status_payload_case() {
         let (mut client, _) = spawn_unica_server(UnicaServer::with_canonical_v13_task_handlers(
             call, get, wait, cancel,
         ));
+        client.initialize().await;
 
         for (id, name, arguments) in [
             (1, "unica.task.get", json!({"taskId": task_id.to_string()})),
@@ -1169,7 +1138,7 @@ pub async fn compatibility_hostile_status_payload_case() {
                 .send(json!({
                     "jsonrpc":"2.0", "id":id, "method":"tools/call",
                     "params":{
-                        "name":name, "arguments":arguments, "_meta":modern_meta()
+                        "name":name, "arguments":arguments
                     }
                 }))
                 .await;
