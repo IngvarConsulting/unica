@@ -2203,6 +2203,72 @@ async fn a_lost_submit_is_a_task_for_native_clients_and_a_task_receipt_for_other
     }
 }
 
+/// Claude Code объявляет Tasks в `tools/list`, но не в `tools/call` (#3220).
+/// Каждый инструмент, который ответ называет следующим шагом, должен быть
+/// в каталоге, выданном тому же клиенту.
+#[tokio::test]
+async fn a_task_receipt_names_only_tools_from_the_catalog_listed_to_the_same_client() {
+    use unica_execution_contract::invocation::{InvocationStatus, TaskId};
+
+    let task_id = TaskId::new();
+    let call: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _, _| {
+        Ok(CanonicalCallOutcome::Task(canonical_snapshot(
+            task_id,
+            InvocationStatus::Working,
+            None,
+        )))
+    });
+    let get: Arc<CanonicalTaskHandler> =
+        Arc::new(move |_, _| Ok(canonical_snapshot(task_id, InvocationStatus::Working, None)));
+    let server = UnicaServer::with_canonical_v13_tasks(call, Arc::clone(&get), get);
+    let (mut client, _) = spawn_unica_server(server);
+
+    let mut catalog = Vec::new();
+    let mut cursor = None::<Value>;
+    for id in 1.. {
+        let mut params = json!({"_meta": modern_tasks_meta()});
+        if let Some(cursor) = cursor.take() {
+            params["cursor"] = cursor;
+        }
+        client
+            .send(json!({"jsonrpc":"2.0", "id":id, "method":"tools/list", "params":params}))
+            .await;
+        let listed = client.receive().await;
+        catalog.extend(
+            listed["result"]["tools"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{listed}"))
+                .iter()
+                .map(|tool| tool["name"].as_str().unwrap().to_string()),
+        );
+        match listed["result"].get("nextCursor") {
+            Some(next) if !next.is_null() => cursor = Some(next.clone()),
+            _ => break,
+        }
+    }
+
+    client
+        .send(json!({
+            "jsonrpc":"2.0", "id":100, "method":"tools/call",
+            "params":{"name":"unica.run", "arguments":{}, "_meta":modern_meta()}
+        }))
+        .await;
+    let answer = client.receive().await;
+    assert!(answer.get("error").is_none(), "{answer}");
+    let next = answer["result"]["structuredContent"]["next"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    for step in &next {
+        let tool = step["tool"].as_str().unwrap_or_else(|| panic!("{answer}"));
+        assert!(
+            catalog.iter().any(|name| name == tool),
+            "next names `{tool}`, absent from the catalog listed to this client: {catalog:?}; answer: {answer}"
+        );
+    }
+    client.shutdown().await;
+}
+
 #[tokio::test]
 async fn tasks_direct_first_capability_controls_native_projection_without_reexecution() {
     tasks_direct_first_capability_case().await;
