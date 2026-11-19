@@ -1,8 +1,17 @@
 use super::*;
 
+/// rule: CTR.SOURCE.METADATA-COLLECTION-ROW
 #[test]
 fn metadata_kind_branch_lists_registered_objects_with_canonical_addresses() {
     let fixture = RealReaderFixture::new();
+    // Строка называет синоним и число подчинённых из `ChildObjects`: по ней
+    // агент выбирает объект, не открывая каждый (#548).
+    let owners = fixture.source.join("Catalogs/Владельцы.xml");
+    let xml = fs::read_to_string(&owners).unwrap().replace(
+        "<Name>Владельцы</Name>",
+        "<Name>Владельцы</Name><Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Владельцы номенклатуры</v8:content></v8:item></Synonym>",
+    );
+    fs::write(&owners, xml).unwrap();
     let cancellation = CancellationToken::new();
     let source_root =
         Arc::new(unica_workspace::read::open_source_directory(&fixture.source).unwrap());
@@ -24,12 +33,14 @@ fn metadata_kind_branch_lists_registered_objects_with_canonical_addresses() {
             {
                 "at": "main:Catalog.Items",
                 "kind": "Catalog",
-                "title": "Items"
+                "title": "Items",
+                "props": {"children": 5}
             },
             {
                 "at": "main:Catalog.Владельцы",
                 "kind": "Catalog",
-                "title": "Владельцы"
+                "title": "Владельцы",
+                "props": {"synonym": "ru = 'Владельцы номенклатуры'", "children": 0}
             }
         ]),
     );

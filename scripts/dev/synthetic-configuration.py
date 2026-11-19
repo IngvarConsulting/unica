@@ -10,6 +10,12 @@ configuration is copied. The result is a Git repository with a
 meant for loading into the platform (references to absent objects remain).
 
     synthetic-configuration.py --out DIR [--profile FILE] [--scale 1.0] [--seed 1119]
+                               [--kinds Catalog ...] [--no-modules]
+
+Catalog names have the measured lengths of the profile and a synonym of the
+same words, as 1C names them. `--kinds` keeps only the named object kinds and
+`--no-modules` writes descriptors without BSL: a collection check needs
+neither the other kinds nor the module text.
 
 Every 97th module carries ``СинтетическаяМеткаПоиска`` so that a lexical
 search has hits spread over the whole corpus.
@@ -110,7 +116,22 @@ def fresh_uuids(text: str, salt: str) -> str:
     return UUID.sub(lambda m: str(uuid.uuid5(uuid.NAMESPACE_URL, salt + m.group(0))), text)
 
 
-def clone(kind: str, name: str, src: Path) -> None:
+def catalog_name(rng: random.Random, profile: dict, taken: set[str]) -> tuple[str, str]:
+    """A catalog name of a measured length and its synonym of the same words."""
+    lengths = profile["catalogs"]["name_lengths"]
+    while True:
+        target = max(3, sample_size(rng, profile["quantile_points"], lengths))
+        words: list[str] = []
+        while sum(map(len, words)) < target:
+            words.append(rng.choice(WORDS))
+        words[-1] = words[-1][: len(words[-1]) - (sum(map(len, words)) - target)]
+        name = "".join(words)
+        if name not in taken:
+            taken.add(name)
+            return name, " ".join([words[0], *(word.lower() for word in words[1:])])
+
+
+def clone(kind: str, name: str, src: Path, synonym: str | None = None) -> None:
     directory, template = TEMPLATES[kind]
     source = TEMPLATE / directory
     for path in [source / f"{template}.xml", *sorted((source / template).rglob("*"))]:
@@ -122,6 +143,15 @@ def clone(kind: str, name: str, src: Path) -> None:
         text = path.read_text(encoding="utf-8-sig")
         # Whole name only: `СпособыУстановкиКурсаВалюты` keeps its name.
         text = re.sub(rf"(?<!\w){re.escape(template)}(?!\w)", name, text)
+        if synonym is not None and path.name == f"{template}.xml" and path.parent == source:
+            text, replaced = re.subn(
+                r"(<Synonym>\s*<v8:item>\s*<v8:lang>ru</v8:lang>\s*<v8:content>)[^<]*",
+                lambda m: m.group(1) + synonym,
+                text,
+                count=1,
+            )
+            if replaced != 1:
+                raise SystemExit(f"the template {path.name} no longer has a Russian synonym")
         target.write_text(BOM + fresh_uuids(text, name), encoding="utf-8")
 
 
@@ -154,7 +184,14 @@ def add_forms(src: Path, name: str, forms: int) -> list[Path]:
     return modules
 
 
-def generate(out: Path, profile: dict, scale: float, seed: int) -> dict:
+def generate(
+    out: Path,
+    profile: dict,
+    scale: float,
+    seed: int,
+    kinds: tuple[str, ...] | None = None,
+    modules_wanted: bool = True,
+) -> dict:
     rng = random.Random(seed)
     if out.exists() and any(out.iterdir()):
         if not (out / SENTINEL).is_file():
@@ -169,36 +206,50 @@ def generate(out: Path, profile: dict, scale: float, seed: int) -> dict:
     )
     for extra in ["Languages", "Ext"]:
         shutil.copytree(TEMPLATE / extra, src / extra)
-    counts = {kind: max(1, round(count * scale)) for kind, count in profile["objects"].items()}
+    counts = {
+        kind: max(1, round(count * scale))
+        for kind, count in profile["objects"].items()
+        if kinds is None or kind in kinds
+    }
     names = {kind: [f"{PREFIX[kind]}{i:05d}" for i in range(count)] for kind, count in counts.items()}
+    synonyms: dict[str, str] = {}
+    if "Catalog" in names:
+        taken: set[str] = set()
+        named = [catalog_name(rng, profile, taken) for _ in names["Catalog"]]
+        names["Catalog"] = [name for name, _ in named]
+        synonyms = dict(named)
     for kind, items in names.items():
         for name in items:
-            clone(kind, name, src)
-    form_total = round(profile["modules"]["form"]["files"] * scale)
-    per_catalog = [form_total // counts["Catalog"]] * counts["Catalog"]
-    for i in range(form_total % counts["Catalog"]):
-        per_catalog[i] += 1
+            clone(kind, name, src, synonyms.get(name) if kind == "Catalog" else None)
     modules: dict[str, list[Path]] = {"common": [], "form": [], "object": [], "manager": [], "other": []}
-    for name in names["CommonModule"]:
-        modules["common"].append(src / "CommonModules" / name / "Ext" / "Module.bsl")
-    for name, forms in zip(names["Catalog"], per_catalog):
-        modules["form"].extend(add_forms(src, name, max(2, forms))[: forms or 0])
-    for kind, directory in [("Catalog", "Catalogs"), ("Document", "Documents"), ("Report", "Reports")]:
-        for name in names[kind]:
-            modules["object"].append(src / directory / name / "Ext" / "ObjectModule.bsl")
-    for kind, directory in [
-        ("Catalog", "Catalogs"),
-        ("Document", "Documents"),
-        ("InformationRegister", "InformationRegisters"),
-        ("Report", "Reports"),
-    ]:
-        for name in names[kind]:
-            modules["manager"].append(src / directory / name / "Ext" / "ManagerModule.bsl")
-    for name in names["InformationRegister"]:
-        modules["other"].append(src / "InformationRegisters" / name / "Ext" / "RecordSetModule.bsl")
+    if modules_wanted:
+        catalogs = names.get("Catalog", [])
+        form_total = round(profile["modules"]["form"]["files"] * scale) if catalogs else 0
+        per_catalog = [form_total // max(1, len(catalogs))] * len(catalogs)
+        for i in range(form_total % max(1, len(catalogs))):
+            per_catalog[i] += 1
+        for name in names.get("CommonModule", []):
+            modules["common"].append(src / "CommonModules" / name / "Ext" / "Module.bsl")
+        for name, forms in zip(catalogs, per_catalog):
+            modules["form"].extend(add_forms(src, name, max(2, forms))[: forms or 0])
+        for kind, directory in [("Catalog", "Catalogs"), ("Document", "Documents"), ("Report", "Reports")]:
+            for name in names.get(kind, []):
+                modules["object"].append(src / directory / name / "Ext" / "ObjectModule.bsl")
+        for kind, directory in [
+            ("Catalog", "Catalogs"),
+            ("Document", "Documents"),
+            ("InformationRegister", "InformationRegisters"),
+            ("Report", "Reports"),
+        ]:
+            for name in names.get(kind, []):
+                modules["manager"].append(src / directory / name / "Ext" / "ManagerModule.bsl")
+        for name in names.get("InformationRegister", []):
+            modules["other"].append(src / "InformationRegisters" / name / "Ext" / "RecordSetModule.bsl")
     written = {}
     ordinal = 0
     for role, paths in modules.items():
+        if not paths:
+            continue
         sizes = role_sizes(rng, profile, role, len(paths), scale)
         total = 0
         for path, size in zip(paths, sizes):
@@ -251,9 +302,13 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--profile", type=Path, default=Path(__file__).with_name("synthetic-configuration-ut11.json"))
     parser.add_argument("--scale", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=1119)
+    parser.add_argument("--kinds", nargs="+", choices=sorted(TEMPLATES), help="only these object kinds")
+    parser.add_argument("--no-modules", action="store_true", help="descriptors without BSL modules")
     args = parser.parse_args(argv)
     profile = json.loads(args.profile.read_text(encoding="utf-8"))
-    print(json.dumps(generate(args.out, profile, args.scale, args.seed), ensure_ascii=False, indent=1))
+    kinds = tuple(args.kinds) if args.kinds else None
+    result = generate(args.out, profile, args.scale, args.seed, kinds, not args.no_modules)
+    print(json.dumps(result, ensure_ascii=False, indent=1))
     return 0
 
 
