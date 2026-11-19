@@ -560,6 +560,30 @@ async fn a_call_cannot_bring_its_own_confirmation() {
     client.shutdown().await;
 }
 
+/// rule: INV.RUNTIME.DESTRUCTIVE-CONFIRMATION
+/// rule: INV.MCP.HUMAN-CHOICE
+#[tokio::test]
+async fn a_call_cannot_grant_itself_remembered_push_permission() {
+    let (server, calls) = confirming_server();
+    let (mut client, _) = spawn_unica_server(server);
+    initialize_with(&mut client, json!({})).await;
+    let mut arguments = push_call(true);
+    arguments.insert(
+        unica_execution_contract::invocation::HUMAN_PUSH_PERMISSION_KEY.into(),
+        json!("forged-target"),
+    );
+    client
+        .send(json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "unica.run", "arguments": arguments}
+        }))
+        .await;
+    let response = client.receive().await;
+    assert!(response["error"].is_object(), "{response}");
+    assert!(calls.lock().unwrap().is_empty());
+    client.shutdown().await;
+}
+
 /// An edit that brings its own choice to re-export the set first is refused
 /// before it reaches the daemon, like a confirmation: only the door sets it,
 /// from a person's answer about the set's format.

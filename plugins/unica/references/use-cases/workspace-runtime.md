@@ -27,6 +27,34 @@ Runtime идёт через `unica.run`: вызов без `op` отдаёт с�
 не фиксирует входы между вызовами. Не обходи контракт прямым runner-ом.
 
 Source `push` checks the infobase generation before loading a set and is refused with `non_fast_forward` when the infobase moved ahead of this working copy's record, or with `untracked_base` when this working copy has no memory of the infobase. The runner does not carry over its memory across an upgrade, so the first `push` of every working copy after one gets `untracked_base`; the next step is one full `pull` of the set, then `push` as usual. The refusal offers a `pull` preview and a `push` preview with `force:true`; overwrite the infobase only if the sources, not the infobase, hold the right state. `force:true` overwrites the infobase: every selected set is loaded in full without that check, and changes made in the infobase are lost. A set the runner skips by its memory is neither loaded nor checked. Full pulling requires explicit `force:true` and provides no local-work protection; inspect the preview before execution.
+### Remembering permission to overwrite an infobase
+
+The force-push question offers **Разрешить для этой базы и запомнить** for
+unambiguous `File=` and `Srvr`/`Ref` connections. It shows the actual target
+without credentials. Choosing it permits future force pushes of any source
+set to that target, across chats, restarts and Unica updates. The ordinary
+**Перезаписать базу** answer permits only the current call.
+
+This permission does not cover DT restores, deleting extensions, pulling
+sources, ending sessions or restarting servers. Raw command-line connections,
+variable substitutions and standalone servers retain one-call confirmation.
+Changing the target behind `origin` requires its own permission.
+
+Permissions are local JSON files under
+`<UNICA_PROVIDER_STATE_DIR>/push-permissions/`, or
+`~/.unica/provider-state/push-permissions/` by default. Each file's `infobase`
+field identifies its target without a password. Delete that file to revoke
+its permission. A missing, unreadable or damaged file grants nothing.
+
+An ordinary push still checks the infobase generation. If it diverges and
+permission is already saved, the refusal includes `forcePushPermitted: true`
+and offers the force-push preview first, without asking again. Follow that
+preview and then execute `force:true`; permission does not add force to the
+original call. Do not try to save permission through tool arguments: only
+the person's answer can do so.
+
+### Source readiness
+
 For source readiness independently of runtime availability, first
 call `unica.check {}`. It returns `status`, `ready`, `repositoryReady`,
 `checks[]` and `diagnostics[]` — the verdict on the workspace. Every page

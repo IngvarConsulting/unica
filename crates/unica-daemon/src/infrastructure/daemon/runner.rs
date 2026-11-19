@@ -748,7 +748,7 @@ pub(super) enum OriginKind {
     Standalone,
 }
 
-pub(super) fn origin_kind(root: &Path) -> Result<OriginKind, String> {
+pub(super) fn origin_configuration(root: &Path) -> Result<Option<Value>, String> {
     let mut origin: Option<Value> = None;
     for file in [BASE_NAME, LOCAL_NAME] {
         let Some(mut layer) = read_yaml_config(root, file)? else {
@@ -761,7 +761,11 @@ pub(super) fn origin_kind(root: &Path) -> Result<OriginKind, String> {
             }
         }
     }
-    let Some(origin) = origin else {
+    Ok(origin)
+}
+
+pub(super) fn origin_kind(root: &Path) -> Result<OriginKind, String> {
+    let Some(origin) = origin_configuration(root)? else {
         return Ok(OriginKind::Undeclared);
     };
     if origin

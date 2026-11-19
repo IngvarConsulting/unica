@@ -24,6 +24,7 @@ mod v13_infobase_another_copy;
 mod v13_infobase_create;
 mod v13_infobase_exports;
 mod v13_infobase_sessions;
+mod v13_push_permission;
 mod v13_read_modes;
 mod v13_run_dictionary;
 mod v13_search_admission;
