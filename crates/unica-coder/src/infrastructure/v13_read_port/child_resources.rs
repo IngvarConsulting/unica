@@ -8,13 +8,14 @@ use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use unica_address::source_target::MetadataAddress;
+use unica_metadata::child_resources::{TypedChildEntryKind, TypedChildResourceRead};
 use unica_metadata::MetaDiagnostic;
-use unica_metadata_designer::child_resources::{
-    observe_typed_child_resources_with, observed_child_directories, TypedChildEntryKind,
-    TypedChildObservationScope, TypedChildResourceRead, TYPED_CHILD_TREE_MAX_DEPTH,
-};
 use unica_refusal::RefusalDetail;
 use unica_source_contract::read::{FileStamp, SourceDirectory, SourceEntry};
+
+fn codec() -> &'static dyn unica_metadata::read_codec::MetadataReadCodec {
+    crate::infrastructure::family_codecs::metadata_read_codec()
+}
 
 /// Один вход каталогов дочерних ресурсов.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,24 +74,15 @@ impl ProviderReadAuthority {
             return Ok(diagnostics.as_ref().clone());
         }
         let reader = RetainedChildResources::new(&self.root, checkpoint);
-        let observed =
-            observe_typed_child_resources_with(
-                &reader,
-                TypedChildObservationScope::Diagnostics,
-                &relative,
-                target,
-                kind,
-                name,
-                owner_xml,
-            );
+        let diagnostics =
+            codec().child_resource_diagnostics(&reader, &relative, target, kind, name, owner_xml);
         reader.finish()?;
-        let diagnostics = match observed {
-            Ok(observation) => observation.diagnostics,
-            Err(failure) => failure.diagnostics,
-        };
         if let Some(revision) = revision {
-            self.artifacts
-                .retain_child_resources(relative, revision, Arc::new(diagnostics.clone()));
+            self.artifacts.retain_child_resources(
+                relative,
+                revision,
+                Arc::new(diagnostics.clone()),
+            );
         }
         Ok(diagnostics)
     }
@@ -120,10 +112,11 @@ fn child_resource_revision(
             Err(error) if error.kind() == io::ErrorKind::NotFound => None,
             Err(error) => return Err(error),
         };
-        for name in observed_child_directories() {
-            let directory = match object.as_ref().map(|object| {
-                object.retain_immediate_child_nofollow(std::ffi::OsStr::new(name))
-            }) {
+        for name in codec().observed_child_directories() {
+            let directory = match object
+                .as_ref()
+                .map(|object| object.retain_immediate_child_nofollow(std::ffi::OsStr::new(name)))
+            {
                 None => Err(io::ErrorKind::NotFound.into()),
                 Some(entry) => entry,
             };
@@ -202,9 +195,7 @@ fn walk_in_parallel(
             })
             .collect::<Vec<_>>();
         let mut found = Vec::new();
-        let mut interruptible = || {
-            check().inspect_err(|_| stop.store(true, Ordering::Relaxed))
-        };
+        let mut interruptible = || check().inspect_err(|_| stop.store(true, Ordering::Relaxed));
         let checked = own.iter().try_for_each(|name| {
             interruptible()?;
             visit(directory, relative, name, 1, &mut found, &mut interruptible)
@@ -214,7 +205,11 @@ fn walk_in_parallel(
         }
         let mut walked = handles
             .into_iter()
-            .map(|handle| handle.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic)))
+            .map(|handle| {
+                handle
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+            })
             .collect::<Vec<_>>();
         walked.push(Ok(found));
         (walked, checked)
@@ -234,8 +229,10 @@ fn visit(
     entries: &mut Vec<(PathBuf, RevisionEntry)>,
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<()> {
-    if depth > TYPED_CHILD_TREE_MAX_DEPTH {
-        return Err(io::Error::other("child resource tree is deeper than observed"));
+    if depth > codec().child_tree_max_depth() {
+        return Err(io::Error::other(
+            "child resource tree is deeper than observed",
+        ));
     }
     let path = relative.join(name);
     match directory.retain_immediate_child_nofollow(name)? {

@@ -268,15 +268,7 @@ pub struct RegistrationCache {
     /// the revision of its form, template and command directories. Unlike
     /// the other records, the revision walks those directories: their files
     /// are stamped, not read.
-    child_resources: Mutex<
-        std::collections::HashMap<
-            std::path::PathBuf,
-            (
-                crate::infrastructure::v13_read_port::ChildResourceRevision,
-                Arc<Vec<unica_metadata::MetaDiagnostic>>,
-            ),
-        >,
-    >,
+    child_resources: Mutex<RetainedChildResources>,
     /// The background proof of all top-level descriptors has been started.
     /// Test builds start it marked, so tests that watch which files a call
     /// opens see only that call; the test of the warm-up clears the mark.
@@ -286,6 +278,16 @@ pub struct RegistrationCache {
     #[cfg(any(test, feature = "test-support"))]
     after_parse: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
+
+/// Child resource diagnostics by descriptor path, each under the revision
+/// of the object's child directories.
+type RetainedChildResources = std::collections::HashMap<
+    std::path::PathBuf,
+    (
+        crate::infrastructure::v13_read_port::ChildResourceRevision,
+        Arc<Vec<unica_metadata::MetaDiagnostic>>,
+    ),
+>;
 
 /// Records retained per descriptor path, each under the stamp the
 /// descriptor had before it was read.

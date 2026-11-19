@@ -600,26 +600,7 @@ pub fn observed_child_directories() -> impl Iterator<Item = &'static str> {
     })
 }
 
-/// What one entry of a listed directory is, without following links.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TypedChildEntryKind {
-    File,
-    Directory,
-    Link,
-    Other,
-}
-
-/// The reads the child resource observation makes: whole files, existence
-/// and the immediate entries of a directory. `check` reads through project
-/// discovery; `view` reads through the source root it holds.
-pub trait TypedChildResourceRead {
-    fn read_file(&self, path: &Path) -> std::io::Result<Vec<u8>>;
-    fn exists(&self, path: &Path) -> bool;
-    fn entries(
-        &self,
-        path: &Path,
-    ) -> std::io::Result<Vec<(std::ffi::OsString, TypedChildEntryKind)>>;
-}
+pub use unica_metadata::child_resources::{TypedChildEntryKind, TypedChildResourceRead};
 
 struct DiscoveryChildResources<'a>(&'a dyn ProjectDiscoveryRead);
 
@@ -792,28 +773,27 @@ pub fn observe_typed_child_resources_with(
             };
 
             let payload_root = collection_dir.join(&name);
-            let (payload, directories) =
-                if reader.exists(&payload_root) {
-                    match read_child_tree(reader, &payload_root, keep_images) {
-                        Ok(value) => value,
-                        Err(error) => {
-                            observation.diagnostics.push(
-                                crate::edit::typed_diagnostic(
-                                    MetaDiagnosticCode::ProviderUnavailable,
-                                    format!(
-                                        "typed child resource topology is unavailable: {child}: {}",
-                                        error.public_message()
-                                    ),
-                                    Some("resources.child.topology"),
-                                )
-                                .with_metadata_path(child.clone()),
-                            );
-                            continue;
-                        }
+            let (payload, directories) = if reader.exists(&payload_root) {
+                match read_child_tree(reader, &payload_root, keep_images) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        observation.diagnostics.push(
+                            crate::edit::typed_diagnostic(
+                                MetaDiagnosticCode::ProviderUnavailable,
+                                format!(
+                                    "typed child resource topology is unavailable: {child}: {}",
+                                    error.public_message()
+                                ),
+                                Some("resources.child.topology"),
+                            )
+                            .with_metadata_path(child.clone()),
+                        );
+                        continue;
                     }
-                } else {
-                    (Vec::new(), Vec::new())
-                };
+                }
+            } else {
+                (Vec::new(), Vec::new())
+            };
             // Заимствованного ребёнка платформа выгружает без своего
             // содержимого (`Form.xml`, `Template.xml`), если расширение его не
             // меняет. Наблюдение не требует у него файлов; доказать

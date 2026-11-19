@@ -62,7 +62,10 @@ fn child_resource_check_is_retained_until_a_child_resource_changes() {
         })
         .unwrap_or_else(|| panic!("{first:?}"));
     assert_eq!(
-        unavailable.metadata_path.as_ref().map(MetadataAddress::as_str),
+        unavailable
+            .metadata_path
+            .as_ref()
+            .map(MetadataAddress::as_str),
         Some("Catalog.Products.Form.Main")
     );
 
@@ -115,14 +118,20 @@ fn cancelled_child_resource_check_refuses_the_read() {
             Arc::new(unica_workspace::read::open_source_directory(&source).unwrap()),
         )
         .with_artifacts(Arc::clone(artifacts))
-        .child_resource_diagnostics(&target, "Catalog", "Products", OWNER.as_bytes(), &mut || {
-            calls += 1;
-            if calls == stop_at {
-                Err(ViewError::new(RefusalCode::Cancelled, "cancelled"))
-            } else {
-                Ok(())
-            }
-        });
+        .child_resource_diagnostics(
+            &target,
+            "Catalog",
+            "Products",
+            OWNER.as_bytes(),
+            &mut || {
+                calls += 1;
+                if calls == stop_at {
+                    Err(ViewError::new(RefusalCode::Cancelled, "cancelled"))
+                } else {
+                    Ok(())
+                }
+            },
+        );
         (result, calls)
     };
     let settled = || {
