@@ -711,8 +711,8 @@ fn canonical_uuid_attribute_round_trips_as_an_editable_observed_type() {
 }
 
 /// INV.APP.META-OBSERVATION: посторонний файл в каталоге формы не скрывает
-/// справочник и его форму в `view`, а `check` того же узла называет форму
-/// ошибкой `provider_unavailable` логическим адресом.
+/// справочник и его форму в `view`; и `view`, и `check` того же узла
+/// называют форму ошибкой `provider_unavailable` логическим адресом.
 /// rule: INV.APP.META-OBSERVATION
 #[test]
 fn canonical_foreign_form_file_keeps_catalog_structure_and_reports_provider_unavailable() {
@@ -751,6 +751,18 @@ fn canonical_foreign_form_file_keeps_catalog_structure_and_reports_provider_unav
             .unwrap()
             .contains(&json!({"at":"main:Catalog.Products.Form","count":1})),
         "{data}"
+    );
+    let limits = data["limits"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter(|limit| limit.contains("provider_unavailable"))
+        .collect::<Vec<_>>();
+    assert_eq!(limits.len(), 1, "{data}");
+    assert!(
+        limits[0].starts_with("resources.child.") && limits[0].ends_with("Catalog.Products.Form.Main"),
+        "{limits:?}"
     );
     let forms = call(
         &runtime,

@@ -571,6 +571,16 @@ impl<'a> LogicalViewReadAuthority<'a> {
             .iter()
             .filter_map(|diagnostic| {
                 let field = diagnostic.field.as_deref()?;
+                // Непроверенный дочерний ресурс: сообщение называет его
+                // логический адрес, как в `check`.
+                if diagnostic.code == MetaDiagnosticCode::ProviderUnavailable
+                    && field.starts_with("resources.")
+                {
+                    return Some(json!({
+                        "field": field,
+                        "message": format!("provider_unavailable: {}", diagnostic.message),
+                    }));
+                }
                 if diagnostic.severity == MetaDiagnosticSeverity::Warning {
                     return (diagnostic.code == MetaDiagnosticCode::ValidationWarning
                         && field.starts_with("details."))

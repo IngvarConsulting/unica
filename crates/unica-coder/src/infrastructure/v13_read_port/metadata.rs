@@ -50,6 +50,16 @@ impl ProviderReadAuthority {
                     .unwrap_or_else(|_| "metadata reader failed".to_string());
                 ViewError::detailed(RefusalDetail::SourceUnreadable, message)
             })?;
+        // Форма, макет или команда, которые не удалось проверить, не скрывают
+        // прочитанного из описания владельца (INV.APP.META-OBSERVATION).
+        let child_resources = self.child_resource_diagnostics(
+            target,
+            info.kind.as_str(),
+            &info.name,
+            &descriptor,
+            checkpoint,
+        )?;
+        info.diagnostics.extend(child_resources);
         if info.kind == MetadataKind::ExchangePlan {
             let relative = Path::new("ExchangePlans")
                 .join(&info.name)

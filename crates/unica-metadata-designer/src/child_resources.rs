@@ -3,7 +3,6 @@ use crate::edit::*;
 use crate::resource_plan::{TypedChildFileMutation, TypedChildObservation, TypedChildResourcePlan};
 use roxmltree::Document;
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use unica_address::source_target::MetadataAddress;
 use unica_metadata::{
@@ -583,8 +582,101 @@ fn typed_physical_collection(
     typed_child_storage_profile(collection).map(|profile| (profile.directory, profile.resource))
 }
 
+/// The child collections the observation checks, with the tag that names a
+/// child in the owner descriptor.
+const OBSERVED_CHILD_COLLECTIONS: [(MetaCollection, &str); 3] = [
+    (MetaCollection::Forms, "Form"),
+    (MetaCollection::Templates, "Template"),
+    (MetaCollection::Commands, "Command"),
+];
+
+/// The directories under the object directory that hold everything the
+/// observation reads besides the owner descriptor.
+pub fn observed_child_directories() -> impl Iterator<Item = &'static str> {
+    OBSERVED_CHILD_COLLECTIONS.iter().map(|(collection, _)| {
+        typed_child_storage_profile(*collection)
+            .expect("closed observed child collection has a storage profile")
+            .directory
+    })
+}
+
+/// What one entry of a listed directory is, without following links.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypedChildEntryKind {
+    File,
+    Directory,
+    Link,
+    Other,
+}
+
+/// The reads the child resource observation makes: whole files, existence
+/// and the immediate entries of a directory. `check` reads through project
+/// discovery; `view` reads through the source root it holds.
+pub trait TypedChildResourceRead {
+    fn read_file(&self, path: &Path) -> std::io::Result<Vec<u8>>;
+    fn exists(&self, path: &Path) -> bool;
+    fn entries(
+        &self,
+        path: &Path,
+    ) -> std::io::Result<Vec<(std::ffi::OsString, TypedChildEntryKind)>>;
+}
+
+struct DiscoveryChildResources<'a>(&'a dyn ProjectDiscoveryRead);
+
+impl TypedChildResourceRead for DiscoveryChildResources<'_> {
+    fn read_file(&self, path: &Path) -> std::io::Result<Vec<u8>> {
+        unica_source_designer::read::read_bytes(self.0, path)
+    }
+
+    fn exists(&self, path: &Path) -> bool {
+        unica_source_designer::read::path_exists(self.0, path)
+    }
+
+    fn entries(
+        &self,
+        path: &Path,
+    ) -> std::io::Result<Vec<(std::ffi::OsString, TypedChildEntryKind)>> {
+        self.0
+            .read_entries(path)?
+            .map(|entry| {
+                let entry = entry?;
+                let file_type = entry.file_type()?;
+                let kind = if file_type.is_symlink() {
+                    TypedChildEntryKind::Link
+                } else if file_type.is_dir() {
+                    TypedChildEntryKind::Directory
+                } else if file_type.is_file() {
+                    TypedChildEntryKind::File
+                } else {
+                    TypedChildEntryKind::Other
+                };
+                Ok((entry.file_name(), kind))
+            })
+            .collect()
+    }
+}
+
 pub fn observe_typed_child_resources(
     reader: &dyn ProjectDiscoveryRead,
+    descriptor_path: &Path,
+    owner: &MetadataAddress,
+    object_kind: &str,
+    object_name: &str,
+    owner_xml: &str,
+) -> Result<TypedChildObservation, unica_metadata::request::MetaFailure> {
+    observe_typed_child_resources_with(
+        &DiscoveryChildResources(reader),
+        descriptor_path,
+        owner,
+        object_kind,
+        object_name,
+        owner_xml,
+    )
+}
+
+/// The same observation over any reader of the child resources.
+pub fn observe_typed_child_resources_with(
+    reader: &dyn TypedChildResourceRead,
     descriptor_path: &Path,
     owner: &MetadataAddress,
     object_kind: &str,
@@ -617,11 +709,7 @@ pub fn observe_typed_child_resources(
 
     let object_dir = descriptor_path.with_extension("");
     let mut observation = TypedChildObservation::default();
-    for (collection, tag) in [
-        (MetaCollection::Forms, "Form"),
-        (MetaCollection::Templates, "Template"),
-        (MetaCollection::Commands, "Command"),
-    ] {
+    for (collection, tag) in OBSERVED_CHILD_COLLECTIONS {
         let profile = typed_child_storage_profile(collection)
             .expect("closed observed child collection has a storage profile");
         let collection_dir = object_dir.join(profile.directory);
@@ -645,7 +733,7 @@ pub fn observe_typed_child_resources(
             let descriptor = match profile.descriptor {
                 crate::edit::TypedChildDescriptorStorage::Standalone => {
                     let path = collection_dir.join(format!("{name}.xml"));
-                    match unica_source_designer::read::read_bytes(reader, &path) {
+                    match reader.read_file(&path) {
                         Ok(bytes) => bytes,
                         Err(_) => {
                             observation.diagnostics.push(
@@ -690,8 +778,8 @@ pub fn observe_typed_child_resources(
 
             let payload_root = collection_dir.join(&name);
             let (payload, directories) =
-                if unica_source_designer::read::path_exists(reader, &payload_root) {
-                    match read_typed_child_tree(reader, &payload_root) {
+                if reader.exists(&payload_root) {
+                    match read_child_tree(reader, &payload_root) {
                         Ok(value) => value,
                         Err(error) => {
                             observation.diagnostics.push(
@@ -1107,8 +1195,15 @@ pub fn read_typed_child_tree(
     reader: &dyn ProjectDiscoveryRead,
     root: &Path,
 ) -> Result<TypedChildTree, TypedChildTreeError> {
+    read_child_tree(&DiscoveryChildResources(reader), root)
+}
+
+fn read_child_tree(
+    reader: &dyn TypedChildResourceRead,
+    root: &Path,
+) -> Result<TypedChildTree, TypedChildTreeError> {
     fn visit(
-        reader: &dyn ProjectDiscoveryRead,
+        reader: &dyn TypedChildResourceRead,
         root: &Path,
         current: &Path,
         depth: usize,
@@ -1119,30 +1214,23 @@ pub fn read_typed_child_tree(
             return Err(TypedChildTreeError::Unavailable);
         }
         let entries = reader
-            .read_entries(current)
+            .entries(current)
             .map_err(|_| TypedChildTreeError::Unavailable)?;
-        for entry in entries {
-            let entry = entry.map_err(|_| TypedChildTreeError::Unavailable)?;
-            let file_type = entry
-                .file_type()
-                .map_err(|_| TypedChildTreeError::Unavailable)?;
-            if file_type.is_symlink() {
-                return Err(TypedChildTreeError::SymbolicLink);
-            }
-            if file_type.is_dir() {
-                directories.push(entry.path().strip_prefix(root).unwrap().to_path_buf());
-                visit(reader, root, &entry.path(), depth + 1, files, directories)?;
-            } else if file_type.is_file() {
-                let path = entry.path();
-                let mut bytes = Vec::new();
-                reader
-                    .open_input(&path)
-                    .map_err(|_| TypedChildTreeError::Unavailable)?
-                    .read_to_end(&mut bytes)
-                    .map_err(|_| TypedChildTreeError::Unavailable)?;
-                files.push((path.strip_prefix(root).unwrap().to_path_buf(), bytes));
-            } else {
-                return Err(TypedChildTreeError::UnsupportedNode);
+        for (name, kind) in entries {
+            let path = current.join(name);
+            match kind {
+                TypedChildEntryKind::Link => return Err(TypedChildTreeError::SymbolicLink),
+                TypedChildEntryKind::Directory => {
+                    directories.push(path.strip_prefix(root).unwrap().to_path_buf());
+                    visit(reader, root, &path, depth + 1, files, directories)?;
+                }
+                TypedChildEntryKind::File => {
+                    let bytes = reader
+                        .read_file(&path)
+                        .map_err(|_| TypedChildTreeError::Unavailable)?;
+                    files.push((path.strip_prefix(root).unwrap().to_path_buf(), bytes));
+                }
+                TypedChildEntryKind::Other => return Err(TypedChildTreeError::UnsupportedNode),
             }
         }
         Ok(())
