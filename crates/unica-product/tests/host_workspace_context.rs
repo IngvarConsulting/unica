@@ -325,8 +325,11 @@ fn stdio_call_uses_host_workspace_instead_of_plugin_cwd() {
     // selection is refused, never served.
     let mut params = view_params(Some(location));
     params["arguments"] = json!({"workspace": plugin.to_str().unwrap()});
-    frontend.send(3, "tools/call", params);
+    frontend.send(3, "tools/call", params.clone());
     assert_refusal(&frontend.receive(3));
+    params["arguments"] = json!({"workspace": "plugin"});
+    frontend.send(4, "tools/call", params);
+    assert_refusal(&frontend.receive(4));
     let fixture = contract();
     assert_eq!(
         frontend.initialized["result"]["capabilities"]["experimental"]
@@ -1012,7 +1015,7 @@ fn a_selection_chooses_among_client_roots_and_keeps_their_state_apart() {
         &[],
         Some(RootsAnswer::Roots(vec![root(&project_a), root(&project_b)])),
     );
-    let b = project_b.to_str().unwrap();
+    let b = "проект b";
 
     // 1, 13: no selection keeps the first root and lists the whole set.
     let listed = frontend.call(2, "unica.view", json!({}));
@@ -1024,6 +1027,7 @@ fn a_selection_chooses_among_client_roots_and_keeps_their_state_apart() {
     assert_eq!(available.len(), 2, "{origin:#}");
     assert!(same(&available[0]["directory"], &project_a));
     assert!(same(&available[1]["directory"], &project_b));
+    assert_eq!(available[1]["space"], b);
     assert_eq!(available[1]["projectFile"], true);
 
     // 2: the selected root, named as an explicit choice.
@@ -1099,11 +1103,7 @@ fn a_selection_chooses_among_client_roots_and_keeps_their_state_apart() {
     assert!(!catalog_a.contains("из B"));
 
     // 6: outside the set: refused, nothing substituted.
-    assert_refusal(&frontend.call(
-        12,
-        "unica.view",
-        json!({"workspace": foreign.to_str().unwrap()}),
-    ));
+    assert_refusal(&frontend.call(12, "unica.view", json!({"workspace": "чужой c"})));
 
     // 11: the host opened another directory: the next call may select it.
     frontend.roots = Some(RootsAnswer::Roots(vec![
@@ -1112,11 +1112,7 @@ fn a_selection_chooses_among_client_roots_and_keeps_their_state_apart() {
         root(&foreign),
     ]));
     assert_workspace(
-        &frontend.call(
-            13,
-            "unica.view",
-            json!({"workspace": foreign.to_str().unwrap()}),
-        ),
+        &frontend.call(13, "unica.view", json!({"workspace": "чужой c"})),
         &foreign,
     );
 }
@@ -1152,7 +1148,7 @@ fn a_repository_of_workspaces_selects_each_product_by_relative_path() {
     );
 
     // 5: two products, two workspaces.
-    let first = frontend.call(3, "unica.view", json!({"workspace": "smb"}));
+    let first = frontend.call(3, "unica.view", json!({"workspace": "репозиторий r/smb"}));
     assert_workspace(&first, &smb);
     assert_ne!(
         structured(&first)["data"]["config"]["state"],
@@ -1160,13 +1156,13 @@ fn a_repository_of_workspaces_selects_each_product_by_relative_path() {
         "{first:#}"
     );
     assert_workspace(
-        &frontend.call(4, "unica.view", json!({"workspace": "acc"})),
+        &frontend.call(4, "unica.view", json!({"workspace": "репозиторий r/acc"})),
         &acc,
     );
 
     // 7: a project file above the open directory is not borrowed.
     std::fs::write(root_dir.path().join("v8project.yaml"), "format: DESIGNER\n").unwrap();
-    let above = frontend.call(5, "unica.view", json!({"workspace": "docs"}));
+    let above = frontend.call(5, "unica.view", json!({"workspace": "репозиторий r/docs"}));
     assert_refusal(&above);
     assert!(above.to_string().contains("lies above"), "{above:#}");
 }
@@ -1184,15 +1180,16 @@ fn request_metadata_allows_only_its_own_directory() {
     let _daemon = spawn_owned_daemon(&state);
     let mut frontend = Frontend::start(&plugin, &state, &[]);
     let fixture = contract();
-    let mut call = |id: u64, selection: &Path| {
+    let mut call = |id: u64, selection: &str| {
         let mut params = view_params(Some(json!(project_a.to_str().unwrap())));
-        params["arguments"] = json!({"workspace": selection.to_str().unwrap()});
+        params["arguments"] = json!({"workspace": selection});
         frontend.send(id, "tools/call", params);
         frontend.receive(id)
     };
     // 12
-    assert_refusal(&call(2, &project_b));
-    let inner = call(3, &nested);
+    assert!(project_b.is_dir());
+    assert_refusal(&call(2, "проект b"));
+    let inner = call(3, "проект a/вложенная");
     assert_workspace(&inner, &nested);
     assert_eq!(
         structured(&inner)["data"]["workspaceRootOrigin"]["capability"],
@@ -1236,7 +1233,7 @@ fn a_modern_client_answers_roots_on_every_subject_call() {
         "{listed:#}"
     );
 
-    let b = project_b.to_str().unwrap();
+    let b = "проект b";
     let found = frontend.call(
         3,
         "unica.search",

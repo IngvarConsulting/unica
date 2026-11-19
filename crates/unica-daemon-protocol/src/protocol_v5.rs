@@ -1970,7 +1970,7 @@ mod medium_tests {
         let digests = [
             r#"{"channel":"launchCwd"}"#,
             r#"{"channel":"clientRoots","root":"workspace-a"}"#,
-            r#"{"channel":"clientRoots","root":"workspace-a","selected":true,"available":[{"directory":"workspace-a","projectFile":true,"workspaces":["smb"]}]}"#,
+            r#"{"channel":"clientRoots","root":"workspace-a","selected":true,"available":[{"space":"workspace-a","directory":"workspace-a","projectFile":true,"workspaces":["smb"]}]}"#,
             r#"{"channel":"startupEnvironment","variable":"PROJECT_DIR","roots":"timeout"}"#,
             r#"{"channel":"requestMetadata","capability":"host/meta"}"#,
         ]

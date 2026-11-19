@@ -807,7 +807,7 @@ fn v13_tool_definitions(profile: V13TaskProfile) -> &'static [Tool] {
 fn with_workspace_selection(mut schema: Value) -> Value {
     let field = serde_json::json!({
         "type": "string",
-        "description": "Directory to work in, chosen among those the host opened to this session (unica.view {} lists them): absolute path, file URI, or relative to the session project. Omit for the session project."
+        "description": "Workspace to work in: a space name from unica.view {} (available[].space), optionally followed by /<subdirectory>. Omit for the session project."
     });
     for branch in [None, Some("then"), Some("else")] {
         let target = match branch {
@@ -1474,7 +1474,7 @@ fn take_workspace_selection(
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(selection)) if !selection.is_empty() => Ok(Some(selection)),
         Some(_) => Err(ErrorData::invalid_params(
-            "`workspace` must be a non-empty path: absolute, a file URI, or relative to the session project",
+            "`workspace` must be a non-empty space name from unica.view {}",
             None,
         )),
     }

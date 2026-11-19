@@ -15,6 +15,7 @@ path = "src/lib.rs"
 
 [dependencies]
 unica-artifact-delivery = { path = "../unica-artifact-delivery" }
+unica-source-contract = { path = "../unica-source-contract" }
 serde.workspace = true
 serde_json.workspace = true
 url.workspace = true

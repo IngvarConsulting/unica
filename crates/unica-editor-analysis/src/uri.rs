@@ -11,11 +11,9 @@
 //! `Catalog.X.Module.Object.Body`).
 
 use percent_encoding::{percent_decode_str, utf8_percent_encode, AsciiSet, CONTROLS};
-use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use unica_address::address::QualifiedAddress;
-use unica_lsp_contract::protocol::MAX_LSP_SPACE_BYTES;
 
 pub(crate) const SCHEME: &str = "unica";
 
@@ -92,34 +90,15 @@ impl SpaceRegistry {
     /// Name a space for each folder. Folders are taken in the order given;
     /// Long or shared names get a short hash of each path.
     pub fn from_folders(folders: &[WorkspaceFolder]) -> Self {
-        let mut uses = BTreeMap::<String, usize>::new();
-        for folder in folders {
-            *uses.entry(space_name(folder)).or_default() += 1;
-        }
+        let named: Vec<(&str, &Path)> = folders
+            .iter()
+            .map(|folder| (folder.name.as_str(), folder.root.as_path()))
+            .collect();
         let mut spaces = BTreeMap::new();
-        for folder in folders {
-            let name = space_name(folder);
-            let space = if name.len() > MAX_LSP_SPACE_BYTES || uses[&name] > 1 {
-                let hash = short_path_hash(&folder.root);
-                let mut suffix = format!("-{hash}");
-                let mut index = 0;
-                loop {
-                    let budget = MAX_LSP_SPACE_BYTES - suffix.len();
-                    let prefix = &name[..name.floor_char_boundary(budget)];
-                    let candidate = format!("{prefix}{suffix}");
-                    if !uses.contains_key(&candidate)
-                        && spaces
-                            .get(&candidate)
-                            .is_none_or(|root| root == &folder.root)
-                    {
-                        break candidate;
-                    }
-                    index += 1;
-                    suffix = format!("-{hash}-{index}");
-                }
-            } else {
-                name
-            };
+        for (space, folder) in unica_source_contract::workspace::space_names(&named)
+            .into_iter()
+            .zip(folders)
+        {
             spaces.entry(space).or_insert_with(|| folder.root.clone());
         }
         Self { spaces }
@@ -206,32 +185,20 @@ impl SpaceRegistry {
     }
 }
 
-fn space_name(folder: &WorkspaceFolder) -> String {
-    let name = folder.name.trim();
-    if name.is_empty() {
-        folder
-            .root
-            .file_name()
-            .and_then(|name| name.to_str())
-            .filter(|name| !name.is_empty())
-            .unwrap_or("workspace")
-            .to_lowercase()
-    } else {
-        name.to_lowercase()
-    }
-}
-
-fn short_path_hash(root: &Path) -> String {
-    let digest = Sha256::digest(root.to_string_lossy().as_bytes());
-    digest[..4]
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use unica_lsp_contract::protocol::MAX_LSP_SPACE_BYTES;
+    use unica_source_contract::workspace::space_path_hash as short_path_hash;
+
+    /// The wire bound of a space and the naming bound are one number.
+    #[test]
+    fn the_space_naming_bound_is_the_wire_bound() {
+        assert_eq!(
+            MAX_LSP_SPACE_BYTES,
+            unica_source_contract::workspace::MAX_SPACE_BYTES
+        );
+    }
 
     fn folder(name: &str, root: &str) -> WorkspaceFolder {
         WorkspaceFolder {
