@@ -13,12 +13,12 @@ pub(super) const KIND: KindDeclaration = KindDeclaration {
     layout: Some(LayoutDeclaration {
         directory: "Queues",
         display_name_ru: "Очереди",
-        child_objects_8_3_27: true,
+        requires_child_objects: true,
         ..LayoutDeclaration::EMPTY
     }),
     // The queue of 8.5.4: its message is a record, its manager a manager.
     // The platform refuses to import a queue descriptor without them.
-    generated_types_8_3_27: Some(&[("QueueMessage", "Record"), ("QueueManager", "Manager")]),
+    generated_types: Some(&[("QueueMessage", "Record"), ("QueueManager", "Manager")]),
     since: Some([8, 5, 4]),
     // Очередь пишет измерения перед реквизитами: выгрузка 8.5.4
     // собирает их в этом порядке даже из источника с обратным.

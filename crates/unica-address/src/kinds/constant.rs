@@ -11,10 +11,10 @@ pub(super) const KIND: KindDeclaration = KindDeclaration {
     layout: Some(LayoutDeclaration {
         directory: "Constants",
         display_name_ru: "Константы",
-        child_objects_8_3_27: false,
+        requires_child_objects: false,
         ..LayoutDeclaration::EMPTY
     }),
-    generated_types_8_3_27: Some(&[
+    generated_types: Some(&[
         ("ConstantManager", "Manager"),
         ("ConstantValueManager", "ValueManager"),
         ("ConstantValueKey", "ValueKey"),

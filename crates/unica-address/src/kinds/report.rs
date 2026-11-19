@@ -15,10 +15,10 @@ pub(super) const KIND: KindDeclaration = KindDeclaration {
     layout: Some(LayoutDeclaration {
         directory: "Reports",
         display_name_ru: "Отчёты",
-        child_objects_8_3_27: true,
+        requires_child_objects: true,
         ..LayoutDeclaration::EMPTY
     }),
-    generated_types_8_3_27: Some(&[("ReportObject", "Object"), ("ReportManager", "Manager")]),
+    generated_types: Some(&[("ReportObject", "Object"), ("ReportManager", "Manager")]),
     child_order: Some(&["Attribute", "TabularSection", "Form", "Template", "Command"]),
     ..KindDeclaration::new("Report")
 };

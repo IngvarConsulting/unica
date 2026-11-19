@@ -11,9 +11,9 @@ pub(super) const KIND: KindDeclaration = KindDeclaration {
     layout: Some(LayoutDeclaration {
         directory: "CommandGroups",
         display_name_ru: "Группы команд",
-        child_objects_8_3_27: false,
+        requires_child_objects: false,
         ..LayoutDeclaration::EMPTY
     }),
-    generated_types_8_3_27: Some(&[]),
+    generated_types: Some(&[]),
     ..KindDeclaration::new("CommandGroup")
 };

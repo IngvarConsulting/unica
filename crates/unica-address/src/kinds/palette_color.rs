@@ -13,10 +13,10 @@ pub(super) const KIND: KindDeclaration = KindDeclaration {
     layout: Some(LayoutDeclaration {
         directory: "PaletteColors",
         display_name_ru: "Цвета палитры",
-        child_objects_8_3_27: false,
+        requires_child_objects: false,
         ..LayoutDeclaration::EMPTY
     }),
-    generated_types_8_3_27: Some(&[]),
+    generated_types: Some(&[]),
     since: Some([8, 5, 1]),
     ..KindDeclaration::new("PaletteColor")
 };

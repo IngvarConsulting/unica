@@ -13,8 +13,8 @@ pub(super) const KIND: KindDeclaration = KindDeclaration {
         display_name_ru: "Боты",
         config_dump_prefix: Some("Bot"),
         config_dump_module_suffix: Some(".Module"),
-        child_objects_8_3_27: false,
+        requires_child_objects: false,
     }),
-    generated_types_8_3_27: Some(&[]),
+    generated_types: Some(&[]),
     ..KindDeclaration::new("Bot")
 };

@@ -33,7 +33,7 @@ pub struct KindDeclaration {
     /// Раскладка выгрузки: каталог и профиль 8.3.27.
     pub layout: Option<LayoutDeclaration>,
     /// Порождённые типы 8.3.27 (`InternalInfo`) с их категориями.
-    pub generated_types_8_3_27: Option<&'static [(&'static str, &'static str)]>,
+    pub generated_types: Option<&'static [(&'static str, &'static str)]>,
     /// Линия платформы, с которой вид есть, если позже первой описанной.
     pub since: Option<[u32; 3]>,
     /// Порядок, в котором выгрузка пишет виды дочерних объекта верхнего
@@ -50,7 +50,7 @@ impl KindDeclaration {
             metadata: None,
             root: None,
             layout: None,
-            generated_types_8_3_27: None,
+            generated_types: None,
             since: None,
             child_order: None,
         }
@@ -114,7 +114,7 @@ pub struct LayoutDeclaration {
     pub config_dump_module_suffix: Option<&'static str>,
     /// Требует ли 8.3.27 контейнер `ChildObjects` в корне описания, в том
     /// числе пустой.
-    pub child_objects_8_3_27: bool,
+    pub requires_child_objects: bool,
 }
 
 impl LayoutDeclaration {
@@ -123,7 +123,7 @@ impl LayoutDeclaration {
         display_name_ru: "",
         config_dump_prefix: None,
         config_dump_module_suffix: None,
-        child_objects_8_3_27: false,
+        requires_child_objects: false,
     };
 }
 
@@ -135,7 +135,7 @@ pub struct MetadataLayout {
     pub display_name_ru: &'static str,
     pub config_dump_prefix: Option<&'static str>,
     pub config_dump_module_suffix: Option<&'static str>,
-    pub child_objects_8_3_27: bool,
+    pub requires_child_objects: bool,
 }
 
 /// Виды корня, которые выгружает платформа, но которых Unica не знает,
@@ -264,7 +264,7 @@ const fn layouts<const N: usize, const M: usize>(
         display_name_ru: "",
         config_dump_prefix: None,
         config_dump_module_suffix: None,
-        child_objects_8_3_27: false,
+        requires_child_objects: false,
     }; M];
     let mut index = 0;
     let mut next = 0;
@@ -276,7 +276,7 @@ const fn layouts<const N: usize, const M: usize>(
                 display_name_ru: layout.display_name_ru,
                 config_dump_prefix: layout.config_dump_prefix,
                 config_dump_module_suffix: layout.config_dump_module_suffix,
-                child_objects_8_3_27: layout.child_objects_8_3_27,
+                requires_child_objects: layout.requires_child_objects,
             };
             next += 1;
         }
@@ -443,7 +443,7 @@ mod tests {
                 assert!(declaration.metadata.is_some(), "{kind:?} has no address");
                 assert!(declaration.root.is_some(), "{kind:?} has no root place");
                 assert!(
-                    declaration.generated_types_8_3_27.is_some(),
+                    declaration.generated_types.is_some(),
                     "{kind:?} has no generated types profile"
                 );
             }

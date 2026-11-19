@@ -886,7 +886,7 @@ pub fn metadata_generated_types_8_3_27(
     object_type: &str,
 ) -> Option<&'static [(&'static str, &'static str)]> {
     unica_address::kinds::declared(object_type)
-        .and_then(|(_, declaration)| declaration.generated_types_8_3_27)
+        .and_then(|(_, declaration)| declaration.generated_types)
 }
 
 pub fn emit_meta_internal_info<F>(

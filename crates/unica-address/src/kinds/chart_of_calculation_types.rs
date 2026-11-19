@@ -19,10 +19,10 @@ pub(super) const KIND: KindDeclaration = KindDeclaration {
     layout: Some(LayoutDeclaration {
         directory: "ChartsOfCalculationTypes",
         display_name_ru: "ПВР",
-        child_objects_8_3_27: true,
+        requires_child_objects: true,
         ..LayoutDeclaration::EMPTY
     }),
-    generated_types_8_3_27: Some(&[
+    generated_types: Some(&[
         ("ChartOfCalculationTypesObject", "Object"),
         ("ChartOfCalculationTypesRef", "Ref"),
         ("ChartOfCalculationTypesSelection", "Selection"),

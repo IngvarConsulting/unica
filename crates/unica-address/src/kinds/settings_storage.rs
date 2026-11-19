@@ -11,9 +11,9 @@ pub(super) const KIND: KindDeclaration = KindDeclaration {
     layout: Some(LayoutDeclaration {
         directory: "SettingsStorages",
         display_name_ru: "Хранилища настроек",
-        child_objects_8_3_27: true,
+        requires_child_objects: true,
         ..LayoutDeclaration::EMPTY
     }),
-    generated_types_8_3_27: Some(&[("SettingsStorageManager", "Manager")]),
+    generated_types: Some(&[("SettingsStorageManager", "Manager")]),
     ..KindDeclaration::new("SettingsStorage")
 };

@@ -14,10 +14,10 @@ pub(super) const KIND: KindDeclaration = KindDeclaration {
     layout: Some(LayoutDeclaration {
         directory: "CalculationRegisters",
         display_name_ru: "Регистры расчёта",
-        child_objects_8_3_27: true,
+        requires_child_objects: true,
         ..LayoutDeclaration::EMPTY
     }),
-    generated_types_8_3_27: Some(&[
+    generated_types: Some(&[
         ("CalculationRegisterRecord", "Record"),
         ("CalculationRegisterManager", "Manager"),
         ("CalculationRegisterSelection", "Selection"),

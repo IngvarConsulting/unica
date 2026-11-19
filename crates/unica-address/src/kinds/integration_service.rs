@@ -14,9 +14,9 @@ pub(super) const KIND: KindDeclaration = KindDeclaration {
     layout: Some(LayoutDeclaration {
         directory: "IntegrationServices",
         display_name_ru: "Сервисы интеграции",
-        child_objects_8_3_27: true,
+        requires_child_objects: true,
         ..LayoutDeclaration::EMPTY
     }),
-    generated_types_8_3_27: Some(&[("IntegrationServiceManager", "Manager")]),
+    generated_types: Some(&[("IntegrationServiceManager", "Manager")]),
     ..KindDeclaration::new("IntegrationService")
 };

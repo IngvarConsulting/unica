@@ -53,7 +53,7 @@ pub fn root_child_objects_order(tag: &str) -> Option<usize> {
 /// childless. This profile covers the complete physical registry used by
 /// `cfe.borrow`, which is wider than the typed [`MetadataKind`] surface.
 pub fn metadata_kind_requires_child_objects_8_3_27(tag: &str) -> Option<bool> {
-    metadata_kind(tag).map(|kind| kind.child_objects_8_3_27)
+    metadata_kind(tag).map(|kind| kind.requires_child_objects)
 }
 
 pub fn attached_resource_relative(

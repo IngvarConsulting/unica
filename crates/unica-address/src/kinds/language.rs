@@ -11,9 +11,9 @@ pub(super) const KIND: KindDeclaration = KindDeclaration {
     layout: Some(LayoutDeclaration {
         directory: "Languages",
         display_name_ru: "Языки",
-        child_objects_8_3_27: false,
+        requires_child_objects: false,
         ..LayoutDeclaration::EMPTY
     }),
-    generated_types_8_3_27: Some(&[]),
+    generated_types: Some(&[]),
     ..KindDeclaration::new("Language")
 };

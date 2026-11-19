@@ -15,10 +15,10 @@ pub(super) const KIND: KindDeclaration = KindDeclaration {
     layout: Some(LayoutDeclaration {
         directory: "DataProcessors",
         display_name_ru: "Обработки",
-        child_objects_8_3_27: true,
+        requires_child_objects: true,
         ..LayoutDeclaration::EMPTY
     }),
-    generated_types_8_3_27: Some(&[
+    generated_types: Some(&[
         ("DataProcessorObject", "Object"),
         ("DataProcessorManager", "Manager"),
     ]),
