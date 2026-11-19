@@ -26,6 +26,11 @@ const EXPECTED_COMPATIBILITY_TOOLS: [&str; 11] = [
     "unica.task.cancel",
 ];
 
+/// The task compatibility tools a pre-2026-07-28 session adds to the canonical
+/// eight. A 2026-07-28 client never sees them (CTR.WIRE.CANONICAL-TOOL-PROFILES).
+const COMPATIBILITY_TASK_TOOLS: [&str; 3] =
+    ["unica.task.get", "unica.task.result", "unica.task.cancel"];
+
 /// #490: every launch verifies both guaranteed lifecycles on fresh processes —
 /// a legacy `initialize` session (the 2025-06-18 offer real hosts still send)
 /// and the modern 2026-07-28 direct-first path opened by `server/discover`.
@@ -197,10 +202,27 @@ fn verify_modern_direct(probe_launch: &ProbeLaunch<'_>, timeout: Duration) -> Re
         }),
     )?;
     let tools_response = receive_response(&probe.receiver, 2, timeout)?;
-    check_compatibility_surface(&tools_response)
+    check_modern_direct_surface(&tools_response)
+}
+
+fn check_modern_direct_surface(tools_response: &Value) -> Result<()> {
+    let expected = EXPECTED_COMPATIBILITY_TOOLS
+        .iter()
+        .copied()
+        .filter(|name| !COMPATIBILITY_TASK_TOOLS.contains(name))
+        .collect::<BTreeSet<_>>();
+    check_surface(tools_response, &expected, "2026-07-28 surface")
 }
 
 fn check_compatibility_surface(tools_response: &Value) -> Result<()> {
+    let expected = EXPECTED_COMPATIBILITY_TOOLS
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    check_surface(tools_response, &expected, "v0.13 compatibility surface")
+}
+
+fn check_surface(tools_response: &Value, expected: &BTreeSet<&str>, surface: &str) -> Result<()> {
     let tools = tools_response
         .pointer("/result/tools")
         .and_then(Value::as_array)
@@ -216,23 +238,19 @@ fn check_compatibility_surface(tools_response: &Value) -> Result<()> {
             duplicates.insert(*name);
         }
     }
-    let expected = EXPECTED_COMPATIBILITY_TOOLS
-        .iter()
-        .copied()
-        .collect::<BTreeSet<_>>();
     let missing = expected
         .iter()
         .copied()
         .filter(|name| !unique_names.contains(name))
         .collect::<Vec<_>>();
     let unexpected = unique_names
-        .difference(&expected)
+        .difference(expected)
         .copied()
         .collect::<Vec<_>>();
     let unnamed = tools.len().saturating_sub(names.len());
     if !missing.is_empty() || !unexpected.is_empty() || !duplicates.is_empty() || unnamed != 0 {
         return Err(BootstrapError::new(format!(
-            "Unica tools/list does not match the exact v0.13 compatibility surface; missing: {}; unexpected: {}; duplicate: {}; unnamed definitions: {unnamed}",
+            "Unica tools/list does not match the exact {surface}; missing: {}; unexpected: {}; duplicate: {}; unnamed definitions: {unnamed}",
             if missing.is_empty() { "none".to_string() } else { missing.join(", ") },
             if unexpected.is_empty() { "none".to_string() } else { unexpected.join(", ") },
             if duplicates.is_empty() {
@@ -338,5 +356,39 @@ mod tests {
         );
         assert_eq!(command.get_program(), "unica");
         assert_eq!(command.get_args().count(), 0);
+    }
+
+    fn tools_list(names: &[&str]) -> Value {
+        json!({"result": {"tools": names.iter().map(|name| json!({"name": name})).collect::<Vec<_>>()}})
+    }
+
+    /// rule: CTR.WIRE.CANONICAL-TOOL-PROFILES
+    #[test]
+    fn modern_direct_verification_expects_the_eight_tools_without_task_compatibility() {
+        let eight = [
+            "unica.view",
+            "unica.apply",
+            "unica.resolve",
+            "unica.search",
+            "unica.check",
+            "unica.diff",
+            "unica.run",
+            "unica.docs",
+        ];
+        check_modern_direct_surface(&tools_list(&eight)).unwrap();
+
+        let error = check_modern_direct_surface(&tools_list(&EXPECTED_COMPATIBILITY_TOOLS))
+            .unwrap_err()
+            .to_string();
+        for task_tool in ["unica.task.get", "unica.task.result", "unica.task.cancel"] {
+            assert!(error.contains(task_tool), "{error}");
+        }
+        assert!(error.contains("2026-07-28"), "{error}");
+    }
+
+    /// rule: CTR.WIRE.CANONICAL-TOOL-PROFILES
+    #[test]
+    fn legacy_verification_still_expects_the_eleven_tools() {
+        check_compatibility_surface(&tools_list(&EXPECTED_COMPATIBILITY_TOOLS)).unwrap();
     }
 }

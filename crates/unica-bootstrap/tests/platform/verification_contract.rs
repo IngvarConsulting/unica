@@ -85,21 +85,13 @@ fn verify_requires_both_lifecycles_and_the_exact_v13_compatibility_surface() {
 /// rule: INV.WIRE.GUARANTEED-VERSIONS
 #[test]
 fn verify_requires_each_lifecycle_to_expose_each_public_tool() {
-    const REQUIRED: [&str; 11] = [
-        "unica.view",
-        "unica.apply",
-        "unica.resolve",
-        "unica.search",
-        "unica.check",
-        "unica.diff",
-        "unica.run",
-        "unica.docs",
-        "unica.task.get",
-        "unica.task.result",
-        "unica.task.cancel",
-    ];
     for lifecycle in ["legacy", "direct"] {
-        for missing in REQUIRED {
+        let required: &[&str] = if lifecycle == "legacy" {
+            &LEGACY_TOOLS
+        } else {
+            &CANONICAL_TOOLS
+        };
+        for missing in required.iter().copied() {
             let root = temp_root(&format!(
                 "missing-{lifecycle}-{}",
                 missing.replace('.', "-")
@@ -194,6 +186,37 @@ fn verify_rejects_duplicate_names_in_the_v13_surface() {
     assert!(error.to_string().contains("unica.view"), "{error}");
 }
 
+/// rule: CTR.WIRE.CANONICAL-TOOL-PROFILES
+#[test]
+fn verify_rejects_task_compatibility_tools_on_the_direct_lifecycle() {
+    let root = temp_root("direct-task-tools");
+    let record = root.join("provider-state.txt");
+    // Каталог совместимости на 2026-07-28 — ровно то, что ночь приняла бы
+    // до разделения проверок по жизненным циклам.
+    let legacy_catalog = tools_list_response(&LEGACY_TOOLS, None, &[]);
+    let runtime = write_fake_runtime_serving(
+        &root,
+        &record,
+        &legacy_catalog,
+        &legacy_catalog,
+        &["2025-06-18", "2025-11-25", "2026-07-28"],
+    );
+
+    let error = verify_runtime(
+        &runtime,
+        &root,
+        &root.join("private-provider-state"),
+        Duration::from_secs(2),
+    )
+    .unwrap_err()
+    .to_string();
+
+    assert!(error.contains("2026-07-28"), "{error}");
+    for task_tool in ["unica.task.get", "unica.task.result", "unica.task.cancel"] {
+        assert!(error.contains(task_tool), "{error}");
+    }
+}
+
 /// rule: INV.WIRE.GUARANTEED-VERSIONS
 #[test]
 fn verify_rejects_discover_without_the_guaranteed_versions() {
@@ -226,9 +249,25 @@ fn write_fake_runtime(
     extra_tools: &[&str],
     supported_versions: &[&str],
 ) -> PathBuf {
+    let legacy_tools = tools_list_response(&LEGACY_TOOLS, legacy_missing_tool, extra_tools);
+    let direct_tools = tools_list_response(&CANONICAL_TOOLS, direct_missing_tool, extra_tools);
+    write_fake_runtime_serving(
+        root,
+        provider_state_record,
+        &legacy_tools,
+        &direct_tools,
+        supported_versions,
+    )
+}
+
+fn write_fake_runtime_serving(
+    root: &Path,
+    provider_state_record: &Path,
+    legacy_tools: &str,
+    direct_tools: &str,
+    supported_versions: &[&str],
+) -> PathBuf {
     let path = root.join("fake-unica");
-    let legacy_tools = tools_list_response(legacy_missing_tool, extra_tools);
-    let direct_tools = tools_list_response(direct_missing_tool, extra_tools);
     let supported = serde_json::to_string(supported_versions).unwrap();
     let requests = root.join("requests.txt");
     let tools_list_seen = root.join("tools-list-seen");
@@ -272,25 +311,41 @@ done
     path
 }
 
-fn tools_list_response(missing: Option<&str>, extra_tools: &[&str]) -> String {
-    let tools = [
-        "unica.view",
-        "unica.apply",
-        "unica.resolve",
-        "unica.search",
-        "unica.check",
-        "unica.diff",
-        "unica.run",
-        "unica.docs",
-        "unica.task.get",
-        "unica.task.result",
-        "unica.task.cancel",
-    ]
-    .into_iter()
-    .chain(extra_tools.iter().copied())
-    .filter(|name| Some(*name) != missing)
-    .map(|name| json!({"name": name}))
-    .collect::<Vec<_>>();
+/// The 2026-07-28 catalog: the canonical eight, never the task compatibility tools.
+const CANONICAL_TOOLS: [&str; 8] = [
+    "unica.view",
+    "unica.apply",
+    "unica.resolve",
+    "unica.search",
+    "unica.check",
+    "unica.diff",
+    "unica.run",
+    "unica.docs",
+];
+
+/// A legacy `initialize` session: the canonical eight plus task compatibility.
+const LEGACY_TOOLS: [&str; 11] = [
+    "unica.view",
+    "unica.apply",
+    "unica.resolve",
+    "unica.search",
+    "unica.check",
+    "unica.diff",
+    "unica.run",
+    "unica.docs",
+    "unica.task.get",
+    "unica.task.result",
+    "unica.task.cancel",
+];
+
+fn tools_list_response(base: &[&str], missing: Option<&str>, extra_tools: &[&str]) -> String {
+    let tools = base
+        .iter()
+        .copied()
+        .chain(extra_tools.iter().copied())
+        .filter(|name| Some(*name) != missing)
+        .map(|name| json!({"name": name}))
+        .collect::<Vec<_>>();
     serde_json::to_string(&json!({
         "jsonrpc": "2.0",
         "id": 2,
