@@ -117,6 +117,33 @@ class LinuxX64BaselineTests(unittest.TestCase):
 
         self.assertEqual(found, {})
 
+    def test_the_nightly_functions_of_httparse_and_ring_mulx_pass(self) -> None:
+        # Ночь 44423152914: httparse выбирает модуль sse42 через
+        # is_x86_feature_detected!, ring — MULX/ADX-код по проверке CPUID.
+        found = self.module.violations(disassembly(
+            ("_RNvNtNtCs2Yr9gS91ZMf_8httparse4simd5sse4227match_header_value_vectored",
+             ["lddqu	(%rcx), %xmm3", "pcmpestri	$0x14, %xmm3, %xmm0"]),
+            ("__bn_postx4x_internal", ["andn	%rax, %r12, %r12"]),
+            ("__bn_sqrx8x_reduction", ["mulx	0x0(%rbp), %rax, %r8"]),
+            ("__ecp_nistz256_mul_montx", ["mulx	%r9, %r8, %r9"]),
+            ("__ecp_nistz256_sqr_montx", ["mulx	%r14, %r9, %r10"]),
+            ("mulx4x_internal", ["mulx	(%rsi), %r8, %rax"]),
+            ("ring_core_0_17_14__bn_mulx4x_mont", ["mulx	(%rsi), %r8, %rax"]),
+            ("ring_core_0_17_14__bn_sqrx8x_internal", ["mulx	0x8(%rsi), %r8, %rax"]),
+        ))
+
+        self.assertEqual(found, {})
+
+    def test_a_rust_module_named_after_a_feature_must_be_a_whole_word(self) -> None:
+        lddqu = ["lddqu	(%rcx), %xmm3"]
+        found = self.module.violations(disassembly(
+            ("_RNvNtCs1_5crate8sse42abc5parse", lddqu),
+            ("_RNvNtCs1_5crate6xsse425parse", lddqu),
+            ("bn_mulx4x_mont_unprefixed_copy", ["mulx	(%rsi), %r8, %rax"]),
+        ))
+
+        self.assertEqual(len(found), 3)
+
     def test_each_given_binary_must_be_checkable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

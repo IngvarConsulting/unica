@@ -11,8 +11,9 @@ beyond baseline x86-64, which ends at SSE2: SSE3 to SSE4.2, POPCNT, AES-NI,
 PCLMULQDQ, SHA, VEX/EVEX vector code (AVX, AVX2, AVX-512, FMA) and the BMI,
 BMI2, ADX and MOVBE scalar extensions. Such code is allowed only in functions
 that a CPU check selects at run time. Their names carry the extension
-(`..._avx2`, `SlimAVX2`, `x86_vaes256`, `..._adx`); the hand-written assembly
-of ring whose names do not is listed explicitly.
+(`..._avx2`, `SlimAVX2`, `x86_vaes256`, `..._adx`); in Rust it is the module
+that holds the `#[target_feature]` functions (`httparse::simd::sse42`). The
+hand-written assembly of ring whose names do not is listed explicitly.
 
 Function names come from the symbol table, so the check covers the binaries
 Unica builds itself and refuses a file without one rather than passing it.
@@ -70,7 +71,7 @@ BEYOND_BASELINE = {
 # Функции, которые выбирает проверка CPU во время выполнения: имя называет
 # расширение отдельным словом, а не случайными буквами хеша или слова.
 DISPATCHED_NAME = re.compile(
-    r"(?:^|[_\d])(?:avx(?:2|512)?|sse41)(?:[_\d.]|$)"  # ring *_avx2, memchr 4avx2, crc32fast calculate_avx512
+    r"(?:^|[_\d])(?:avx(?:2|512)?|sse4[12])(?:[_\d.]|$)"  # ring *_avx2, memchr 4avx2, crc32fast calculate_avx512, httparse 5sse42
     r"|(?:Slim|Fat)(?:AVX2|SSSE3)"  # aho-corasick teddy
     r"|\dx86_v?aes(?:256|512)?\w"  # aes backends x86_aes, x86_vaes256, x86_vaes512
     r"|\dpclmulqdq\d"  # crc32fast specialized::pclmulqdq
@@ -80,13 +81,25 @@ DISPATCHED_NAME = re.compile(
 # Ассемблер ring, который ring вызывает только после проверки CPU, а имя
 # расширения не называет: AES-NI, SSSE3, CLMUL, SHA и AVX-вариант AES-GCM,
 # вместе с его внутренними метками.
+#
+# MULX/ADX-варианты Монтгомери (суффикс `x` по соглашению OpenSSL) ring 0.17
+# выбирает так: `bn_mulx4x_mont`, `bn_mulx4x_mont_gather5` и `bn_powerx5`
+# вызывает Rust только при `Some((Adx, Bmi2..))` (`limbs/x86_64/mont.rs`);
+# `bn_sqrx8x_internal` зовёт `bn_sqr8x_mont` по флагу `mulx_adx_capable`
+# из той же проверки; `mulx4x_internal`, `__bn_postx4x_internal` и
+# `__bn_sqrx8x_reduction` — их внутренние метки. `__ecp_nistz256_*_montx`
+# вызываются только из `ecp_nistz256_*_adx`, а их C-код P-256 выбирает
+# по `adx_bmi2_available`, который выставляет та же проверка CPUID.
 DISPATCHED_ASSEMBLY = re.compile(
     r"^ring_core_\d+_\d+_\d+__(?:"
     r"aes_hw_\w+|aesni_gcm_(?:en|de)crypt|vpaes_\w+"
     r"|gcm_(?:init|gmult|ghash)_clmul|ChaCha20_ctr32_ssse3\w*"
     r"|sha(?:256|512)_block_data_order_(?:hw|ssse3)"
+    r"|bn_(?:mulx4x_mont(?:_gather5)?|powerx5|sqrx8x_internal)"
     r")$"
     r"|^_aesni_(?:ctr32_(?:ghash_)?6x|encrypt\d)$|^_vpaes_\w+$|^process_extra_in_trailer$"
+    r"|^(?:mulx4x_internal|__bn_postx4x_internal|__bn_sqrx8x_reduction"
+    r"|__ecp_nistz256_(?:mul|sqr)_montx)$"
 )
 
 
