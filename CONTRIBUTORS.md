@@ -11,6 +11,7 @@
 | @korolevpavel | 12083359 | 1.0 | #2858 | korolev.vrn@gmail.com |
 | @VictorMurashkin | 23651763 | 1.0 | #2857 | murashkin.victor@gmail.com, 23651763+VictorMurashkin@users.noreply.github.com, murashkin@balanceprof.ru |
 | @Agrajaga | 22379662 | 1.0 | #3189 | soplomiha@gmail.com |
+| @VSydorenko | 50884937 | 1.0 | #3226 | v.m.sydorenko@gmail.com |
 
 ## Без оферты
 
