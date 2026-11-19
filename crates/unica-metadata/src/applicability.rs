@@ -16,6 +16,7 @@ pub enum OperationApplicability {
     Interface,
     InterfaceGroup,
     Metadata,
+    MetadataRelations,
     MetadataOrCommonTemplate,
     MetadataAttribute,
     MetadataAttributeContainer,
@@ -42,6 +43,10 @@ pub enum OperationApplicability {
     Subsystem,
     SupportRule,
 }
+pub fn support_configuration_root(segments: &[unica_address::address::AddressSegment]) -> bool {
+    matches!(segments, [root] if root.kind() == NodeKind::Configuration && root.name().is_none())
+}
+
 /// The nodes that carry an own vendor support record: a top-level metadata
 /// object, and below it a form, template or command, an attribute, a tabular
 /// section and its attribute, a dimension, a resource, and a nested
@@ -85,12 +90,13 @@ impl OperationApplicability {
             Self::ConfigurationRoot => "`Configuration` of a configuration, not of an extension",
             Self::ExtensionRoot => "`Configuration` of an extension",
             Self::Metadata => "`Kind.Name`",
+            Self::MetadataRelations => "`Kind.Name` of a kind with supported relations",
             Self::MetadataOrCommonTemplate => "`Kind.Name` or `CommonTemplate.Name`",
             Self::SupportRule => {
-                "`Kind.Name` or its node with an own support record: `.Form.F`, `.Template.T`, `.Command.C`, `.Attribute.A`, `.TabularSection.T[.Attribute.A]`, `.Dimension.D`, `.Resource.R`; `Subsystem.A[.Subsystem.B…]`"
+                "`Configuration` of a configuration, `Kind.Name` or its node with an own support record: `.Form.F`, `.Template.T`, `.Command.C`, `.Attribute.A`, `.TabularSection.T[.Attribute.A]`, `.Dimension.D`, `.Resource.R`; `Subsystem.A[.Subsystem.B…]`"
             }
             Self::MetadataOrRoleOrSubsystem => {
-                "`Configuration`, `Kind.Name`, `CommonForm.Name.Metadata`, `Kind.Name.Form.Name.Metadata`, `Role.Name` or `Subsystem.Name[.Subsystem.Child]`"
+                "`Configuration`, `Kind.Name`, `CommonForm.Name.Metadata`, `Kind.Name.Form.Name.Metadata`, `Role.Name`, `Subsystem.Name[.Subsystem.Child]` or `Catalog.Name.StandardAttribute.Owner`"
             }
             Self::MetadataAttributeContainer => {
                 "`Kind.Name` of a kind with attributes or `Kind.Name.TabularSection.T`"
@@ -139,6 +145,9 @@ impl OperationApplicability {
                     && site.source().kind() == SourceSetKind::Extension
             }
             Self::Metadata => site.metadata_object().is_some(),
+            Self::MetadataRelations => site
+                .metadata_object()
+                .is_some_and(|kind| !crate::metadata_relation_specs(kind).is_empty()),
             // A common template is a top-level object the configurator
             // removes like any other, though it has no typed metadata kind.
             Self::MetadataOrCommonTemplate => {
@@ -243,7 +252,11 @@ impl OperationApplicability {
                             segment.kind() == NodeKind::Subsystem && segment.name().is_some()
                         }))
             }
-            Self::SupportRule => support_record_path(segments),
+            Self::SupportRule => {
+                (site.source().kind() == SourceSetKind::Configuration
+                    && support_configuration_root(segments))
+                    || support_record_path(segments)
+            }
             Self::Event => {
                 terminal.kind() == NodeKind::Event
                     && terminal.name().is_some()

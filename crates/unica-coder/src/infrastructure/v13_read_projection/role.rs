@@ -32,6 +32,9 @@ pub(super) fn project_role(
         let mut limits = dropped_by_size(payload, &props, address, |probe| {
             platform_scalar_props(probe, ROLE_PLATFORM_PROPS)
         });
+        if let Some(message) = payload.get("synonymError").and_then(Value::as_str) {
+            limits.push(format!("properties.Synonym is unreadable: {message}"));
+        }
         if let Some(message) = payload.get("commentError").and_then(Value::as_str) {
             limits.push(format!("Comment: {message}"));
         }
@@ -53,8 +56,14 @@ pub(super) fn project_role(
                 payload
                     .get("synonym")
                     .and_then(Value::as_str)
-                    .or_else(|| payload.get("name").and_then(Value::as_str))
-                    .unwrap_or("Role"),
+                    .and_then(super::localized_display_text)
+                    .or_else(|| {
+                        payload
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .map(str::to_string)
+                    })
+                    .unwrap_or_else(|| "Role".to_string()),
                 props,
             )
             .with_branches(branches)

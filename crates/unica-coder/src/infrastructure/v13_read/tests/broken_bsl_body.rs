@@ -39,6 +39,10 @@ fn broken_bsl_body_keeps_exact_text_and_localizes_the_error() {
     let result = fixture.view_service().view(ViewRequest::new(BODY).unwrap());
     assert!(result.ok, "{result:?}");
     assert_eq!(result.source_text.as_deref(), Some(text));
+    assert_eq!(
+        result.rev.as_deref(),
+        Some(unica_source_contract::read::module_text_revision(text.as_bytes()).as_str())
+    );
     let diagnostic = result
         .diagnostics
         .first()
@@ -89,6 +93,10 @@ fn broken_bsl_range_uses_full_source_coordinates_and_reports_the_unshown_count()
         .view(ViewRequest::new(&format!("{BODY}#L1")).unwrap());
     assert!(result.ok, "{result:?}");
     assert_eq!(result.source_text.as_deref(), Some("// selected\n"));
+    assert_eq!(
+        result.rev.as_deref(),
+        Some(unica_source_contract::read::module_text_revision(text.as_bytes()).as_str())
+    );
     assert_eq!(result.diagnostics.len(), 1);
     let diagnostic = &result.diagnostics[0];
     assert!(diagnostic["startLine"].as_u64().unwrap() > 1);
@@ -117,6 +125,10 @@ fn oversized_bsl_range_remains_readable_with_explicit_unknown_syntax() {
         .view(ViewRequest::new(&format!("{BODY}#L1")).unwrap());
     assert!(result.ok, "{result:?}");
     assert_eq!(result.source_text.as_deref(), Some("// selected\n"));
+    assert_eq!(
+        result.rev.as_deref(),
+        Some(unica_source_contract::read::module_text_revision(text.as_bytes()).as_str())
+    );
     assert!(result.diagnostics.is_empty());
     assert!(!result.data.unwrap()["limits"]
         .as_array()
@@ -166,6 +178,13 @@ fn body_syntax_uses_the_editor_buffer_and_preserves_the_healthy_disk() {
     let result = service.view(ViewRequest::new(&format!("{BODY}#L1")).unwrap());
     assert!(result.ok, "{result:?}");
     assert_eq!(result.source_text.as_deref(), Some("// buffer\n"));
+    assert_eq!(
+        result.rev.as_deref(),
+        Some(
+            unica_source_contract::read::module_text_revision(b"// buffer\nProcedure Broken(\n")
+                .as_str()
+        )
+    );
     assert_eq!(result.diagnostics[0]["code"], "bsl-parse-error");
     assert_eq!(tree_snapshot(&fixture.source), before);
     let healthy = fixture.view_service().view(ViewRequest::new(BODY).unwrap());
@@ -201,7 +220,12 @@ fn body_syntax_is_derived_from_its_retained_text_even_when_disk_changes_after_re
         .unwrap();
     assert_eq!(
         observed.text,
-        crate::application::v13::source_text::ModuleText::Text("// observed\n".into())
+        crate::application::v13::source_text::ModuleText::Text {
+            text: "// observed\n".into(),
+            revision: unica_source_contract::read::module_text_revision(
+                b"// observed\nProcedure Broken(\n"
+            ),
+        }
     );
     assert_eq!(observed.diagnostics[0]["code"], "bsl-parse-error");
 }

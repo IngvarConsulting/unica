@@ -1,0 +1,7 @@
+{
+  "scenario": "S-1703-xdto-property-rename",
+  "module": "verify-value-roundtrip.bsl",
+  "client": "thick",
+  "pass": "PASS: renamed XDTO model; explicit and implicit XML names; dotted name; value roundtrip",
+  "negativeControl": "Первое свойство или его позиция изменились"
+}

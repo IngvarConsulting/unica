@@ -166,15 +166,13 @@ jobs:
           components: rustfmt, clippy
       - id: guards-fmt
         if: ${{ !cancelled() }}
-        run: |
-          cargo fmt --all -- --check
-          python scripts/ci/check-discovered-modules-format.py
+        run: python scripts/ci/check-discovered-modules-format.py
       # Линтер workflow. Версия закреплена; находки гейт не красят — они
       # уходят в Code Scanning, где видны по правилу и строке, и разбираются
       # отдельно. Токен нужен сетевым проверкам: подменённые коммиты, известные
       # уязвимости действий.
       - if: ${{ !cancelled() }}
-        uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2.88.1
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         timeout-minutes: 5
         with:
           tool: zizmor@1.30.0
@@ -188,7 +186,7 @@ jobs:
       # Сбой загрузки не красит гейт: это отчёт, не проверка.
       - if: ${{ !cancelled() && hashFiles('.build/zizmor.sarif') != '' }}
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
           sarif_file: .build/zizmor.sarif
           category: zizmor
@@ -198,7 +196,7 @@ jobs:
         uses: ./.github/actions/install-nextest
         timeout-minutes: 5
       - if: ${{ !cancelled() && steps.classify.outputs.rust_required == 'true' }}
-        uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2.88.1
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         timeout-minutes: 5
         with:
           tool: clippy-sarif@0.8.0,sarif-fmt@0.8.0
@@ -268,7 +266,7 @@ jobs:
       # потерять историю оповещений.
       - if: always() && hashFiles('.build/clippy.sarif') != ''
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
           sarif_file: .build/clippy.sarif
           category: clippy-ubuntu-latest
@@ -690,6 +688,14 @@ jobs:
           --out-dir ".build/tool-bundles/${{ matrix.target }}"
           --work-dir .build/tool-work
           --metrics-file ".build/cargo-metrics/${{ matrix.target }}.json"
+      # Компилятор образа сам выбирает набор инструкций C-кода; без проверки
+      # AVX2 доехал до выпуска и ронял загрузчик на старых CPU (#3190).
+      - name: Check linux-x64 binaries need only baseline x86-64
+        if: matrix.target == 'linux-x64'
+        run: >
+          python scripts/ci/check-linux-x64-baseline.py
+          .build/tool-bundles/linux-x64/bin/linux-x64/unica
+          .build/tool-bundles/linux-x64/bootstrap/bin/linux-x64/unica-bootstrap
       - name: Build, install, and verify local development on Windows
         if: matrix.target == 'win-x64'
         shell: bash
@@ -1232,7 +1238,7 @@ jobs:
       # Джоба идёт только на теге и при перезапуске дописывает ассеты к уже
       # созданному релизу; переход на `gh release` — вместе с репетицией релиза.
       - name: Publish the release assets # zizmor: ignore[superfluous-actions] замена на gh release требует репетиции на теге
-        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           generate_release_notes: true

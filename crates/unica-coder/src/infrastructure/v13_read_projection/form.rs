@@ -9,7 +9,6 @@ use unica_refusal::RefusalCode;
 
 /// Скаляры корня формы в его `props`.
 const FORM_ROOT_SCALAR_KEYS: &[&str] = &[
-    "title",
     "objectContext",
     "isExtension",
     "baseFormVersion",
@@ -29,6 +28,8 @@ pub(super) const PAYLOAD_KEYS: &[&str] = &[
     "autoCommandBar",
     "commandBarLocation",
     "conditionalAppearance",
+    "localizedProperties",
+    "localizedLimits",
     "elements",
     "attributes",
     "parameters",
@@ -111,11 +112,10 @@ pub(super) fn project_form(
     }
     if suffix.is_empty() {
         let mut props = selected_scalar_props(payload, FORM_ROOT_SCALAR_KEYS);
-        // Заголовок длиннее предела не пропадает молча: предел называет
-        // адрес, по которому он читается целиком.
-        let limits = dropped_by_size(payload, &props, address, |probe| {
+        let mut limits = dropped_by_size(payload, &props, address, |probe| {
             selected_scalar_props(probe, FORM_ROOT_SCALAR_KEYS)
         });
+        localized_properties(address, payload, &mut props, &mut limits);
         if let Some(properties) = root_properties(payload) {
             props.insert("properties".to_string(), properties);
         }
@@ -381,6 +381,7 @@ fn form_node(
             }
         }
     }
+    localized_properties(address, item, &mut props, &mut limits);
     if kind == NodeKind::Item {
         for (source, property) in [("dataPath", "DataPath"), ("commandName", "CommandName")] {
             if let Some(value) = item.get(source).filter(|value| value.is_string()) {
@@ -477,16 +478,35 @@ pub(super) fn branch_fields(kind: NodeKind) -> &'static [&'static str] {
     }
 }
 
+fn localized_properties(
+    address: &QualifiedAddress,
+    value: &Value,
+    props: &mut Map<String, Value>,
+    limits: &mut Vec<String>,
+) {
+    if let Some(values) = value["localizedProperties"].as_object() {
+        for (name, value) in values {
+            place_prop(props, limits, address, name, value, true, name);
+        }
+    }
+    limits.extend(
+        value["localizedLimits"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_owned),
+    );
+}
+
 pub(super) fn node_props(kind: NodeKind, value: &Value) -> Map<String, Value> {
     let keys: &[&str] = match kind {
-        NodeKind::Item => &["tag", "title", "visible", "enabled", "readOnly"],
+        NodeKind::Item => &["tag", "visible", "enabled", "readOnly"],
         NodeKind::Event => &["handler", "callType"],
         NodeKind::Attribute => &["type", "isMain", "mainTable"],
         NodeKind::Column => &["type", "parentType"],
         NodeKind::Parameter => &["type", "isKey"],
         NodeKind::Command => &[
-            "title",
-            "tooltip",
             "shortcut",
             "picture",
             "representation",

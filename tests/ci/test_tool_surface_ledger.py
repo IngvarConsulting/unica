@@ -228,7 +228,7 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
     def test_canonical_subject_schemas_have_only_logical_inputs(self) -> None:
         tools = {tool["name"]: tool for tool in self.tools}
         expected_properties = {
-            "unica.view": {"at", "limit", "cursor"},
+            "unica.view": {"at", "limit", "cursor", "offset", "from"},
             "unica.apply": {"at", "ops", "executionToken"},
             # Единственный инструмент, которому путь на входе разрешён:
             # аварийный мост затем и заведён, чтобы путь не просачивался

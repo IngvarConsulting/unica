@@ -1025,18 +1025,19 @@ mod medium_tests {
     }
 
     /// Конверт превью, снятый с v8-runner 0.9.0 на 8.3.27.2074 14.09.2026.
+    /// С 0.18.1 интерактивный enterprise-клиент без ожидания запускается
+    /// без `/DisableStartupDialogs`: окна лицензии и входа остаются человеку.
+    /// Ключ остаётся только у Конфигуратора (сверено превью 0.18.1 на 8.3.27.2342).
     fn preview_envelope(mode: &str, execute: Option<&str>) -> Value {
-        let mut args = vec![
-            if mode == "designer" {
-                "DESIGNER"
-            } else {
-                "ENTERPRISE"
-            }
-            .to_string(),
-            "/DisableStartupDialogs".to_string(),
+        let mut args = if mode == "designer" {
+            vec!["DESIGNER".to_string(), "/DisableStartupDialogs".to_string()]
+        } else {
+            vec!["ENTERPRISE".to_string()]
+        };
+        args.extend([
             "/IBConnectionString".to_string(),
             "File=/opt/ib/sendbox".to_string(),
-        ];
+        ]);
         if let Some(execute) = execute {
             args.extend(["/Execute".to_string(), execute.to_string()]);
         }

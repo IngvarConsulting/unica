@@ -51,6 +51,7 @@ impl std::error::Error for ApplyStagingError {}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApplyPlanErrorKind {
     BadValue,
+    Conflict,
     NotFound,
     ProviderUnavailable,
     InvalidState,

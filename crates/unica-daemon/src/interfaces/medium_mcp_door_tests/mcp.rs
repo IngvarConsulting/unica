@@ -2472,7 +2472,7 @@ fn main() {
     let digest = format!("{:x}", Sha256::digest(&bytes));
     let mut core_targets = serde_json::Map::new();
     let mut runner_targets = serde_json::Map::new();
-    let runner_version = "0.17.4"; // Fixture pin must match the production runner contract.
+    let runner_version = "0.18.1"; // Fixture pin must match the production runner contract.
     for host in HostTarget::ALL {
         let target = host.as_str();
         let suffix = if target == "win-x64" { ".exe" } else { "" };
@@ -3318,9 +3318,12 @@ fn busy_base_workspace(root: &std::path::Path, mode: &str) -> std::path::PathBuf
         &std::fs::read(fixtures.join("v8_runner_017/push-untracked-base-preview.json")).unwrap(),
     )
     .unwrap();
+    // Runner 0.18 shape: `id` is the session UUID, `number` the platform number.
     let session = |computer: &str| {
         json!({"computer": computer, "application": "1CV8C", "application_title": "Тонкий клиент",
-               "started": "2026-11-12T09:05:41", "user": null, "id": "1"})
+               "started": "2026-11-12T09:05:41", "user": null,
+               "id": "0b2f6c1e-7a54-4f0e-9d3c-5e8a1b2c3d4e", "number": 7,
+               "from_this_machine": false, "excluded": false})
     };
     let with_error = |error: Value| {
         let mut envelope = refused.clone();
@@ -3369,7 +3372,7 @@ fn busy_base_workspace(root: &std::path::Path, mode: &str) -> std::path::PathBuf
     .unwrap();
     forced["data"]["sessions"] = json!({
         "terminated": [session("PC1"), session("PC2")],
-        "lock": {"denied": false}, "message_delivered": false
+        "lock": {"denied": false}, "message_delivered": false, "managed_ras": false
     });
     std::fs::write(
         workspace.join("probe-loaded-forced.json"),
@@ -3498,6 +3501,13 @@ async fn a_push_held_by_sessions_ends_them_by_the_persons_choice() {
     let terminated = &done["result"]["structuredContent"]["data"]["sessionsTerminated"];
     assert_eq!(terminated[0]["computer"], "PC1", "{done}");
     assert_eq!(terminated.as_array().map(Vec::len), Some(2), "{done}");
+    // The public session carries neither the runner's UUID nor its number.
+    assert_eq!(
+        terminated[0],
+        json!({"computer": "PC1", "application": "1CV8C", "applicationTitle": "Тонкий клиент",
+               "started": "2026-11-12T09:05:41", "user": null}),
+        "{done}"
+    );
     let calls = runner_writes(&workspace);
     assert_eq!(calls.len(), 2, "{calls:?}");
     assert!(!calls[0].contains("--sessions"), "{calls:?}");

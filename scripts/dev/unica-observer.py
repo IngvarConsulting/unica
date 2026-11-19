@@ -1544,6 +1544,7 @@ async function view(at, cursor, fresh) {
   cache.set(key, record);
   try {
     const answer = await pending;
+    if (notificationIndexing(answer.result?.data) && cache.get(key) === record) cache.delete(key);
     setTimeout(() => { record.settledBefore = true; });
     return answer;
   } catch (error) { cache.delete(key); throw error; }
@@ -1573,7 +1574,7 @@ function markLeaf(row) {
   row.nextElementSibling.hidden = true;
 }
 
-function makeRow(label, at, meta, count) {
+function makeRow(label, at, meta, count, binding) {
   const wrap = document.createElement("div");
   const row = document.createElement("div");
   row.className = "row";
@@ -1592,12 +1593,18 @@ function makeRow(label, at, meta, count) {
   if (at !== undefined) {
     wrap.dataset.at = at;
     let loading;
+    let retry = false;
     const setOpen = async (open) => {
       if (!tog.textContent) return;
+      if (open && retry) {
+        kids.replaceChildren();
+        loading = undefined;
+        retry = false;
+      }
       loading ??= fill(kids, at).catch(error => {
         kids.insertAdjacentHTML("beforeend", `<div class="err">ошибка страницы: ${esc(error.message)}</div>`);
       });
-      await loading;
+      retry = (await loading) === true;
       if (!tog.textContent) return;
       kids.hidden = !open;
       tog.textContent = open ? "▾" : "▸";
@@ -1608,7 +1615,7 @@ function makeRow(label, at, meta, count) {
       event.stopPropagation();
       if (event.detail <= 1) toggle();
     };
-    row.onclick = (event) => { if (event.detail <= 1) select(at, row); };
+    row.onclick = (event) => { if (event.detail <= 1) select(at, row, undefined, binding); };
     row.ondblclick = (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -1621,6 +1628,36 @@ function makeRow(label, at, meta, count) {
 function shortLabel(at, parent) {
   if (parent && at.startsWith(parent + ".")) return at.slice(parent.length + 1);
   return at;
+}
+
+function handlerTarget(data) {
+  const entry = data.props;
+  if (data.kind === "Method" && data.at?.includes(":HTTPService.") &&
+      typeof entry?.implementationAt === "string") {
+    return entry.implementationAt;
+  }
+  if (data.kind === "Operation" && data.at?.includes(":WebService.") &&
+      typeof entry?.implementationAt === "string") {
+    return entry.implementationAt;
+  }
+  if ((data.kind === "ScheduledJob" ||
+       (data.kind === "Event" && entry?.binding === "property" && entry.state === "implemented")) &&
+      typeof entry?.implementationAt === "string") {
+    return entry.implementationAt;
+  }
+}
+
+function notificationIndexing(data) {
+  return data?.kind === "Binding" && data.props?.notificationIndex === "indexing";
+}
+
+function bindingBadge(item) {
+  if (item.state === "invalid") return ' <span class="badge">недопустимая привязка</span>';
+  if (item.binding !== "notifyDescription") return "";
+  const {line, character} = item.range?.start || {};
+  const position = Number.isSafeInteger(line) && line >= 0 &&
+    Number.isSafeInteger(character) && character >= 0 ? ` · ${line + 1}:${character + 1}` : "";
+  return ` <span class="badge">ОписаниеОповещения${position}</span>`;
 }
 
 async function fill(container, at, cursor) {
@@ -1655,6 +1692,10 @@ async function fill(container, at, cursor) {
     const badges = `<span class="cnt">${branch.count ?? ""}</span>` + (isGraph(branch.at) ? ' <span class="badge graph">граф вызовов</span>' : "");
     container.appendChild(makeRow(shortLabel(branch.at, parent), branch.at, " " + badges));
   }
+  const handler = handlerTarget(data);
+  if (handler) {
+    container.appendChild(makeRow("Handler", handler, ` <span class="cnt">${esc(handler)}</span>`));
+  }
   for (const item of data.items || []) {
     if (item && typeof item.at === "string") {
       const meta = item.kind ? ` <span class="badge">${esc(item.kind)}</span>` : "";
@@ -1662,7 +1703,9 @@ async function fill(container, at, cursor) {
       const title = item.title && item.title !== item.at && item.title !== shortLabel(item.at, parent)
         ? ` <span class="cnt">${esc(item.title)}</span>` : "";
       const size = count === undefined ? "" : ` <span class="cnt">${count}</span>`;
-      container.appendChild(makeRow(shortLabel(item.at, parent), item.at, meta + title + size, count));
+      const binding = data.kind === "Binding" ? item : undefined;
+      const state = binding ? bindingBadge(binding) : "";
+      container.appendChild(makeRow(shortLabel(item.at, parent), item.at, meta + title + size + state, count, binding));
     } else {
       // Строка данных без адреса (например, строка исходника): адреса у неё нет.
       container.appendChild(makeRow(JSON.stringify(item).slice(0, 160)));
@@ -1677,6 +1720,13 @@ async function fill(container, at, cursor) {
     let loadingPage;
     more.onclick = () => loadingPage ??= fill(container, at, result.cursor).finally(() => more.remove());
     container.appendChild(more);
+  }
+  if (notificationIndexing(data)) {
+    const note = document.createElement("div");
+    note.className = "cnt";
+    note.textContent = "Индекс имён строится. Раскройте ветвь снова.";
+    container.appendChild(note);
+    return true;
   }
   if (!container.childElementCount) markLeaf(container.previousElementSibling);
 }
@@ -1763,6 +1813,14 @@ function renderNode(at, answer) {
     for (const b of data.branches) html += `<tr><td><a href="#" data-at="${esc(b.at)}" class="at">${esc(b.at)}</a></td><td>${esc(b.count ?? "")}</td></tr>`;
     html += `</table></section>`;
   }
+  if (data.kind === "Binding" && data.items?.length) {
+    html += '<section><h3>Привязки</h3><table>';
+    data.items.forEach((item, index) => {
+      if (typeof item?.at !== "string") return;
+      html += `<tr><td><a href="#" data-at="${esc(item.at)}" data-binding="${index}" class="at">${esc(item.at)}</a></td><td>${bindingBadge(item)}</td></tr>`;
+    });
+    html += "</table></section>";
+  }
   if ("can" in data) {
     html += `<section><h3>can (${data.can.length})</h3>`;
     if (!data.can.length) {
@@ -1791,7 +1849,10 @@ function renderNode(at, answer) {
   highlightCodeBlocks(node, answer.sourceText);
   const reveal = $("revealNode");
   if (reveal) reveal.onclick = () => revealSelectedInTree(reveal, $("revealStatus"), nodeAt, data.kind);
-  node.querySelectorAll("a[data-at]").forEach((a) => a.onclick = (event) => { event.preventDefault(); select(a.dataset.at); });
+  node.querySelectorAll("a[data-at]").forEach((a) => a.onclick = (event) => {
+    event.preventDefault();
+    select(a.dataset.at, undefined, undefined, data.items?.[a.dataset.binding]);
+  });
   node.querySelectorAll("button[data-contract]").forEach((b) => b.onclick = () => showContract(nodeAt, data.can[+b.dataset.contract]));
   node.querySelectorAll("button[data-preview]").forEach((b) => b.onclick = () => showPreview(nodeAt, data.can[+b.dataset.preview]));
   // Открытая форма инструмента следует за выбранным узлом.
@@ -1799,7 +1860,51 @@ function renderNode(at, answer) {
   if (atField && nodeAt) { atField.value = nodeAt; atField.dispatchEvent(new Event("input", {bubbles: true})); }
 }
 
-async function select(at, row, fresh) {
+async function showBindingSource(binding, version) {
+  const {sourceAt, range, rev} = binding || {};
+  if (binding?.binding !== "notifyDescription" || !sourceAt || !range || !rev) return;
+  const section = document.createElement("section");
+  const title = section.appendChild(document.createElement("h3"));
+  title.textContent = "Место создания оповещения";
+  const status = section.appendChild(document.createElement("p"));
+  status.className = "cnt";
+  status.textContent = "Загрузка фрагмента…";
+  $("node").querySelector("dl").after(section);
+  try {
+    const answer = await view(sourceAt, undefined, true);
+    if (version !== selectionVersion) return;
+    const text = answer.sourceText;
+    if (!answer.result?.ok || typeof text !== "string") {
+      status.textContent = answer.result?.diagnostics?.[0]?.message || "Фрагмент недоступен";
+      return;
+    }
+    if (answer.result.rev !== rev) {
+      status.textContent = "Ревизия исходника изменилась. Откройте привязку заново.";
+      return;
+    }
+    const {start, end} = range;
+    const lines = text.split("\n");
+    const endLine = end.line - start.line;
+    const from = start.character;
+    const to = lines.slice(0, endLine).reduce((offset, line) => offset + line.length + 1, end.character);
+    if (endLine < 0 || endLine >= lines.length || from < 0 || to <= from || to > text.length) {
+      status.textContent = "Диапазон отсутствует во фрагменте";
+      return;
+    }
+    const pre = document.createElement("pre");
+    pre.className = "source-text";
+    const code = pre.appendChild(document.createElement("code"));
+    const highlight = document.createElement("mark");
+    highlight.textContent = text.slice(from, to);
+    code.append(text.slice(0, from), highlight, text.slice(to));
+    status.replaceWith(pre);
+    highlight.scrollIntoView({block: "nearest", inline: "nearest"});
+  } catch (error) {
+    if (version === selectionVersion) status.textContent = error.message;
+  }
+}
+
+async function select(at, row, fresh, binding) {
   const version = ++selectionVersion;
   highlightTreeRow(row);
   $("node").innerHTML = `<p class="cnt" id="nodeLoading"></p>`;
@@ -1809,9 +1914,11 @@ async function select(at, row, fresh) {
     stop();
     if (version !== selectionVersion) return;
     renderNode(at, answer);
+    void showBindingSource(binding, version);
     const result = answer.result || {};
     const data = result.data || {};
-    if (result.ok && !result.cursor && !["branches", "items", "sourceSets"].some((key) => (data[key] || []).length)) markLeaf(row);
+    if (result.ok && !result.cursor && !handlerTarget(data) && !notificationIndexing(data) &&
+        !["branches", "items", "sourceSets"].some((key) => (data[key] || []).length)) markLeaf(row);
   }
   catch (error) {
     stop();

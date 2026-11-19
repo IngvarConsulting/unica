@@ -18,25 +18,6 @@
 объединяет их через один типизированный MCP-сервер `unica`; это объединение не
 заменяет и не отменяет лицензии отдельных компонентов.
 
-## Библиотеки с локальными исправлениями
-
-### ureq
-
-<!-- unica-attribution: library ureq -->
-
-- Репозиторий: [algesten/ureq](https://github.com/algesten/ureq)
-- Автор: [Martin Algesten и участники ureq](https://github.com/algesten/ureq/graphs/contributors)
-- Исходная версия: `2.12.1`, commit `ba4555d54fd72e16fc737f7e8fcc812efb131260`
-- Лицензия: [MIT OR Apache-2.0](third-party/licenses/ureq/LICENSE-MIT);
-  [Apache-2.0](third-party/licenses/ureq/LICENSE-APACHE)
-- Отдельные лицензии декодера chunked:
-  [MIT](third-party/licenses/ureq/src/chunked/LICENSE-MIT),
-  [Apache-2.0](third-party/licenses/ureq/src/chunked/LICENSE-APACHE)
-
-Библиотека входит в бинарники Unica. Локальное исправление сохраняет полностью
-полученный ответ при ошибке подготовки соединения к повторному использованию.
-Исходники и сведения об исправлении доступны в `vendor/ureq` репозитория Unica.
-
 ## Встроенные инструменты
 
 ### BSL Analyzer
@@ -66,8 +47,8 @@ Unica поставляет LSP-бинарник `bsl-analyzer` и локальн
 - Репозиторий: [IngvarConsulting/v8-runner-rust](https://github.com/IngvarConsulting/v8-runner-rust)
 - Автор: [v8-runner contributors](https://github.com/alkoleft/v8-runner-rust/graphs/contributors)
 - Исходный проект: [alkoleft/v8-runner-rust](https://github.com/alkoleft/v8-runner-rust)
-- Закреплённая версия: `0.17.4`, source tag и asset tag `v0.17.4`,
-  commit `0781c9b125a72231e4b17ce24253c29901750f63`
+- Закреплённая версия: `0.18.1`, source tag и asset tag `v0.18.1`,
+  commit `ef5743a3bf696f5edc215cfd9527bbed9d2352c4`
 - Лицензия: [AGPL-3.0-only](third-party/licenses/v8-runner/LICENSE)
 
 `v8-runner` запускается Unica как отдельный внутренний процесс. На его

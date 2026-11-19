@@ -174,21 +174,39 @@ impl ProviderReadAuthority {
             .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.message))?;
         let mut payload = identity_metadata_payload_from_evidence(target, &evidence)?;
         if evidence.artifact_kind() == "Language" {
-            match crate::infrastructure::family_codecs::metadata_read_codec()
-                .language_code(&descriptor)
-            {
+            let codec = crate::infrastructure::family_codecs::metadata_read_codec();
+            let mut properties = Vec::new();
+            let mut unreadable = Vec::new();
+            match codec.language_code(&descriptor) {
                 Ok(code) => {
-                    payload["properties"] = json!([{
+                    properties.push(json!({
                         "key": "LanguageCode",
                         "value": unica_metadata::MetaObservedPropertyValue::Text { value: code },
-                    }]);
+                    }));
                 }
                 Err(message) => {
-                    payload["unreadable"] = json!([{
-                        "field": "properties.LanguageCode",
-                        "message": message,
-                    }]);
+                    unreadable
+                        .push(json!({"field": "properties.LanguageCode", "message": message}));
                 }
+            }
+            let synonym = std::str::from_utf8(&descriptor)
+                .map_err(|error| error.to_string())
+                .and_then(|text| codec.descriptor_localized_property(text, "Language", "Synonym"));
+            match synonym {
+                Ok(Some(value)) => {
+                    properties.push(json!({
+                        "key": "Synonym",
+                        "value": unica_metadata::MetaObservedPropertyValue::Text { value },
+                    }));
+                }
+                Ok(None) => {}
+                Err(message) => {
+                    unreadable.push(json!({"field": "properties.Synonym", "message": message}));
+                }
+            }
+            payload["properties"] = json!(properties);
+            if !unreadable.is_empty() {
+                payload["unreadable"] = json!(unreadable);
             }
         }
         if evidence.artifact_kind() == "DocumentNumerator" {
@@ -336,7 +354,7 @@ impl ProviderReadAuthority {
         &self,
         target: &MetadataAddress,
         checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
-    ) -> Result<PlatformXmlSourceSetOwnerEvidence, ViewError> {
+    ) -> Result<Arc<PlatformXmlSourceSetOwnerEvidence>, ViewError> {
         // The actor retains the proof under the stamp the descriptor had
         // before it was read (INV.SOURCE.CONFIGURATION-ROOT-CACHE-REUSE).
         // Without a stamp the descriptor is read as before, with its own
@@ -344,22 +362,26 @@ impl ProviderReadAuthority {
         // through its inventory under the caller's checkpoint: it keeps that
         // path.
         if self.is_external_source_set() {
-            return self.metadata_owner_evidence_uncached(target, checkpoint);
+            return self
+                .metadata_owner_evidence_uncached(target, checkpoint)
+                .map(Arc::new);
         }
         let Some((relative, stamp)) = self
             .metadata_descriptor_relative(target)
             .ok()
             .and_then(|relative| Some((relative.clone(), self.descriptor_stamp(&relative)?)))
         else {
-            return self.metadata_owner_evidence_uncached(target, checkpoint);
+            return self
+                .metadata_owner_evidence_uncached(target, checkpoint)
+                .map(Arc::new);
         };
         if let Some(evidence) = self.artifacts.retained_owner_evidence(&relative, &stamp) {
             checkpoint()?;
-            return Ok((*evidence).clone());
+            return Ok(evidence);
         }
-        let evidence = self.metadata_owner_evidence_uncached(target, checkpoint)?;
+        let evidence = Arc::new(self.metadata_owner_evidence_uncached(target, checkpoint)?);
         self.artifacts
-            .retain_owner_evidence(relative, stamp, Arc::new(evidence.clone()));
+            .retain_owner_evidence(relative, stamp, Arc::clone(&evidence));
         Ok(evidence)
     }
 
@@ -376,7 +398,7 @@ impl ProviderReadAuthority {
             ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
         })?;
         let observed = if self.is_external_source_set() {
-            self.common_module_synonym_observed(&owner)?
+            Arc::new(self.common_module_synonym_observed(&owner)?)
         } else if let Some((relative, stamp)) = self
             .metadata_descriptor_relative(&owner)
             .ok()
@@ -386,23 +408,23 @@ impl ProviderReadAuthority {
                 .artifacts
                 .retained_common_module_synonym(&relative, &stamp)
             {
-                Some(observed) => (*observed).clone(),
+                Some(observed) => observed,
                 None => {
-                    let observed = self.common_module_synonym_observed(&owner)?;
+                    let observed = Arc::new(self.common_module_synonym_observed(&owner)?);
                     self.artifacts.retain_common_module_synonym(
                         relative,
                         stamp,
-                        Arc::new(observed.clone()),
+                        Arc::clone(&observed),
                     );
                     observed
                 }
             }
         } else {
-            self.common_module_synonym_observed(&owner)?
+            Arc::new(self.common_module_synonym_observed(&owner)?)
         };
         let mut props = serde_json::Map::new();
         let mut limits = Vec::new();
-        match observed {
+        match observed.as_ref() {
             Ok(Some(text)) => crate::infrastructure::v13_read_projection::place_prop(
                 &mut props,
                 &mut limits,

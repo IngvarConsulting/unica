@@ -57,9 +57,9 @@ metadata_operations!(
     ObjectBorrow => ("object.borrow", ExtensionRoot, From),
     ObjectCreate => ("object.create", Configuration, Values),
     ObjectRemove => ("object.remove", MetadataOrCommonTemplate, Target),
-    RelationAdd => ("relation.add", Metadata, Values),
-    RelationRemove => ("relation.remove", Metadata, Values),
-    RelationReplace => ("relation.replace", Metadata, Values),
+    RelationAdd => ("relation.add", MetadataRelations, Values),
+    RelationRemove => ("relation.remove", MetadataRelations, Values),
+    RelationReplace => ("relation.replace", MetadataRelations, Values),
     HelpCreate => ("help.create", Metadata, Values),
     AttributeAdd => ("attribute.add", MetadataAttributeContainer, Items),
     AttributeSet => ("attribute.set", MetadataAttribute, Values),
@@ -233,6 +233,14 @@ impl unica_operations::FamilyOperation for MetadataOperation {
             .any(|segment| segment.kind() == unica_address::address::NodeKind::TabularSection);
         let mut contract = self
             .contract_at(owner.map(|owner| crate::contracts::MetadataSite { owner, in_section }));
+        if self == Self::AttributeSet
+            && !OperationApplicability::CatalogTabularAttribute.matches(site)
+        {
+            contract.schema["properties"]["values"]["properties"]
+                .as_object_mut()
+                .expect("attribute.set values schema")
+                .remove("toolTip");
+        }
         if self == Self::EnumValueSet {
             let line = site.source().classification_profile().semantic_line();
             offer_enum_value_color(&mut contract.schema["properties"]["values"], line);
@@ -269,6 +277,51 @@ mod tests {
     use super::*;
     use crate::MetadataKind;
     use serde_json::json;
+
+    /// #2243: a relation operation has at least one owner-specific value.
+    /// rule: INV.WIRE.V13-CAN-DICTIONARY
+    #[test]
+    fn relation_operations_require_a_relation_domain_for_every_metadata_kind() {
+        use unica_address::address::QualifiedAddress;
+        use unica_source_contract::context::{OperationSite, SourceSetTraits};
+        use unica_source_contract::route::RouteClass;
+        use unica_source_contract::{SourceProfile, SourceSetKind};
+        let profile = SourceProfile::platform_xml_8_3_27_format_2_20();
+        let source =
+            SourceSetTraits::from_profiles(SourceSetKind::Configuration, Some(profile), profile);
+        for &kind in MetadataKind::ALL {
+            let at = QualifiedAddress::parse(&format!("main:{}.Probe", kind.as_str())).unwrap();
+            let site = OperationSite::from_route(&at, source, RouteClass::Metadata);
+            let expected = !crate::metadata_relation_specs(kind).is_empty();
+            for op in [
+                MetadataOperation::RelationAdd,
+                MetadataOperation::RelationRemove,
+                MetadataOperation::RelationReplace,
+            ] {
+                assert_eq!(
+                    op.applicability().matches(&site),
+                    expected,
+                    "{} {}",
+                    kind.as_str(),
+                    op.name()
+                );
+                if expected {
+                    let contract = op.contract_at(Some(crate::contracts::MetadataSite {
+                        owner: kind,
+                        in_section: false,
+                    }));
+                    let validator = jsonschema::validator_for(&contract.schema).unwrap();
+                    assert!(
+                        validator.is_valid(&contract.example_args),
+                        "{} {}: {}",
+                        kind.as_str(),
+                        op.name(),
+                        contract.example_args
+                    );
+                }
+            }
+        }
+    }
 
     /// rule: INV.SOURCE.PROFILE-CAPABILITIES
     #[test]
@@ -523,7 +576,7 @@ mod tests {
         assert!(contract.normalize(&contract.example_args, "args").is_ok());
         for values in [
             json!({"newName":"PrintCopy"}),
-            json!({"synonym":"Print","comment":"kept"}),
+            json!({"synonym":"ru = 'Print'","comment":"kept"}),
             json!({"position":{"before":"Other"}}),
         ] {
             assert!(
@@ -623,6 +676,26 @@ mod tests {
             ] {
                 assert!(contract.normalize(&args, "args").is_err(), "{args}");
             }
+        }
+    }
+
+    #[test]
+    fn tool_tip_has_an_nstr_setter_only_on_catalog_tabular_attributes() {
+        for (owner, in_section, allowed) in [
+            (MetadataKind::Catalog, true, true),
+            (MetadataKind::Catalog, false, false),
+            (MetadataKind::Document, true, false),
+        ] {
+            let contract = MetadataOperation::AttributeSet
+                .contract_at(Some(MetadataSite { owner, in_section }));
+            let args = json!({"values":{"toolTip":"ru = 'Подсказка'; en = 'Tip'"}});
+            assert_eq!(contract.normalize(&args, "args").is_ok(), allowed);
+            assert!(contract
+                .normalize(
+                    &json!({"values":{"toolTip":[{"language":"ru","content":"Подсказка"}]}}),
+                    "args"
+                )
+                .is_err());
         }
     }
 
@@ -789,6 +862,7 @@ mod tests {
                     collection: crate::MetaCollection::Dimensions,
                     scope: None,
                     elements: vec![crate::MetaElementUpdate {
+                        tool_tip: None,
                         name: "Item".into(),
                         new_name: None,
                         synonym: None,

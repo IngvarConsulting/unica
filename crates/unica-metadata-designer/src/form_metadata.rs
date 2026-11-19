@@ -1,5 +1,5 @@
 use super::info_projection::{
-    direct_md_child, meta_info_property_value_is_valid, parsed_localized_meta_info_property_value,
+    direct_md_child, localized_node_as_nstr, meta_info_property_value_is_valid,
 };
 use super::validation_context::inspect_form_metadata_image_identity;
 use super::xml_model::MD_CLASSES_NS;
@@ -63,16 +63,7 @@ pub fn observe_form_property(property: roxmltree::Node<'_, '_>) -> Result<Option
     let name = property.tag_name().name();
     let value = match name {
         "Synonym" | "ExtendedPresentation" | "Explanation" => {
-            if !direct_text_is_formatting(property)
-                || !meta_info_property_value_is_valid(
-                    property,
-                    MetaInfoPropertyValueKind::LocalizedString,
-                )
-            {
-                return Err("malformed localized text".into());
-            }
-            serde_json::to_value(parsed_localized_meta_info_property_value(property))
-                .map_err(|error| error.to_string())?
+            return localized_node_as_nstr(property).map(|value| value.map(Value::String));
         }
         "UsePurposes" => {
             if property.attributes().len() != 0 || !direct_text_is_formatting(property) {

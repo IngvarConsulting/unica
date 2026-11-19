@@ -282,7 +282,7 @@ pub fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
             tools: vec![
                 V13ToolContract {
                     name: "view",
-                    description: "Inspect the workspace with no arguments, or read one logical 1C node by address.",
+                    description: "Inspect the workspace with no arguments, or read one logical 1C node by address. Collection pages report data.offset and data.total. Root metadata collections keep Configuration.xml registration order. offset and from start a fresh question; cursor continues its immutable snapshot.",
                     input_schema: schema(
                         json!({
                             "at": logical_address_with("Qualified logical address: <sourceSet>:<Kind>[.<Name>...]. A node answer lists its operations in can; append .Can.<op> for one operation's argument contract. Omit for the workspace."),
@@ -291,6 +291,8 @@ pub fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                             "limit": {"type": "integer", "minimum": 1, "maximum": 50,
                                 "description": "Maximum child items per addressed view page, from 1 to 50; valid only with at. Omit for 20. A preferred 64 KiB page size may stop earlier, but an indivisible item remains whole."},
                             "cursor": cursor("Continuation cursor from an earlier addressed view."),
+                            "offset": {"type":"integer", "minimum":0, "description":"Start a collection page at this zero-based position, without reading prior pages. Exclusive with from and cursor. Positions beyond the end return an empty page with data.offset equal to data.total."},
+                            "from": {"type":"string", "description":"Start at the first registered name beginning with this prefix, ignoring Unicode case. Exclusive with offset and cursor. No match returns an empty page with data.offset equal to data.total. Names, not synonyms, are matched."},
                         }),
                         json!([]),
                     ),
@@ -393,7 +395,7 @@ pub fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                     description: "Search bundled Unica and safe 1C documentation by topic, or open a document locator. Search hits and long document text use pages; each search source reports whether its retrieved window is complete.",
                     input_schema: schema(
                         json!({
-                            "query": {"type": "string", "description": "Documentation question or search phrase."},
+                            "query": {"type": "string", "description": "Documentation question, search phrase, or an exact documentId returned by this tool. Platform-help locators include the installation build: `platform-syntax-help:<platform-build>:<corpus>:<path>`."},
                             "source": {"type": "string", "description": "Optional documented source kind, not a provider identity."},
                             "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20, "description": "Maximum hits per search page or text fragments per long document page, from 1 to 50. A text fragment is one line or at most 16 KiB of a longer line; short documents still arrive whole."},
                             "cursor": cursor("Continue the same documentation search or long document. A document cursor checks its complete text and metadata for changes; concatenate document.text fragments in page order."),
@@ -818,7 +820,7 @@ mod tests {
             &catalog.tools,
             "view",
             json!([]),
-            &["at", "limit", "cursor"],
+            &["at", "limit", "cursor", "offset", "from"],
         );
         assert_schema(
             &catalog.tools,

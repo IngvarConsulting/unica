@@ -53,6 +53,7 @@ pub enum PropertiesSite {
         source_kind: SourceSetKind,
     },
     CommentOnly(NodeKind),
+    CatalogOwner,
     DocumentNumerator,
     FunctionalOption,
     Role,
@@ -211,7 +212,7 @@ macro_rules! descriptor_properties {
                     PropertiesSite::Configuration { extension, line } => {
                         self.on_root(extension) && !line_lacks(line, self.names()[0], None)
                     }
-                    PropertiesSite::Metadata { .. } => false,
+                    PropertiesSite::Metadata { .. } | PropertiesSite::CatalogOwner => false,
                     PropertiesSite::FormDescriptor { common, extension, line } => {
                         if extension {
                             self == Self::Comment
@@ -234,12 +235,12 @@ macro_rules! descriptor_properties {
 
 // Columns: subsystem, role, configuration root, extension root. The root
 // profile names scalar properties, and the parts of one composite property,
-// with a published value set; names,
-// languages, roles, storages, forms and the script variant stay outside it.
+// with a published value set.
 // An extension root changes only its own identity (#1644). The platform
 // re-export of 8.3.27 resets a configuration's own
 // `ConfigurationExtensionCompatibilityMode`, so only an extension sets it.
 descriptor_properties!(
+    Name => ("Name", "name", String, false, false, true, false),
     LocationUrl => ("LocationURL", "locationURL", String, false, false, false, false),
     Location => ("Location", "location", String, false, false, false, false),
     PrivilegedGetMode => ("PrivilegedGetMode", "privilegedGetMode", Boolean, false, false, false, false),
@@ -291,6 +292,21 @@ const fn form_member(common: bool) -> &'static str {
         "Form"
     }
 }
+
+/// Localized properties read and written on a configuration descriptor.
+pub const CONFIGURATION_LOCALIZED_PROPERTIES: &[(&str, &str)] = &[
+    ("Synonym", "synonym"),
+    ("Caption", "caption"),
+    ("ShortCaption", "shortCaption"),
+    ("BriefInformation", "briefInformation"),
+    ("DetailedInformation", "detailedInformation"),
+    ("Copyright", "copyright"),
+    ("VendorInformationAddress", "vendorInformationAddress"),
+    (
+        "ConfigurationInformationAddress",
+        "configurationInformationAddress",
+    ),
+];
 
 impl DescriptorProperty {
     /// Localized properties keep one value per language; the others are
@@ -488,6 +504,13 @@ impl PropertiesSite {
         {
             return Some(Self::Subsystem);
         }
+        // The standard Owner attribute of a configuration's catalog.
+        if matches!(at.segments(), [owner, member]
+            if owner.kind() == NodeKind::Catalog && owner.name().is_some()
+            && member.kind() == NodeKind::StandardAttribute && member.name() == Some("Owner"))
+        {
+            return (source_kind == SourceSetKind::Configuration).then_some(Self::CatalogOwner);
+        }
         let [owner] = at.segments() else {
             return None;
         };
@@ -583,6 +606,9 @@ impl PropertiesSite {
                 values["x-unica-alias-groups"] = json!([names]);
                 return values;
             }
+            Self::CatalogOwner => {
+                properties.insert("FillFromFillingValue".into(), json!({"type":"boolean"}));
+            }
             Self::Metadata { kind, source_kind } => {
                 properties = metadata_property_schemas(Some(kind));
                 if kind == MetadataKind::EventSubscription {
@@ -614,6 +640,16 @@ impl PropertiesSite {
                         continue;
                     }
                     let schema = match field.kind() {
+                        DescriptorPropertyKind::String if field == DescriptorProperty::Name => {
+                            json!({
+                                "type": "string",
+                                "pattern": r"^[^\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]*$",
+                                "description": "Configuration name as XML 1.0 text. Changing it preserves the root address and UUID."
+                            })
+                        }
+                        DescriptorPropertyKind::String if field.localized() => {
+                            crate::localized_value_schema()
+                        }
                         DescriptorPropertyKind::String => json!({"type":"string"}),
                         DescriptorPropertyKind::Boolean => json!({"type":"boolean"}),
                         DescriptorPropertyKind::Enum => {
@@ -784,6 +820,7 @@ impl PropertiesOperation {
                     PropertiesSite::FormDescriptor { extension: true, .. } => "The existing descriptor of a form in an extension: `<set>:CommonForm.Name.Metadata` or `<set>:Kind.Name.Form.Name.Metadata`. An extension changes only Comment of its forms.",
                     PropertiesSite::FormDescriptor { common: true, .. } => "The existing common form descriptor at `<set>:CommonForm.Name.Metadata`.",
                     PropertiesSite::FormDescriptor { .. } => "The existing descriptor of a form of a metadata object at `<set>:Kind.Name.Form.Name.Metadata`.",
+                    PropertiesSite::CatalogOwner => "The standard Owner attribute at `<set>:Catalog.Name.StandardAttribute.Owner` in a configuration source.",
                     PropertiesSite::CommentOnly(_) => "The existing named root metadata descriptor at `<set>:Kind.Name`. This profile changes only Comment.",
                     _ => "The existing named top-level metadata object, role or subsystem, or a nested subsystem, at its full address. The address selects the property profile.",
                 },
@@ -799,6 +836,7 @@ impl PropertiesOperation {
                     _ => "values is a nonempty object. Use JSON booleans for flags. An empty string clears text where the property allows it; Location requires a nonempty storage reference. null is not omission. Use one spelling of each property, never both aliases. Argument errors are checked before descriptor state; valid arguments still require an existing readable descriptor. Preview writes nothing; execute only the saved execution token.",
                 },
                 example_args: match site {
+                    PropertiesSite::CatalogOwner => json!({"values":{"FillFromFillingValue":true}}),
                     PropertiesSite::DocumentNumerator => json!({"values":{"NumberLength":12,"CheckUnique":true}}),
                     PropertiesSite::WSReference => json!({"values":{"LocationURL":"https://example.invalid/service?wsdl"}}),
                     PropertiesSite::FunctionalOption => json!({"values":{"Location":"Constant.UseGoods","PrivilegedGetMode":true}}),
@@ -811,7 +849,7 @@ impl PropertiesOperation {
                     _ => json!({"values":{"Comment":"Updated comment"}}),
                 },
                 help: match site {
-                    PropertiesSite::WSReference | PropertiesSite::Metadata { .. } | PropertiesSite::DocumentNumerator | PropertiesSite::CommentOnly(_) | PropertiesSite::FormDescriptor { .. } | PropertiesSite::FunctionalOption | PropertiesSite::StyleItem | PropertiesSite::PaletteColor | PropertiesSite::Queue | PropertiesSite::Language => "skills/meta-edit/SKILL.md",
+                    PropertiesSite::WSReference | PropertiesSite::Metadata { .. } | PropertiesSite::DocumentNumerator | PropertiesSite::CommentOnly(_) | PropertiesSite::FormDescriptor { .. } | PropertiesSite::FunctionalOption | PropertiesSite::StyleItem | PropertiesSite::PaletteColor | PropertiesSite::Queue | PropertiesSite::Language | PropertiesSite::CatalogOwner => "skills/meta-edit/SKILL.md",
                     PropertiesSite::Role => "skills/role-edit/SKILL.md",
                     PropertiesSite::Subsystem => "skills/subsystem-edit/SKILL.md",
                     PropertiesSite::Configuration { .. } => "skills/cf-edit/SKILL.md",
@@ -976,7 +1014,7 @@ mod tests {
             let oracle = jsonschema::validator_for(&new.schema).unwrap();
             assert!(oracle.is_valid(&json!({"values":{
                 "ClientApplicationTheme":"Dark","InterfaceCompatibilityMode":"Version8_5",
-                "caption":"Учёт"
+                "caption":"ru = 'Учёт'"
             }})));
         }
 
@@ -1134,6 +1172,43 @@ mod tests {
             assert_eq!(
                 oracle.is_valid(&json!({"values":{"EditType":"InList"}})),
                 source_kind == SourceSetKind::Configuration
+            );
+        }
+    }
+
+    #[test]
+    fn catalog_owner_exposes_only_the_filling_flag() {
+        use super::*;
+        let at = QualifiedAddress::parse("main:Catalog.Items.StandardAttribute.Owner").unwrap();
+        let site = PropertiesSite::from_address(&at, SourceSetKind::Configuration)
+            .expect("Owner is writable");
+        let contract = PropertiesOperation::Set.contract(site);
+        let oracle = jsonschema::validator_for(&contract.schema).unwrap();
+        for enabled in [false, true] {
+            assert!(oracle.is_valid(&json!({"values":{"FillFromFillingValue":enabled}})));
+        }
+        for values in [
+            json!({}),
+            json!({"FillFromFillingValue":"true"}),
+            json!({"FillFromFillingValue":true,"FillChecking":"ShowError"}),
+        ] {
+            assert!(!oracle.is_valid(&json!({"values":values})));
+        }
+        assert!(PropertiesSite::from_address(&at, SourceSetKind::Extension).is_none());
+        for other in [
+            "main:Catalog.Items.StandardAttribute.Code",
+            "main:Catalog.Items.StandardAttribute",
+            "main:Document.Order.StandardAttribute.Owner",
+            "main:Catalog.Items.Attribute.Owner",
+            "main:Catalog.Items.TabularSection.Lines.StandardAttribute.Owner",
+        ] {
+            assert!(
+                PropertiesSite::from_address(
+                    &QualifiedAddress::parse(other).unwrap(),
+                    SourceSetKind::Configuration
+                )
+                .is_none(),
+                "{other}"
             );
         }
     }
@@ -1746,10 +1821,10 @@ mod tests {
     fn normalization_keeps_independent_alias_groups_and_rejects_collisions() {
         for site in [PropertiesSite::Role, PropertiesSite::Subsystem] {
             let contract = PropertiesOperation::Set.contract(site);
-            let args = json!({"values":{"synonym":"S","Comment":"C"}});
+            let args = json!({"values":{"synonym":"ru = 'S'","Comment":"C"}});
             assert_eq!(contract.normalize(&args, "args").unwrap(), args);
             for values in [
-                json!({"Synonym":"S","synonym":"S"}),
+                json!({"Synonym":"ru = 'S'","synonym":"ru = 'S'"}),
                 json!({"Comment":"C","comment":"different"}),
                 json!({}),
             ] {

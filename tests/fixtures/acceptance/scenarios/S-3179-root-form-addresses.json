@@ -1,0 +1,346 @@
+{
+  "id": "S-3179-root-form-addresses",
+  "issue": 3179,
+  "area": "Конфигурация и свойства верхнего уровня",
+  "task": "Прочитать квалифицированные адреса назначенной формы и форм начальной страницы, открыть их и передать в запись без изменения платформенных ссылок. Чужой набор отклоняется до записи.",
+  "workspace": "tests/fixtures/acceptance/workspace-borrowed",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "beforeCfg": {
+          "file": "src/cf/Configuration.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "defaultReportForm": "ОбщаяФорма"
+              }
+            }
+          },
+          {
+            "op": "homePage.set",
+            "args": {
+              "values": {
+                "template": "TwoColumnsEqualWidth",
+                "left": [
+                  {
+                    "form": "CommonForm.ОбщаяФорма",
+                    "height": 13,
+                    "common": false,
+                    "roles": []
+                  }
+                ],
+                "right": [
+                  {
+                    "form": "DataProcessor.Обработка.Form.Форма",
+                    "height": 10,
+                    "common": true,
+                    "roles": []
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "token": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.beforeCfg"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Configuration.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Configuration/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}DefaultReportForm",
+          "eq": [
+            "CommonForm.ОбщаяФорма"
+          ]
+        },
+        {
+          "path": "src/cf/Ext/HomePageWorkArea.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/xcf/extrnprops}LeftColumn/{http://v8.1c.ru/8.3/xcf/extrnprops}Item/{http://v8.1c.ru/8.3/xcf/extrnprops}Form",
+          "eq": [
+            "CommonForm.ОбщаяФорма"
+          ]
+        },
+        {
+          "path": "src/cf/Ext/HomePageWorkArea.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/xcf/extrnprops}RightColumn/{http://v8.1c.ru/8.3/xcf/extrnprops}Item/{http://v8.1c.ru/8.3/xcf/extrnprops}Form",
+          "eq": [
+            "DataProcessor.Обработка.Form.Форма"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "rootForm": {
+          "pointer": "/data/props/properties/forms/defaultReportForm"
+        },
+        "leftForm": {
+          "pointer": "/data/props/homePage/left/0/form"
+        },
+        "rightForm": {
+          "pointer": "/data/props/homePage/right/0/form"
+        },
+        "page": {
+          "pointer": "/data/props/homePage"
+        },
+        "afterCfg": {
+          "file": "src/cf/Configuration.xml",
+          "kind": "sha256"
+        },
+        "afterPage": {
+          "file": "src/cf/Ext/HomePageWorkArea.xml",
+          "kind": "sha256"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/props/properties/forms/defaultReportForm",
+          "eq": "main:CommonForm.ОбщаяФорма"
+        },
+        {
+          "pointer": "/data/props/homePage/left",
+          "eq": [
+            {
+              "form": "main:CommonForm.ОбщаяФорма",
+              "height": 13,
+              "common": false,
+              "roles": []
+            }
+          ]
+        },
+        {
+          "pointer": "/data/props/homePage/right",
+          "eq": [
+            {
+              "form": "main:DataProcessor.Обработка.Form.Форма",
+              "height": 10,
+              "common": true,
+              "roles": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.rootForm"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:CommonForm.ОбщаяФорма"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.leftForm"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:CommonForm.ОбщаяФорма"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.rightForm"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:DataProcessor.Обработка.Form.Форма"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "defaultReportForm": "$capture.rootForm"
+              }
+            }
+          },
+          {
+            "op": "homePage.set",
+            "args": {
+              "values": "$capture.page"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.afterCfg"
+        },
+        {
+          "path": "src/cf/Ext/HomePageWorkArea.xml",
+          "kind": "sha256",
+          "eq": "$capture.afterPage"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "defaultReportForm": "ext:CommonForm.ОбщаяФорма"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: `ext:CommonForm.ОбщаяФорма` is not a common form of source set `main`; name it `CommonForm.Name` or `Name`",
+      "fileAssertions": [
+        {
+          "path": "src/cf/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.afterCfg"
+        },
+        {
+          "path": "src/cf/Ext/HomePageWorkArea.xml",
+          "kind": "sha256",
+          "eq": "$capture.afterPage"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "homePage.set",
+            "args": {
+              "values": {
+                "template": "OneColumn",
+                "left": [
+                  {
+                    "form": "ext:CommonForm.ОбщаяФорма"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: expected a qualified form address in source set `main`",
+      "fileAssertions": [
+        {
+          "path": "src/cf/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.afterCfg"
+        },
+        {
+          "path": "src/cf/Ext/HomePageWorkArea.xml",
+          "kind": "sha256",
+          "eq": "$capture.afterPage"
+        }
+      ]
+    }
+  ]
+}

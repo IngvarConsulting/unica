@@ -2,7 +2,7 @@ use crate::application::v13::resolve::{ModuleLine, ResolvedLines};
 use crate::application::v13::source_text::{admit_text, ModuleText, ModuleTextObservation};
 use unica_bsl::projection::{
     CommonModuleProperties, EventProjection, MethodProjection, ModuleProjectionSet,
-    RegionProjection,
+    RegionProjection, VariableProjection,
 };
 use unica_metadata::validation_subject::{MetadataChildProfile, MetadataTemplateType};
 use unica_metadata::{MetaDiagnosticCode, MetaDiagnosticSeverity, MetadataKind};
@@ -113,6 +113,7 @@ pub struct LogicalViewReadAuthority<'a> {
     deadline: ProviderDeadline,
     module_projections: Mutex<BTreeMap<ModuleProjectionCacheKey, Arc<ModuleProjectionSet>>>,
     configuration_payloads: Mutex<BTreeMap<RevisionCacheKey, Arc<Value>>>,
+    registered_owner_names: Mutex<BTreeMap<RevisionCacheKey, Arc<RegisteredOwnerNames>>>,
     verified_owners: Mutex<BTreeSet<OwnerProofCacheKey>>,
     owner_evidence: Mutex<BTreeMap<OwnerProofCacheKey, Arc<PlatformXmlSourceSetOwnerEvidence>>>,
     verified_owner_edges: Mutex<BTreeSet<OwnerEdgeCacheKey>>,
@@ -144,6 +145,8 @@ struct RevisionCacheKey {
     revision: String,
 }
 
+type RegisteredOwnerNames = BTreeSet<(String, String)>;
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct OwnerProofCacheKey {
     revision: RevisionCacheKey,
@@ -161,10 +164,17 @@ mod body_syntax_read;
 mod diagnostic_scope;
 mod editability_view;
 mod form_payload;
+mod http_service_handler;
 mod method_doc;
 mod module_body_read;
+mod module_variables;
+mod notification_bindings;
+mod scheduled_job_handler;
 mod typed_payload_read;
 mod validation_input;
+mod web_service_handler;
+
+use module_variables::{find_variable, variable_node, variable_node_value};
 
 impl<'a> LogicalViewReadAuthority<'a> {
     #[cfg(any(test, feature = "test-support"))]
@@ -237,6 +247,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
             deadline,
             module_projections: Mutex::new(BTreeMap::new()),
             configuration_payloads: Mutex::new(BTreeMap::new()),
+            registered_owner_names: Mutex::new(BTreeMap::new()),
             verified_owners: Mutex::new(BTreeSet::new()),
             owner_evidence: Mutex::new(BTreeMap::new()),
             verified_owner_edges: Mutex::new(BTreeSet::new()),
@@ -725,12 +736,18 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
             self.form_view(&route, admitted)?
         } else {
             let payload = self.typed_payload_for(&route, admitted)?;
+            let handler = payload.pointer("/details/details/method").cloned();
+            let projected = if at
+                .segments()
+                .first()
+                .is_some_and(|owner| owner.kind() == NodeKind::HttpService)
+            {
+                self.http_service_view(&route, payload, admitted)?
+            } else {
+                self.web_service_view(&route, payload, admitted)?
+            };
             let projected =
-                crate::infrastructure::v13_read_projection::project_typed_payload_for_source(
-                    &route,
-                    payload,
-                    self.read.source_set_kind(),
-                )?;
+                self.with_scheduled_job_handler(projected, at, handler.as_ref(), admitted)?;
             self.with_template_body_branches(projected, &route)?
         };
         let projected = match projected {
@@ -1470,6 +1487,7 @@ fn module_projection_view(
     requested: &QualifiedAddress,
     prefix_len: usize,
     projections: &ModuleProjectionSet,
+    bindings: BTreeMap<String, Vec<Value>>,
 ) -> Result<NodeViewData, ViewError> {
     let unknown = projections
         .summary()
@@ -1477,7 +1495,7 @@ fn module_projection_view(
         .common_module
         .as_ref()
         .is_some_and(|common| !common.execution_environment_known());
-    let view = module_projection_view_data(requested, prefix_len, projections)?;
+    let view = module_projection_view_data(requested, prefix_len, projections, bindings)?;
     // Предел сообщает, что для заимствованного модуля известны не все флаги среды.
     Ok(if unknown {
         view.with_limit(UNKNOWN_CONTEXTS_LIMIT)
@@ -1490,6 +1508,7 @@ fn module_projection_view_data(
     requested: &QualifiedAddress,
     prefix_len: usize,
     projections: &ModuleProjectionSet,
+    bindings: BTreeMap<String, Vec<Value>>,
 ) -> Result<NodeViewData, ViewError> {
     let suffix = &requested.segments()[prefix_len..];
     if suffix.is_empty() {
@@ -1514,7 +1533,7 @@ fn module_projection_view_data(
     if (branch == NodeKind::Method && suffix.len() > 2)
         || (matches!(
             branch,
-            NodeKind::Interface | NodeKind::Event | NodeKind::Body
+            NodeKind::Interface | NodeKind::Event | NodeKind::Body | NodeKind::Variable
         ) && suffix.len() > 1)
     {
         return Err(ViewError::new(
@@ -1523,20 +1542,45 @@ fn module_projection_view_data(
         ));
     }
     match (branch, suffix[0].name(), suffix.get(1)) {
+        (NodeKind::Variable, None, None) => module_collection(
+            requested,
+            NodeKind::Variable,
+            projections
+                .variables()
+                .iter()
+                .map(variable_node_value)
+                .collect(),
+        ),
+        (NodeKind::Variable, Some(name), None) => {
+            let variable = find_variable(projections, name)?;
+            Ok(NodeViewData::Node(variable_node(variable)))
+        }
         (NodeKind::Method, None, None) => module_collection(
             requested,
             NodeKind::Method,
             projections
                 .methods()
                 .iter()
-                .map(method_node_value)
+                .map(|method| {
+                    method_node_value(
+                        method,
+                        bindings.get(&method.at).map_or(0, Vec::len),
+                        notification_bindings::can_receive(projections, method),
+                    )
+                })
                 .collect(),
         ),
         (NodeKind::Method, Some(name), None) => projections
             .methods()
             .iter()
             .find(|method| method.name == name)
-            .map(method_node)
+            .map(|method| {
+                method_node(
+                    method,
+                    bindings.get(&method.at).map_or(0, Vec::len),
+                    notification_bindings::can_receive(projections, method),
+                )
+            })
             .map(NodeViewData::Node)
             .ok_or_else(|| {
                 ViewError::new(
@@ -1552,6 +1596,7 @@ fn module_projection_view_data(
                 requested,
                 projections.method_text(method),
                 method.text_from_line,
+                projections.source_text(),
             )
         }
         (NodeKind::Region, None, None) => module_collection(
@@ -1633,7 +1678,12 @@ fn module_projection_view_data(
                     format!("event `{name}` was not found"),
                 )
             }),
-        (NodeKind::Body, None, None) => module_text(requested, projections.source_text(), 1),
+        (NodeKind::Body, None, None) => module_text(
+            requested,
+            projections.source_text(),
+            1,
+            projections.source_text(),
+        ),
         _ => Err(ViewError::new(
             RefusalCode::NotFound,
             "module projection suffix is not available",
@@ -1646,6 +1696,7 @@ fn module_text(
     requested: &QualifiedAddress,
     text: &str,
     first_line: usize,
+    module_source: &str,
 ) -> Result<NodeViewData, ViewError> {
     let count = text.lines().count();
     let (from, to) = requested.line_range().map_or(
@@ -1676,31 +1727,42 @@ fn module_text(
     } else {
         text
     };
-    let text = if admit_text(text).is_ok() {
-        SourceText::Whole(text.to_string())
+    let (text, revision) = if admit_text(text).is_ok() {
+        (
+            SourceText::Whole(text.to_string()),
+            Some(unica_source_contract::read::module_text_revision(
+                module_source.as_bytes(),
+            )),
+        )
     } else {
-        SourceText::Oversized {
-            bytes: text.len() as u64,
-            prefix: unica_execution_contract::source_text_budget::complete_prefix(
-                text,
-                unica_bootstrap::MAX_RESPONSE_BUDGET,
-            )
-            .to_string(),
-        }
+        (
+            SourceText::Oversized {
+                bytes: text.len() as u64,
+                prefix: unica_execution_contract::source_text_budget::complete_prefix(
+                    text,
+                    unica_bootstrap::MAX_RESPONSE_BUDGET,
+                )
+                .to_string(),
+            },
+            None,
+        )
     };
-    Ok(NodeViewData::Text(TextView::new(
-        NodeView::new(
-            requested.to_string(),
-            NodeKind::Body.as_str(),
-            NodeKind::Body.as_str(),
-            Map::new(),
-        ),
-        SourceText::Window {
-            text: Box::new(text),
-            from,
-            to,
-        },
-    )))
+    Ok(NodeViewData::Text(
+        TextView::new(
+            NodeView::new(
+                requested.to_string(),
+                NodeKind::Body.as_str(),
+                NodeKind::Body.as_str(),
+                Map::new(),
+            ),
+            SourceText::Window {
+                text: Box::new(text),
+                from,
+                to,
+            },
+        )
+        .with_revision(revision),
+    ))
 }
 
 fn selected_lines(at: &QualifiedAddress, full: ResolvedLines) -> Result<ResolvedLines, ViewError> {
@@ -1761,7 +1823,7 @@ fn find_method<'a>(
         })
 }
 
-fn method_node(method: &MethodProjection) -> NodeView {
+fn method_node(method: &MethodProjection, binding_count: usize, notify: bool) -> NodeView {
     let mut props = Map::from_iter([
         ("signature".to_string(), json!(method.signature)),
         ("methodKind".to_string(), json!(method.method_kind)),
@@ -1771,7 +1833,14 @@ fn method_node(method: &MethodProjection) -> NodeView {
         // Это координата внутри модуля, а не физическая раскладка.
         ("line".to_string(), json!(method.text_from_line)),
         ("endLine".to_string(), json!(method.to_line)),
+        (
+            "declarationLine".to_string(),
+            json!(method.declaration_line),
+        ),
     ]);
+    if let Some(column) = method.name_column {
+        props.insert("nameColumn".to_string(), json!(column));
+    }
     if let Some(doc) = &method.doc {
         props.insert("doc".to_string(), json!(doc));
         // Поля комментария идут рядом с его текстом, а не вместо него:
@@ -1788,13 +1857,24 @@ fn method_node(method: &MethodProjection) -> NodeView {
     if let Some(area) = method.area {
         props.insert("area".to_string(), json!(area));
     }
-    NodeView::new(&method.at, NodeKind::Method.as_str(), &method.name, props).with_branches(vec![
-        BranchRef::new(format!("{}.Body", method.at), method.text_line_count()),
-    ])
+    let mut branches = vec![BranchRef::new(
+        format!("{}.Body", method.at),
+        method.text_line_count(),
+    )];
+    if notify {
+        branches.push(BranchRef::uncounted(format!("{}.Binding", method.at)));
+    } else if binding_count > 0 {
+        branches.push(BranchRef::new(
+            format!("{}.Binding", method.at),
+            binding_count,
+        ));
+    }
+    NodeView::new(&method.at, NodeKind::Method.as_str(), &method.name, props)
+        .with_branches(branches)
 }
 
-fn method_node_value(method: &MethodProjection) -> Value {
-    serde_json::to_value(method_node(method)).unwrap_or(Value::Null)
+fn method_node_value(method: &MethodProjection, binding_count: usize, notify: bool) -> Value {
+    serde_json::to_value(method_node(method, binding_count, notify)).unwrap_or(Value::Null)
 }
 
 fn region_node(requested: &QualifiedAddress, region: &RegionProjection) -> NodeView {

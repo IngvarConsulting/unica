@@ -651,6 +651,15 @@ fn project_mxl(
     )))
 }
 
+pub(super) fn localized_display_text(value: &str) -> Option<String> {
+    let items = unica_metadata::parse_nstr(value).ok()?;
+    items
+        .iter()
+        .find(|item| item.language == "ru" && !item.content.is_empty())
+        .or_else(|| items.iter().find(|item| !item.content.is_empty()))
+        .map(|item| item.content.clone())
+}
+
 fn project_configuration(
     address: &QualifiedAddress,
     payload: &Value,
@@ -690,15 +699,29 @@ pub(super) fn project_configuration_with_counts(
         &[
             "format",
             "name",
-            "synonym",
-            "caption",
-            "shortCaption",
             "version",
             "vendor",
             "extensionPurpose",
             "totalObjects",
         ],
     );
+    let mut limits = payload
+        .get("propertyLimits")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    for (_, key) in unica_metadata::descriptor_operations::CONFIGURATION_LOCALIZED_PROPERTIES {
+        if let Some(value) = payload
+            .get(*key)
+            .or_else(|| payload.pointer(&format!("/properties/{key}")))
+            .filter(|value| value.is_string())
+        {
+            place_prop(&mut props, &mut limits, address, key, value, false, key);
+        }
+    }
     // `interface` идёт рядом с `homePage` не по сходству имён: оба живут
     // отдельным документом рядом с `Configuration.xml` и оба описывают корень
     // целиком. Командного интерфейса как узла у конфигурации нет — внутри
@@ -724,7 +747,15 @@ pub(super) fn project_configuration_with_counts(
         match payload.get(key) {
             Some(Value::Object(object)) => {
                 // Typed, bounded structures of the root parser travel whole.
-                props.insert(key.to_string(), Value::Object(object.clone()));
+                let mut object = object.clone();
+                if key == "properties" {
+                    for (_, key) in
+                        unica_metadata::descriptor_operations::CONFIGURATION_LOCALIZED_PROPERTIES
+                    {
+                        object.remove(*key);
+                    }
+                }
+                props.insert(key.to_string(), Value::Object(object));
             }
             Some(Value::Null) => {
                 props.insert(key.to_string(), Value::Null);
@@ -743,6 +774,26 @@ pub(super) fn project_configuration_with_counts(
             }
         }
     }
+    if let Some(forms) = props
+        .get_mut("properties")
+        .and_then(|properties| properties.get_mut("forms"))
+        .and_then(Value::as_object_mut)
+    {
+        for form in forms.values_mut() {
+            qualify_configuration_form(form, address.source_set(), false);
+        }
+    }
+    if let Some(home_page) = props.get_mut("homePage") {
+        for column in ["left", "right"] {
+            if let Some(items) = home_page.get_mut(column).and_then(Value::as_array_mut) {
+                for item in items {
+                    if let Some(form) = item.get_mut("form") {
+                        qualify_configuration_form(form, address.source_set(), true);
+                    }
+                }
+            }
+        }
+    }
     // Вид, которого нет в линии платформы набора, пустой ветви не получает.
     let line = payload
         .get("format")
@@ -756,12 +807,46 @@ pub(super) fn project_configuration_with_counts(
             payload
                 .get("synonym")
                 .and_then(Value::as_str)
-                .or_else(|| payload.get("name").and_then(Value::as_str))
-                .unwrap_or("Configuration"),
+                .and_then(localized_display_text)
+                .or_else(|| {
+                    payload
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+                .unwrap_or_else(|| "Configuration".to_string()),
             props,
         )
-        .with_branches(branches),
+        .with_branches(branches)
+        .with_limits(limits),
     ))
+}
+
+/// Идентификаторы, записанные платформой вместо имени формы, сохраняются для apply.
+fn qualify_configuration_form(form: &mut Value, source_set: &str, allow_nested: bool) {
+    let Some(reference) = form.as_str() else {
+        return;
+    };
+    let Ok(metadata) = unica_address::source_target::MetadataAddress::parse_logical(reference)
+    else {
+        return;
+    };
+    let Ok(address) = QualifiedAddress::parse(&format!("{source_set}:{metadata}")) else {
+        return;
+    };
+    let is_form = match address.segments() {
+        [common] => common.kind() == NodeKind::CommonForm && common.name().is_some(),
+        [owner, nested] => {
+            allow_nested
+                && owner.name().is_some()
+                && nested.kind() == NodeKind::Form
+                && nested.name().is_some()
+        }
+        _ => false,
+    };
+    if is_form {
+        *form = Value::String(address.to_string());
+    }
 }
 
 /// Состояние поддержки членов коллекции: значение `props.support` члена,
@@ -982,6 +1067,7 @@ fn validate_reader_payload(reader: LogicalReader, payload: &Value) -> Result<(),
     })?;
     let allowed: &[&str] = match reader {
         LogicalReader::Configuration => &[
+            "propertyLimits",
             "format",
             "name",
             "synonym",
@@ -1004,6 +1090,7 @@ fn validate_reader_payload(reader: LogicalReader, payload: &Value) -> Result<(),
         LogicalReader::Role => &[
             "name",
             "synonym",
+            "synonymError",
             "comment",
             "commentError",
             "support",
@@ -1964,6 +2051,7 @@ fn bounded_prop(key: &str, value: &Value) -> Option<Value> {
 
 /// Наблюдённое свойство описания без обёртки `{"kind": …}` (#2031): текст,
 /// флаг и число приходят простым значением, пустое значение не публикуется.
+#[cfg(test)]
 fn bounded_observed_prop(key: &str, value: &Value) -> Option<Value> {
     bounded_prop(key, &observed_value(value)?)
 }
@@ -1980,7 +2068,13 @@ pub(super) fn place_prop(
     subject: &str,
 ) {
     let placed = if observed {
-        bounded_observed_prop(key, value)
+        let Some(value) = observed_value(value) else {
+            if !observed_absent(value) {
+                limits.push(format!("{subject} has an invalid observed value"));
+            }
+            return;
+        };
+        bounded_prop(key, &value)
     } else {
         bounded_prop(key, value)
     };
@@ -1988,10 +2082,7 @@ pub(super) fn place_prop(
         Some(value) => {
             props.insert(key.to_string(), value);
         }
-        None if !observed || observed_value(value).is_some() => {
-            limits.push(compact_limit(subject, owner, key));
-        }
-        None => {}
+        None => limits.push(compact_limit(subject, owner, key)),
     }
 }
 
@@ -2122,10 +2213,29 @@ fn prop_limit(key: &str) -> usize {
     }
 }
 
-/// Значение наблюдения без обёртки `{"kind": …}`. `None` — значения нет:
-/// `nil`, `empty` и многоязычная строка без переводов. Переводы
-/// многоязычной строки остаются массивом `{language, content}` в порядке
-/// источника; прочие составные значения не меняются.
+/// Значения нет: `nil`, `empty` и многоязычная строка без переводов.
+fn observed_absent(value: &Value) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    match object.get("kind").and_then(Value::as_str) {
+        Some("nil" | "empty") => object.len() == 1,
+        Some("localizedString") => {
+            object.len() == 2
+                && object
+                    .get("values")
+                    .and_then(Value::as_array)
+                    .is_some_and(Vec::is_empty)
+        }
+        _ => false,
+    }
+}
+
+/// Значение наблюдения без обёртки `{"kind": …}`. `None` — значения нет
+/// ([`observed_absent`]) или его нельзя опубликовать: многоязычная строка
+/// публикуется строкой НСтр в порядке источника, а переводы, которых НСтр
+/// не выражает, ответ называет в `limits`. Прочие составные значения не
+/// меняются.
 fn observed_value(value: &Value) -> Option<Value> {
     let Some(object) = value.as_object() else {
         return Some(value.clone());
@@ -2136,10 +2246,25 @@ fn observed_value(value: &Value) -> Option<Value> {
         Some("text" | "boolean" | "unsignedInteger") if only("value") => {
             object.get("value").cloned()
         }
-        Some("localizedString") if only("values") => object
-            .get("values")
-            .filter(|values| values.as_array().is_some_and(|values| !values.is_empty()))
-            .cloned(),
+        // A multilingual value is one NStr string with every language
+        // (INV.SOURCE.LOCALIZED-STRING-NSTR); without translations it is absent.
+        Some("localizedString") if only("values") => {
+            let items = object
+                .get("values")
+                .and_then(Value::as_array)?
+                .iter()
+                .map(|item| {
+                    Some(unica_metadata::LocalizedItem {
+                        language: item.get("language")?.as_str()?.to_string(),
+                        content: item.get("content")?.as_str()?.to_string(),
+                    })
+                })
+                .collect::<Option<Vec<_>>>()?;
+            if items.is_empty() {
+                return None;
+            }
+            unica_metadata::format_nstr(&items).map(Value::String)
+        }
         _ => Some(value.clone()),
     }
 }
@@ -2176,7 +2301,10 @@ fn platform_scalar_props(value: &Value, names: &[(&str, &str)]) -> Map<String, V
         .filter_map(|(source, name)| {
             value
                 .get(*source)
-                .filter(|value| safe_prop(name, value))
+                .filter(|value| {
+                    (!matches!(*name, "Synonym" | "Explanation") || value.is_string())
+                        && safe_prop(name, value)
+                })
                 .map(|value| ((*name).to_string(), value.clone()))
         })
         .collect()
@@ -2255,9 +2383,16 @@ fn node_from_value(
         .and_then(|object| {
             ["title", "synonym", "name", "dataPath", "id"]
                 .into_iter()
-                .find_map(|key| object.get(key).and_then(Value::as_str))
+                .find_map(|key| {
+                    let value = object.get(key).and_then(Value::as_str)?;
+                    if key == "synonym" && reader == LogicalReader::Subsystem {
+                        localized_display_text(value)
+                    } else {
+                        Some(value.to_string())
+                    }
+                })
         })
-        .unwrap_or_else(|| kind.as_str());
+        .unwrap_or_else(|| kind.as_str().to_string());
     let props = reader_node_props(reader, kind, value);
     let limits = dropped_by_size(value, &props, address, |probe| {
         reader_node_props(reader, kind, probe)
@@ -2436,7 +2571,7 @@ fn known_reader_branches(
         .collect()
 }
 
-fn safe_prop(key: &str, value: &Value) -> bool {
+pub(super) fn safe_prop(key: &str, value: &Value) -> bool {
     match value {
         Value::Null | Value::Bool(_) | Value::Number(_) => true,
         Value::String(text) => text.len() <= prop_limit(key),

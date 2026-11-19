@@ -37,7 +37,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           MILESTONE_OWNER: zeegin
           STRICT: "true"
-          WORKING_MILESTONE: v0.16
+          WORKING_MILESTONE: v0.17
         run: |
           set -euo pipefail
           # Запись очереди называется gh-readonly-queue/<база>/pr-<номер>-<sha>.

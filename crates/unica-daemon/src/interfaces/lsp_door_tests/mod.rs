@@ -6,7 +6,7 @@ use crate::infrastructure::daemon::server::actor_capacity_tests::{
     canonical_v13_service, LiveV5Daemon, V5Submission,
 };
 use serde_json::{json, Value};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::io::{self, Write};
 use std::io::{BufReader, Cursor, Read};
 use std::path::Path;
@@ -363,7 +363,7 @@ fn capabilities_follow_what_the_lsp_service_declares() {
         json!({"kind": "full", "items": [{
             "range": {"start": {"line": 1, "character": 2}, "end": {"line": 1, "character": 2}},
             "severity": 2,
-            "code": "bsl.code.known",
+            "code": "UnusedLocalMethod",
             "source": "unica",
             "message": "Текст Unica",
         }]})
@@ -434,7 +434,10 @@ fn every_workspace_folder_is_answered_with_its_space_or_a_failure_in_order() {
     );
     assert_eq!(
         content["result"],
-        json!({"text": "// unica://w0/main/CommonModule.A.Module"})
+        json!({
+            "text": "// unica://w0/main/CommonModule.A.Module",
+            "rev": "5df25f71343a19627da6c0b79e0636bfa474dc846e16b0a818a0d75917cc4099",
+        })
     );
     assert_eq!(
         error_code(&editor.request("workspace/textDocumentContent", json!({}))),
@@ -496,6 +499,7 @@ fn a_document_notification_the_daemon_would_refuse_keeps_the_session() {
 /// Служба продукта: папка редактора и вызов MCP той же рабочей области
 /// приходят к одному актору; буфер редактора виден в его ответах и не
 /// попадает на диск.
+/// rule: INV.SOURCE.CODE-REPLACE-TEXT-REVISION
 #[test]
 fn the_product_service_serves_an_editor_folder_over_the_mcp_workspace_actor() {
     let daemon = LiveV5Daemon::start_with_product_lsp(canonical_v13_service());
@@ -505,7 +509,18 @@ fn the_product_service_serves_an_editor_folder_over_the_mcp_workspace_actor() {
         .path()
         .join("src/CommonModules/Main/Ext/Module.bsl");
     std::fs::create_dir_all(module.parent().unwrap()).unwrap();
-    std::fs::write(&module, "Procedure Disk() EndProcedure\n").unwrap();
+    let registration = workspace.path().join("src/Configuration.xml");
+    let configuration = std::fs::read_to_string(&registration).unwrap().replace(
+        "</ChildObjects>",
+        "<CommonModule>Main</CommonModule></ChildObjects>",
+    );
+    std::fs::write(registration, configuration).unwrap();
+    std::fs::write(
+        workspace.path().join("src/CommonModules/Main.xml"),
+        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab"><Properties><Name>Main</Name></Properties></CommonModule></MetaDataObject>"#,
+    ).unwrap();
+    let disk = "Procedure Disk() EndProcedure\r\n";
+    std::fs::write(&module, format!("\u{feff}{disk}")).unwrap();
     let root = std::fs::canonicalize(workspace.path()).unwrap();
     let folder: String = url::Url::from_file_path(&root).unwrap().into();
     // The document is the module body, as MCP `view` and `resolve` name it.
@@ -537,12 +552,27 @@ fn the_product_service_serves_an_editor_folder_over_the_mcp_workspace_actor() {
         editor.request(
             "workspace/textDocumentContent",
             json!({"uri": "unica://work/main/CommonModule.Main.Body"}),
-        )["result"]["text"]
+        )["result"]
             .clone()
     };
+    let body = InvocationRequest::new(
+        ToolIdentity::View,
+        json!({"at":"main:CommonModule.Main.Body"}),
+        root.to_string_lossy(),
+        7_000,
+    )
+    .unwrap();
+    let V5Submission::Direct(read) = daemon.submit(&owner, &body) else {
+        panic!("a warm Body view replies inline");
+    };
+    assert!(read.ok, "{read:?}");
+    assert_eq!(read.source_text.as_deref(), Some(disk));
+    let saved = content(&mut editor);
+    assert_eq!(saved["text"], disk);
+    assert_eq!(saved["rev"], json!(read.rev));
     assert_eq!(
-        content(&mut editor),
-        json!("Procedure Disk() EndProcedure\n")
+        saved["rev"],
+        unica_source_contract::read::module_text_revision(disk.as_bytes())
     );
     editor.notify(
         "textDocument/didOpen",
@@ -551,13 +581,18 @@ fn the_product_service_serves_an_editor_folder_over_the_mcp_workspace_actor() {
             "text": "Procedure Buffer() EndProcedure\n",
         }}),
     );
+    let open = content(&mut editor);
+    assert_eq!(open["text"], "Procedure Buffer() EndProcedure\n");
+    assert_ne!(open["rev"], saved["rev"]);
     assert_eq!(
-        content(&mut editor),
-        json!("Procedure Buffer() EndProcedure\n")
+        open["rev"],
+        unica_source_contract::read::module_text_revision(
+            "Procedure Buffer() EndProcedure\n".as_bytes()
+        )
     );
     assert_eq!(
         std::fs::read_to_string(&module).unwrap(),
-        "Procedure Disk() EndProcedure\n"
+        format!("\u{feff}{disk}")
     );
     let foreign = editor.request(
         "workspace/textDocumentContent",
@@ -587,11 +622,8 @@ fn the_product_service_serves_an_editor_folder_over_the_mcp_workspace_actor() {
         }}),
     );
     assert_eq!(
-        content(&mut editor),
-        json!(
-            "Procedure Reopened() EndProcedure
-"
-        )
+        content(&mut editor)["text"],
+        "Procedure Reopened() EndProcedure\n"
     );
     assert!(!editor.lost.load(Ordering::Acquire));
 }
@@ -698,6 +730,74 @@ fn medium_an_lsp_hover_stream_does_not_delay_a_parallel_mcp_call() {
         "MCP median {under_lsp:?} under a hover stream exceeds {allowed:?} (median {baseline:?} without LSP)"
     );
     });
+}
+
+/// A completes its daemon call before cancellation, but cannot remove pending
+/// until B has reused its public id and reached the same completion boundary.
+#[test]
+fn medium_a_late_cancelled_worker_cannot_remove_a_reused_public_request_id() {
+    let host = Arc::new(HeldHost::default());
+    let daemon =
+        LiveV5Daemon::start_with_lsp_host(canonical_v13_service(), host as Arc<dyn LspHost>);
+    let (entered, entering) = mpsc::channel();
+    let (finished, finishing) = mpsc::channel();
+    let (release_a, gate_a) = mpsc::channel();
+    let (release_b, gate_b) = mpsc::channel();
+    let gates = Mutex::new(HashMap::from([(1, gate_a), (2, gate_b)]));
+    let hook: WorkerHook = Arc::new(move |ticket, stage| {
+        if stage == WorkerStage::BeforePendingRemoval {
+            let gate = gates.lock().unwrap().remove(&ticket);
+            if let Some(gate) = gate {
+                let _ = entered.send(ticket);
+                // Closing the guard also releases a worker after an assertion.
+                let _ = gate.recv();
+            }
+        } else {
+            let _ = finished.send(ticket);
+        }
+    });
+    let mut editor = Editor::start_with_worker_hook(&daemon, Some(hook));
+    // Declared after Editor: gates open before its Drop joins the frontend.
+    let mut release_a = ReleaseOnDrop(Some(release_a));
+    let mut release_b = ReleaseOnDrop(Some(release_b));
+    editor.initialize();
+    let id = json!(7);
+    let send = |editor: &Editor, id: Value, uri: &str| {
+        editor.send(json!({
+            "jsonrpc":"2.0", "id":id, "method":"workspace/textDocumentContent", "params":{"uri":uri}
+        }))
+    };
+    send(&editor, id.clone(), "unica://old-A");
+    assert_eq!(entering.recv_timeout(WAIT).unwrap(), 1);
+    editor.notify("$/cancelRequest", json!({"id":id}));
+    assert_eq!(error_code(&editor.response(&id)), REQUEST_CANCELLED);
+    send(&editor, id.clone(), "unica://new-B");
+    assert_eq!(entering.recv_timeout(WAIT).unwrap(), 2);
+    send(&editor, json!(8), "unica://neighbor-C");
+    assert_eq!(
+        editor.response(&json!(8))["result"]["text"],
+        "// unica://neighbor-C"
+    );
+    release_a.release();
+    while finishing.recv_timeout(WAIT).unwrap() != 1 {}
+    assert!(
+        editor.try_response(&id).is_none(),
+        "late A must not answer for B"
+    );
+    release_b.release();
+    while finishing.recv_timeout(WAIT).unwrap() != 2 {}
+    assert_eq!(editor.response(&id)["result"]["text"], "// unica://new-B");
+    assert!(
+        editor.try_response(&id).is_none(),
+        "B gets exactly one response"
+    );
+    // A late cancel without pending does not prohibit legal reuse.
+    editor.notify("$/cancelRequest", json!({"id":id}));
+    send(&editor, id.clone(), "unica://reused-D");
+    assert_eq!(
+        editor.response(&id)["result"]["text"],
+        "// unica://reused-D"
+    );
 }
 
 /// Устаревший запрос отменяется и его результат не выдаётся.
@@ -883,9 +983,8 @@ impl LspHost for HeldHost {
     fn call(&self, _: &V5LspSessionId, call: V5LspCall, context: &LspCallContext) -> V5LspOutcome {
         match call {
             V5LspCall::TextDocumentContent { uri } => {
-                return V5LspOutcome::Text {
-                    text: format!("// {uri}"),
-                };
+                let text = format!("// {uri}");
+                return V5LspOutcome::Text { text };
             }
             V5LspCall::Definition { uri, position } => {
                 return V5LspOutcome::Locations {
@@ -912,7 +1011,7 @@ impl LspHost for HeldHost {
                     items: vec![V5LspDiagnostic {
                         range: V5LspRange { start, end: start },
                         severity: V5LspSeverity::Warning,
-                        code: "bsl.code.known".into(),
+                        code: "UnusedLocalMethod".into(),
                         message: "Текст Unica".into(),
                         reasons: Vec::new(),
                     }],
@@ -987,6 +1086,10 @@ struct Editor {
 
 impl Editor {
     fn start(daemon: &LiveV5Daemon) -> Self {
+        Self::start_with_worker_hook(daemon, None)
+    }
+
+    fn start_with_worker_hook(daemon: &LiveV5Daemon, worker_hook: Option<WorkerHook>) -> Self {
         let (input, receiver) = mpsc::channel();
         let output = Arc::new((Mutex::new(EditorOutput::default()), Condvar::new()));
         let client = Arc::new(V5DaemonClient::from(daemon.owner()));
@@ -997,15 +1100,14 @@ impl Editor {
             Arc::new(move || lost.store(true, Ordering::Release))
         };
         let thread = thread::spawn(move || {
-            serve(
-                BufReader::new(ChannelReader {
-                    receiver,
-                    pending: Cursor::new(Vec::new()),
-                }),
-                writer,
-                client,
-                session_lost,
-            )
+            let input = BufReader::new(ChannelReader {
+                receiver,
+                pending: Cursor::new(Vec::new()),
+            });
+            match worker_hook {
+                Some(hook) => serve_with_worker_hook(input, writer, client, session_lost, hook),
+                None => serve(input, writer, client, session_lost),
+            }
         });
         Self {
             input: Some(input),

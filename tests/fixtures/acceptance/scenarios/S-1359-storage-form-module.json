@@ -1,0 +1,278 @@
+{
+  "id": "S-1359-storage-form-module",
+  "issue": 1359,
+  "area": "Код BSL",
+  "task": "Прочитать, найти и разрешить модуль формы хранилища настроек; перейти к двум обработчикам формы, проверить Manager и пустой Module, затем предпросмотреть и применить правку только BSL",
+  "workspace": "tests/fixtures/acceptance/workspace-storage-form-module",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:SettingsStorage.Probe.Form.Save.Module"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:SettingsStorage.Probe.Form.Save.Module.Form"
+        }
+      ],
+      "captures": {
+        "module": {
+          "pointer": "/data/items/0/at"
+        },
+        "originalModule": {
+          "file": "src/SettingsStorages/Probe/Forms/Save/Ext/Form/Module.bsl",
+          "kind": "sha256"
+        },
+        "configuration": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "clientInterface": {
+          "file": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256"
+        },
+        "language": {
+          "file": "src/Languages/Русский.xml",
+          "kind": "sha256"
+        },
+        "managerModule": {
+          "file": "src/SettingsStorages/Probe/Ext/ManagerModule.bsl",
+          "kind": "sha256"
+        },
+        "emptyForm": {
+          "file": "src/SettingsStorages/Probe/Forms/Empty/Ext/Form.xml",
+          "kind": "sha256"
+        },
+        "emptyDescriptor": {
+          "file": "src/SettingsStorages/Probe/Forms/Empty.xml",
+          "kind": "sha256"
+        },
+        "saveForm": {
+          "file": "src/SettingsStorages/Probe/Forms/Save/Ext/Form.xml",
+          "kind": "sha256"
+        },
+        "saveDescriptor": {
+          "file": "src/SettingsStorages/Probe/Forms/Save.xml",
+          "kind": "sha256"
+        },
+        "storageDescriptor": {
+          "file": "src/SettingsStorages/Probe.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.module"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:SettingsStorage.Probe.Form.Save.Module.Form"
+        }
+      ]
+    },
+    {
+      "tool": "unica.search",
+      "args": {
+        "query": "storage-form-probe",
+        "scope": "main:SettingsStorage.Probe.Form.Save.Module.Form"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/matches/0/at",
+          "eq": "main:SettingsStorage.Probe.Form.Save.Module.Form.Method.ПриСозданииНаСервере.Body#L3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "src/SettingsStorages/Probe/Forms/Save/Ext/Form/Module.bsl"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:SettingsStorage.Probe.Form.Save.Module.Form"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:SettingsStorage.Probe.Form.Save.Event.OnCreateAtServer"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/implementationAt",
+          "eq": "main:SettingsStorage.Probe.Form.Save.Module.Form.Method.ПриСозданииНаСервере"
+        },
+        {
+          "pointer": "/data/props/state",
+          "eq": "implemented"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:SettingsStorage.Probe.Form.Save.Event.OnOpen"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/implementationAt",
+          "eq": "main:SettingsStorage.Probe.Form.Save.Module.Form.Method.ПриОткрытии"
+        },
+        {
+          "pointer": "/data/props/state",
+          "eq": "implemented"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:SettingsStorage.Probe.Form.Empty.Module"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:SettingsStorage.Probe.Form.Empty.Module.Form"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:SettingsStorage.Probe.Module.Manager.Method.ManagerProbe"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Method"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:SettingsStorage.Probe.Form.Save.Module.Form.Body",
+        "ops": [
+          {
+            "op": "code.replace",
+            "args": {
+              "text": "&НаСервере\nПроцедура ПриСозданииНаСервере(Отказ, СтандартнаяОбработка)\n    Сообщить(\"storage-form-updated\");\nКонецПроцедуры\n\n&НаКлиенте\nПроцедура ПриОткрытии(Отказ)\nКонецПроцедуры\n"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/SettingsStorages/Probe/Forms/Save/Ext/Form/Module.bsl",
+          "eq": "$capture.originalModule"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:SettingsStorage.Probe.Form.Save.Module.Form.Body"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/sourceText",
+          "eq": "&НаСервере\nПроцедура ПриСозданииНаСервере(Отказ, СтандартнаяОбработка)\n    Сообщить(\"storage-form-updated\");\nКонецПроцедуры\n\n&НаКлиенте\nПроцедура ПриОткрытии(Отказ)\nКонецПроцедуры\n"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.configuration"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "eq": "$capture.clientInterface"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "eq": "$capture.language"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/SettingsStorages/Probe/Ext/ManagerModule.bsl",
+          "eq": "$capture.managerModule"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/SettingsStorages/Probe/Forms/Empty/Ext/Form.xml",
+          "eq": "$capture.emptyForm"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/SettingsStorages/Probe/Forms/Empty.xml",
+          "eq": "$capture.emptyDescriptor"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/SettingsStorages/Probe/Forms/Save/Ext/Form.xml",
+          "eq": "$capture.saveForm"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/SettingsStorages/Probe/Forms/Save.xml",
+          "eq": "$capture.saveDescriptor"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/SettingsStorages/Probe.xml",
+          "eq": "$capture.storageDescriptor"
+        }
+      ]
+    }
+  ]
+}

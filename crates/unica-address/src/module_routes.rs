@@ -138,7 +138,7 @@ pub fn module_prefix_route(address: &QualifiedAddress) -> Option<ModuleRoute> {
     let segments = address.segments();
     (1..=segments.len()).rev().find_map(|length| {
         let route = module_route_for_segments(&segments[..length])?;
-        module_projection_suffix_is_valid(&segments[length..]).then_some(route)
+        module_projection_suffix_is_valid(&segments[length..], route.role()).then_some(route)
     })
 }
 
@@ -198,6 +198,19 @@ pub fn has_direct_module_route(owner_kind: NodeKind, role: ModuleRole) -> bool {
 }
 
 pub fn has_nested_module_route(owner_kind: NodeKind) -> bool {
+    has_nested_module_role(owner_kind, ModuleRole::Form)
+        || has_nested_module_role(owner_kind, ModuleRole::Command)
+}
+
+/// Nested roles share their owner matrix with physical source layouts.
+/// Settings storage has forms, but does not declare nested commands.
+pub fn has_nested_module_role(owner_kind: NodeKind, role: ModuleRole) -> bool {
+    if owner_kind == NodeKind::SettingsStorage {
+        return role == ModuleRole::Form;
+    }
+    if !matches!(role, ModuleRole::Form | ModuleRole::Command) {
+        return false;
+    }
     matches!(
         owner_kind,
         NodeKind::Document
@@ -223,14 +236,14 @@ pub fn has_nested_module_route(owner_kind: NodeKind) -> bool {
             | NodeKind::ExternalReport
     )
 }
-fn module_projection_suffix_is_valid(suffix: &[AddressSegment]) -> bool {
+fn module_projection_suffix_is_valid(suffix: &[AddressSegment], role: ModuleRole) -> bool {
     match suffix {
         [] => true,
         [branch] if matches!(branch.kind(), NodeKind::Body) && branch.name().is_none() => true,
         [branch]
             if matches!(
                 branch.kind(),
-                NodeKind::Method | NodeKind::Interface | NodeKind::Event
+                NodeKind::Method | NodeKind::Interface | NodeKind::Event | NodeKind::Variable
             ) =>
         {
             true
@@ -238,7 +251,9 @@ fn module_projection_suffix_is_valid(suffix: &[AddressSegment]) -> bool {
         [method, projection]
             if method.kind() == NodeKind::Method
                 && method.name().is_some()
-                && matches!(projection.kind(), NodeKind::Body)
+                && (projection.kind() == NodeKind::Body
+                    || (projection.kind() == NodeKind::Binding
+                        && matches!(role, ModuleRole::Form | ModuleRole::Common)))
                 && projection.name().is_none() =>
         {
             true
@@ -318,10 +333,11 @@ fn direct_or_named_module(owner: NodeKind, raw_role: &str) -> Option<ModuleRoute
 }
 
 fn nested_module(owner: NodeKind, child: NodeKind, raw_role: &str) -> Option<ModuleRoute> {
-    if !has_nested_module_route(owner) {
+    let role = ModuleRole::from_semantic_name(raw_role)?;
+    if !has_nested_module_role(owner, role) {
         return None;
     }
-    match (child, ModuleRole::from_semantic_name(raw_role)?) {
+    match (child, role) {
         (NodeKind::Form, ModuleRole::Form) => {
             Some(route(owner, ModuleRole::Form, ModuleRouteKind::NestedForm))
         }
@@ -344,9 +360,47 @@ const fn route(owner_kind: NodeKind, role: ModuleRole, route_kind: ModuleRouteKi
 
 #[cfg(test)]
 mod tests {
-    use super::module_route;
+    use super::{module_prefix_route, module_route, ModuleRole};
     use crate::address::QualifiedAddress;
     use serde::Deserialize;
+
+    /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
+    #[test]
+    fn binding_is_an_unnamed_branch_of_a_form_method() {
+        for at in [
+            "main:CommonForm.Main.Module.Form.Method.Handler.Binding",
+            "ext:Report.Example.Form.Main.Module.Form.Method.Handler.Binding",
+        ] {
+            let address = QualifiedAddress::parse(at).unwrap();
+            assert_eq!(
+                module_prefix_route(&address).unwrap().role(),
+                ModuleRole::Form
+            );
+        }
+        for at in [
+            "main:CommonForm.Main.Module.Form.Binding",
+            "main:CommonForm.Main.Module.Form.Method.Handler.Binding.Name",
+            "main:CommonForm.Main.Module.Form.Method.Handler.Binding.Event.OnOpen",
+            "main:Catalog.Main.Module.Object.Method.Handler.Binding",
+        ] {
+            let module = QualifiedAddress::parse(at)
+                .ok()
+                .as_ref()
+                .and_then(module_prefix_route);
+            assert_eq!(module, None, "{at}");
+        }
+    }
+
+    /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
+    #[test]
+    fn binding_is_addressable_on_a_common_module_method() {
+        let address =
+            QualifiedAddress::parse("main:CommonModule.Main.Method.Handler.Binding").unwrap();
+        assert_eq!(
+            module_prefix_route(&address).unwrap().role(),
+            ModuleRole::Common
+        );
+    }
 
     /// Очередь держит один прямой модуль — менеджера. Модуля объекта у неё
     /// нет: её сообщение запись, а не ссылка, и выгрузка 8.5.4 файла объекта
@@ -383,6 +437,27 @@ mod tests {
         at: String,
         exists: bool,
         role: Option<String>,
+    }
+
+    #[test]
+    fn settings_storage_routes_only_the_form_role_of_nested_forms() {
+        for (raw, expected) in [
+            ("main:SettingsStorage.User.Form.Save.Module.Form", true),
+            ("main:SettingsStorage.User.Module.Manager", true),
+            (
+                "main:SettingsStorage.User.Command.Open.Module.Command",
+                false,
+            ),
+            ("main:SettingsStorage.User.Form.Save.Module.Command", false),
+            ("main:SettingsStorage.User.Form.Save.Module.Object", false),
+            (
+                "main:SettingsStorage.User.Template.Layout.Module.Form",
+                false,
+            ),
+        ] {
+            let at = QualifiedAddress::parse(raw).unwrap();
+            assert_eq!(module_route(&at).is_some(), expected, "{raw}");
+        }
     }
 
     #[test]

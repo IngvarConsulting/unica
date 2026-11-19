@@ -62,7 +62,7 @@ fn props_set_common_module_can_is_contextual_and_previews_without_writes() {
 fn props_set_role_can_is_contextual_and_previews_without_writes() {
     assert_props_can_and_preview(
         "main:Role.SalesReader",
-        json!({"values":{"synonym":"Properties role preview","Comment":"Independent alias groups"}}),
+        json!({"values":{"synonym":"ru = 'Properties role preview'","Comment":"Independent alias groups"}}),
         &[
             (json!({"values":{"Synonym":"","comment":""}}), true),
             (json!({"values":{"synonym":"","Comment":""}}), true),
@@ -354,7 +354,27 @@ fn relation_can_is_contextual_and_a_relationless_owner_has_no_accepted_sample() 
             (&event, &event_binding, event_at, &["source"][..]),
             (&fixture, &main, report, &[][..]),
         ] {
-            let detailed = contract(&runtime, workspace, at, op);
+            let detailed = if accepted.is_empty() {
+                // Keep the parser/schema negative matrix, without publishing
+                // this empty domain as a callable operation on the node.
+                let rejected = call(
+                    &runtime,
+                    workspace,
+                    ToolIdentity::View,
+                    json!({"at": format!("{at}.Can.{op}")}),
+                );
+                assert!(!rejected.ok, "{rejected:?}");
+                assert_eq!(rejected.diagnostics[0]["code"], "bad_value");
+                let raw = unica_metadata::apply_operations::MetadataOperation::named(op)
+                    .unwrap()
+                    .contract_at(Some(unica_metadata::contracts::MetadataSite {
+                        owner: unica_metadata::MetadataKind::Report,
+                        in_section: false,
+                    }));
+                json!({"argsSchema": raw.schema, "exampleArgs": raw.example_args, "notes": raw.notes})
+            } else {
+                contract(&runtime, workspace, at, op)
+            };
             let schema = &detailed["argsSchema"];
             let oracle = jsonschema::validator_for(schema).unwrap();
             if accepted.is_empty() {
@@ -724,7 +744,7 @@ fn canonical_foreign_form_file_keeps_catalog_structure_and_reports_provider_unav
     assert!(viewed.ok, "{viewed:?}");
     let data = viewed.data.as_ref().unwrap();
     assert_eq!(data["title"], "Products");
-    assert_eq!(data["props"]["Synonym"], "Products");
+    assert_eq!(data["props"]["Synonym"], "ru = 'Products'");
     assert!(
         data["branches"]
             .as_array()
@@ -1359,7 +1379,7 @@ fn canonical_unmodelled_type_is_a_localized_warning_in_check_and_view() {
         &fixture,
         "main:Catalog.Products.Attribute.Article",
     );
-    assert_eq!(attribute["props"]["synonym"], "Article");
+    assert_eq!(attribute["props"]["synonym"], "ru = 'Article'");
     assert_eq!(attribute["props"]["incomplete"], true);
     assert!(attribute["props"].get("type").is_none(), "{attribute}");
     assert!(
@@ -1369,7 +1389,7 @@ fn canonical_unmodelled_type_is_a_localized_warning_in_check_and_view() {
         "{attribute}"
     );
     let constant = view(&runtime, &fixture, "main:Constant.Rate");
-    assert_eq!(constant["props"]["Synonym"], "Rate");
+    assert_eq!(constant["props"]["Synonym"], "ru = 'Rate'");
     // Тип не прочитан: значения нет, причина — в пределах узла.
     assert!(constant["props"]["Type"].is_null(), "{constant}");
     assert!(
@@ -2151,6 +2171,175 @@ fn canonical_check_accepts_a_common_binary_template_without_data() {
     assert_eq!(viewed["kind"], "CommonTemplate", "{viewed}");
 }
 
+/// #2057: the same bilingual standard row name is rejected before a batch
+/// can publish earlier changes; headers retain their independent namespace.
+/// rule: INV.SOURCE.METADATA-MUTATION-VALIDITY
+#[test]
+fn tabular_standard_names_refuse_add_copy_and_rename_without_source_writes() {
+    let fixture = Fixture::new("workspace-tabular-attribute-copy");
+    let runtime = runtime();
+    let catalog = "main:Catalog.Валюты";
+    let section = format!("{catalog}.TabularSection.Представления");
+    let attribute = format!("{section}.Attribute.КодЯзыка");
+    let before = unica_workspace::test_support::tree_snapshot(&fixture.workspace);
+    for name in ["НомерСтроки", "LineNumber", "нОмЕрСтРоКи", "linenumber"] {
+        for (op, args, path) in [
+            (
+                "attribute.add",
+                json!({"at":section,"items":[{"name":"SafeBeforeFailure","type":{"variants":[{"kind":"string","length":20,"allowedLength":"variable"}]}},{"name":name,"type":{"variants":[{"kind":"string","length":20,"allowedLength":"variable"}]}}]}),
+                "ops[1].args.items[1].name",
+            ),
+            (
+                "attribute.copy",
+                json!({"at":attribute,"values":{"name":name}}),
+                "ops[1].args.values.name",
+            ),
+            (
+                "attribute.set",
+                json!({"at":attribute,"values":{"newName":name}}),
+                "ops[1].args.values.newName",
+            ),
+        ] {
+            let refused = call(
+                &runtime,
+                &fixture,
+                ToolIdentity::Apply,
+                json!({"at":catalog,"ops":[{"op":"props.set","args":{"values":{"Comment":"must not publish"}}},{"op":op,"args":args}]}),
+            );
+            assert!(!refused.ok, "{name} {op}: {refused:?}");
+            assert_eq!(refused.diagnostics[0]["code"], "bad_value", "{refused:?}");
+            assert_eq!(refused.at.as_deref(), Some(path), "{refused:?}");
+            assert!(
+                refused.diagnostics[0]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("standard LineNumber"),
+                "{refused:?}"
+            );
+            assert!(refused
+                .data
+                .as_ref()
+                .and_then(|data| data.get("executionToken"))
+                .is_none());
+            assert_eq!(
+                unica_workspace::test_support::tree_snapshot(&fixture.workspace),
+                before
+            );
+        }
+    }
+    let new_scope = call(
+        &runtime,
+        &fixture,
+        ToolIdentity::Apply,
+        json!({"at":catalog,"ops":[{"op":"tabularSection.add","args":{"items":[{"name":"FreshLines"}]}},
+            {"op":"attribute.add","args":{"at":format!("{catalog}.TabularSection.FreshLines"),"items":[{"name":"LineNumber","type":{"variants":[{"kind":"string","length":20,"allowedLength":"variable"}]}}]}}]}),
+    );
+    assert!(!new_scope.ok, "{new_scope:?}");
+    assert_eq!(new_scope.at.as_deref(), Some("ops[1].args.items[0].name"));
+    assert_eq!(
+        unica_workspace::test_support::tree_snapshot(&fixture.workspace),
+        before
+    );
+    for (at, name) in [
+        (catalog.to_string(), "LineNumber"),
+        (section, "LineNumberText"),
+    ] {
+        let preview = call(
+            &runtime,
+            &fixture,
+            ToolIdentity::Apply,
+            json!({"at":at,"ops":[{"op":"attribute.add","args":{"items":[{"name":name,"type":{"variants":[{"kind":"string","length":20,"allowedLength":"variable"}]}}]}}]}),
+        );
+        assert!(preview.ok, "{preview:?}");
+        assert_eq!(preview.data.unwrap()["mode"], "preview");
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&fixture.workspace),
+            before
+        );
+    }
+}
+
+/// #2243: absence, detailed contracts and direct apply agree for an owner
+/// whose relation domain is empty; owners with relations remain usable.
+/// rule: INV.WIRE.V13-CAN-DICTIONARY
+#[test]
+fn common_module_does_not_offer_uninhabited_relation_operations() {
+    let fixture = Fixture::new("workspace");
+    let runtime = runtime();
+    let before = unica_workspace::test_support::tree_snapshot(&fixture.workspace);
+    for at in [
+        "main:CommonModule.GoogleПереводчик",
+        "main:Report.АнализВерсийОбъектов",
+    ] {
+        let node = view(&runtime, &fixture, at);
+        for op in ["relation.add", "relation.remove", "relation.replace"] {
+            assert!(
+                !node["can"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|entry| entry["op"] == op),
+                "{op}: {node}"
+            );
+            let detailed = call(
+                &runtime,
+                &fixture,
+                ToolIdentity::View,
+                json!({"at": format!("{at}.Can.{op}")}),
+            );
+            assert!(!detailed.ok, "{detailed:?}");
+            assert_eq!(detailed.diagnostics[0]["code"], "bad_value");
+            assert_eq!(detailed.next[0]["args"]["at"], at);
+            let refused = call(
+                &runtime,
+                &fixture,
+                ToolIdentity::Apply,
+                json!({"at": at, "ops":[{"op": op, "args":{"values":{"relation":"owners","targets":[{"metadataPath":"Catalog.Валюты"}]}}}]}),
+            );
+            assert!(!refused.ok, "{refused:?}");
+            assert_eq!(refused.diagnostics[0]["code"], "bad_value");
+            assert_eq!(refused.next[0]["tool"], "unica.view");
+            assert_eq!(refused.next[0]["args"]["at"], at);
+            let supported = contract(&runtime, &fixture, "main:Catalog.Валюты", op);
+            let validator = jsonschema::validator_for(&supported["argsSchema"]).unwrap();
+            assert!(validator.is_valid(&supported["exampleArgs"]));
+        }
+    }
+    let args = json!({"values":{"relation":"basedOn","targets":[{"metadataPath":"Document.АктОбУничтоженииПерсональныхДанных"}]}});
+    for op in ["relation.add", "relation.replace"] {
+        let preview = call(
+            &runtime,
+            &fixture,
+            ToolIdentity::Apply,
+            json!({"at":"main:Catalog.Валюты","ops":[{"op":op,"args":args.clone()}]}),
+        );
+        assert!(preview.ok, "{preview:?}");
+        assert_eq!(preview.data.as_ref().unwrap()["mode"], "preview");
+    }
+    assert_eq!(
+        unica_workspace::test_support::tree_snapshot(&fixture.workspace),
+        before
+    );
+    publish(
+        &runtime,
+        &fixture,
+        json!({"at":"main:Catalog.Валюты","ops":[{"op":"relation.add","args":args.clone()}]}),
+    );
+    let populated = unica_workspace::test_support::tree_snapshot(&fixture.workspace);
+    let removal = call(
+        &runtime,
+        &fixture,
+        ToolIdentity::Apply,
+        json!({"at":"main:Catalog.Валюты","ops":[{"op":"relation.remove","args":args}]}),
+    );
+    assert!(removal.ok, "{removal:?}");
+    assert_eq!(removal.data.as_ref().unwrap()["mode"], "preview");
+    assert_eq!(
+        unica_workspace::test_support::tree_snapshot(&fixture.workspace),
+        populated
+    );
+}
+
 /// #2015: a short enum can be corrected immediately; a long enum has a
 /// bounded preview and an actual readable continuation to the complete set.
 #[test]
@@ -2489,7 +2678,7 @@ fn oversized_role_synonym_is_named_by_its_platform_name() {
     );
     let whole = view(&runtime, &fixture, &format!("{at}.Props.Synonym"));
     assert!(
-        whole["props"]["Synonym"] == synonym,
+        whole["props"]["Synonym"] == format!("ru = '{synonym}'"),
         "the synonym reads whole at its address"
     );
     let plain = view(&runtime, &Fixture::new("workspace"), at);
@@ -2552,7 +2741,7 @@ fn an_oversized_synonym_leaves_a_bounded_marked_title() {
         );
         let whole = view(&runtime, &fixture, &format!("{at}.Props.Synonym"));
         assert!(
-            whole["props"]["Synonym"] == synonym,
+            whole["props"]["Synonym"] == format!("ru = '{synonym}'"),
             "{at}: the synonym reads whole at its address"
         );
         let rows = view(&runtime, &fixture, collection);
@@ -2573,6 +2762,7 @@ fn an_oversized_synonym_leaves_a_bounded_marked_title() {
 
 /// A form item title longer than the property limit leaves a bounded
 /// marked title and a limit naming the address it reads whole at.
+/// rule: INV.SOURCE.LOCALIZED-STRING-NSTR
 #[test]
 fn an_oversized_form_item_title_is_named_by_a_limit() {
     let fixture = Fixture::new("workspace");
@@ -2609,8 +2799,9 @@ fn an_oversized_form_item_title_is_named_by_a_limit() {
         "a limit names the title address"
     );
     let whole = view(&runtime, &fixture, &format!("{at}.Props.title"));
-    assert!(
-        whole["props"]["title"] == title,
-        "the title reads whole at its address"
+    assert_eq!(
+        whole["props"]["title"],
+        format!("ru = '{title}'"),
+        "the full title retains its NStr form at the property address"
     );
 }

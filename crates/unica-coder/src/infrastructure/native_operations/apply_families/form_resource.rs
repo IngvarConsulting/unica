@@ -111,6 +111,7 @@ pub(crate) fn parse_form_resource_plan_operation_in(
                         object,
                         op_index,
                         binding.source_set_name(),
+                        binding.source_kind(),
                     )?)
                 }
                 None => return Err(hidden_apply_family_unimplemented(op_index)),
@@ -354,6 +355,7 @@ mod tests {
         match schema["type"].as_str() {
             Some("boolean") => vec![json!(true), json!(false)],
             Some("integer") | Some("number") => vec![json!(7)],
+            Some("string") if schema["format"] == "localized-nstr" => vec![json!("en = 'Sample'")],
             Some("string") => vec![json!("Sample")],
             Some("object") => {
                 let mut sample = serde_json::Map::new();
@@ -379,7 +381,7 @@ mod tests {
     /// писатель вида не пишет, в контракт не попадает.
     #[test]
     fn every_published_element_key_reaches_the_xml_of_its_kind() {
-        use unica_forms_designer::codec::{emit_form_element, FormEmissionContext};
+        use unica_forms_designer::codec::{emit_form_element, FormEmissionContext, FormTextMode};
         let fixture = ApplySeamFixture::new();
         let contract = unica_forms::operations::FormOperation::ItemAdd.contract();
         let variants = contract.schema["properties"]["items"]["items"]["anyOf"]
@@ -399,7 +401,7 @@ mod tests {
                 &definition,
                 "\t",
                 &mut FormEmissionContext::new(),
-                Some("en"),
+                FormTextMode::NStr(Some("en")),
             )
             .unwrap_or_else(|error| panic!("{item}: {error}"));
             lines.join("\n")
@@ -524,7 +526,7 @@ mod tests {
             "A",
             1,
             "\t\t",
-            Some("ru"),
+            unica_forms_designer::codec::FormTextMode::NStr(Some("ru")),
         )
         .unwrap();
         let text = lines.join("\n");
@@ -574,11 +576,9 @@ mod tests {
         }
     }
 
-    /// Titles, tooltips and input hints of new form elements,
-    /// attributes and commands are written in the default language of the
-    /// source set; an explicit language-to-text value is written as given.
+    /// rule: INV.SOURCE.LOCALIZED-STRING-NSTR
     #[test]
-    fn form_item_titles_and_tooltips_write_the_configuration_default_language() {
+    fn form_items_attributes_and_commands_write_all_supplied_translations() {
         let fixture = ApplySeamFixture::new();
         fixture.use_english_only_language();
         let admission = fixture.admission();
@@ -603,23 +603,23 @@ mod tests {
             parse(
                 "item.add",
                 json!({"at": form, "items": [
-                    {"name": "Header", "type": "Group", "title": "Header"},
-                    {"name": "Total", "path": "Объект.Total", "title": "Total",
-                     "tooltip": "Total hint", "inputHint": "Type the total"},
+                    {"name": "Header", "type": "Group", "title": "en = 'Header'"},
+                    {"name": "Total", "path": "Объект.Total", "title": "en = 'Total'",
+                     "tooltip": "en = 'Total hint'", "inputHint": "en = 'Type the total'"},
                     {"name": "Count", "path": "Объект.Total",
-                     "tooltip": {"en": "Count hint", "de": "Anzahl"}},
-                    {"name": "Note", "type": "Label", "title": "Note"}
+                     "tooltip": "en = 'Count hint'; de = 'Anzahl'"},
+                    {"name": "Note", "type": "Label", "title": "en = 'Note'"}
                 ]}),
                 1,
             ),
             parse(
                 "attribute.add",
-                json!({"at": form, "items": [{"name": "Comment", "type": "String", "title": "Comment"}]}),
+                json!({"at": form, "items": [{"name": "Comment", "type": "String", "title": "en = 'Comment'"}]}),
                 2,
             ),
             parse(
                 "command.add",
-                json!({"at": form, "items": [{"name": "Refresh", "title": "Refresh"}]}),
+                json!({"at": form, "items": [{"name": "Refresh", "title": "en = 'Refresh'"}]}),
                 3,
             ),
         ];
@@ -661,11 +661,9 @@ mod tests {
         );
     }
 
-    /// Only a plain-string text needs the default language: in a source set
-    /// whose language cannot be read, an element without text, an explicit
-    /// translation and a removal pass, a plain-string title is refused.
+    /// rule: INV.SOURCE.LOCALIZED-STRING-NSTR
     #[test]
-    fn form_edits_without_plain_text_do_not_read_the_default_language() {
+    fn form_edits_with_nstr_do_not_read_the_default_language() {
         let fixture = ApplySeamFixture::new();
         let form = "main:Document.First.Form.Main";
         let plan = |operations: &[(&str, serde_json::Value)]| {
@@ -695,7 +693,7 @@ mod tests {
             ),
             (
                 "item.add",
-                json!({"at": form, "items": [{"name": "Header", "type": "Group", "title": "Header"}]}),
+                json!({"at": form, "items": [{"name": "Header", "type": "Group", "title": "en = 'Header'"}]}),
             ),
         ])
         .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
@@ -711,13 +709,6 @@ mod tests {
         }
         std::fs::remove_file(fixture.source_dir().join("Languages/Русский.xml")).unwrap();
 
-        let error = plan(&[(
-            "item.add",
-            json!({"at": form, "items": [{"name": "Footer", "type": "Group", "title": "Footer"}]}),
-        )])
-        .expect_err("a new title needs the default language");
-        assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidSource, "{error:?}");
-
         let staged = plan(&[
             (
                 "item.add",
@@ -726,7 +717,7 @@ mod tests {
             (
                 "item.add",
                 json!({"at": form, "items": [{"name": "Hinted", "path": "Объект.Total",
-                    "tooltip": {"en": "Hint"}}]}),
+                    "tooltip": "en = 'Hint'"}]}),
             ),
         ])
         .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
@@ -769,7 +760,7 @@ mod tests {
             let form = "main:Document.First.Form.Main";
             let operations = [
             ("form.add", json!({"at": "main:Document.First", "items": [{"name": "Main", "type": "ObjectForm"}]})),
-            ("command.add", json!({"at": form, "items": [{"name": "TestCommand", "title": "Test", "action": "TestCommand"}]})),
+            ("command.add", json!({"at": form, "items": [{"name": "TestCommand", "title": "en = 'Test'", "action": "TestCommand"}]})),
             ("item.add", json!({"at": form, "items": [{"name": "TestButton", "type": "Button", "command": "TestCommand"}]})),
             ("item.add", json!({"at": form, "items": [{"name": "TestInput", "path": "Object.Total"}]})),
         ].into_iter().enumerate().map(|(index, (op, args))| {
@@ -849,7 +840,7 @@ mod tests {
                 "item.add",
                 json!({
                     "at": "main:Document.First.Form.ФормаДокумента.Item.ГруппаИтог",
-                    "items": [{"name": "ПолеИтог", "path": "Объект.Total", "title": "Итог"}]
+                    "items": [{"name": "ПолеИтог", "path": "Объект.Total", "title": "ru = 'Итог'"}]
                 }),
                 2,
             ),
@@ -958,9 +949,9 @@ mod tests {
                             "visible":false,
                             "enabled":false,
                             "readOnly":true,
-                            "title":"Протокол",
+                            "title":"ru = 'Протокол'",
                             "titleLocation":"Top",
-                            "tooltip":"Подсказка",
+                            "tooltip":"ru = 'Подсказка'",
                             "tooltipRepresentation":"Button",
                             "width":35,
                             "autoMaxWidth":false,
@@ -2608,8 +2599,8 @@ mod tests {
         let at = "main:Catalog.Items.Form.Item";
         let item = json!({
             "name": "Refresh",
-            "title": "Refresh",
-            "tooltip": "Refresh the list",
+            "title": "en = 'Refresh'",
+            "tooltip": "en = 'Refresh the list'",
             "shortcut": "F5",
             "picture": "StdPicture.Refresh",
             "representation": "TextPicture",
@@ -2638,6 +2629,14 @@ mod tests {
         };
         assert_eq!(definition, &json!({"commands": [expected]}));
 
+        parse_form_resource_plan_operation(
+            "command.add",
+            &json!({"at": at, "items": [{"name": "Refresh", "title": "", "tooltip": ""}]}),
+            0,
+            &fixture.binding,
+        )
+        .expect("empty NStr explicitly supplies no translations");
+
         for (field, value) in [
             ("use", json!(false)),
             ("functionalOptions", json!(["FunctionalOption.X"])),
@@ -2650,14 +2649,14 @@ mod tests {
             ("picture", json!({"src": "StdPicture.Refresh"})),
             ("picture", json!("abs:picture.png")),
             ("title", json!({"ru": "Обновить"})),
-            ("title", json!("")),
+            ("title", json!("Обновить")),
             ("callType", json!("Before")),
             (
                 "actions",
                 json!([{"callType": "Before", "handler": "RefreshBefore"}]),
             ),
             ("tooltip", json!({"ru": "Обновить"})),
-            ("tooltip", json!("")),
+            ("tooltip", json!("Обновить список")),
             ("shortcut", json!("")),
         ] {
             let error = parse_form_resource_plan_operation(

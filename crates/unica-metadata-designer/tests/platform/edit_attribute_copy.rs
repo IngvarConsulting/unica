@@ -192,3 +192,72 @@ fn a_copy_of_a_member_that_is_not_last_follows_the_last_and_keeps_references_to_
     assert_eq!(code, MetaDiagnosticCode::InvalidArguments);
     assert_eq!(field.as_deref(), Some("at"));
 }
+
+fn assert_refused_without_changes(input: &str) {
+    let mut actual = input.to_string();
+    let failure = apply_typed_operations_to_image_with_seed(
+        &mut actual,
+        &[copy("ПараметрыПрописи", "Копия")],
+        "",
+        b"copy-seed",
+    )
+    .unwrap_err();
+    let diagnostic = &failure.diagnostics[0];
+    assert_eq!(diagnostic.code, MetaDiagnosticCode::InvalidArguments);
+    assert_eq!(diagnostic.field.as_deref(), Some("operations[0].at"));
+    assert_eq!(
+        actual, input,
+        "a refused copy must preserve every input byte"
+    );
+}
+
+#[test]
+fn a_copy_refuses_ambiguous_source_members_and_tabular_sections() {
+    let before = catalog();
+    let source = tabular_attribute(&before, "ПараметрыПрописи");
+    let duplicate = source
+        .replacen(uuid_of(&source), "ade16579-f323-435e-b222-9a0c2d378d37", 1)
+        .replacen(
+            "<Name>ПараметрыПрописи</Name>",
+            "<Name>параметрыпрописи</Name>",
+            1,
+        );
+    assert_refused_without_changes(&before.replacen(
+        &source,
+        &format!("{source}\r\n\t\t\t\t\t{duplicate}"),
+        1,
+    ));
+
+    let start = before.find("<TabularSection uuid=").unwrap();
+    let end =
+        start + before[start..].find("</TabularSection>").unwrap() + "</TabularSection>".len();
+    let section = &before[start..end];
+    let duplicate = section.replacen(uuid_of(section), "ade16579-f323-435e-b222-9a0c2d378d37", 1);
+    assert_refused_without_changes(&before.replacen(
+        section,
+        &format!("{section}\r\n\t\t\t{duplicate}"),
+        1,
+    ));
+}
+
+#[test]
+fn a_copy_refuses_identities_on_the_properties_element_itself() {
+    let before = catalog();
+    let source = tabular_attribute(&before, "ПараметрыПрописи");
+    for attribute in ["id=\"9\"", "uuid=\"ade16579-f323-435e-b222-9a0c2d378d37\""] {
+        let changed = source.replacen("<Properties>", &format!("<Properties {attribute}>"), 1);
+        assert_refused_without_changes(&before.replacen(&source, &changed, 1));
+    }
+}
+
+#[test]
+fn a_copy_refuses_self_references_regardless_of_identifier_case() {
+    let before = catalog();
+    let source = tabular_attribute(&before, "ПараметрыПрописи");
+    let changed = source.replacen(
+        "<Comment/>",
+        "<Comment>catalog.валюты.tabularsection.представления.attribute.параметрыпрописи</Comment>",
+        1,
+    );
+    assert_refused_without_changes(&before.replacen(&source, &changed, 1));
+}

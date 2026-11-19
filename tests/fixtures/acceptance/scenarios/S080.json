@@ -11,7 +11,7 @@
             "op": "dimension.set",
             "args": {
               "values": {
-                "synonym": "Идентификатор узла"
+                "synonym": "ru = 'Идентификатор узла'"
               }
             }
           }

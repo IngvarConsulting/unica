@@ -22,7 +22,10 @@ const METHOD: &str = "\u{feff}<html><body>\
 
 fn parsed() -> unica_documentation::model::HelpArticle {
     public_article(
-        "syntax-context",
+        LocatorScope {
+            version: "8.3.27.2074",
+            corpus: "syntax-context",
+        },
         &source::parse(
             "objects/catalog234/catalog236/ValueTable/methods/Copy649.html",
             METHOD,
@@ -38,7 +41,7 @@ fn every_reference_arrives_as_a_locator_of_the_same_corpus() {
     let article = parsed();
     assert_eq!(
         article.owner_document_id.as_deref(),
-        Some("platform-syntax-help:syntax-context:objects/catalog234/catalog236/ValueTable.html")
+        Some("platform-syntax-help:8.3.27.2074:syntax-context:objects/catalog234/catalog236/ValueTable.html")
     );
     let ArticleField::Parsed(variants) = &article.variants else {
         panic!("вариант разобран: {:?}", article.variants);
@@ -48,13 +51,13 @@ fn every_reference_arrives_as_a_locator_of_the_same_corpus() {
     };
     assert_eq!(
         parameters[0].types[0].document_id.as_deref(),
-        Some("platform-syntax-help:syntax-context:objects/catalog234/Array.html")
+        Some("platform-syntax-help:8.3.27.2074:syntax-context:objects/catalog234/Array.html")
     );
     // Имя типа — то, которым его назвала справка, а не отрезок пути.
     assert_eq!(parameters[0].types[0].text, "Массив");
     assert_eq!(
         article.links[0].document_id,
-        "platform-syntax-help:syntax-context:objects/catalog234/Array.html"
+        "platform-syntax-help:8.3.27.2074:syntax-context:objects/catalog234/Array.html"
     );
 }
 
@@ -116,7 +119,10 @@ fn an_unparsed_section_keeps_its_reason_and_text() {
     let html = "<html><body><p class=\"V8SH_heading\">Сделать (Do)</p>\
         <p class=\"V8SH_chapter\">Параметры:</p>Параметр описан прозой.</body></html>";
     let article = public_article(
-        "syntax-context",
+        LocatorScope {
+            version: "8.3.27.2074",
+            corpus: "syntax-context",
+        },
         &source::parse("objects/c/Sample/methods/Do1.html", html),
     );
     let ArticleField::Parsed(variants) = &article.variants else {

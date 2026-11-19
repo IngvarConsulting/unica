@@ -12,7 +12,7 @@ impl LogicalViewReadAuthority<'_> {
         let mut diagnostics = Vec::new();
         let mut limits = Vec::new();
         match full.as_ref().unwrap_or(&text) {
-            ModuleText::Text(source) => {
+            ModuleText::Text { text: source, .. } => {
                 let analysis = unica_bsl::text::analyze_module(source).map_err(|error| {
                     ViewError::detailed(RefusalDetail::SourceUnreadable, error)
                 })?;

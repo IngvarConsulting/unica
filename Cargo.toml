@@ -5,7 +5,7 @@ exclude = ["crates/unica-research"]
 resolver = "2"
 
 [workspace.package]
-version = "0.15.0-rc.1"
+version = "0.16.0"
 edition = "2021"
 license = "LGPL-3.0-or-later"
 repository = "https://github.com/IngvarConsulting/unica"
@@ -61,11 +61,11 @@ regex = "1"
 # строит искатель заново на каждый вызов. Уже в графе через regex/aho-corasick.
 memchr = "2.8"
 regex-syntax = "0.8"
-ureq = { version = "2.12", features = ["json"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "gzip"] }
+bytes = "1"
 rustls = { version = "0.23.27", default-features = false, features = ["std", "ring", "tls12", "logging"] }
 rustls-platform-verifier = "0.7"
-# Запас, когда в хранилище ОС нет ни одного корня; тот же набор, что был
-# у ureq по умолчанию.
+# Запас, когда в хранилище ОС нет ни одного корня.
 webpki-roots = "1"
 # Только для стендов TLS в тестах: корень и сертификат сервера на лету.
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
@@ -116,7 +116,3 @@ opt-level = 1
 
 [profile.dev.package.sha2]
 opt-level = 3
-
-[patch.crates-io]
-# Preserve completed HTTP responses when connection reuse preparation fails.
-ureq = { path = "vendor/ureq" }

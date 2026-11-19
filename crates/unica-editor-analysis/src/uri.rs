@@ -1,9 +1,10 @@
 //! `unica://<space>/<source set>/<address>` document identities.
 //!
 //! The server names each workspace folder of one LSP connection a space: the
-//! folder name in lower case, or that with a short hash of its path when two
-//! folders share it. Editors lower-case a URI authority (VS Code does), so a
-//! space is named and matched in lower case. A URI of a space this connection was not given is refused, so
+//! folder name in lower case. Long or shared names get a short hash of the
+//! folder path and are shortened to fit the protocol. Editors lower-case a URI
+//! authority (VS Code does), so a space is named and matched in lower case.
+//! A URI of a space this connection was not given is refused, so
 //! two workspaces that both have a source set `main` never mix. The address
 //! follows the Unica logical address grammar; a document is a module body,
 //! addressed as MCP addresses it (`CommonModule.X.Body`,
@@ -14,6 +15,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use unica_address::address::QualifiedAddress;
+use unica_lsp_contract::protocol::MAX_LSP_SPACE_BYTES;
 
 pub(crate) const SCHEME: &str = "unica";
 
@@ -88,7 +90,7 @@ pub enum UriError {
 
 impl SpaceRegistry {
     /// Name a space for each folder. Folders are taken in the order given;
-    /// a name shared by several folders gets a short hash of each path.
+    /// Long or shared names get a short hash of each path.
     pub fn from_folders(folders: &[WorkspaceFolder]) -> Self {
         let mut uses = BTreeMap::<String, usize>::new();
         for folder in folders {
@@ -97,8 +99,24 @@ impl SpaceRegistry {
         let mut spaces = BTreeMap::new();
         for folder in folders {
             let name = space_name(folder);
-            let space = if uses[&name] > 1 {
-                format!("{name}-{}", short_path_hash(&folder.root))
+            let space = if name.len() > MAX_LSP_SPACE_BYTES || uses[&name] > 1 {
+                let hash = short_path_hash(&folder.root);
+                let mut suffix = format!("-{hash}");
+                let mut index = 0;
+                loop {
+                    let budget = MAX_LSP_SPACE_BYTES - suffix.len();
+                    let prefix = &name[..name.floor_char_boundary(budget)];
+                    let candidate = format!("{prefix}{suffix}");
+                    if !uses.contains_key(&candidate)
+                        && spaces
+                            .get(&candidate)
+                            .is_none_or(|root| root == &folder.root)
+                    {
+                        break candidate;
+                    }
+                    index += 1;
+                    suffix = format!("-{hash}-{index}");
+                }
             } else {
                 name
             };
@@ -275,6 +293,40 @@ mod tests {
         assert_ne!(spaces[0], spaces[1]);
         let space = registry.space_of_root(Path::new("/b/src")).unwrap();
         assert_eq!(registry.root(space), Some(Path::new("/b/src")));
+    }
+
+    #[test]
+    fn long_names_and_shared_names_fit_the_protocol() {
+        use unica_lsp_contract::protocol::V5LspWorkspaceSpace;
+
+        let long = "я".repeat(MAX_LSP_SPACE_BYTES);
+        let at_limit = "я".repeat(MAX_LSP_SPACE_BYTES / 2);
+        let reserved = format!("{}-{}", "я".repeat(27), short_path_hash(Path::new("/a")));
+        let registry = SpaceRegistry::from_folders(&[
+            folder(&long, "/a"),
+            folder(&long, "/b"),
+            folder(&at_limit, "/c"),
+            folder(&at_limit, "/d"),
+            folder(&reserved, "/e"),
+        ]);
+        assert_eq!(registry.spaces().count(), 5);
+        assert_eq!(registry.root(&reserved), Some(Path::new("/e")));
+        for (space, root) in registry.spaces() {
+            V5LspWorkspaceSpace::opened("file:///work", space)
+                .validate()
+                .unwrap();
+            let document = DocumentUri {
+                space: space.to_owned(),
+                address: "main:CommonModule.А.Body".to_owned(),
+            };
+            assert_eq!(
+                registry
+                    .parse(&registry.format(&document).unwrap())
+                    .unwrap(),
+                document
+            );
+            assert_eq!(registry.space_of_root(root), Some(space));
+        }
     }
 
     #[test]

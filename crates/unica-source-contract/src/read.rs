@@ -1,11 +1,23 @@
 //! Owned source observations and read-only ports. Opening ambient paths and
 //! every mutation remain responsibilities of the issuing workspace owner.
+use sha2::{Digest, Sha256};
 use std::ffi::{OsStr, OsString};
 use std::fmt::Debug;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
+
+pub const MODULE_UTF8_BOM: [u8; 3] = [0xef, 0xbb, 0xbf];
+
+/// Ревизия полного текста модуля. Начальные BOM исключаются, переводы строк
+/// учитываются побайтно.
+pub fn module_text_revision(mut bytes: &[u8]) -> String {
+    while let Some(content) = bytes.strip_prefix(&MODULE_UTF8_BOM) {
+        bytes = content;
+    }
+    format!("{:x}", Sha256::digest(bytes))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FileIdentity {
@@ -253,6 +265,23 @@ pub trait SourceDirectoryReadPort: Debug + Send + Sync {
     ) -> io::Result<Option<Vec<(OsString, FileStamp)>>> {
         Ok(None)
     }
+    /// Like the full batch, restricted to names whose extension exactly
+    /// equals `extension` (without the dot, for example `xml`). A missing
+    /// entry still requires the caller's ordinary per-file lookup.
+    fn relative_directory_file_stamps_with_extension(
+        &self,
+        relative: &Path,
+        extension: &OsStr,
+    ) -> io::Result<Option<Vec<(OsString, FileStamp)>>> {
+        self.relative_directory_file_stamps(relative).map(|batch| {
+            batch.map(|entries| {
+                entries
+                    .into_iter()
+                    .filter(|(name, _)| Path::new(name).extension() == Some(extension))
+                    .collect()
+            })
+        })
+    }
     fn open_relative_regular_nofollow(&self, relative: &Path) -> io::Result<ReadFile>;
     fn read_immediate_names_with_limit(
         &self,
@@ -328,6 +357,14 @@ impl SourceDirectory {
         relative: &Path,
     ) -> io::Result<Option<Vec<(OsString, FileStamp)>>> {
         self.0.relative_directory_file_stamps(relative)
+    }
+    pub fn relative_directory_file_stamps_with_extension(
+        &self,
+        relative: &Path,
+        extension: &OsStr,
+    ) -> io::Result<Option<Vec<(OsString, FileStamp)>>> {
+        self.0
+            .relative_directory_file_stamps_with_extension(relative, extension)
     }
     pub fn open_relative_regular_nofollow(&self, relative: &Path) -> io::Result<ReadFile> {
         self.0.open_relative_regular_nofollow(relative)

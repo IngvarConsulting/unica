@@ -112,7 +112,8 @@ impl NodeView {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BranchRef {
     at: String,
-    count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    count: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     bytes: Option<u64>,
 }
@@ -121,7 +122,15 @@ impl BranchRef {
     pub fn new(at: impl Into<String>, count: usize) -> Self {
         Self {
             at: at.into(),
-            count,
+            count: Some(count),
+            bytes: None,
+        }
+    }
+
+    pub fn uncounted(at: impl Into<String>) -> Self {
+        Self {
+            at: at.into(),
+            count: None,
             bytes: None,
         }
     }
@@ -150,6 +159,12 @@ pub struct CollectionView {
 impl CollectionView {
     pub fn new(node: NodeView, items: Vec<Value>) -> Self {
         Self { node, items }
+    }
+
+    /// Moves the node and its already serialized rows to the response owner.
+    pub fn into_parts(self) -> (NodeView, Vec<Value>) {
+        let Self { node, items } = self;
+        (node, items)
     }
 
     pub fn try_map_items<E>(
@@ -186,11 +201,23 @@ pub struct TextView {
     node: NodeView,
     #[serde(skip)]
     text: SourceText,
+    #[serde(skip)]
+    revision: Option<String>,
 }
 
 impl TextView {
     pub fn new(node: NodeView, text: SourceText) -> Self {
-        Self { node, text }
+        Self {
+            node,
+            text,
+            revision: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_revision(mut self, revision: Option<String>) -> Self {
+        self.revision = revision;
+        self
     }
 }
 
@@ -230,11 +257,11 @@ impl NodeViewData {
     }
 
     /// Отделяет исходный текст: узел остаётся без него.
-    pub fn take_text(&mut self) -> Option<SourceText> {
+    pub fn take_text(&mut self) -> Option<(SourceText, Option<String>)> {
         match self {
-            Self::Text(text) => Some(std::mem::replace(
-                &mut text.text,
-                SourceText::Whole(String::new()),
+            Self::Text(text) => Some((
+                std::mem::replace(&mut text.text, SourceText::Whole(String::new())),
+                text.revision.take(),
             )),
             Self::Node(_) | Self::Collection(_) => None,
         }

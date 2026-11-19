@@ -3,6 +3,30 @@ use crate::infrastructure::v13_large_configuration::RegistrationCache;
 
 const MODULE: &str = "main:CommonModule.РеактивныйСервер";
 
+/// A filtered batch is an optimization, never proof of an absent file.
+/// rule: INV.SOURCE.CONFIGURATION-ROOT-CACHE-REUSE
+#[test]
+fn a_name_outside_the_descriptor_batch_keeps_the_per_file_fallback() {
+    let fixture = RealReaderFixture::new();
+    let artifacts = Arc::new(RegistrationCache::default());
+    let read = operation(&fixture, &artifacts);
+    read.stamp_descriptors_by_directory();
+    assert!(read
+        .descriptor_stamp(std::path::Path::new("Catalogs/Items.xml"))
+        .is_some());
+    let relative = std::path::Path::new("Catalogs/Fallback.XML");
+    write(
+        &fixture.source.join(relative),
+        "late file outside the filtered batch",
+    );
+    let root = unica_workspace::read::open_source_directory(&fixture.source).unwrap();
+    assert_eq!(
+        read.descriptor_stamp(relative),
+        root.relative_file_stamp(relative).unwrap()
+    );
+    assert!(read.descriptor_stamp(relative).is_some());
+}
+
 /// One operation of the actor: a read authority over the fixture sharing the
 /// actor's retained artifacts.
 fn operation(
@@ -141,7 +165,10 @@ fn common_module_synonym_is_retained_until_its_descriptor_changes() {
     );
 
     // The same synonym reversed: other content of the same length.
-    let before_text = before.as_str().unwrap().to_string();
+    let before_text = unica_metadata::parse_nstr(before.as_str().unwrap())
+        .unwrap()
+        .remove(0)
+        .content;
     let reversed: String = before_text.chars().rev().collect();
     assert_ne!(
         reversed, before_text,
@@ -157,7 +184,7 @@ fn common_module_synonym_is_retained_until_its_descriptor_changes() {
     assert_eq!(edited.len(), text.len());
     rewrite_keeping_mtime(&descriptor, &edited);
     let after = synonym_of(&fixture, &artifacts);
-    assert_eq!(after, Some(json!(reversed)));
+    assert_eq!(after, Some(json!(format!("ru = '{reversed}'"))));
 }
 
 /// After the first read of a set the actor proves its top-level descriptors

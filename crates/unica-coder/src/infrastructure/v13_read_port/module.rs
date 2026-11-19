@@ -113,6 +113,9 @@ impl ProviderReadAuthority {
         Ok(Some(newlines + usize::from(last != Some(b'\n'))))
     }
 
+    /// Streams the module only after one shared UTF-8 check, so every Body
+    /// reader sees the same text and numbers the same lines. An absent file
+    /// is `None`; the length is in bytes.
     fn visit_module_utf8_chunks(
         &self,
         target: &MetadataAddress,

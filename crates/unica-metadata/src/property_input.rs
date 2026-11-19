@@ -9,17 +9,21 @@ use serde_json::{Map, Value};
 use std::collections::HashSet;
 use unica_operation_contract::{ArgumentShape, ContractError, OperationContract};
 
+/// Every language of a multilingual property, written as the whole value
+/// (#2163).
+pub type LocalizedValue = Vec<crate::LocalizedItem>;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RolePropertyChanges {
-    pub synonym: Option<String>,
+    pub synonym: Option<LocalizedValue>,
     pub comment: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubsystemPropertyChanges {
-    pub synonym: Option<String>,
+    pub synonym: Option<LocalizedValue>,
     pub comment: Option<String>,
-    pub explanation: Option<String>,
+    pub explanation: Option<LocalizedValue>,
     pub include_help_in_contents: Option<bool>,
     pub include_in_command_interface: Option<bool>,
     pub use_one_command: Option<bool>,
@@ -29,6 +33,8 @@ pub struct SubsystemPropertyChanges {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DescriptorPropertyValue {
     Text(String),
+    /// Every language of a multilingual property.
+    Languages(Vec<crate::LocalizedItem>),
     Boolean(bool),
     /// The parts given, each by its platform name, in the platform order.
     Parts(Vec<(&'static str, String)>),
@@ -64,6 +70,9 @@ pub enum PropertiesIntent {
     LanguageCode {
         code: String,
         comment: Option<String>,
+    },
+    CatalogOwner {
+        fill_from_filling_value: bool,
     },
     CommentOnly {
         kind: unica_address::address::NodeKind,
@@ -251,6 +260,23 @@ impl<'a> PropertyArgumentReader<'a> {
                     .as_str()
                     .map(str::to_string)
                     .ok_or_else(|| invalid(path, "property value must be a string"))
+            })
+            .transpose()
+    }
+
+    fn localized(&mut self, field: DescriptorProperty) -> DecodeResult<Option<LocalizedValue>> {
+        if !field.localized() {
+            return Err(invalid(
+                &self.path,
+                "property kind disagrees with its multilingual decoder",
+            ));
+        }
+        self.alias(field)?
+            .map(|(value, path)| {
+                let text = value
+                    .as_str()
+                    .ok_or_else(|| invalid(&path, crate::LOCALIZED_VALUE_FORM))?;
+                crate::parse_nstr(text).map_err(|message| invalid(path, message))
             })
             .transpose()
     }
@@ -508,6 +534,20 @@ fn decode_with_contract(
                 return Err(invalid(&values_path, "property changes must not be empty"));
             }
             let intent = match site {
+                PropertiesSite::CatalogOwner => {
+                    let value = values_reader
+                        .field("FillFromFillingValue", false)?
+                        .and_then(Value::as_bool)
+                        .ok_or_else(|| {
+                            invalid(
+                                format!("{values_path}.FillFromFillingValue"),
+                                "FillFromFillingValue must be a boolean",
+                            )
+                        })?;
+                    PropertiesIntent::CatalogOwner {
+                        fill_from_filling_value: value,
+                    }
+                }
                 PropertiesSite::CommentOnly(kind) => PropertiesIntent::CommentOnly {
                     kind,
                     comment: values_reader
@@ -701,14 +741,14 @@ fn decode_with_contract(
                     }
                 }
                 PropertiesSite::Role => PropertiesIntent::Role(RolePropertyChanges {
-                    synonym: values_reader.string(DescriptorProperty::Synonym)?,
+                    synonym: values_reader.localized(DescriptorProperty::Synonym)?,
                     comment: values_reader.string(DescriptorProperty::Comment)?,
                 }),
                 PropertiesSite::Subsystem => {
                     PropertiesIntent::Subsystem(SubsystemPropertyChanges {
-                        synonym: values_reader.string(DescriptorProperty::Synonym)?,
+                        synonym: values_reader.localized(DescriptorProperty::Synonym)?,
                         comment: values_reader.string(DescriptorProperty::Comment)?,
-                        explanation: values_reader.string(DescriptorProperty::Explanation)?,
+                        explanation: values_reader.localized(DescriptorProperty::Explanation)?,
                         include_help_in_contents: values_reader
                             .boolean(DescriptorProperty::IncludeHelpInContents)?,
                         include_in_command_interface: values_reader
@@ -721,6 +761,9 @@ fn decode_with_contract(
                     let mut changes = Vec::new();
                     for field in site.descriptor_fields() {
                         let value = match field.kind() {
+                            DescriptorPropertyKind::String if field.localized() => values_reader
+                                .localized(field)?
+                                .map(DescriptorPropertyValue::Languages),
                             DescriptorPropertyKind::String => values_reader
                                 .string(field)?
                                 .map(DescriptorPropertyValue::Text),
@@ -859,6 +902,30 @@ mod tests {
     }
 
     #[test]
+    fn owner_filling_decoder_requires_exact_boolean_and_rejects_unknown_properties() {
+        for enabled in [false, true] {
+            assert_eq!(
+                decode(
+                    PropertiesSite::CatalogOwner,
+                    json!({"values":{"FillFromFillingValue":enabled}})
+                )
+                .unwrap(),
+                PropertiesIntent::CatalogOwner {
+                    fill_from_filling_value: enabled
+                }
+            );
+        }
+        for values in [
+            json!({}),
+            json!({"FillFromFillingValue":"true"}),
+            json!({"FillFromFillingValue":null}),
+            json!({"FillFromFillingValue":false,"FillValue":true}),
+        ] {
+            assert!(decode(PropertiesSite::CatalogOwner, json!({"values":values})).is_err());
+        }
+    }
+
+    #[test]
     fn document_numerator_properties_have_a_closed_addressed_write_profile() {
         let address = unica_address::address::QualifiedAddress::resolve_input(
             "main:DocumentNumerator.Sales",
@@ -954,6 +1021,13 @@ mod tests {
                     MetaPropertyValueKind::UnsignedInteger => {
                         (json!(0.0), MetaPropertyValue::UnsignedInteger(0))
                     }
+                    MetaPropertyValueKind::String if spec.key == MetaPropertyKey::Synonym => (
+                        json!("ru = 'property text'"),
+                        MetaPropertyValue::Localized(vec![crate::LocalizedItem {
+                            language: "ru".into(),
+                            content: "property text".into(),
+                        }]),
+                    ),
                     MetaPropertyValueKind::String => {
                         let text = spec.enum_values.first().copied().unwrap_or(match spec.key {
                             MetaPropertyKey::Event => "OnWrite",
@@ -982,26 +1056,80 @@ mod tests {
         }
     }
 
+    /// #2163: a multilingual descriptor property takes its whole value as
+    /// one NStr string; plain text without a language is refused.
+    #[test]
+    fn descriptor_localized_properties_take_the_whole_nstr_value() {
+        let items = vec![
+            crate::LocalizedItem {
+                language: "ru".into(),
+                content: "Продажи".into(),
+            },
+            crate::LocalizedItem {
+                language: "en".into(),
+                content: "Sales".into(),
+            },
+        ];
+        let full = "ru = 'Продажи'; en = 'Sales'";
+        assert_eq!(
+            decode(
+                PropertiesSite::Subsystem,
+                json!({"values":{"Synonym":full, "Explanation":""}})
+            )
+            .unwrap(),
+            PropertiesIntent::Subsystem(SubsystemPropertyChanges {
+                synonym: Some(items.clone()),
+                comment: None,
+                explanation: Some(Vec::new()),
+                include_help_in_contents: None,
+                include_in_command_interface: None,
+                use_one_command: None,
+            })
+        );
+        let PropertiesIntent::Configuration(changes) = decode(
+            PropertiesSite::Configuration {
+                extension: false,
+                line: None,
+            },
+            json!({"values":{"BriefInformation":full, "Vendor":"V"}}),
+        )
+        .unwrap() else {
+            panic!("the root keeps its Configuration intent");
+        };
+        assert!(changes.changes.iter().any(|(property, value)| {
+            *property == DescriptorProperty::BriefInformation
+                && *value == DescriptorPropertyValue::Languages(items.clone())
+        }));
+        for value in [json!("Продажи"), json!("ru = 'А'; ru = 'Б'"), json!(["ru"])] {
+            let error =
+                decode(PropertiesSite::Role, json!({"values":{"Synonym":value}})).unwrap_err();
+            assert_eq!(error.path, "ops[7].args.values.Synonym", "{value}");
+        }
+    }
+
     #[test]
     fn descriptor_aliases_keep_independent_values_false_and_empty_strings() {
         assert_eq!(
             decode(
                 PropertiesSite::Role,
-                json!({"values":{"synonym":"S","Comment":""}})
+                json!({"values":{"synonym":"ru = 'S'","Comment":""}})
             )
             .unwrap(),
             PropertiesIntent::Role(RolePropertyChanges {
-                synonym: Some("S".into()),
+                synonym: Some(vec![crate::LocalizedItem {
+                    language: "ru".into(),
+                    content: "S".into()
+                }]),
                 comment: Some(String::new())
             })
         );
         assert_eq!(
             decode(PropertiesSite::Subsystem, json!({"values":{
-                "Synonym":"S", "comment":"C", "explanation":"",
+                "Synonym":"ru = 'S'", "comment":"C", "explanation":"",
                 "includeHelpInContents":false, "IncludeInCommandInterface":true, "useOneCommand":false
             }})).unwrap(),
             PropertiesIntent::Subsystem(SubsystemPropertyChanges {
-                synonym: Some("S".into()), comment: Some("C".into()), explanation: Some(String::new()),
+                synonym: Some(vec![crate::LocalizedItem { language: "ru".into(), content: "S".into() }]), comment: Some("C".into()), explanation: Some(Vec::new()),
                 include_help_in_contents: Some(false), include_in_command_interface: Some(true), use_one_command: Some(false),
             })
         );

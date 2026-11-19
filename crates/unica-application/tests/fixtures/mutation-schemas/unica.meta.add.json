@@ -1360,6 +1360,13 @@
                       ],
                       "type": "string"
                     },
+                    "SequenceFilling": {
+                      "enum": [
+                        "AutoFill",
+                        "AutoFillOff"
+                      ],
+                      "type": "string"
+                    },
                     "Server": {
                       "type": "boolean"
                     },
@@ -1380,6 +1387,7 @@
                       "type": "string"
                     },
                     "Synonym": {
+                      "pattern": "^\\s*(?:[A-Za-z0-9_-]+\\s*=\\s*'(?:[^']|'')*'\\s*(?:;\\s*[A-Za-z0-9_-]+\\s*=\\s*'(?:[^']|'')*'\\s*)*;?\\s*)?$",
                       "type": "string"
                     },
                     "Type": {
@@ -2268,6 +2276,7 @@
                         "type": "boolean"
                       },
                       "synonym": {
+                        "pattern": "^\\s*(?:[A-Za-z0-9_-]+\\s*=\\s*'(?:[^']|'')*'\\s*(?:;\\s*[A-Za-z0-9_-]+\\s*=\\s*'(?:[^']|'')*'\\s*)*;?\\s*)?$",
                         "type": "string"
                       },
                       "templateType": {
@@ -2369,6 +2378,7 @@
                         "type": "boolean"
                       },
                       "synonym": {
+                        "pattern": "^\\s*(?:[A-Za-z0-9_-]+\\s*=\\s*'(?:[^']|'')*'\\s*(?:;\\s*[A-Za-z0-9_-]+\\s*=\\s*'(?:[^']|'')*'\\s*)*;?\\s*)?$",
                         "type": "string"
                       },
                       "templateType": {

@@ -159,7 +159,7 @@ fn first_body_chunk(result: &DomainResult, budget: usize) -> Option<Value> {
         .ok()?
         .without_line_range();
     let node = result.data.as_ref()?.as_object()?;
-    let revision = result.rev.clone();
+    let revision = result.rev.clone().or_else(|| Some("0".repeat(64)));
     let preview = |count: usize| -> Option<DomainResult> {
         let end = prefix
             .split_inclusive('\n')

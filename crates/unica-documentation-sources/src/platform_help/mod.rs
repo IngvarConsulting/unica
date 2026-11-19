@@ -2,6 +2,8 @@ pub mod article_fields;
 mod container;
 pub mod corpus;
 pub mod installation;
+mod locator;
+pub use locator::PlatformHelpLocator;
 pub mod provider;
 
 #[cfg(test)]

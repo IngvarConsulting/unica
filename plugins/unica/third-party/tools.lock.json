@@ -58,12 +58,12 @@
     },
     {
       "name": "v8-runner",
-      "version": "0.17.4",
+      "version": "0.18.1",
       "repository": "https://github.com/IngvarConsulting/v8-runner-rust",
-      "sourceTag": "v0.17.4",
-      "sourceCommit": "0781c9b125a72231e4b17ce24253c29901750f63",
+      "sourceTag": "v0.18.1",
+      "sourceCommit": "ef5743a3bf696f5edc215cfd9527bbed9d2352c4",
       "assetRepository": "https://github.com/IngvarConsulting/v8-runner-rust",
-      "assetTag": "v0.17.4",
+      "assetTag": "v0.18.1",
       "license": "AGPL-3.0-only",
       "assetStrategy": "upstream-archive-release-asset",
       "binaryName": "v8-runner",
@@ -71,26 +71,26 @@
         "darwin-arm64": {
           "assetName": "v8-runner-macos-aarch64.tar.gz",
           "archiveBinary": "v8-runner-macos-aarch64/v8-runner",
-          "sha256": "65bc7ad874f55b3cff8e04b94795a9ba8d037b15d1ca8ecc461b26aa6bb3c2ba",
-          "size": 5306028
+          "sha256": "39b827fa0503abac78a9c368e08f816b000b45592edfea676313ce786bafa64b",
+          "size": 5415066
         },
         "linux-x64": {
           "assetName": "v8-runner-linux-x86_64-musl.tar.gz",
           "archiveBinary": "v8-runner-linux-x86_64-musl/v8-runner",
-          "sha256": "6c740b005947998e2034dae2497c7cafefc2d9b746777f5f580f90815d2fa459",
-          "size": 6081745
+          "sha256": "f23e40562483f7fe4ce184e79a1d1c72a5f19a597896c0de2aaaea80d8803546",
+          "size": 6224977
         },
         "win-x64": {
           "assetName": "v8-runner-windows-x86_64.zip",
           "archiveBinary": "v8-runner-windows-x86_64/v8-runner.exe",
-          "sha256": "b0fa55084664b86c96589f85e1aa9a57396c12b207d36c796ee4afd277ade38f",
-          "size": 4808050
+          "sha256": "2e3c0078ae1ec6f7bd993846b1cdfb2e2ab8ddb4b5c7241d01b3b6dadd8140a2",
+          "size": 4930058
         }
       }
     },
     {
       "name": "unica",
-      "version": "0.15.0-rc.1",
+      "version": "0.16.0",
       "repository": "https://github.com/IngvarConsulting/unica",
       "sourceTag": "workspace",
       "sourceCommit": "workspace",

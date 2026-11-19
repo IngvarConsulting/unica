@@ -95,6 +95,21 @@ pub struct ArticleLink {
     pub path: String,
 }
 
+/// A row of the platform's See also section.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SeeAlsoEntry {
+    Document(ArticleLink),
+    Member {
+        owner: String,
+        kind: ArticleKind,
+        link: ArticleLink,
+    },
+    Unparsed {
+        text: String,
+        links: Vec<ArticleLink>,
+    },
+}
+
 /// Список членов на странице типа: «Свойства», «Методы», «Конструкторы»,
 /// «События».
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -132,9 +147,8 @@ pub struct Article {
     pub collection_element: Field<Vec<TypeRef>>,
     pub member_lists: Vec<MemberList>,
     /// Ссылки статьи на другие статьи в порядке появления, без повторов.
-    /// Отдельного раздела «См. также» у статей платформы нет: связанные
-    /// статьи названы ссылками внутри текста.
     pub links: Vec<ArticleLink>,
+    pub see_also: Vec<SeeAlsoEntry>,
     /// Разделы, которым разбор не знает места: заголовок и сырой текст.
     /// Статья не теряет их молча.
     pub other_sections: Vec<(String, String)>,
@@ -162,6 +176,11 @@ const ARRAY_ELEMENT_WINDOW: usize = 200;
 /// платформы или его член.
 pub(crate) fn classify(path: &str) -> Option<(String, ArticleKind, Option<String>)> {
     let id = path.strip_suffix(".html")?;
+    let (kind, owner) = classify_id(id)?;
+    Some((id.to_owned(), kind, owner))
+}
+
+fn classify_id(id: &str) -> Option<(ArticleKind, Option<String>)> {
     if !id.starts_with("objects/") {
         return None;
     }
@@ -194,9 +213,9 @@ pub(crate) fn classify(path: &str) -> Option<(String, ArticleKind, Option<String
             Some((index, kind))
         });
     match member {
-        Some((index, Some(kind))) => Some((id.to_owned(), kind, Some(parts[..index].join("/")))),
+        Some((index, Some(kind))) => Some((kind, Some(parts[..index].join("/")))),
         Some((_, None)) => None,
-        None => Some((id.to_owned(), ArticleKind::Type, None)),
+        None => Some((ArticleKind::Type, None)),
     }
 }
 
@@ -226,7 +245,7 @@ pub fn header(path: &str, html: &str) -> ArticleHeader {
     let kind = classify(path)
         .map(|(_, kind, _)| kind)
         .unwrap_or(ArticleKind::Concept);
-    let title = element_text(html, "V8SH_pagetitle").unwrap_or_default();
+    let title = page_title(path, html);
     let owner_heading = paragraph(html, "V8SH_title");
     let heading = match kind {
         ArticleKind::Type => owner_heading.clone(),
@@ -243,7 +262,7 @@ pub fn header(path: &str, html: &str) -> ArticleHeader {
         ArticleKind::Type | ArticleKind::Concept => None,
         _ => owner_heading.as_deref().map(split_name),
     };
-    let sections = chapters(html);
+    let (sections, _) = article_chapters(path, html);
     let named = |wanted: [&str; 2]| {
         sections
             .iter()
@@ -344,7 +363,7 @@ pub fn parse(path: &str, html: &str) -> Article {
     let base = id
         .rsplit_once('/')
         .map_or(String::new(), |(head, _)| head.to_owned());
-    let title = element_text(html, "V8SH_pagetitle").unwrap_or_default();
+    let title = page_title(path, html);
     let owner_heading = paragraph(html, "V8SH_title");
     let heading = match kind {
         ArticleKind::Type => owner_heading.clone(),
@@ -385,6 +404,7 @@ pub fn parse(path: &str, html: &str) -> Article {
         collection_element: Field::Empty,
         member_lists: Vec::new(),
         links: Vec::new(),
+        see_also: Vec::new(),
         other_sections: Vec::new(),
     };
 
@@ -398,7 +418,9 @@ pub fn parse(path: &str, html: &str) -> Article {
         ArticleKind::Method | ArticleKind::Event | ArticleKind::Constructor | ArticleKind::Concept
     );
     let mut syntax_seen = false;
-    for (raw_title, content) in chapters(html) {
+    let (sections, legacy) = article_chapters(path, html);
+    let section_text = if legacy { legacy_prose } else { text };
+    for (raw_title, content) in sections {
         let title = raw_title.trim().trim_end_matches(':').trim().to_owned();
         let variant_section = matches!(
             title.as_str(),
@@ -461,7 +483,7 @@ pub fn parse(path: &str, html: &str) -> Article {
                 current(&mut article.variants).description = Field::Parsed(text(content));
             }
             "Описание" | "Description" => {
-                let body = text(content);
+                let body = section_text(content);
                 if kind == ArticleKind::Property {
                     let types = type_list(content);
                     article.value_type_text = type_text(content);
@@ -473,6 +495,11 @@ pub fn parse(path: &str, html: &str) -> Article {
                     // Тип свойства стоит первой строкой «Описания»; описанием
                     // остаётся текст после неё.
                     article.description = Field::Parsed(without_type_line(&body));
+                } else if let (true, Field::Parsed(description)) =
+                    (legacy, &mut article.description)
+                {
+                    description.push_str("\n\n");
+                    description.push_str(&body);
                 } else {
                     article.description = Field::Parsed(body);
                 }
@@ -491,7 +518,14 @@ pub fn parse(path: &str, html: &str) -> Article {
                 article.read_only = Field::from(read_only, UnparsedReason::UnknownUse, content);
             }
             "Доступность" | "Availability" => {
-                let body = text(content);
+                let body = section_text(content);
+                if legacy && kind == ArticleKind::Concept {
+                    // У понятия нет поля availability в публичной схеме.
+                    if !body.is_empty() {
+                        article.other_sections.push((title, body));
+                    }
+                    continue;
+                }
                 article.availability_text = body.clone();
                 // Сначала места, за первой точкой — примечания.
                 let places = contexts(body.split('.').next().unwrap_or_default());
@@ -505,7 +539,7 @@ pub fn parse(path: &str, html: &str) -> Article {
                     lower.contains("обращение к серверу") || lower.contains("server call");
             }
             "Примечание" | "Note" => {
-                article.note = Field::Parsed(text(content));
+                article.note = Field::Parsed(section_text(content));
             }
             "Пример" | "Example" => {
                 article.example =
@@ -539,8 +573,15 @@ pub fn parse(path: &str, html: &str) -> Article {
                     members: article_links(content, &base),
                 });
             }
-            _ => {
+            "См. также" | "See also" => {
+                article.see_also.extend(see_also(content, &base));
                 let body = text(content);
+                if !body.is_empty() {
+                    article.other_sections.push((title.clone(), body));
+                }
+            }
+            _ => {
+                let body = section_text(content);
                 if !title.is_empty() && !body.is_empty() {
                     article.other_sections.push((title.clone(), body));
                 }
@@ -645,6 +686,139 @@ fn chapters(html: &str) -> Vec<(String, &str)> {
         rest = &body[end..];
     }
     sections
+}
+
+fn page_title(path: &str, html: &str) -> String {
+    let title = element_text(html, "V8SH_pagetitle");
+    title
+        .or_else(|| {
+            if !path.starts_with("def_") {
+                return None;
+            }
+            let start = tags(html).find(|tag| tag.2.eq_ignore_ascii_case("h1"))?.1;
+            let end = tags(&html[start..])
+                .find(|tag| tag.2.eq_ignore_ascii_case("/h1"))?
+                .0;
+            Some(text(&html[start..start + end]))
+        })
+        .unwrap_or_default()
+}
+
+type Chapters<'a> = Vec<(String, &'a str)>;
+
+fn article_chapters<'a>(path: &str, html: &'a str) -> (Chapters<'a>, bool) {
+    let sections = chapters(html);
+    if sections.is_empty() && path.starts_with("def_") {
+        // В корпусе языка старые страницы выделяют начало раздела жирным
+        // текстом в начале абзаца, без V8SH_chapter и с тегами в разном регистре.
+        (legacy_chapters(html), true)
+    } else {
+        (sections, false)
+    }
+}
+
+fn tags(html: &str) -> impl Iterator<Item = (usize, usize, &str)> {
+    let mut offset = 0;
+    std::iter::from_fn(move || {
+        let start = offset + html[offset..].find('<')?;
+        let end = start + html[start..].find('>')? + 1;
+        offset = end;
+        let name = html[start + 1..end - 1]
+            .trim_end_matches('/')
+            .split_ascii_whitespace()
+            .next()
+            .unwrap_or_default();
+        Some((start, end, name))
+    })
+}
+
+fn legacy_chapters(html: &str) -> Chapters<'_> {
+    let Some(mut html) = after_closing_heading(html) else {
+        return Vec::new();
+    };
+    // У старых страниц имя из H1 продублировано отдельным DIV перед текстом.
+    let mut body_tags = tags(html);
+    let title = body_tags.next().is_some_and(|(start, end, name)| {
+        name.eq_ignore_ascii_case("div")
+            && html[..start].trim().is_empty()
+            && html[start..end].to_ascii_lowercase().contains("v8sh_title")
+    });
+    if title {
+        if let Some((_, close, _)) = body_tags.find(|tag| tag.2.eq_ignore_ascii_case("/div")) {
+            html = &html[close..];
+        }
+    }
+    // Горизонтальная черта отделяет служебные ссылки от тела статьи.
+    let end = tags(html)
+        .find(|tag| tag.2.eq_ignore_ascii_case("hr"))
+        .map_or(html.len(), |tag| tag.0);
+    let html = &html[..end];
+    let mut headings = tags(html)
+        .filter_map(|(start, end, name)| {
+            if !name.eq_ignore_ascii_case("p") {
+                return None;
+            }
+            let after = &html[end..];
+            let mut tags = tags(after);
+            let (open_start, open_end, open) = tags.next()?;
+            if !after[..open_start].trim().is_empty() || !open.eq_ignore_ascii_case("strong") {
+                return None;
+            }
+            let (close_start, close_end, _) =
+                tags.find(|tag| tag.2.eq_ignore_ascii_case("/strong"))?;
+            let heading = text(&after[open_end..close_start]);
+            let heading = heading.strip_suffix(':')?.trim();
+            (!heading.is_empty()).then(|| (start, end + close_end, heading.to_owned()))
+        })
+        .peekable();
+    let mut sections = Vec::new();
+    let intro_end = headings.peek().map_or(html.len(), |next| next.0);
+    let intro = &html[..intro_end];
+    if !text(intro).is_empty() {
+        sections.push(("Описание".to_owned(), intro));
+    }
+    while let Some((_, body, heading)) = headings.next() {
+        let end = headings.peek().map_or(html.len(), |next| next.0);
+        sections.push((heading, &html[body..end]));
+    }
+    sections
+}
+
+fn legacy_prose(html: &str) -> String {
+    let mut out = String::new();
+    let mut start = 0;
+    let mut separator = "";
+    let mut bullet = false;
+    let mut append = |raw: &str, separator: &mut &str, bullet: &mut bool| {
+        let body = text(raw);
+        if !body.is_empty() {
+            if !out.is_empty() {
+                out.push_str(separator);
+            }
+            if *bullet {
+                out.push_str("• ");
+            }
+            out.push_str(&body);
+            *separator = "";
+            *bullet = false;
+        }
+    };
+    for (at, end, tag) in tags(html) {
+        let (breaks, item) = match tag.to_ascii_lowercase().as_str() {
+            "br" | "/li" => ("\n", false),
+            "/p" | "/div" | "/ul" | "/ol" => ("\n\n", false),
+            "li" => ("\n", true),
+            _ => continue,
+        };
+        append(&html[start..at], &mut separator, &mut bullet);
+        if breaks.len() > separator.len() {
+            separator = breaks;
+        }
+        bullet |= item;
+        start = end;
+    }
+    append(&html[start..], &mut separator, &mut bullet);
+    out
 }
 
 fn parameters(content: &str) -> Option<Vec<Parameter>> {
@@ -914,8 +1088,15 @@ pub(crate) fn links(markup: &str) -> Vec<TypeName> {
 /// страницы: относительные ссылки разрешаются от него, иначе путь из списка
 /// членов типа не открывает статью.
 fn article_links(markup: &str, base: &str) -> Vec<ArticleLink> {
+    article_links_from(hrefs(markup), base)
+}
+
+fn article_links_from<'a>(
+    hrefs: impl IntoIterator<Item = (&'a str, &'a str)>,
+    base: &str,
+) -> Vec<ArticleLink> {
     let mut found: Vec<ArticleLink> = Vec::new();
-    for (href, label) in hrefs(markup) {
+    for (href, label) in hrefs {
         let absolute;
         let path = match href.strip_prefix("v8help://SyntaxHelperContext/") {
             Some(path) => path,
@@ -935,6 +1116,60 @@ fn article_links(markup: &str, base: &str) -> Vec<ArticleLink> {
         found.push(ArticleLink { label, path });
     }
     found
+}
+
+fn see_also(content: &str, base: &str) -> Vec<SeeAlsoEntry> {
+    let mut rows = Vec::new();
+    let mut start = 0;
+    for (at, _) in content.match_indices('<') {
+        let Some(end) = content[at..].find('>') else {
+            break;
+        };
+        let end = at + end;
+        let tag = content[at + 1..end]
+            .split_ascii_whitespace()
+            .next()
+            .unwrap_or_default()
+            .trim_end_matches('/');
+        // A final chapter can be followed by the page's methodical links.
+        if tag.eq_ignore_ascii_case("hr") {
+            see_also_row(&content[start..at], base, &mut rows);
+            return rows;
+        }
+        if ["br", "/p", "/li"]
+            .iter()
+            .any(|name| tag.eq_ignore_ascii_case(name))
+        {
+            see_also_row(&content[start..at], base, &mut rows);
+            start = end + 1;
+        }
+    }
+    see_also_row(&content[start..], base, &mut rows);
+    rows
+}
+
+fn see_also_row(markup: &str, base: &str, rows: &mut Vec<SeeAlsoEntry>) {
+    let body = text(markup);
+    if body.is_empty() {
+        return;
+    }
+    let page_links = hrefs(markup)
+        .into_iter()
+        .filter(|(href, _)| href.ends_with(".html") && !href.contains(['#', '?']));
+    let links = article_links_from(page_links, base);
+    let entry = match links.as_slice() {
+        [link] if body == link.label => SeeAlsoEntry::Document(link.clone()),
+        [owner, link] => match classify_id(&link.path) {
+            Some((kind, Some(path))) if path == owner.path => SeeAlsoEntry::Member {
+                owner: owner.label.clone(),
+                kind,
+                link: link.clone(),
+            },
+            _ => SeeAlsoEntry::Unparsed { text: body, links },
+        },
+        _ => SeeAlsoEntry::Unparsed { text: body, links },
+    };
+    rows.push(entry);
 }
 
 /// Адрес и разметка подписи каждой ссылки.

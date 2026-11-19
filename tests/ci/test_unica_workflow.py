@@ -964,7 +964,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         # CI sets no `CARGO_TARGET_DIR`: the archive goes to `<root>/target`.
         with mock.patch.dict(os.environ):
             os.environ.pop("CARGO_TARGET_DIR", None)
-            for lane in ("ordinary", "receipt", "vendor"):
+            for lane in lanes.LANES:
                 archive = lanes.archive_command(lane, Path("tests.tar.zst"))
                 self.assertEqual(Path(archive[archive.index("--target-dir") + 1]), lanes.ROOT / "target")
         script_text = CLIPPY_SCRIPT.read_text(encoding="utf-8")

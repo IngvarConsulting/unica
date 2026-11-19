@@ -14,7 +14,7 @@ use {
 use serde_json::{json, Map, Value};
 use std::io::{self, Write};
 use std::sync::Arc;
-use unica_address::address::QualifiedAddress;
+use unica_address::address::{NodeKind, QualifiedAddress};
 use unica_execution_contract::invocation::DomainResult;
 use unica_refusal::RefusalCode;
 
@@ -54,12 +54,15 @@ const MAX_LIMIT: usize = 50;
 // decision-source: arch/rules/mcp/read-page-budget.md
 pub const PREFERRED_PAGE_BYTES: usize = 64 * 1024;
 type ViewProjector<'a> = dyn Fn(&Value) -> Result<Value, ViewError> + 'a;
+type OwnedViewProjector<'a> = dyn Fn(Value) -> Result<Value, ViewError> + 'a;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ViewRequest {
     at: QualifiedAddress,
     limit: usize,
     cursor: Option<String>,
+    offset: Option<usize>,
+    from: Option<String>,
 }
 
 impl ViewRequest {
@@ -70,6 +73,8 @@ impl ViewRequest {
             at,
             limit: DEFAULT_LIMIT,
             cursor: None,
+            offset: None,
+            from: None,
         })
     }
 
@@ -99,6 +104,32 @@ impl ViewRequest {
     pub fn with_cursor(mut self, cursor: String) -> Self {
         self.cursor = Some(cursor);
         self
+    }
+
+    pub fn with_offset(mut self, offset: usize) -> Result<Self, ViewError> {
+        self.offset = Some(offset);
+        self.validate_selector()?;
+        Ok(self)
+    }
+
+    pub fn with_from(mut self, from: String) -> Result<Self, ViewError> {
+        self.from = Some(from);
+        self.validate_selector()?;
+        Ok(self)
+    }
+
+    fn validate_selector(&self) -> Result<(), ViewError> {
+        if usize::from(self.offset.is_some())
+            + usize::from(self.from.is_some())
+            + usize::from(self.cursor.is_some())
+            > 1
+        {
+            return Err(ViewError::new(
+                RefusalCode::BadValue,
+                "view accepts only one of offset, from and cursor",
+            ));
+        }
+        Ok(())
     }
 
     fn continuation_question(&self, source_set_identity: String) -> ViewCursorQuestion {
@@ -229,6 +260,16 @@ impl<A: ViewReadAuthority> ViewService<A> {
         request: ViewRequest,
         project: &ViewProjector<'_>,
     ) -> DomainResult {
+        self.view_projected_owned(request, &|data| project(&data))
+    }
+
+    /// Enriches the owned fresh projection without copying its collection.
+    /// Cursor continuations use the saved result and do not run the projector.
+    pub fn view_projected_owned(
+        &self,
+        request: ViewRequest,
+        project: &OwnedViewProjector<'_>,
+    ) -> DomainResult {
         match self.try_view(&request, Some(project), None, None) {
             Ok(result) => result,
             Err(error) => error_result(Some(request.at.to_string()), error),
@@ -279,10 +320,23 @@ impl<A: ViewReadAuthority> ViewService<A> {
     fn try_view(
         &self,
         request: &ViewRequest,
-        project: Option<&ViewProjector<'_>>,
+        project: Option<&OwnedViewProjector<'_>>,
         supplied: Option<(&QualifiedAddress, &str, Option<Value>)>,
         continuation_source: Option<&QualifiedAddress>,
     ) -> Result<DomainResult, ViewError> {
+        request.validate_selector()?;
+        if (request.offset.is_some() || request.from.is_some())
+            && request
+                .at
+                .segments()
+                .last()
+                .is_some_and(|part| part.kind() == NodeKind::Body)
+        {
+            return Err(ViewError::new(
+                RefusalCode::BadValue,
+                "offset and from select a collection page, not Body text",
+            ));
+        }
         let source_at = supplied
             .as_ref()
             .map_or(continuation_source.unwrap_or(&request.at), |(at, _, _)| *at);
@@ -290,6 +344,8 @@ impl<A: ViewReadAuthority> ViewService<A> {
         if let Some(cursor) = request.cursor.as_deref() {
             let question = request.continuation_question(snapshot.source_set_identity.clone());
             let stored = self.cursors.read(cursor, &question).map_err(cursor_error)?;
+            let page_node =
+                collection_metadata(stored.snapshot.node(), stored.offset, stored.snapshot.len());
             // The window holds one item past the page: its presence alone
             // tells the page whether a continuation follows.
             let window = stored
@@ -297,7 +353,7 @@ impl<A: ViewReadAuthority> ViewService<A> {
                 .read_items(stored.offset, request.limit.saturating_add(1))
                 .map_err(cursor_error)?;
             let page = prepare_page(
-                stored.snapshot.node(),
+                &page_node,
                 &window,
                 0,
                 request.limit,
@@ -313,7 +369,7 @@ impl<A: ViewReadAuthority> ViewService<A> {
                 None
             };
             return collection_result(
-                stored.snapshot.node(),
+                &page_node,
                 page.items,
                 next_cursor,
                 page.stopped_by,
@@ -338,7 +394,7 @@ impl<A: ViewReadAuthority> ViewService<A> {
 
         let mut text = None;
         let mut body_diagnostics = Vec::new();
-        let serialized = if let Some((_, _, data)) = supplied {
+        let mut serialized = if let Some((_, _, data)) = supplied {
             data.ok_or_else(|| {
                 ViewError::new(
                     RefusalCode::InvalidState,
@@ -357,11 +413,11 @@ impl<A: ViewReadAuthority> ViewService<A> {
                 None => self.authority.read_exact(&canonical_at, &snapshot)?,
             };
             text = view.take_text();
-            let serialized = serde_json::to_value(view).map_err(|error| {
+            let serialized = serialize_view_data(view).map_err(|error| {
                 ViewError::new(RefusalCode::ProviderUnavailable, error.to_string())
             })?;
             match project {
-                Some(project) => project(&serialized)?,
+                Some(project) => project(serialized)?,
                 None => serialized,
             }
         };
@@ -371,13 +427,16 @@ impl<A: ViewReadAuthority> ViewService<A> {
                 "reader returned a projection for another logical address",
             ));
         }
-        let mut object = serialized.as_object().cloned().ok_or_else(|| {
-            ViewError::new(
+        // Preserve the former clone's compact storage even for supplied or
+        // projected JSON, without copying the rows' owned contents.
+        shrink_projection_storage(&mut serialized);
+        let Value::Object(mut object) = serialized else {
+            return Err(ViewError::new(
                 RefusalCode::ProviderUnavailable,
                 "typed node projection is not an object",
-            )
-        })?;
-        if let Some(text) = text {
+            ));
+        };
+        if let Some((text, revision)) = text {
             // Проекция может ответить на другой вопрос о том же узле
             // (контракт операции `.Can.<op>`): текст несёт только сам `Body`.
             if object.get("kind").and_then(Value::as_str) == Some("Body") {
@@ -403,7 +462,7 @@ impl<A: ViewReadAuthority> ViewService<A> {
                         json!({"lines": {"state": "range", "from": from, "to": to}}),
                     );
                 }
-                let mut result = body_text_result(&canonical_at, object, Some(snapshot.revision));
+                let mut result = body_text_result(&canonical_at, object, revision);
                 result.diagnostics = body_diagnostics;
                 match text {
                     SourceText::Whole(text) => {
@@ -416,14 +475,12 @@ impl<A: ViewReadAuthority> ViewService<A> {
                             unica_bootstrap::MAX_RESPONSE_BUDGET,
                         );
                         let data = result.data.take();
-                        let rev = result.rev.take();
                         result = DomainResult::canonical_rejection(
                             Some(canonical_at.to_string()),
                             RefusalCode::ResultTooLarge,
                             error.to_string(),
                         );
                         result.data = data;
-                        result.rev = rev;
                         result.next.extend(error.next().iter().cloned());
                         result.source_text_read_hint = Some(Box::new(
                             unica_execution_contract::invocation::SourceTextReadHint {
@@ -454,16 +511,21 @@ impl<A: ViewReadAuthority> ViewService<A> {
             }
         }
         let Some(items) = object.remove("items") else {
+            if request.offset.is_some() || request.from.is_some() {
+                return Err(ViewError::new(
+                    RefusalCode::BadValue,
+                    "offset and from select a collection page, not a single node",
+                ));
+            }
             return node_result(&canonical_at, object, snapshot.revision);
         };
-        let items = items.as_array().cloned().ok_or_else(|| {
-            ViewError::new(
+        let Value::Array(items) = items else {
+            return Err(ViewError::new(
                 RefusalCode::ProviderUnavailable,
                 "typed collection items are not an array",
-            )
-        })?;
+            ));
+        };
         let node = Value::Object(object);
-        preflight_collection(&node, &items, &binding)?;
         let current = self.authority.snapshot(source_at)?;
         if current != snapshot {
             return Err(ViewError::new(
@@ -481,7 +543,31 @@ impl<A: ViewReadAuthority> ViewService<A> {
         request: &ViewRequest,
         binding: ViewCursorBinding,
     ) -> Result<DomainResult, ViewError> {
-        let first = prepare_page(&node, &items, 0, request.limit, &binding)?;
+        let start = request
+            .offset
+            .map(|offset| offset.min(items.len()))
+            .unwrap_or_else(|| {
+                request.from.as_ref().map_or(0, |prefix| {
+                    let prefix = prefix.to_lowercase();
+                    items
+                        .iter()
+                        .position(|item| {
+                            item.get("at").and_then(Value::as_str).is_some_and(|at| {
+                                QualifiedAddress::last_name_starts_with(at, &prefix)
+                            })
+                        })
+                        .unwrap_or(items.len())
+                })
+            });
+        // Every continuation must fit even when its absolute offset has as
+        // many digits as the total. Both fields belong to all byte probes.
+        preflight_collection(
+            &collection_metadata(&node, items.len(), items.len()),
+            &items,
+            &binding,
+        )?;
+        let page_node = collection_metadata(&node, start, items.len());
+        let first = prepare_page(&page_node, &items, start, request.limit, &binding)?;
         let cursor = if first.next_offset == items.len() {
             None
         } else {
@@ -491,8 +577,58 @@ impl<A: ViewReadAuthority> ViewService<A> {
                     .map_err(cursor_error)?,
             )
         };
-        collection_result(&node, first.items, cursor, first.stopped_by, &binding)
+        collection_result(&page_node, first.items, cursor, first.stopped_by, &binding)
     }
+}
+
+fn serialize_view_data(view: NodeViewData) -> Result<Value, serde_json::Error> {
+    match view {
+        NodeViewData::Collection(collection) => {
+            let (node, items) = collection.into_parts();
+            let Value::Object(mut fields) = serde_json::to_value(node)? else {
+                return Err(serde::ser::Error::custom(
+                    "view node projection is not an object",
+                ));
+            };
+            fields.insert("items".into(), Value::Array(items));
+            Ok(Value::Object(fields))
+        }
+        view => serde_json::to_value(view),
+    }
+}
+
+fn shrink_projection_storage(value: &mut Value) {
+    match value {
+        Value::String(text) if text.capacity() != text.len() => {
+            *text = std::mem::take(text).into_boxed_str().into_string();
+        }
+        Value::Array(items) => {
+            for item in items.iter_mut() {
+                shrink_projection_storage(item);
+            }
+            if items.capacity() != items.len() {
+                *items = std::mem::take(items).into_boxed_slice().into_vec();
+            }
+        }
+        Value::Object(fields) => {
+            // Map does not expose its capacity; rebuild its index while
+            // moving keys and values instead of cloning their contents.
+            let original = std::mem::take(fields);
+            *fields = Map::with_capacity(original.len());
+            for (key, mut value) in original {
+                shrink_projection_storage(&mut value);
+                fields.insert(key.into_boxed_str().into_string(), value);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collection_metadata(node: &Value, offset: usize, total: usize) -> Value {
+    let mut node = node.clone();
+    node["offset"] = json!(offset);
+    node["total"] = json!(total);
+    node
 }
 
 /// `Body` модуля из его текста. Текст сверх предела отказывает лишь там,
@@ -501,15 +637,15 @@ fn module_body_view(
     body_at: &QualifiedAddress,
     text: ModuleText,
 ) -> Result<NodeViewData, ViewError> {
-    let (text, count) = match text {
+    let (text, count, revision) = match text {
         ModuleText::TooLarge {
             bytes,
             prefix,
             lines,
-        } => (SourceText::Oversized { bytes, prefix }, lines),
-        ModuleText::Text(text) => {
+        } => (SourceText::Oversized { bytes, prefix }, lines, None),
+        ModuleText::Text { text, revision } => {
             let lines = text.lines().count();
-            (SourceText::Whole(text), lines)
+            (SourceText::Whole(text), lines, Some(revision))
         }
     };
     let (from, to) = body_at
@@ -520,10 +656,13 @@ fn module_body_view(
         from,
         to,
     };
-    Ok(NodeViewData::Text(TextView::new(
-        NodeView::new(body_at.to_string(), "Body", "Body", Map::new()),
-        text,
-    )))
+    Ok(NodeViewData::Text(
+        TextView::new(
+            NodeView::new(body_at.to_string(), "Body", "Body", Map::new()),
+            text,
+        )
+        .with_revision(revision),
+    ))
 }
 
 fn collection_result(
@@ -993,6 +1132,117 @@ mod tests {
         assert_eq!(stale, second);
     }
 
+    #[test]
+    fn owned_collection_serialization_preserves_the_canonical_shape() {
+        use crate::domain::node_view::{BranchRef, SourceText, TextView};
+        use unica_operation_contract::OperationRef;
+        let node = NodeView::new(
+            "main:CommonModule",
+            "CommonModule",
+            "Общие модули",
+            Map::from_iter([
+                ("caption".into(), json!("Юникод")),
+                ("enabled".into(), json!(true)),
+            ]),
+        )
+        .with_branches(vec![BranchRef::new("main:CommonModule.Sample.Method", 2)])
+        .with_can(vec![OperationRef::new(
+            "meta.add",
+            Map::from_iter([("kind".into(), json!("CommonModule"))]),
+        )])
+        .with_limits(vec!["A visible limit".into()]);
+        for view in [
+            NodeViewData::Collection(CollectionView::new(node.clone(), vec![])),
+            NodeViewData::Collection(CollectionView::new(
+                node.clone(),
+                vec![
+                    json!(null),
+                    json!(42),
+                    json!({"name":"Имя","nested":[false,{"text":"Юникод"}]}),
+                ],
+            )),
+            NodeViewData::Node(node.clone()),
+            NodeViewData::Text(TextView::new(node, SourceText::Whole("// source".into()))),
+        ] {
+            let expected = serde_json::to_value(&view).unwrap();
+            assert_eq!(super::serialize_view_data(view).unwrap(), expected);
+        }
+    }
+
+    /// rule: INV.APP.VIEW-CURSOR-CAPACITY
+    #[test]
+    fn a_supplied_collection_does_not_retain_its_providers_spare_capacity() {
+        use serde_json::Value;
+        fn payload(kind: &str) -> Value {
+            match kind {
+                "string" => {
+                    let mut text = String::with_capacity(1024 * 1024);
+                    text.push('x');
+                    Value::String(text)
+                }
+                "array" => {
+                    let mut items = Vec::with_capacity(16 * 1024);
+                    items.push(Value::Null);
+                    Value::Array(items)
+                }
+                "key" => {
+                    let mut key = String::with_capacity(1024 * 1024);
+                    key.push('x');
+                    Value::Object(Map::from_iter([(key, Value::Null)]))
+                }
+                "map" => {
+                    let mut fields = Map::with_capacity(16 * 1024);
+                    fields.insert("x".into(), Value::Null);
+                    Value::Object(fields)
+                }
+                "outer" => Value::Null,
+                _ => unreachable!(),
+            }
+        }
+        for kind in ["outer", "string", "array", "key", "map"] {
+            let service =
+                ViewService::new(FixtureAuthority::new(), ViewCursorStore::new(16 * 1024));
+            let owner = QualifiedAddress::parse("main:Document.Заказ.Module.Object").unwrap();
+            let branch = "main:Document.Заказ.Module.Object.Method.Проба.Caller";
+            let mut items = Vec::with_capacity(16 * 1024);
+            for line in 0..3 {
+                items.push(Value::Object(Map::from_iter([
+                    ("line".into(), json!(line)),
+                    ("payload".into(), payload(kind)),
+                ])));
+            }
+            let expected = serde_json::to_value(&items).unwrap();
+            let data = Value::Object(Map::from_iter([
+                ("at".into(), json!(branch)),
+                ("kind".into(), json!("Caller")),
+                ("title".into(), json!("Caller")),
+                ("items".into(), Value::Array(items)),
+            ]));
+            let request = || ViewRequest::new(branch).unwrap().with_limit(1).unwrap();
+            let mut page =
+                service.view_preloaded_collection(request(), &owner, "rev-1", Some(data));
+            for line in 0..3 {
+                assert!(page.ok, "{kind}: {page:?}");
+                assert_eq!(
+                    page.data.as_ref().unwrap()["items"],
+                    json!([expected[line]]),
+                    "{kind}"
+                );
+                if let Some(cursor) = page.cursor.take() {
+                    assert!(line < 2);
+                    page = service.view_preloaded_collection(
+                        request().with_cursor(cursor),
+                        &owner,
+                        "rev-1",
+                        None,
+                    );
+                } else {
+                    assert_eq!(line, 2);
+                }
+            }
+        }
+    }
+
     /// rule: INV.APP.DEFERRED-READ
     #[test]
     fn cursor_replay_keeps_the_issued_snapshot_after_source_change() {
@@ -1127,6 +1377,8 @@ mod tests {
         assert!(serde_json::to_vec(&last).unwrap().len() <= super::PREFERRED_PAGE_BYTES);
     }
 
+    /// rule: INV.APP.DEFERRED-READ
+    /// rule: INV.WIRE.READ-PAGE-BUDGET
     #[test]
     fn projected_section_is_counted_before_publishing_a_replayable_cursor() {
         let at = "main:Document.Заказ.Module.Object.Body";
@@ -1142,13 +1394,14 @@ mod tests {
             )),
         );
         let service = ViewService::new(authority, ViewCursorStore::default());
-        let project = |data: &serde_json::Value| -> Result<serde_json::Value, ViewError> {
-            let mut projected = data.clone();
+        let calls = std::cell::Cell::new(0);
+        let project = |mut projected: serde_json::Value| -> Result<serde_json::Value, ViewError> {
+            calls.set(calls.get() + 1);
             projected["can"] = json!(["operation".repeat(1_000)]);
             Ok(projected)
         };
         let request = || ViewRequest::new(at).unwrap().with_limit(50).unwrap();
-        let first = service.view_projected(request(), &project);
+        let first = service.view_projected_owned(request(), &project);
         assert!(first.ok);
         assert_eq!(first.page.as_ref().unwrap()["stoppedBy"], "bytes");
         assert_eq!(
@@ -1160,14 +1413,15 @@ mod tests {
         );
         assert!(serde_json::to_vec(&first).unwrap().len() <= super::PREFERRED_PAGE_BYTES);
         let cursor = first.cursor.unwrap();
-        let next = service.view_projected(request().with_cursor(cursor.clone()), &project);
+        let next = service.view_projected_owned(request().with_cursor(cursor.clone()), &project);
         assert_eq!(
             next,
-            service.view_projected(request().with_cursor(cursor), &project)
+            service.view_projected_owned(request().with_cursor(cursor), &project)
         );
         assert_eq!(next.page.as_ref().unwrap()["stoppedBy"], "complete");
         assert!(next.cursor.is_none());
         assert!(serde_json::to_vec(&next).unwrap().len() <= super::PREFERRED_PAGE_BYTES);
+        assert_eq!(calls.get(), 1, "only the fresh request runs the projector");
     }
 
     #[test]
@@ -1187,12 +1441,16 @@ mod tests {
 
     /// rule: INV.APP.DEFERRED-MANIFEST
     /// rule: INV.SOURCE.MODULE-COMPILATION-AND-BODY
+    /// rule: INV.SOURCE.CODE-REPLACE-TEXT-REVISION
     #[test]
     fn module_text_is_returned_whole_beside_the_projected_node_without_pages() {
         let at = "main:Document.Заказ.Module.Object.Body";
         let text = "// Комментарий\r\nProcedure A()\n\tReturn;\nEndProcedure\n";
         let mut authority = FixtureAuthority::new();
-        authority.module_text = Some(ModuleText::Text(text.into()));
+        authority.module_text = Some(ModuleText::Text {
+            text: text.into(),
+            revision: "module-text-revision".into(),
+        });
         let service = ViewService::new(authority, ViewCursorStore::default());
         let request = ViewRequest::new(at).unwrap().with_limit(1).unwrap();
         let result = service.view_projected(request, &|data| {
@@ -1202,6 +1460,7 @@ mod tests {
         });
         assert!(result.ok, "the Body read must succeed");
         assert_eq!(result.source_text.as_deref(), Some(text));
+        assert_eq!(result.rev.as_deref(), Some("module-text-revision"));
         assert_eq!(
             result.data.unwrap(),
             json!({"at": at, "kind": "Body", "title": "Body", "can": [{"op": "code.replace"}]})
@@ -1237,7 +1496,7 @@ mod tests {
     fn module_text_rechecks_revision_after_the_read() {
         let at = "main:Document.Заказ.Module.Object.Body";
         let mut authority = FixtureAuthority::new();
-        authority.module_text = Some(ModuleText::Text("Procedure A()\n".into()));
+        authority.module_text = Some(ModuleText::whole("Procedure A()\n".into()));
         authority.revision_change_on_snapshot = Some(2);
         let result = ViewService::new(authority, ViewCursorStore::default())
             .view(ViewRequest::new(at).unwrap());
@@ -1681,5 +1940,168 @@ mod tests {
         let title = metadata["title"].as_str().unwrap().to_owned() + "!";
         metadata["title"] = json!(title);
         assert!(super::preflight_collection(&metadata, &items, &binding).is_err());
+    }
+}
+
+#[cfg(test)]
+mod collection_selection_tests {
+    use super::*;
+    use crate::domain::node_view::CollectionView;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Mutex,
+    };
+
+    struct Authority {
+        items: Arc<Mutex<Vec<Value>>>,
+        reads: Arc<AtomicUsize>,
+    }
+    impl ViewReadAuthority for Authority {
+        fn snapshot(&self, _at: &QualifiedAddress) -> Result<ViewSourceSnapshot, ViewError> {
+            Ok(ViewSourceSnapshot {
+                source_set_identity: "selected-source".into(),
+                revision: "admitted".into(),
+            })
+        }
+        fn read_exact(
+            &self,
+            at: &QualifiedAddress,
+            _snapshot: &ViewSourceSnapshot,
+        ) -> Result<NodeViewData, ViewError> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            let node = NodeView::new(at.to_string(), "CommonModule", "Common modules", Map::new());
+            if at.segments().last().unwrap().name().is_some() {
+                return Ok(NodeViewData::Node(node));
+            }
+            Ok(NodeViewData::Collection(CollectionView::new(
+                node,
+                self.items.lock().unwrap().clone(),
+            )))
+        }
+    }
+    fn fixture() -> (
+        ViewService<Authority>,
+        Arc<Mutex<Vec<Value>>>,
+        Arc<AtomicUsize>,
+    ) {
+        let items = Arc::new(Mutex::new(["Zulu", "общийМодуль", "Other", "ОбщийСервер", "Alpha"].map(|name| json!({"at":format!("main:CommonModule.{name}"), "title":"Alias", "kind":"CommonModule"})).to_vec()));
+        let reads = Arc::new(AtomicUsize::new(0));
+        (
+            ViewService::new(
+                Authority {
+                    items: Arc::clone(&items),
+                    reads: Arc::clone(&reads),
+                },
+                ViewCursorStore::default(),
+            ),
+            items,
+            reads,
+        )
+    }
+    fn request() -> ViewRequest {
+        ViewRequest::new("main:CommonModule")
+            .unwrap()
+            .with_limit(2)
+            .unwrap()
+    }
+
+    #[test]
+    // rule: INV.APP.VIEW-CURSOR-CAPACITY
+    fn different_start_pages_share_the_same_immutable_collection_payload() {
+        let (service, _, _) = fixture();
+        let first = service.view(request().with_offset(0).unwrap());
+        let second = service.view(request().with_from("ОБЩ".into()).unwrap());
+        assert!(first.ok && second.ok);
+        assert!(first.cursor.is_some() && second.cursor.is_some());
+        let usage = service.cursors.retained_usage_for_test();
+        assert_eq!(usage.records, 1);
+        assert_eq!(usage.unique_payloads, 1);
+    }
+
+    #[test]
+    fn collection_offset_and_prefix_keep_registration_order_and_report_empty_position() {
+        let (service, _, _) = fixture();
+        for (request, offset, first) in [
+            (
+                request().with_offset(3).unwrap(),
+                3,
+                Some("main:CommonModule.ОбщийСервер"),
+            ),
+            (
+                request().with_offset(0).unwrap(),
+                0,
+                Some("main:CommonModule.Zulu"),
+            ),
+            (
+                request().with_from("ОБЩ".into()).unwrap(),
+                1,
+                Some("main:CommonModule.общийМодуль"),
+            ),
+            (request().with_from("absent".into()).unwrap(), 5, None),
+            (request().with_offset(usize::MAX).unwrap(), 5, None),
+        ] {
+            let result = service.view(request);
+            assert!(result.ok, "{result:?}");
+            let data = result.data.unwrap();
+            assert_eq!(data["offset"], offset);
+            assert_eq!(data["total"], 5);
+            assert_eq!(data["items"][0]["at"].as_str(), first);
+        }
+    }
+
+    #[test]
+    // rule: INV.APP.DEFERRED-READ
+    // rule: INV.APP.VIEW-CURSOR-CAPACITY
+    fn selected_page_cursor_repeats_its_saved_snapshot_while_new_questions_read_fresh() {
+        let (service, items, reads) = fixture();
+        let first = service.view(request().with_from("ОБЩ".into()).unwrap());
+        assert!(first.ok, "{first:?}");
+        let cursor = first.cursor.unwrap();
+        let before = reads.load(Ordering::SeqCst);
+        items.lock().unwrap().clear();
+        let next = service.view(request().with_cursor(cursor.clone()));
+        let repeated = service.view(request().with_cursor(cursor));
+        assert!(next.ok && repeated.ok);
+        assert_eq!(next.data, repeated.data);
+        assert_eq!(next.cursor, repeated.cursor);
+        assert_eq!(next.data.as_ref().unwrap()["offset"], 3);
+        assert_eq!(next.data.as_ref().unwrap()["total"], 5);
+        assert_eq!(reads.load(Ordering::SeqCst), before);
+        let fresh = service.view(request().with_offset(3).unwrap());
+        assert!(fresh.ok);
+        assert_eq!(fresh.data.unwrap()["total"], 0);
+        assert_eq!(reads.load(Ordering::SeqCst), before + 1);
+    }
+
+    #[test]
+    fn page_selectors_are_exclusive_and_do_not_apply_to_nodes_or_text() {
+        let (service, _, reads) = fixture();
+        assert!(request()
+            .with_offset(0)
+            .unwrap()
+            .with_from("a".into())
+            .is_err());
+        let mixed = service.view(
+            request()
+                .with_offset(0)
+                .unwrap()
+                .with_cursor("forged".into()),
+        );
+        assert!(!mixed.ok);
+        assert_eq!(reads.load(Ordering::SeqCst), 0);
+        let node = service.view(
+            ViewRequest::new("main:CommonModule.Zulu")
+                .unwrap()
+                .with_offset(0)
+                .unwrap(),
+        );
+        assert!(!node.ok);
+        let text = service.view(
+            ViewRequest::new("main:CommonModule.Zulu.Body")
+                .unwrap()
+                .with_from("a".into())
+                .unwrap(),
+        );
+        assert!(!text.ok);
     }
 }

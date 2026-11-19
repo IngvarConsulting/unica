@@ -96,7 +96,7 @@
         },
         {
           "pointer": "/data/props/synonym",
-          "eq": "Long"
+          "eq": "ru = 'Long'"
         },
         {
           "pointer": "/data/branches",
