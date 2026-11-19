@@ -4,7 +4,10 @@ use super::*;
 pub(super) const KIND: KindDeclaration = KindDeclaration {
     russian: &["Перечисление"],
     metadata: Some(MetadataDeclaration::new(&["Enums", "Перечисления"]).manager()),
-    root: Some(RootPlace { child_objects: 3500, tree: Some(3700) }),
+    root: Some(RootPlace {
+        child_objects: 3500,
+        tree: Some(3700),
+    }),
     layout: Some(LayoutDeclaration {
         directory: "Enums",
         display_name_ru: "Перечисления",

@@ -79,12 +79,12 @@ fn main() {
     }
     generated.push_str("        }\n    }\n}\n\n");
     generated.push_str(&format!(
-        "/// Every declaration in file-name order.\npub(crate) const DECLARED: [(NodeKind, KindDeclaration); {}] = [\n",
+        "/// Every declaration in file-name order.\npub(crate) const DECLARED: [(NodeKind, &KindDeclaration); {}] = [\n",
         kinds.len()
     ));
     for kind in &kinds {
         generated.push_str(&format!(
-            "    (NodeKind::{}, {}::KIND),\n",
+            "    (NodeKind::{}, &{}::KIND),\n",
             kind.variant, kind.module
         ));
     }

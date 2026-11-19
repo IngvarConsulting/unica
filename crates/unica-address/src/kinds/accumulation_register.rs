@@ -3,8 +3,13 @@ use super::*;
 
 pub(super) const KIND: KindDeclaration = KindDeclaration {
     russian: &["РегистрНакопления"],
-    metadata: Some(MetadataDeclaration::new(&["AccumulationRegisters", "РегистрыНакопления"]).manager()),
-    root: Some(RootPlace { child_objects: 3900, tree: Some(4400) }),
+    metadata: Some(
+        MetadataDeclaration::new(&["AccumulationRegisters", "РегистрыНакопления"]).manager(),
+    ),
+    root: Some(RootPlace {
+        child_objects: 3900,
+        tree: Some(4400),
+    }),
     layout: Some(LayoutDeclaration {
         directory: "AccumulationRegisters",
         display_name_ru: "Регистры накопления",
@@ -19,6 +24,13 @@ pub(super) const KIND: KindDeclaration = KindDeclaration {
         ("AccumulationRegisterRecordSet", "RecordSet"),
         ("AccumulationRegisterRecordKey", "RecordKey"),
     ]),
-    child_order: Some(&["Resource", "Attribute", "Dimension", "Form", "Template", "Command"]),
+    child_order: Some(&[
+        "Resource",
+        "Attribute",
+        "Dimension",
+        "Form",
+        "Template",
+        "Command",
+    ]),
     ..KindDeclaration::new("AccumulationRegister")
 };

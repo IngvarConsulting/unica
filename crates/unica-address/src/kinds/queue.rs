@@ -6,7 +6,10 @@ pub(super) const KIND: KindDeclaration = KindDeclaration {
     metadata: Some(MetadataDeclaration::new(&["Queues", "Очереди"])),
     // Очереди: дерево Конфигуратора 8.5.4, между регламентными
     // заданиями и ботами.
-    root: Some(RootPlace { child_objects: 2500, tree: Some(1000) }),
+    root: Some(RootPlace {
+        child_objects: 2500,
+        tree: Some(1000),
+    }),
     layout: Some(LayoutDeclaration {
         directory: "Queues",
         display_name_ru: "Очереди",
@@ -15,10 +18,7 @@ pub(super) const KIND: KindDeclaration = KindDeclaration {
     }),
     // The queue of 8.5.4: its message is a record, its manager a manager.
     // The platform refuses to import a queue descriptor without them.
-    generated_types_8_3_27: Some(&[
-        ("QueueMessage", "Record"),
-        ("QueueManager", "Manager"),
-    ]),
+    generated_types_8_3_27: Some(&[("QueueMessage", "Record"), ("QueueManager", "Manager")]),
     since: Some([8, 5, 4]),
     // Очередь пишет измерения перед реквизитами: выгрузка 8.5.4
     // собирает их в этом порядке даже из источника с обратным.

@@ -72,6 +72,17 @@ class KindListTests(unittest.TestCase):
         found = self.listed(f"mod m {{\n    fn f() {{\n        let a = [{six}];\n    }}\n}}\n")
         self.assertEqual([line for line, _ in found], [3])
 
+    def test_sibling_items_do_not_add_up_to_a_list(self) -> None:
+        functions = "\n".join(
+            f'    #[test]\n    fn reads_{tag.lower()}() {{\n        check("{tag}");\n    }}' for tag in TAGS
+        )
+        self.assertEqual(self.listed(f"mod tests {{\n{functions}\n}}\n"), [])
+        impl = "\n".join(f'    fn {tag.lower()}() -> &str {{ "{tag}" }}' for tag in TAGS)
+        self.assertEqual(self.listed(f"impl X {{\n{impl}\n}}\n"), [])
+        # Тип `fn` перед перечислением не делает его тело телом функции.
+        enum = "\n".join(f"    {tag}," for tag in TAGS)
+        self.assertEqual(len(self.listed(f"const F: fn() = f;\nenum Mine {{\n{enum}\n}}\n")), 1)
+
     def test_a_kind_declared_twice_is_refused(self) -> None:
         self.declare("kind0_again.rs", "Kind0")
         _, errors = guard.declared(self.root)

@@ -1468,7 +1468,9 @@ pub fn normalize_subsystem_content_ref(raw: &str) -> String {
 pub fn subsystem_content_type(type_part: &str) -> Option<&'static str> {
     match type_part {
         "Каталог" => return Some("Catalog"),
-        "ПараметрФункциональныхОпций" => return Some("FunctionalOptionsParameter"),
+        "ПараметрФункциональныхОпций" => {
+            return Some("FunctionalOptionsParameter")
+        }
         _ => {}
     }
     unica_address::address::NodeKind::metadata_kinds()
@@ -2493,7 +2495,8 @@ mod content_type_tests {
 
     #[test]
     fn unknown_and_nested_kinds_pass_through() {
-        for raw in ["Формы", "Forms", "ВнешниеОбработки", "Нечто", "catalogs"] {
+        for raw in ["Формы", "Forms", "ВнешниеОбработки", "Нечто", "catalogs"]
+        {
             assert_eq!(subsystem_content_type(raw), None, "{raw}");
         }
         assert_eq!(normalize_subsystem_content_ref("Нечто.Имя"), "Нечто.Имя");

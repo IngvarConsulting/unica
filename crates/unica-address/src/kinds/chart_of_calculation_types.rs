@@ -3,8 +3,19 @@ use super::*;
 
 pub(super) const KIND: KindDeclaration = KindDeclaration {
     russian: &["ПланВидовРасчета", "ПланВидовРасчёта"],
-    metadata: Some(MetadataDeclaration::new(&["ChartsOfCalculationTypes", "ПланыВидовРасчета", "ПланыВидовРасчёта"]).manager().object()),
-    root: Some(RootPlace { child_objects: 4300, tree: Some(4200) }),
+    metadata: Some(
+        MetadataDeclaration::new(&[
+            "ChartsOfCalculationTypes",
+            "ПланыВидовРасчета",
+            "ПланыВидовРасчёта",
+        ])
+        .manager()
+        .object(),
+    ),
+    root: Some(RootPlace {
+        child_objects: 4300,
+        tree: Some(4200),
+    }),
     layout: Some(LayoutDeclaration {
         directory: "ChartsOfCalculationTypes",
         display_name_ru: "ПВР",
@@ -18,7 +29,10 @@ pub(super) const KIND: KindDeclaration = KindDeclaration {
         ("ChartOfCalculationTypesList", "List"),
         ("ChartOfCalculationTypesManager", "Manager"),
         ("DisplacingCalculationTypes", "DisplacingCalculationTypes"),
-        ("DisplacingCalculationTypesRow", "DisplacingCalculationTypesRow"),
+        (
+            "DisplacingCalculationTypesRow",
+            "DisplacingCalculationTypesRow",
+        ),
         ("BaseCalculationTypes", "BaseCalculationTypes"),
         ("BaseCalculationTypesRow", "BaseCalculationTypesRow"),
         ("LeadingCalculationTypes", "LeadingCalculationTypes"),

@@ -154,7 +154,7 @@ pub fn declared(tag: &str) -> Option<(NodeKind, &'static KindDeclaration)> {
     DECLARED
         .iter()
         .find(|(_, declaration)| declaration.tag == tag)
-        .map(|(kind, declaration)| (*kind, declaration))
+        .map(|(kind, declaration)| (*kind, *declaration))
 }
 
 /// Вид по написанию сегмента: каноническому или русскому.
@@ -204,14 +204,14 @@ const fn passes(declaration: &KindDeclaration, filter: Filter) -> bool {
 /// Устойчивая сортировка вставками: виды без ключа остаются в порядке
 /// файлов после остальных.
 const fn sorted<const N: usize>(
-    mut items: [(NodeKind, KindDeclaration); N],
+    mut items: [(NodeKind, &'static KindDeclaration); N],
     order: Order,
-) -> [(NodeKind, KindDeclaration); N] {
+) -> [(NodeKind, &'static KindDeclaration); N] {
     let mut index = 1;
     while index < N {
         let mut position = index;
         while position > 0
-            && order_key(&items[position - 1].1, order) > order_key(&items[position].1, order)
+            && order_key(items[position - 1].1, order) > order_key(items[position].1, order)
         {
             let previous = items[position - 1];
             items[position - 1] = items[position];
@@ -223,11 +223,14 @@ const fn sorted<const N: usize>(
     items
 }
 
-const fn count<const N: usize>(items: &[(NodeKind, KindDeclaration); N], filter: Filter) -> usize {
+const fn count<const N: usize>(
+    items: &[(NodeKind, &'static KindDeclaration); N],
+    filter: Filter,
+) -> usize {
     let mut total = 0;
     let mut index = 0;
     while index < N {
-        if passes(&items[index].1, filter) {
+        if passes(items[index].1, filter) {
             total += 1;
         }
         index += 1;
@@ -236,14 +239,14 @@ const fn count<const N: usize>(items: &[(NodeKind, KindDeclaration); N], filter:
 }
 
 const fn kinds<const N: usize, const M: usize>(
-    items: &[(NodeKind, KindDeclaration); N],
+    items: &[(NodeKind, &'static KindDeclaration); N],
     filter: Filter,
 ) -> [NodeKind; M] {
     let mut out = [items[0].0; M];
     let mut index = 0;
     let mut next = 0;
     while index < N {
-        if passes(&items[index].1, filter) {
+        if passes(items[index].1, filter) {
             out[next] = items[index].0;
             next += 1;
         }
@@ -253,7 +256,7 @@ const fn kinds<const N: usize, const M: usize>(
 }
 
 const fn layouts<const N: usize, const M: usize>(
-    items: &[(NodeKind, KindDeclaration); N],
+    items: &[(NodeKind, &'static KindDeclaration); N],
 ) -> [MetadataLayout; M] {
     let mut out = [MetadataLayout {
         tag: "",
@@ -283,7 +286,7 @@ const fn layouts<const N: usize, const M: usize>(
 }
 
 const fn root_tags<const N: usize, const M: usize>(
-    items: &[(NodeKind, KindDeclaration); N],
+    items: &[(NodeKind, &'static KindDeclaration); N],
 ) -> [&'static str; M] {
     let mut out = [""; M];
     let mut index = 0;
@@ -308,10 +311,6 @@ const fn tags<const M: usize>(layouts: &[MetadataLayout; M]) -> [&'static str; M
     out
 }
 
-const BY_CHILD_OBJECTS: [(NodeKind, KindDeclaration); DECLARED.len()] =
-    sorted(DECLARED, Order::ChildObjects);
-const BY_TREE: [(NodeKind, KindDeclaration); DECLARED.len()] = sorted(DECLARED, Order::Tree);
-
 const METADATA_COUNT: usize = count(&DECLARED, Filter::Metadata);
 const ROOT_COUNT: usize = count(&DECLARED, Filter::Root);
 const TREE_COUNT: usize = count(&DECLARED, Filter::Tree);
@@ -320,19 +319,22 @@ const LAYOUT_COUNT: usize = count(&DECLARED, Filter::Layout);
 /// Виды объектов метаданных с адресом исходников: виды корня в порядке
 /// `ChildObjects`, затем остальные в порядке файлов.
 pub(crate) const METADATA_KINDS: [NodeKind; METADATA_COUNT] =
-    kinds(&BY_CHILD_OBJECTS, Filter::Metadata);
+    kinds(&sorted(DECLARED, Order::ChildObjects), Filter::Metadata);
 
 /// Виды корня в порядке дерева Конфигуратора.
-pub(crate) const CONFIGURATOR_TREE_ORDER: [NodeKind; TREE_COUNT] = kinds(&BY_TREE, Filter::Tree);
+pub(crate) const CONFIGURATOR_TREE_ORDER: [NodeKind; TREE_COUNT] =
+    kinds(&sorted(DECLARED, Order::Tree), Filter::Tree);
 
 /// Раскладки видов в порядке, в котором платформа пишет их в `ChildObjects`.
-pub const METADATA_LAYOUTS: [MetadataLayout; LAYOUT_COUNT] = layouts(&BY_CHILD_OBJECTS);
+pub const METADATA_LAYOUTS: [MetadataLayout; LAYOUT_COUNT] =
+    layouts(&sorted(DECLARED, Order::ChildObjects));
 
 /// Теги видов с раскладкой в том же порядке.
 pub const METADATA_LAYOUT_TAGS: [&str; LAYOUT_COUNT] = tags(&METADATA_LAYOUTS);
 
 /// Объявленные виды корня в порядке `ChildObjects` конфигурации.
-pub const DECLARED_ROOT_KINDS: [&str; ROOT_COUNT] = root_tags(&BY_CHILD_OBJECTS);
+pub const DECLARED_ROOT_KINDS: [&str; ROOT_COUNT] =
+    root_tags(&sorted(DECLARED, Order::ChildObjects));
 
 /// Место вида корня в `ChildObjects` конфигурации, как его пишет платформа:
 /// объявленные виды и виды, которых Unica не знает.
@@ -401,7 +403,7 @@ mod tests {
                 }
             }
         }
-        for (name, _) in &collections {
+        for name in collections.keys() {
             assert!(
                 !spellings
                     .keys()

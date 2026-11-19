@@ -10,6 +10,8 @@
 признаку — права роли, модули менеджера — стражем не считается.
 
 Список — самое узкое выражение в скобках, которое называет столько видов.
+Тело функции, модуля, `impl` и `trait` списком не бывает: виды соседних
+функций и тестов в нём не складываются.
 Вид назван строковым литералом своего написания (`"Queue"`) или
 идентификатором варианта (`NodeKind::Queue`, вариант своего перечисления).
 """
@@ -30,6 +32,9 @@ TAG = re.compile(r'KindDeclaration::new\("([^"]+)"\)')
 RAW = re.compile(r'[bc]?r(#*)"')
 CHAR = re.compile(r"'(?:\\.|[^\\'\n])'")
 IDENT = re.compile(r"\w+")
+ITEMS = {"fn", "mod", "impl", "trait"}
+# Начало другого элемента или выражения: `fn` перед ним был типом, а не телом.
+NOT_ITEMS = {"enum", "struct", "union", "const", "static", "let", "match", "type"}
 
 
 @dataclass(frozen=True)
@@ -128,20 +133,32 @@ def lists(text: str, kinds: list[Kind]) -> list[tuple[int, set[str]]]:
     strings = {kind.tag: kind.tag for kind in roots}
     idents = {kind.variant: kind.tag for kind in roots}
     found: list[tuple[int, set[str]]] = []
-    # Открытая скобка: строка, названные внутри виды, есть ли внутри список.
-    stack: list[tuple[int, set[str], bool]] = [(1, set(), False)]
+    # Открытая скобка: строка, названные внутри виды, есть ли внутри список,
+    # тело ли это элемента. Тело `fn`, `mod`, `impl`, `trait` держит
+    # независимые элементы: виды соседних функций списком не складываются.
+    stack: list[tuple[int, set[str], bool, bool]] = [(1, set(), False, True)]
+    item_at: int | None = None
     for line, kind, value in tokens(text):
-        if kind == "open":
-            stack.append((line, set(), False))
+        if kind == "ident" and value in ITEMS:
+            item_at = len(stack)
+        elif kind == "ident" and value in NOT_ITEMS:
+            item_at = None
+        elif kind == "open":
+            body = value == "{" and item_at == len(stack)
+            if body:
+                item_at = None
+            stack.append((line, set(), False, body))
         elif kind == "close":
             if len(stack) == 1:
                 continue
-            start, named, inner = stack.pop()
-            listed = not inner and len(named) >= threshold
+            start, named, inner, body = stack.pop()
+            listed = not body and not inner and len(named) >= threshold
             if listed:
                 found.append((start, named))
-            outer_line, outer_named, outer_inner = stack.pop()
-            stack.append((outer_line, outer_named | named, outer_inner or inner or listed))
+            if body:
+                continue
+            outer_line, outer_named, outer_inner, outer_body = stack.pop()
+            stack.append((outer_line, outer_named | named, outer_inner or inner or listed, outer_body))
         else:
             tag = strings.get(value) if kind == "string" else idents.get(value)
             if tag:

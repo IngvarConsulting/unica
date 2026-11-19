@@ -4,7 +4,10 @@ use super::*;
 pub(super) const KIND: KindDeclaration = KindDeclaration {
     russian: &["Последовательность"],
     metadata: Some(MetadataDeclaration::new(&["Sequences", "Последовательности"]).manager()),
-    root: Some(RootPlace { child_objects: 3300, tree: Some(3500) }),
+    root: Some(RootPlace {
+        child_objects: 3300,
+        tree: Some(3500),
+    }),
     layout: Some(LayoutDeclaration {
         directory: "Sequences",
         display_name_ru: "Последовательности",

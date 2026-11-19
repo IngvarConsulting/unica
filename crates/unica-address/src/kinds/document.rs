@@ -3,8 +3,15 @@ use super::*;
 
 pub(super) const KIND: KindDeclaration = KindDeclaration {
     russian: &["Документ"],
-    metadata: Some(MetadataDeclaration::new(&["Documents", "Документы"]).manager().object()),
-    root: Some(RootPlace { child_objects: 3100, tree: Some(3300) }),
+    metadata: Some(
+        MetadataDeclaration::new(&["Documents", "Документы"])
+            .manager()
+            .object(),
+    ),
+    root: Some(RootPlace {
+        child_objects: 3100,
+        tree: Some(3300),
+    }),
     layout: Some(LayoutDeclaration {
         directory: "Documents",
         display_name_ru: "Документы",
