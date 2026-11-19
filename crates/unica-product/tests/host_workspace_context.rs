@@ -1200,12 +1200,13 @@ fn request_metadata_allows_only_its_own_directory() {
     );
 }
 
-/// Клиент 2026-07-28 отдаёт roots только по
-/// запросу ввода: Unica спрашивает их, когда вызову нужно всё множество, —
-/// при выборе и в `unica.view {}`, — и не тратит повтор на остальные вызовы.
+/// Клиент 2026-07-28 отдаёт roots только ответом на запрос ввода: Unica
+/// задаёт его каждому предметному вызову, как `roots/list` в прежней сессии,
+/// поэтому все вызовы сессии видят одну папку по умолчанию — первый root, а
+/// не захваченную при запуске переменную.
 /// rule: INV.WORKSPACE.HOST-CONTEXT
 #[test]
-fn a_modern_client_is_asked_for_roots_only_when_a_call_needs_the_set() {
+fn a_modern_client_answers_roots_on_every_subject_call() {
     let root_dir = tempfile::tempdir().unwrap();
     let plugin = workspace(root_dir.path(), "plugin");
     let project_a = acceptance_copy(root_dir.path(), "проект A");
@@ -1220,7 +1221,7 @@ fn a_modern_client_is_asked_for_roots_only_when_a_call_needs_the_set() {
     let mut frontend = Frontend::start_modern(
         &plugin,
         &state,
-        &[(variable.as_str(), project_a.to_str().unwrap())],
+        &[(variable.as_str(), project_b.to_str().unwrap())],
         Some(RootsAnswer::Roots(vec![root(&project_a), root(&project_b)])),
     );
 
@@ -1244,12 +1245,13 @@ fn a_modern_client_is_asked_for_roots_only_when_a_call_needs_the_set() {
     assert!(found.to_string().contains("GoogleПереводчик"), "{found:#}");
     assert_eq!(frontend.roots_requests, 2);
 
-    // A call without a selection costs no retry and keeps the project.
+    // A call without a selection works in the first root, not in the stale
+    // startup variable, which here names project B.
     let unselected = frontend.call(4, "unica.search", json!({"query": "МаркерПроектаБ"}));
     assert_eq!(structured(&unselected)["ok"], true, "{unselected:#}");
     assert!(
         !unselected.to_string().contains("GoogleПереводчик"),
         "{unselected:#}"
     );
-    assert_eq!(frontend.roots_requests, 2);
+    assert_eq!(frontend.roots_requests, 3);
 }

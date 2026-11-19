@@ -255,8 +255,7 @@ The plugin-data directory is not a workspace identity. ZCode supplies
 paths are rejected. These variables are captured when the host starts the
 server. When a client declares MCP `roots`, a workspace tool call without host
 request metadata asks for them afresh: by `roots/list` in a session before
-protocol 2026-07-28, by an input request from 2026-07-28 (only for a call with
-`workspace` and for `unica.view {}`). The roots outrank the captured variables;
+protocol 2026-07-28, by an input request from 2026-07-28. The roots outrank the captured variables;
 without `workspace` the call uses the first root, and `workspace` selects a
 directory inside any listed root. A directory opened to the session later is
 therefore usable without restarting the server. The existing canonical workspace/profile keys continue to

@@ -486,13 +486,20 @@ fn select_directory(allowed: &[String], selection: &str) -> Result<(String, usiz
         ));
     };
     // The project file of the selection must not come from above the allowed
-    // directory: the person did not open that directory to the agent.
+    // directories: the person did not open that directory to the agent. A
+    // directory nested in another allowed one may take the outer one's file.
+    let outermost = allowed
+        .iter()
+        .filter_map(|directory| Path::new(directory).canonicalize().ok())
+        .filter(|allowed| canonical.starts_with(allowed))
+        .min_by_key(|allowed| allowed.components().count())
+        .unwrap_or_else(|| root.clone());
     let within = canonical
         .ancestors()
-        .take_while(|base| base.starts_with(&root))
+        .take_while(|base| base.starts_with(&outermost))
         .any(is_workspace_root);
     if !within {
-        if let Some(outer) = root.parent().and_then(find_workspace_root) {
+        if let Some(outer) = outermost.parent().and_then(find_workspace_root) {
             if outer.join("v8project.yaml").is_file() {
                 return Err(format!(
                     "Selected workspace `{selection}` has no v8project.yaml up to its allowed directory {}; the nearest one lies above it, in {}, which the host has not allowed. Select a directory with its own v8project.yaml, or ask the person to open {} to the session.",
@@ -1432,6 +1439,11 @@ mod tests {
         // Without a selection the session keeps today's discovery.
         assert!(context
             .resolve_request(&with_roots(Map::new(), roots.clone()))
+            .is_ok());
+        // The directory above is allowed too: its project file is in the set.
+        let both = ClientRoots::Listed(vec![root_uri(&fixture.0), root_uri(&root)]);
+        assert!(context
+            .resolve_request(&selecting(both, Map::new(), &display_path(&nested)))
             .is_ok());
 
         for (marker, contents) in [

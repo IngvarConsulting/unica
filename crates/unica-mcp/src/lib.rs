@@ -419,10 +419,10 @@ impl UnicaServer {
 
     /// A call that selected its directory and became a Task: the answer to a
     /// later question of that Task runs in the same directory.
+    /// A subject call that became a Task: the answer to a later question of
+    /// that Task runs with the same selection and roots, not with whatever
+    /// the answering request carries.
     fn remember_task_host(&self, response: &CallToolResponse, host: &unica_bootstrap::HostRequest) {
-        if host.selection.is_none() {
-            return;
-        }
         let task_id = match response {
             CallToolResponse::Task(created) => Some(created.task.task_id.clone()),
             CallToolResponse::Complete(result) => result
@@ -435,16 +435,17 @@ impl UnicaServer {
             _ => None,
         };
         if let Some(task_id) = task_id {
-            self.task_hosts
+            let mut hosts = self
+                .task_hosts
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .insert(
-                    task_id,
-                    TaskHost {
-                        selection: host.selection.clone(),
-                        roots: host.roots.clone(),
-                    },
-                );
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            hosts.remember(
+                task_id,
+                TaskHost {
+                    selection: host.selection.clone(),
+                    roots: host.roots.clone(),
+                },
+            );
         }
     }
 }
@@ -1105,23 +1106,21 @@ impl ServerHandler for UnicaServer {
         let roots = if !subject {
             unica_bootstrap::ClientRoots::NotDeclared
         } else if modern_peer(&context) {
-            // From 2026-07-28 roots travel as an input request, which costs
-            // the client a retry: ask only when the call needs the whole set.
-            if selection.is_some() || list_allowed {
-                match modern_client_roots(&context, &metadata, input_responses.as_ref()) {
-                    ModernRoots::Answered(roots) => {
-                        roots_from_input = true;
-                        roots
-                    }
-                    ModernRoots::Ask => {
-                        return Ok(CallToolResponse::from(with_roots_request(
-                            InputRequiredResult::new(None, None),
-                        )))
-                    }
-                    ModernRoots::NotDeclared => unica_bootstrap::ClientRoots::NotDeclared,
+            // From 2026-07-28 roots travel as an input request: asked on every
+            // subject call, as `roots/list` is in a legacy session, so that
+            // every call of a session resolves the same way and roots outrank
+            // the startup variable. The retry costs the client milliseconds.
+            match modern_client_roots(&context, &metadata, input_responses.as_ref()) {
+                ModernRoots::Answered(roots) => {
+                    roots_from_input = true;
+                    roots
                 }
-            } else {
-                unica_bootstrap::ClientRoots::NotDeclared
+                ModernRoots::Ask => {
+                    return Ok(CallToolResponse::from(with_roots_request(
+                        InputRequiredResult::new(None, None),
+                    )))
+                }
+                ModernRoots::NotDeclared => unica_bootstrap::ClientRoots::NotDeclared,
             }
         } else {
             client_roots(&context, &metadata).await
