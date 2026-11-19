@@ -94,7 +94,8 @@ fn child_resource_check_is_retained_until_a_child_resource_changes() {
 }
 
 /// Cancellation at any point of the check refuses the read instead of
-/// turning into a resource error, and leaves nothing retained.
+/// turning into a resource error, and leaves nothing retained: the next
+/// read checks the object again.
 #[test]
 fn cancelled_child_resource_check_refuses_the_read() {
     let root = tempfile::tempdir().unwrap();
@@ -132,16 +133,54 @@ fn cancelled_child_resource_check_refuses_the_read() {
     let (complete, total) = run(&settled(), 0);
     complete.unwrap();
     assert!(total > 2, "{total}");
+    let probe = RetainedReadProbe::watch(&source);
     for stop_at in 1..=total {
         let artifacts = settled();
-        let (refused, _) = run(&artifacts, stop_at);
+        match run(&artifacts, stop_at) {
+            (Err(error), _) => assert_eq!(error.code(), RefusalCode::Cancelled, "{stop_at}"),
+            // The checkpoint runs on a timer while the stamps are taken: a
+            // faster pass may finish before it was asked this often.
+            (Ok(_), calls) => {
+                assert!(calls < stop_at, "stop_at={stop_at} calls={calls}");
+                continue;
+            }
+        }
+        descriptor_opens(&probe, &source);
+        run(&artifacts, 0).0.unwrap();
         assert_eq!(
-            refused.unwrap_err().code(),
-            RefusalCode::Cancelled,
-            "stop_at={stop_at}"
+            descriptor_opens(&probe, &source),
+            2,
+            "a cancelled check retains nothing (stop_at={stop_at})"
         );
-        let (again, calls) = run(&artifacts, 0);
-        again.unwrap();
-        assert_eq!(calls, total, "a cancelled check retains nothing (stop_at={stop_at})");
+    }
+}
+
+/// A child tree deeper than the observation reads is not walked for a
+/// revision: nothing is retained, and the observation names the child.
+#[test]
+fn a_child_tree_deeper_than_observed_is_never_retained() {
+    let root = tempfile::tempdir().unwrap();
+    let source = fs::canonicalize(root.path()).unwrap();
+    let forms = source.join("Catalogs/Products/Forms");
+    let mut deep = forms.join("Main");
+    for _ in 0..70 {
+        deep.push("d");
+    }
+    fs::create_dir_all(&deep).unwrap();
+    fs::write(source.join("Catalogs/Products.xml"), OWNER).unwrap();
+    fs::write(forms.join("Main.xml"), "not a form descriptor").unwrap();
+    let artifacts = Arc::new(RegistrationCache::with_settle_window_for_test(
+        std::time::Duration::ZERO,
+    ));
+    let probe = RetainedReadProbe::watch(&source);
+    for _ in 0..2 {
+        let found = diagnostics(&source, &artifacts);
+        assert!(
+            found.iter().any(|diagnostic| {
+                diagnostic.code == unica_metadata::MetaDiagnosticCode::ProviderUnavailable
+            }),
+            "{found:?}"
+        );
+        assert_eq!(descriptor_opens(&probe, &source), 2, "checked every time");
     }
 }

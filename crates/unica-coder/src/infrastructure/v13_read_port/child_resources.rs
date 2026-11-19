@@ -11,7 +11,7 @@ use unica_address::source_target::MetadataAddress;
 use unica_metadata::MetaDiagnostic;
 use unica_metadata_designer::child_resources::{
     observe_typed_child_resources_with, observed_child_directories, TypedChildEntryKind,
-    TypedChildResourceRead,
+    TypedChildObservationScope, TypedChildResourceRead, TYPED_CHILD_TREE_MAX_DEPTH,
 };
 use unica_refusal::RefusalDetail;
 use unica_source_contract::read::{FileStamp, SourceDirectory, SourceEntry};
@@ -74,7 +74,15 @@ impl ProviderReadAuthority {
         }
         let reader = RetainedChildResources::new(&self.root, checkpoint);
         let observed =
-            observe_typed_child_resources_with(&reader, &relative, target, kind, name, owner_xml);
+            observe_typed_child_resources_with(
+                &reader,
+                TypedChildObservationScope::Diagnostics,
+                &relative,
+                target,
+                kind,
+                name,
+                owner_xml,
+            );
         reader.finish()?;
         let diagnostics = match observed {
             Ok(observation) => observation.diagnostics,
@@ -147,14 +155,18 @@ fn child_resource_revision(
 
 /// The entries of one child directory, its names spread over the host's
 /// cores: on Windows every entry is a handle to open, and a form directory
-/// of a large object has hundreds. The checkpoint runs around the pass,
-/// which only stamps and never reads content.
+/// of a large object has hundreds. The workers only stamp, never read
+/// content; the caller's checkpoint keeps running while they work and stops
+/// them between entries. A tree deeper than the observation's own bound is
+/// not walked: the observation names it and nothing is retained.
 fn walk_in_parallel(
     directory: &SourceDirectory,
     relative: PathBuf,
     entries: &mut Vec<(PathBuf, RevisionEntry)>,
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<()> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
     let names = directory.read_immediate_names_with_limit(None, &mut *check)?;
     let workers = std::thread::available_parallelism()
         .map_or(1, std::num::NonZeroUsize::get)
@@ -163,24 +175,46 @@ fn walk_in_parallel(
     for (index, name) in names.into_iter().enumerate() {
         shares[index % workers].push(name);
     }
-    let walked = std::thread::scope(|scope| {
-        shares
+    let stop = AtomicBool::new(false);
+    let (walked, checked) = std::thread::scope(|scope| {
+        let relative = &relative;
+        let stop = &stop;
+        let handles = shares
             .into_iter()
             .map(|share| {
-                let relative = &relative;
                 scope.spawn(move || -> io::Result<Vec<(PathBuf, RevisionEntry)>> {
+                    let mut stopped = || {
+                        if stop.load(Ordering::Relaxed) {
+                            Err(io::Error::other("child resource revision stopped"))
+                        } else {
+                            Ok(())
+                        }
+                    };
                     let mut found = Vec::new();
                     for name in share {
-                        visit(directory, relative, &name, &mut found, &mut || Ok(()))?;
+                        stopped()?;
+                        visit(directory, relative, &name, 1, &mut found, &mut stopped)?;
                     }
                     Ok(found)
                 })
             })
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>();
+        let mut checked = Ok(());
+        while !handles.iter().all(|handle| handle.is_finished()) {
+            if let Err(error) = check() {
+                stop.store(true, Ordering::Relaxed);
+                checked = Err(error);
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let walked = handles
             .into_iter()
-            .map(|worker| worker.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic)))
-            .collect::<Vec<_>>()
+            .map(|handle| handle.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic)))
+            .collect::<Vec<_>>();
+        (walked, checked)
     });
+    checked?;
     for found in walked {
         entries.extend(found?);
     }
@@ -191,33 +225,28 @@ fn visit(
     directory: &SourceDirectory,
     relative: &Path,
     name: &std::ffi::OsStr,
+    depth: usize,
     entries: &mut Vec<(PathBuf, RevisionEntry)>,
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<()> {
+    if depth > TYPED_CHILD_TREE_MAX_DEPTH {
+        return Err(io::Error::other("child resource tree is deeper than observed"));
+    }
     let path = relative.join(name);
     match directory.retain_immediate_child_nofollow(name)? {
         SourceEntry::Directory(child) => {
             entries.push((path.clone(), RevisionEntry::Directory));
-            walk(&child, path, entries, check)
+            for name in child.read_immediate_names_with_limit(None, &mut *check)? {
+                check()?;
+                visit(&child, &path, &name, depth + 1, entries, check)?;
+            }
+            Ok(())
         }
         entry => {
             entries.push((path, entry_kind(entry)?));
             Ok(())
         }
     }
-}
-
-fn walk(
-    directory: &SourceDirectory,
-    relative: PathBuf,
-    entries: &mut Vec<(PathBuf, RevisionEntry)>,
-    check: &mut dyn FnMut() -> io::Result<()>,
-) -> io::Result<()> {
-    for name in directory.read_immediate_names_with_limit(None, &mut *check)? {
-        check()?;
-        visit(directory, &relative, &name, entries, check)?;
-    }
-    Ok(())
 }
 
 fn entry_kind(entry: SourceEntry) -> io::Result<RevisionEntry> {

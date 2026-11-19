@@ -666,6 +666,7 @@ pub fn observe_typed_child_resources(
 ) -> Result<TypedChildObservation, unica_metadata::request::MetaFailure> {
     observe_typed_child_resources_with(
         &DiscoveryChildResources(reader),
+        TypedChildObservationScope::Validation,
         descriptor_path,
         owner,
         object_kind,
@@ -674,15 +675,27 @@ pub fn observe_typed_child_resources(
     )
 }
 
+/// What an observation keeps besides its diagnostics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypedChildObservationScope {
+    /// The images and footprints a validation subject needs.
+    Validation,
+    /// Diagnostics only: every file is still read, but its content is
+    /// dropped once checked, unless the check itself needs it.
+    Diagnostics,
+}
+
 /// The same observation over any reader of the child resources.
 pub fn observe_typed_child_resources_with(
     reader: &dyn TypedChildResourceRead,
+    scope: TypedChildObservationScope,
     descriptor_path: &Path,
     owner: &MetadataAddress,
     object_kind: &str,
     object_name: &str,
     owner_xml: &str,
 ) -> Result<TypedChildObservation, unica_metadata::request::MetaFailure> {
+    let keep_images = scope == TypedChildObservationScope::Validation;
     let document = Document::parse(owner_xml.trim_start_matches('\u{feff}')).map_err(|_| {
         unica_metadata::request::MetaFailure::from(
             crate::edit::typed_diagnostic(
@@ -759,12 +772,14 @@ pub fn observe_typed_child_resources_with(
                 }
             };
 
-            observation.validation_resources.push(
-                unica_metadata::validation_subject::MetadataResourceImage {
-                    role: typed_child_role(collection, owner, &name),
-                    bytes: descriptor.clone(),
-                },
-            );
+            if keep_images {
+                observation.validation_resources.push(
+                    unica_metadata::validation_subject::MetadataResourceImage {
+                        role: typed_child_role(collection, owner, &name),
+                        bytes: descriptor.clone(),
+                    },
+                );
+            }
             let template_type = (collection == MetaCollection::Templates)
                 .then(|| typed_template_type_from_descriptor(&descriptor, &child))
                 .transpose();
@@ -779,7 +794,7 @@ pub fn observe_typed_child_resources_with(
             let payload_root = collection_dir.join(&name);
             let (payload, directories) =
                 if reader.exists(&payload_root) {
-                    match read_child_tree(reader, &payload_root) {
+                    match read_child_tree(reader, &payload_root, keep_images) {
                         Ok(value) => value,
                         Err(error) => {
                             observation.diagnostics.push(
@@ -866,6 +881,9 @@ pub fn observe_typed_child_resources_with(
             };
             let retained = footprint.retained.clone();
             observation.validation_footprints.push(footprint);
+            if !keep_images {
+                continue;
+            }
             for (relative, bytes) in payload {
                 let role = match typed_child_payload_role(
                     collection,
@@ -1195,18 +1213,24 @@ pub fn read_typed_child_tree(
     reader: &dyn ProjectDiscoveryRead,
     root: &Path,
 ) -> Result<TypedChildTree, TypedChildTreeError> {
-    read_child_tree(&DiscoveryChildResources(reader), root)
+    read_child_tree(&DiscoveryChildResources(reader), root, true)
 }
 
+/// The payload tree of one child. Without `keep_content` each file is still
+/// read, but only the HTML template descriptor, which the footprint check
+/// parses, keeps its bytes.
 fn read_child_tree(
     reader: &dyn TypedChildResourceRead,
     root: &Path,
+    keep_content: bool,
 ) -> Result<TypedChildTree, TypedChildTreeError> {
+    #[allow(clippy::too_many_arguments)]
     fn visit(
         reader: &dyn TypedChildResourceRead,
         root: &Path,
         current: &Path,
         depth: usize,
+        keep_content: bool,
         files: &mut Vec<(PathBuf, Vec<u8>)>,
         directories: &mut Vec<PathBuf>,
     ) -> Result<(), TypedChildTreeError> {
@@ -1222,13 +1246,25 @@ fn read_child_tree(
                 TypedChildEntryKind::Link => return Err(TypedChildTreeError::SymbolicLink),
                 TypedChildEntryKind::Directory => {
                     directories.push(path.strip_prefix(root).unwrap().to_path_buf());
-                    visit(reader, root, &path, depth + 1, files, directories)?;
+                    visit(
+                        reader,
+                        root,
+                        &path,
+                        depth + 1,
+                        keep_content,
+                        files,
+                        directories,
+                    )?;
                 }
                 TypedChildEntryKind::File => {
-                    let bytes = reader
+                    let mut bytes = reader
                         .read_file(&path)
                         .map_err(|_| TypedChildTreeError::Unavailable)?;
-                    files.push((path.strip_prefix(root).unwrap().to_path_buf(), bytes));
+                    let relative = path.strip_prefix(root).unwrap().to_path_buf();
+                    if !keep_content && relative != Path::new("Ext/Template.xml") {
+                        bytes = Vec::new();
+                    }
+                    files.push((relative, bytes));
                 }
                 TypedChildEntryKind::Other => return Err(TypedChildTreeError::UnsupportedNode),
             }
@@ -1237,7 +1273,15 @@ fn read_child_tree(
     }
     let mut files = Vec::new();
     let mut directories = vec![PathBuf::new()];
-    visit(reader, root, root, 0, &mut files, &mut directories)?;
+    visit(
+        reader,
+        root,
+        root,
+        0,
+        keep_content,
+        &mut files,
+        &mut directories,
+    )?;
     files.sort_by(|left, right| left.0.cmp(&right.0));
     directories.sort();
     Ok((files, directories))
@@ -1373,7 +1417,7 @@ pub type TypedChildTree = (Vec<(PathBuf, Vec<u8>)>, Vec<PathBuf>);
 // origin: #309
 // problem: неизвестно
 // on-reach: отказ ProviderUnavailable «typed child resource topology is unavailable»
-const TYPED_CHILD_TREE_MAX_DEPTH: usize = 64;
+pub const TYPED_CHILD_TREE_MAX_DEPTH: usize = 64;
 
 #[cfg(test)]
 mod export_format_tests {
