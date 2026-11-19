@@ -1,0 +1,241 @@
+{
+  "id": "S-3178-method-range-refusal",
+  "issue": 3178,
+  "area": "Код BSL",
+  "task": "Получить точный адрес Body после отказа замены Method текстом с конечным комментарием",
+  "workspace": "tests/fixtures/acceptance/workspace-resolve",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.Probe.Body",
+        "ops": [
+          {
+            "op": "code.replace",
+            "args": {
+              "text": "// Ping description\nProcedure Ping() Export\n    Value = 1;\nEndProcedure // closing comment\n\nProcedure Neighbor() Export\n    Message(\"keep\");\nEndProcedure\n"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "fb94f4871ddce4a745ac4d8778c1d7671d8cc8953e4c3886b576676e96859f56"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Probe.Method.Ping.Body"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/sourceText",
+          "eq": "// Ping description\nProcedure Ping() Export\n    Value = 1;\nEndProcedure // closing comment\n"
+        }
+      ],
+      "captures": {
+        "methodText": {
+          "pointer": "/sourceText"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.Probe.Method.Ping",
+        "ops": [
+          {
+            "op": "code.replace",
+            "args": {
+              "text": "$capture.methodText"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.text"
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        },
+        {
+          "pointer": "/diagnostics/0/outcome",
+          "eq": "fixCall"
+        },
+        {
+          "pointer": "/next/0/tool",
+          "eq": "unica.view"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:CommonModule.Probe.Method.Ping.Body"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "fb94f4871ddce4a745ac4d8778c1d7671d8cc8953e4c3886b576676e96859f56"
+        }
+      ],
+      "captures": {
+        "readBody": {
+          "pointer": "/next/0/args/at"
+        }
+      },
+      "refusal": "bad_value: replacement text includes a comment after the method's closing token, outside the Method span. Use Method.Body for the full text and request a new preview"
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.readBody"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/sourceText",
+          "eq": "// Ping description\nProcedure Ping() Export\n    Value = 1;\nEndProcedure // closing comment\n"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.readBody",
+        "ops": [
+          {
+            "op": "code.replace",
+            "args": {
+              "text": "$capture.methodText"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "fb94f4871ddce4a745ac4d8778c1d7671d8cc8953e4c3886b576676e96859f56"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.Probe.Method.Ping.Body",
+        "ops": [
+          {
+            "op": "code.replace",
+            "args": {
+              "text": "// Ping description\nProcedure Ping() Export\n    Value = 2;\nEndProcedure // closing comment\n"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "fb94f4871ddce4a745ac4d8778c1d7671d8cc8953e4c3886b576676e96859f56"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "973ed94db6906fcf8f8cec6919007dbe44206ea301a6c05136f5b8806a39b41a"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.Probe.Method.Ping.Body",
+        "ops": [
+          {
+            "op": "code.replace",
+            "args": {
+              "text": "// Ping description\nProcedure Ping() Export\n    Value = 2;\nEndProcedure // closing comment\n"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "973ed94db6906fcf8f8cec6919007dbe44206ea301a6c05136f5b8806a39b41a"
+        }
+      ]
+    }
+  ]
+}

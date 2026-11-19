@@ -2715,26 +2715,98 @@ fn conditional_compilation_twins_are_not_redeclarations() {
 /// rule: INV.SOURCE.IDEMPOTENT-PRECHECK
 #[test]
 fn inline_tail_after_the_method_is_not_a_fixed_point() {
-    // The method ends mid-line, so the text after it is not whole lines:
-    // the repeat would append the tail again and must be refused.
-    let before = "Procedure Base()\nEndProcedure // к\n";
-    let fixture = staged_code_fixture("inline-tail", before.as_bytes());
-    let operation = parse_code_plan_operation(
-            "code.replace",
-            &json!({"at":"main:CommonModule.Sample.Method.Base", "text":"Procedure Base()\n    Value = 1;\nEndProcedure // к"}),
-            0,
-            fixture.binding.source_set_name(),
-        )
-        .unwrap();
-    let admission = staged_code_admission(&fixture, false);
-    let error = plan_admitted_code(&admission, &fixture.binding, &[operation])
-        .expect_err("a doubled inline tail must not pass as a repeat no-op");
+    const METHOD: &str = "main:CommonModule.Sample.Method.Base";
+    for (head, statement, end) in [
+        ("Procedure Base()", "    Value = 1;", "EndProcedure"),
+        ("Function Base()", "    Return 1;", "EndFunction"),
+    ] {
+        for (eol, neighbor) in [("\n", true), ("\r\n", true), ("\n", false), ("\r\n", false)] {
+            let original = [head, statement, &format!("{end} // closing comment")].join(eol);
+            let before = if neighbor {
+                format!("{original}{eol}{eol}Procedure Neighbor(){eol}EndProcedure{eol}")
+            } else {
+                original.clone()
+            };
+            let fixture = staged_code_fixture("inline-tail", before.as_bytes());
+            let admission = staged_code_admission(&fixture, false);
+            let operation = |at: &str, text: &str| {
+                parse_code_plan_operation(
+                    "code.replace",
+                    &json!({"at":at, "text":text}),
+                    0,
+                    fixture.binding.source_set_name(),
+                )
+                .unwrap()
+            };
+            let error = plan_admitted_code(
+                &admission,
+                &fixture.binding,
+                &[operation(METHOD, &original)],
+            )
+            .expect_err("a doubled inline tail must not pass as a repeat no-op");
+            assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{error:?}");
+            let body = format!("{METHOD}.Body");
+            let next = error.next().expect("read the full Method.Body");
+            assert_eq!(next["tool"], "unica.view");
+            assert_eq!(next["args"]["at"], body);
+            let (state, _) =
+                plan_admitted_code(&admission, &fixture.binding, &[operation(&body, &original)])
+                    .expect("Method.Body accepts its full text");
+            assert!(state.planned_changes().is_empty());
+            assert_eq!(
+                fs::read(fixture.source.join("CommonModules/Sample/Ext/Module.bsl")).unwrap(),
+                before.as_bytes(),
+            );
+            fixture.cleanup();
+        }
+    }
+}
+
+#[test]
+fn closing_comment_hint_does_not_hide_other_replacement_errors() {
+    let operation = |text: &str| {
+        CodePlanOperation::Replace(CodeReplaceArgs {
+            if_rev: None,
+            at: unica_address::address::QualifiedAddress::parse(
+                "main:CommonModule.Sample.Method.Base",
+            )
+            .unwrap(),
+            anchor: None,
+            text: text.to_owned(),
+        })
+    };
+    let neighbor = b"Procedure Base() EndProcedure Procedure Neighbor() EndProcedure";
+    let Err(error) = plan_code_postimage(
+        neighbor,
+        &operation("Procedure Base() Value = 2; EndProcedure // comment"),
+        0,
+    ) else {
+        panic!("the inline comment would consume the neighboring method");
+    };
     assert_eq!(error.kind(), ApplyPlanErrorKind::Postcondition);
-    assert_eq!(
-        fs::read(fixture.source.join("CommonModules/Sample/Ext/Module.bsl")).unwrap(),
-        before.as_bytes()
-    );
-    fixture.cleanup();
+    assert!(error.next().is_none());
+
+    let before = b"Procedure Base()\nEndProcedure // comment\n";
+    let Err(error) = plan_code_postimage(
+        before,
+        &operation("// detached\n\nProcedure Base()\nEndProcedure // comment"),
+        0,
+    ) else {
+        panic!("the detached comment does not belong to Method.Body");
+    };
+    assert_eq!(error.kind(), ApplyPlanErrorKind::Postcondition);
+    assert!(error.next().is_none());
+
+    let Err(error) = plan_code_postimage(
+        before,
+        &operation("Procedure Base()\n    Value = ;\nEndProcedure // comment"),
+        0,
+    ) else {
+        panic!("invalid sent BSL has its own diagnostic");
+    };
+    assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue);
+    assert!(error.to_string().contains("unparsable"), "{error}");
+    assert!(error.next().is_none());
 }
 
 #[test]
