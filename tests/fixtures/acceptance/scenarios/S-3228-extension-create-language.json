@@ -1,0 +1,83 @@
+{
+  "id": "S-3228-extension-create-language",
+  "issue": 3228,
+  "area": "Метаданные",
+  "task": "Создать общий модуль в расширении с единственным зарегистрированным языком и без DefaultLanguage",
+  "workspace": "tests/fixtures/acceptance/workspace-extension-create-language",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "YAXUNIT:Configuration",
+        "ops": [
+          {
+            "op": "object.create",
+            "args": {
+              "values": {
+                "kind": "CommonModule",
+                "name": "ЮТПроверкаЯзыкаСоздания"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Configuration/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}DefaultLanguage",
+          "eq": []
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Configuration/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}CommonModule",
+          "eq": [
+            "ЮТПроверкаЯзыкаСоздания"
+          ]
+        },
+        {
+          "path": "src/CommonModules/ЮТПроверкаЯзыкаСоздания.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}CommonModule/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}lang",
+          "eq": [
+            "ru"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "YAXUNIT:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/status",
+          "eq": "passed"
+        }
+      ]
+    }
+  ]
+}

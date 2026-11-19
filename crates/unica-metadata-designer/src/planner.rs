@@ -823,10 +823,11 @@ pub fn stage_object_create<R: MetadataPlanningRead>(
         )?;
     }
     reader.with_creation_source(op_index, &mut |source| {
-        // The new descriptor's synonym is written in the source set's default
-        // language, read from the staged image like every other edit (#909).
-        let language =
-            unica_source_designer::language::staged_text_language(staged, source_kind, op_index)?;
+        let language = unica_source_designer::language::staged_object_creation_language(
+            staged,
+            source_kind,
+            op_index,
+        )?;
         let post_image = crate::template_catalog::minimal_object(
             source,
             kind,
