@@ -761,7 +761,8 @@ fn canonical_foreign_form_file_keeps_catalog_structure_and_reports_provider_unav
         .collect::<Vec<_>>();
     assert_eq!(limits.len(), 1, "{data}");
     assert!(
-        limits[0].starts_with("resources.child.") && limits[0].ends_with("Catalog.Products.Form.Main"),
+        limits[0].starts_with("resources.child.")
+            && limits[0].ends_with("Catalog.Products.Form.Main"),
         "{limits:?}"
     );
     let forms = call(

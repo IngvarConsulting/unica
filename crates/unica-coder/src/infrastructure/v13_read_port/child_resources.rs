@@ -121,8 +121,10 @@ fn child_resource_revision(
             };
             match directory {
                 Ok(SourceEntry::Directory(directory)) => {
+                    check()?;
                     entries.push((PathBuf::from(name), RevisionEntry::Directory));
-                    walk(&directory, PathBuf::from(name), &mut entries, &mut check)?;
+                    walk_in_parallel(&directory, PathBuf::from(name), &mut entries, &mut check)?;
+                    check()?;
                 }
                 Ok(entry) => entries.push((PathBuf::from(name), entry_kind(entry)?)),
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -136,10 +138,73 @@ fn child_resource_revision(
     if let Some(error) = interrupted {
         return Err(error);
     }
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
     Ok(walked.ok().map(|()| ChildResourceRevision {
         owner: sha2::Sha256::digest(owner).into(),
         entries,
     }))
+}
+
+/// The entries of one child directory, its names spread over the host's
+/// cores: on Windows every entry is a handle to open, and a form directory
+/// of a large object has hundreds. The checkpoint runs around the pass,
+/// which only stamps and never reads content.
+fn walk_in_parallel(
+    directory: &SourceDirectory,
+    relative: PathBuf,
+    entries: &mut Vec<(PathBuf, RevisionEntry)>,
+    check: &mut dyn FnMut() -> io::Result<()>,
+) -> io::Result<()> {
+    let names = directory.read_immediate_names_with_limit(None, &mut *check)?;
+    let workers = std::thread::available_parallelism()
+        .map_or(1, std::num::NonZeroUsize::get)
+        .clamp(1, names.len().max(1));
+    let mut shares = vec![Vec::new(); workers];
+    for (index, name) in names.into_iter().enumerate() {
+        shares[index % workers].push(name);
+    }
+    let walked = std::thread::scope(|scope| {
+        shares
+            .into_iter()
+            .map(|share| {
+                let relative = &relative;
+                scope.spawn(move || -> io::Result<Vec<(PathBuf, RevisionEntry)>> {
+                    let mut found = Vec::new();
+                    for name in share {
+                        visit(directory, relative, &name, &mut found, &mut || Ok(()))?;
+                    }
+                    Ok(found)
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|worker| worker.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic)))
+            .collect::<Vec<_>>()
+    });
+    for found in walked {
+        entries.extend(found?);
+    }
+    Ok(())
+}
+
+fn visit(
+    directory: &SourceDirectory,
+    relative: &Path,
+    name: &std::ffi::OsStr,
+    entries: &mut Vec<(PathBuf, RevisionEntry)>,
+    check: &mut dyn FnMut() -> io::Result<()>,
+) -> io::Result<()> {
+    let path = relative.join(name);
+    match directory.retain_immediate_child_nofollow(name)? {
+        SourceEntry::Directory(child) => {
+            entries.push((path.clone(), RevisionEntry::Directory));
+            walk(&child, path, entries, check)
+        }
+        entry => {
+            entries.push((path, entry_kind(entry)?));
+            Ok(())
+        }
+    }
 }
 
 fn walk(
@@ -148,18 +213,9 @@ fn walk(
     entries: &mut Vec<(PathBuf, RevisionEntry)>,
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<()> {
-    let mut names = directory.read_immediate_names_with_limit(None, &mut *check)?;
-    names.sort();
-    for name in names {
+    for name in directory.read_immediate_names_with_limit(None, &mut *check)? {
         check()?;
-        let path = relative.join(&name);
-        match directory.retain_immediate_child_nofollow(&name)? {
-            SourceEntry::Directory(child) => {
-                entries.push((path.clone(), RevisionEntry::Directory));
-                walk(&child, path, entries, check)?;
-            }
-            entry => entries.push((path, entry_kind(entry)?)),
-        }
+        visit(directory, &relative, &name, entries, check)?;
     }
     Ok(())
 }
