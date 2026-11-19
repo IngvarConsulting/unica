@@ -12,6 +12,7 @@ pub(crate) mod protocol;
 #[path = "../../../tests/platform/receipt_join_freshness.rs"]
 mod receipt_join_freshness_tests;
 pub(crate) mod server;
+pub(crate) mod user_state;
 
 mod v13_artifact_build;
 mod v13_call_graph;

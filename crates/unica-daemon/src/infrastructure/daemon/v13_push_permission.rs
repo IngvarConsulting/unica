@@ -124,7 +124,7 @@ pub(super) struct Store {
 
 impl Store {
     pub(super) fn for_user() -> Option<Self> {
-        crate::interfaces::daemon::default_user_daemon_state_root()
+        super::user_state::default_user_daemon_state_root()
             .ok()
             .map(Self::new)
     }
