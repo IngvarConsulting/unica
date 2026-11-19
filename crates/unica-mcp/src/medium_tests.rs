@@ -2291,6 +2291,106 @@ async fn a_call_without_tasks_on_2026_07_28_answers_with_the_task_result() {
     client.shutdown().await;
 }
 
+/// A server whose accepted call becomes a Task and whose wait answers by
+/// `wait`, for a direct 2026-07-28 call without Tasks.
+fn awaited_task_server(
+    task_id: unica_execution_contract::invocation::TaskId,
+    wait: Arc<CanonicalTaskWaitHandler>,
+) -> UnicaServer {
+    use unica_execution_contract::invocation::InvocationStatus;
+
+    let call: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _, _| {
+        Ok(CanonicalCallOutcome::Task(canonical_snapshot(
+            task_id,
+            InvocationStatus::Working,
+            None,
+        )))
+    });
+    let get: Arc<CanonicalTaskHandler> =
+        Arc::new(move |_, _| Ok(canonical_snapshot(task_id, InvocationStatus::Working, None)));
+    UnicaServer::with_canonical_v13_task_handlers(call, Arc::clone(&get), wait, get)
+}
+
+async fn awaited_call(server: UnicaServer) -> Value {
+    let (mut client, _) = spawn_unica_server(server);
+    client
+        .send(json!({
+            "jsonrpc":"2.0", "id":1, "method":"tools/call",
+            "params":{"name":"unica.run", "arguments":{}, "_meta":modern_meta()}
+        }))
+        .await;
+    let answer = client.receive().await;
+    client.shutdown().await;
+    answer
+}
+
+fn lost_observation() -> V5TaskExchangeError {
+    V5TaskExchangeError::Transport(TaskObservationTimer::start(Instant::now()).failed(
+        TaskObservationStage::AcquirePeer,
+        Instant::now(),
+        None,
+    ))
+}
+
+/// The call was accepted: a lost observation is read again for the same
+/// Task, and a Task that can no longer be observed never invites repeating
+/// the call. A failed Task answers with its diagnostic, without a snapshot.
+/// rule: INV.WIRE.NATIVE-TASK-CAPABILITY
+#[tokio::test]
+async fn an_awaited_call_never_invites_repeating_an_accepted_operation() {
+    use unica_execution_contract::invocation::{InvocationStatus, TaskId};
+
+    let task_id = TaskId::new();
+    let waits = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::clone(&waits);
+    let recovering: Arc<CanonicalTaskWaitHandler> = Arc::new(move |_, _, _, _| {
+        if observed.fetch_add(1, Ordering::SeqCst) == 0 {
+            return Err(lost_observation());
+        }
+        let mut result = canonical_result("finished after a lost read");
+        result.ok = true;
+        Ok(canonical_snapshot(
+            task_id,
+            InvocationStatus::Completed,
+            Some(result),
+        ))
+    });
+    let answer = awaited_call(awaited_task_server(task_id, recovering)).await;
+    assert_eq!(
+        answer["result"]["structuredContent"]["summary"], "finished after a lost read",
+        "{answer}"
+    );
+    assert_eq!(waits.load(Ordering::SeqCst), 2);
+
+    let lost: Arc<CanonicalTaskWaitHandler> = Arc::new(|_, _, _, _| Err(lost_observation()));
+    let answer = awaited_call(awaited_task_server(task_id, lost)).await;
+    let refusal = &answer["result"]["structuredContent"];
+    assert_eq!(refusal["ok"], false, "{answer}");
+    assert_eq!(
+        refusal["diagnostics"][0]["code"], "task_backend_failed",
+        "{answer}"
+    );
+    assert_eq!(
+        refusal["diagnostics"][0]["outcome"], "needsHuman",
+        "{answer}"
+    );
+    assert!(
+        refusal["summary"]
+            .as_str()
+            .unwrap()
+            .contains(&task_id.to_string()),
+        "{answer}"
+    );
+
+    let failed: Arc<CanonicalTaskWaitHandler> =
+        Arc::new(move |_, _, _, _| Ok(canonical_snapshot(task_id, InvocationStatus::Failed, None)));
+    let answer = awaited_call(awaited_task_server(task_id, failed)).await;
+    let refusal = &answer["result"]["structuredContent"];
+    assert_eq!(refusal["diagnostics"][0]["code"], "task_failed", "{answer}");
+    assert!(refusal.get("data").is_none(), "{answer}");
+    assert!(refusal.get("next").is_none(), "{answer}");
+}
+
 /// The cancellation of a call that waits for its Task cancels the Task.
 /// rule: INV.WIRE.NATIVE-TASK-CAPABILITY
 #[tokio::test]

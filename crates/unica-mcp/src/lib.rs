@@ -521,6 +521,12 @@ const TASK_WAIT_PROGRESS_META_KEY: &str = "unica/taskWait";
 /// Task through the call's own control; the wait asks once more and ends.
 /// A question the Task ended with is asked the way a direct refusal asks
 /// it: only a person answers it.
+///
+/// The call was accepted, so the answer never invites repeating it: a lost
+/// observation is read again for the same Task within one handoff window,
+/// and a Task that can no longer be observed is a `needsHuman` refusal
+/// that names the Task. A failed or cancelled Task answers with its
+/// diagnostic and without a Task snapshot.
 fn await_task_result(
     router: &CanonicalDaemonRouter,
     mut snapshot: V5DaemonTaskSnapshot,
@@ -534,6 +540,7 @@ fn await_task_result(
     let wait_ms = u64::try_from(unica_execution::invocation::INVOCATION_HANDOFF_WINDOW.as_millis())
         .unwrap_or(u64::MAX);
     let mut waits = 0_u32;
+    let mut lost_since = None::<Instant>;
     while matches!(
         snapshot.status(),
         InvocationStatus::Queued | InvocationStatus::Working
@@ -573,13 +580,21 @@ fn await_task_result(
                 if let V5TaskExchangeError::Transport(observation) = &error {
                     log_task_observation(observation, deadline.received_at(), Instant::now());
                 }
-                return Ok(SurfaceToolOutcome::Canonical(
-                    crate::application::v13::task_tools::task_tool_error_result(
-                        compatibility_task_exchange_error(error),
-                    ),
-                ));
+                let recoverable = matches!(
+                    error,
+                    V5TaskExchangeError::Transport(_) | V5TaskExchangeError::SessionPoisoned
+                );
+                let since = *lost_since.get_or_insert_with(Instant::now);
+                if recoverable
+                    && since.elapsed() < unica_execution::invocation::INVOCATION_HANDOFF_WINDOW
+                {
+                    std::thread::sleep(Duration::from_millis(snapshot.poll_interval_ms()));
+                    continue;
+                }
+                return Ok(SurfaceToolOutcome::Canonical(unobservable_task(task_id)));
             }
         };
+        lost_since = None;
     }
     if let Some(choice) = task_question(&snapshot) {
         let refusal = crate::task_projection::call_tool_result(
@@ -591,9 +606,26 @@ fn await_task_result(
         .map_err(crate::task_projection::projection_error)?;
         return Ok(SurfaceToolOutcome::Choice { refusal, choice });
     }
-    Ok(SurfaceToolOutcome::Canonical(
-        project_compatibility_snapshot(&snapshot, CompatibilityProjection::TerminalResult),
-    ))
+    let mut result =
+        project_compatibility_snapshot(&snapshot, CompatibilityProjection::TerminalResult);
+    if snapshot.status() != InvocationStatus::Completed {
+        result.data = None;
+    }
+    Ok(SurfaceToolOutcome::Canonical(result))
+}
+
+/// An accepted call whose Task can no longer be observed: its outcome is
+/// unknown, so a person checks the actual state before anything repeats it.
+fn unobservable_task(
+    task_id: unica_execution_contract::invocation::TaskId,
+) -> unica_execution_contract::invocation::DomainResult {
+    unica_execution_contract::invocation::DomainResult::canonical_rejection(
+        None,
+        unica_refusal::RefusalCode::TaskBackendFailed,
+        format!(
+            "the call was accepted as Task {task_id}, which can no longer be observed;              its outcome is unknown: check the actual state before repeating the call"
+        ),
+    )
 }
 
 enum CompatibilityTaskResult {
