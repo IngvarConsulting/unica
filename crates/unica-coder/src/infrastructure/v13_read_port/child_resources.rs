@@ -156,9 +156,10 @@ fn child_resource_revision(
 /// The entries of one child directory, its names spread over the host's
 /// cores: on Windows every entry is a handle to open, and a form directory
 /// of a large object has hundreds. The workers only stamp, never read
-/// content; the caller's checkpoint keeps running while they work and stops
-/// them between entries. A tree deeper than the observation's own bound is
-/// not walked: the observation names it and nothing is retained.
+/// content. The calling thread takes a share itself and runs the caller's
+/// checkpoint between its entries; an interruption stops the other workers
+/// between theirs. A tree deeper than the observation's own bound is not
+/// walked: the observation names it and nothing is retained.
 fn walk_in_parallel(
     directory: &SourceDirectory,
     relative: PathBuf,
@@ -175,6 +176,7 @@ fn walk_in_parallel(
     for (index, name) in names.into_iter().enumerate() {
         shares[index % workers].push(name);
     }
+    let own = shares.remove(0);
     let stop = AtomicBool::new(false);
     let (walked, checked) = std::thread::scope(|scope| {
         let relative = &relative;
@@ -199,19 +201,22 @@ fn walk_in_parallel(
                 })
             })
             .collect::<Vec<_>>();
-        let mut checked = Ok(());
-        while !handles.iter().all(|handle| handle.is_finished()) {
-            if let Err(error) = check() {
-                stop.store(true, Ordering::Relaxed);
-                checked = Err(error);
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(2));
+        let mut found = Vec::new();
+        let mut interruptible = || {
+            check().inspect_err(|_| stop.store(true, Ordering::Relaxed))
+        };
+        let checked = own.iter().try_for_each(|name| {
+            interruptible()?;
+            visit(directory, relative, name, 1, &mut found, &mut interruptible)
+        });
+        if checked.is_err() {
+            stop.store(true, Ordering::Relaxed);
         }
-        let walked = handles
+        let mut walked = handles
             .into_iter()
             .map(|handle| handle.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic)))
             .collect::<Vec<_>>();
+        walked.push(Ok(found));
         (walked, checked)
     });
     checked?;
