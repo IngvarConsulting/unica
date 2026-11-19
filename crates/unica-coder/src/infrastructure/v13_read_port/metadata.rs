@@ -416,6 +416,13 @@ impl ProviderReadAuthority {
         } else {
             Arc::new(self.object_synonym_observed(&owner)?)
         };
+        // Длинный синоним читается целиком по ключу свойства узла объекта:
+        // у общего модуля это `synonym`, у остальных видов — `Synonym`.
+        let (key, subject) = if owner.as_str().starts_with("CommonModule.") {
+            ("synonym", "common module Synonym")
+        } else {
+            ("Synonym", "Synonym")
+        };
         let mut props = serde_json::Map::new();
         let mut limits = Vec::new();
         match observed.as_ref() {
@@ -423,15 +430,15 @@ impl ProviderReadAuthority {
                 &mut props,
                 &mut limits,
                 at,
-                "synonym",
+                key,
                 &json!(text),
                 false,
-                "Synonym",
+                subject,
             ),
             Ok(None) => {}
             Err(message) => limits.push(format!("properties.Synonym is unreadable: {message}")),
         }
-        Ok((props.remove("synonym"), limits))
+        Ok((props.remove(key), limits))
     }
 
     /// The synonym as the descriptor states it: `Ok(None)` when it is absent

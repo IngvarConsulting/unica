@@ -46,6 +46,42 @@ fn metadata_kind_branch_lists_registered_objects_with_canonical_addresses() {
     );
 }
 
+/// rule: CTR.SOURCE.METADATA-COLLECTION-ROW
+#[test]
+fn oversized_synonym_of_a_collection_row_is_readable_whole_at_its_limit_address() {
+    let fixture = RealReaderFixture::new();
+    let text = "С".repeat(1025);
+    let owners = fixture.source.join("Catalogs/Владельцы.xml");
+    let xml = fs::read_to_string(&owners).unwrap().replace(
+        "<Name>Владельцы</Name>",
+        &format!("<Name>Владельцы</Name><Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>{text}</v8:content></v8:item></Synonym>"),
+    );
+    fs::write(&owners, xml).unwrap();
+    let service = fixture.view_service();
+
+    let branch = service.view(ViewRequest::new("main:Catalog").unwrap());
+    assert!(branch.ok, "{:?}", refusal_codes(&branch));
+    let row = &branch.data.as_ref().unwrap()["items"][1];
+    assert_eq!(row["at"], "main:Catalog.Владельцы");
+    assert!(row["props"].get("synonym").is_none(), "{row}");
+    let address = "main:Catalog.Владельцы.Props.Synonym";
+    assert!(
+        row["limits"][0]
+            .as_str()
+            .is_some_and(|limit| limit.ends_with(&format!("read it whole at {address}"))),
+        "{row}"
+    );
+    // Адрес `<узел>.Props.<ключ>` читает узел с этим свойством целиком.
+    let whole = crate::infrastructure::v13_read_projection::with_whole_prop("Synonym", || {
+        service.view(ViewRequest::new("main:Catalog.Владельцы").unwrap())
+    });
+    assert!(whole.ok, "{:?}", refusal_codes(&whole));
+    assert_eq!(
+        whole.data.as_ref().unwrap()["props"]["Synonym"],
+        format!("ru = '{text}'")
+    );
+}
+
 /// rule: INV.SOURCE.METADATA-NODE-PROPERTIES
 #[test]
 fn metadata_node_props_carry_the_observed_object_properties() {

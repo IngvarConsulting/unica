@@ -213,7 +213,8 @@ def generate(
     }
     names = {kind: [f"{PREFIX[kind]}{i:05d}" for i in range(count)] for kind, count in counts.items()}
     synonyms: dict[str, str] = {}
-    if "Catalog" in names:
+    # A profile without measured catalog names keeps the numbered ones.
+    if "Catalog" in names and "catalogs" in profile:
         taken: set[str] = set()
         named = [catalog_name(rng, profile, taken) for _ in names["Catalog"]]
         names["Catalog"] = [name for name, _ in named]
