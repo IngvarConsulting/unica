@@ -21,9 +21,15 @@ MEDIUM = ("CatalogCollectionPagesTests",)
 
 GENERATOR = REPO_ROOT / "scripts/dev/synthetic-configuration.py"
 PROFILE = REPO_ROOT / "scripts/dev/synthetic-configuration-ut11.json"
-# 2000 токенов страницы при 3,0–3,3 байта на токен o200k_base на текстах УТ
-# (замер в crates/unica-bootstrap/src/host/response_budget.rs).
-PAGE_BYTES = 6000
+# Замер 19.11.2026 (Windows 11, отладочная сборка, tiktoken o200k_base
+# на компактном JSON `structuredContent` каждой страницы `view main:Catalog`
+# по умолчанию, limit 20): синтетика УТ этого теста, 471 справочник, 24
+# страницы — наибольшая 1479 токенов при 7073 байтах; КА 2 2.6.2.72 (кодовая
+# база УТ 11), 1090 справочников, 55 страниц — наибольшая 1922 токена при 8886
+# байтах. Кириллические имена и синонимы дают 4,47–4,55 байта на токен.
+# Граница страницы 2000 токенов (#548) переведена в байты по нижней оценке
+# 4,4: 2000 × 4,4 = 8800. Токенизатора в CI нет, поэтому меряются байты.
+PAGE_BYTES = 8800
 
 
 def generator():
