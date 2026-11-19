@@ -2209,7 +2209,7 @@ async fn a_lost_submit_is_a_task_for_native_clients_and_a_task_receipt_for_other
     }
 }
 
-/// Claude Code объявляет Tasks в `tools/list`, но не в `tools/call` (#3220).
+/// Хост объявляет Tasks в `tools/list`, но не в `tools/call` (#3220).
 /// Каталог 2026-07-28 — восемь инструментов, что бы ни объявил `tools/list`;
 /// вызов без Tasks, ставший заданием, ждёт его конца и отвечает итогом,
 /// а клиента с progressToken держит прогресс.

@@ -518,9 +518,9 @@ const TASK_WAIT_PROGRESS_META_KEY: &str = "unica/taskWait";
 /// the same result `unica.task.result` returns. Each wait lasts one handoff
 /// window and publishes progress for a client that gave a progressToken. A
 /// cancellation of the call has already asked the daemon to cancel the
-/// Task through the call's own control; the wait asks once more and ends
-/// with the cancelled Task. A question the Task ended with is asked the way
-/// a direct refusal asks it: only a person answers it.
+/// Task through the call's own control; the wait asks once more and ends.
+/// A question the Task ended with is asked the way a direct refusal asks
+/// it: only a person answers it.
 fn await_task_result(
     router: &CanonicalDaemonRouter,
     mut snapshot: V5DaemonTaskSnapshot,
@@ -534,15 +534,22 @@ fn await_task_result(
     let wait_ms = u64::try_from(unica_execution::invocation::INVOCATION_HANDOFF_WINDOW.as_millis())
         .unwrap_or(u64::MAX);
     let mut waits = 0_u32;
-    let mut cancel_sent = false;
     while matches!(
         snapshot.status(),
         InvocationStatus::Queued | InvocationStatus::Working
     ) {
         let deadline = FrontendInvocationDeadline::new(Instant::now(), None);
-        if cancellation.requested() && !cancel_sent {
-            cancel_sent = true;
+        // A cancelled request gets no answer: ask once more for the Task to
+        // stop and end the wait, so a draining frontend is not held by it.
+        if cancellation.requested() {
             let _ = (router.cancel)(task_id, deadline);
+            return Ok(SurfaceToolOutcome::Canonical(
+                unica_execution_contract::invocation::DomainResult::canonical_rejection(
+                    None,
+                    unica_refusal::RefusalCode::Cancelled,
+                    "the call was cancelled while it waited for its Task",
+                ),
+            ));
         }
         waits = waits.saturating_add(1);
         progress.publish(ProgressEvent {
