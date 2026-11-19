@@ -215,7 +215,7 @@ impl Frontend {
     }
 
     /// One tool call. A modern client answers the roots input request and
-    /// repeats the call, as Claude Code does; `roots_requests` counts them.
+    /// repeats the call, as a 2026-07-28 host does; `roots_requests` counts them.
     fn call(&mut self, id: u64, name: &str, arguments: Value) -> Value {
         let mut params = json!({"name": name, "arguments": arguments});
         if self.modern {
@@ -306,19 +306,27 @@ fn stdio_call_uses_host_workspace_instead_of_plugin_cwd() {
     let mut frontend = Frontend::start(&plugin, &state, &[]);
     frontend.send(10, "tools/list", json!({}));
     let listed = frontend.receive(10);
+    // The model names no directory of its own (#672): no free `cwd`; a
+    // subject tool only selects inside the host's set with `workspace`.
     for tool in listed["result"]["tools"].as_array().unwrap() {
-        assert!(
-            tool["inputSchema"]["properties"].get("cwd").is_none(),
-            "the model must not choose workspace context: {tool:#}"
+        let properties = &tool["inputSchema"]["properties"];
+        assert!(properties.get("cwd").is_none(), "{tool:#}");
+        let subject = !tool["name"].as_str().unwrap().starts_with("unica.task.");
+        assert_eq!(
+            properties["workspace"]["description"].is_string(),
+            subject,
+            "{tool:#}"
         );
     }
-    let response = frontend.view(
-        2,
-        Some(json!(url::Url::from_directory_path(&project)
-            .unwrap()
-            .as_str())),
-    );
+    let location = json!(url::Url::from_directory_path(&project).unwrap().as_str());
+    let response = frontend.view(2, Some(location.clone()));
     assert_workspace(&response, &project);
+    // The plugin's own directory is outside the set the host named: the
+    // selection is refused, never served.
+    let mut params = view_params(Some(location));
+    params["arguments"] = json!({"workspace": plugin.to_str().unwrap()});
+    frontend.send(3, "tools/call", params);
+    assert_refusal(&frontend.receive(3));
     let fixture = contract();
     assert_eq!(
         frontend.initialized["result"]["capabilities"]["experimental"]
@@ -1163,7 +1171,7 @@ fn a_repository_of_workspaces_selects_each_product_by_relative_path() {
     assert!(above.to_string().contains("lies above"), "{above:#}");
 }
 
-/// Codex называет одну папку на вызов: выбор возможен только внутри неё.
+/// Метаданные вызова называют одну папку: выбор возможен только внутри неё.
 /// rule: INV.WORKSPACE.HOST-CONTEXT
 #[test]
 fn request_metadata_allows_only_its_own_directory() {
@@ -1192,7 +1200,7 @@ fn request_metadata_allows_only_its_own_directory() {
     );
 }
 
-/// Клиент 2026-07-28 (так работает Claude Code) отдаёт roots только по
+/// Клиент 2026-07-28 отдаёт roots только по
 /// запросу ввода: Unica спрашивает их, когда вызову нужно всё множество, —
 /// при выборе и в `unica.view {}`, — и не тратит повтор на остальные вызовы.
 /// rule: INV.WORKSPACE.HOST-CONTEXT

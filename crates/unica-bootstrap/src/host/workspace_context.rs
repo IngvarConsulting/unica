@@ -470,7 +470,15 @@ fn select_directory(allowed: &[String], selection: &str) -> Result<(String, usiz
             canonical.starts_with(&root).then_some((index, root))
         })
         // Nested allowed directories: the innermost one holds the selection.
-        .max_by_key(|(_, root)| root.components().count());
+        // One directory listed twice (a `subst` drive, another spelling): the
+        // spelling the selection was written in, else the first listed.
+        .max_by_key(|(index, root)| {
+            (
+                root.components().count(),
+                Path::new(&display_path(&candidate)).starts_with(&allowed[*index]),
+                std::cmp::Reverse(*index),
+            )
+        });
     let Some((index, root)) = containing else {
         return Err(format!(
             "Selected workspace `{selection}` is outside the directories the host allows for this call ({}). Choose one of them or a directory inside one; unica.view {{}} lists them.",
@@ -511,8 +519,8 @@ fn display_path(path: &Path) -> String {
 }
 
 // resource-limit: host.allowed-workspace-scan
-// class: count
-// unit: directories
+// class: corpus
+// unit: count
 // scope: request
 // value: 2000
 // resource: Сколько каталогов читает перечень разрешённых папок `unica.view {}` в поиске вложенных v8project.yaml.
@@ -521,6 +529,16 @@ fn display_path(path: &Path) -> String {
 // problem: Перечень обходит диск на каждый `unica.view {}`; большая или сетевая папка не должна его задерживать.
 // on-reach: Поиск вложенных рабочих областей останавливается; найденное до предела выдаётся.
 const ALLOWED_SCAN_DIRECTORIES: usize = 2000;
+// resource-limit: host.allowed-workspace-depth
+// class: corpus
+// unit: depth
+// scope: request
+// value: 2
+// resource: На какую глубину перечень разрешённых папок `unica.view {}` ищет вложенные v8project.yaml.
+// status: unproven
+// origin: прототип IngvarConsulting/unica#1420
+// problem: Рабочие области репозитория лежат в подпапках первого или второго уровня; глубже обход дорог и редко нужен.
+// on-reach: Более глубокие рабочие области не перечисляются, но выбираются аргументом `workspace` по пути.
 const ALLOWED_SCAN_DEPTH: usize = 2;
 const ALLOWED_SCAN_SKIPPED: &[&str] = &["node_modules", "target"];
 
@@ -1288,22 +1306,9 @@ mod tests {
         }
     }
 
-    /// A link inside an allowed directory that leads outside it: a junction
-    /// on Windows, a symbolic link elsewhere.
+    /// A link inside an allowed directory that leads outside it.
     fn link_directory(link: &Path, target: &Path) {
-        #[cfg(windows)]
-        {
-            let status = std::process::Command::new("cmd")
-                .args(["/C", "mklink", "/J"])
-                .arg(link)
-                .arg(target)
-                .stdout(std::process::Stdio::null())
-                .status()
-                .unwrap();
-            assert!(status.success());
-        }
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(target, link).unwrap();
+        crate::platform::link_directory_for_test(link, target);
     }
 
     /// Хост задаёт множество папок, модель выбирает внутри него: каждая папка
@@ -1377,6 +1382,28 @@ mod tests {
                 second.to_str().unwrap()
             ))
             .is_err());
+
+        // One directory under two spellings (a `subst` drive, a link): the
+        // root named is the spelling the selection was written in.
+        let alias = fixture.0.join("псевдоним");
+        link_directory(&alias, &second);
+        let twice =
+            ClientRoots::Listed(vec![root_uri(&first), root_uri(&alias), root_uri(&second)]);
+        for (spelling, expected) in [
+            (display_path(&second), "второй проект"),
+            (display_path(&alias), "псевдоним"),
+            // A model may pass the verbatim form a resolved path prints in.
+            (second.to_str().unwrap().to_owned(), "второй проект"),
+        ] {
+            let chosen = context
+                .resolve_request(&selecting(twice.clone(), Map::new(), &spelling))
+                .unwrap();
+            assert!(
+                matches!(&chosen.origin, WorkspaceOrigin::ClientRoots { root, .. } if root.contains(expected)),
+                "{:?}",
+                chosen.origin
+            );
+        }
 
         link_directory(&first.join("ссылка"), &foreign);
         let escaped = context
