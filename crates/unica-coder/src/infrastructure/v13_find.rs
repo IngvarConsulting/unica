@@ -42,7 +42,7 @@ const MAX_SOURCE_SETS: usize = 64;
 // origin: 4288eaccd (#1510)
 // problem: неизвестно
 // on-reach: тихо: путь глубже 7 компонентов не сопоставляется как точный ресурс.
-const MAX_POINT_PATH_DEPTH: usize = 7;
+const MAX_POINT_PATH_DEPTH: usize = 8;
 // resource-limit: find.directory-documents
 // class: corpus
 // unit: count
@@ -117,6 +117,15 @@ const NESTED_FAMILIES: [(&str, NodeKind); 3] = [
     ("Templates", NodeKind::Template),
     ("Commands", NodeKind::Command),
 ];
+
+/// Звено цепочки вложенных объектов при поиске описания по пути.
+struct NestedLink<'a> {
+    parent: &'a SourceDirectory,
+    parent_relative: PathBuf,
+    kind: &'a str,
+    chain: Vec<String>,
+    owner_descriptor: Option<PathBuf>,
+}
 
 /// Файловые ресурсы только для точечного поиска, не индексируемые как факты имени.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -572,7 +581,7 @@ impl WorkspaceFindDirectoryBuilder {
         // The full index chooses the longest stored path. Probe equal-length
         // candidates in every source set before trying shorter fallbacks, so
         // a damaged, unrelated fallback cannot block an exact target.
-        for depth in [7, 6, 5, 4, 3, 2, 1] {
+        for depth in [8, 7, 6, 5, 4, 3, 2, 1] {
             let tail = parts
                 .len()
                 .checked_sub(depth)
@@ -897,6 +906,16 @@ impl WorkspaceFindDirectoryBuilder {
                     )?;
                 }
             }
+        }
+        if depth >= 4 && depth % 2 == 0 && parts.len() >= depth {
+            self.locate_declared_nested_path(
+                source,
+                &parts[parts.len() - depth..],
+                physical_names.as_deref(),
+                deadline,
+                cancellation,
+                located,
+            )?;
         }
         if depth == 4 && parts.len() >= 4 {
             let tail = &parts[parts.len() - 4..];
@@ -1286,6 +1305,222 @@ impl WorkspaceFindDirectoryBuilder {
                 } else if !*ambiguous_alias {
                     add_path_match(located, candidate)?;
                 }
+            }
+        }
+        Ok(())
+    }
+
+    /// Описание вложенного объекта, который объявляет место во владельце:
+    /// `<Каталог>/<Владелец>{/<Каталог вида>/<Имя>}.xml`, например таблица
+    /// или таблица измерения куба внешнего источника. Каждое звено цепочки
+    /// доказывается своим описанием.
+    fn locate_declared_nested_path(
+        &self,
+        source: &LayoutFindSource<'_>,
+        tail: &[&str],
+        physical: Option<&[&OsStr]>,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+        located: &mut Option<FindDocument>,
+    ) -> Result<(), FindBuildError> {
+        if tail.len() < 4 || tail.len() % 2 != 0 {
+            return Ok(());
+        }
+        let physical = physical.unwrap_or(&[]);
+        for directory in matching_names(
+            source.root,
+            tail[0],
+            physical.first().copied(),
+            deadline,
+            cancellation,
+        )? {
+            let Some(directory_name) = directory.to_str() else {
+                continue;
+            };
+            let Some(layout) = metadata_kind_by_directory(directory_name) else {
+                continue;
+            };
+            let collection =
+                match retain_enumerated_child(source.root, &directory, deadline, cancellation)? {
+                    SourceEntry::Directory(collection) => collection,
+                    _ => return Err(unsafe_layout_entry()),
+                };
+            let link = NestedLink {
+                parent: &collection,
+                parent_relative: PathBuf::from(directory_name),
+                kind: layout.tag,
+                chain: Vec::new(),
+                owner_descriptor: None,
+            };
+            self.locate_declared_nested_link(
+                source,
+                link,
+                &tail[1..],
+                physical.get(1..).unwrap_or(&[]),
+                deadline,
+                cancellation,
+                located,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Одно звено цепочки: `rest[0]` — имя объекта вида `link.kind` в каталоге
+    /// `link.parent`; дальше — каталог вложенного вида и остаток цепочки.
+    fn locate_declared_nested_link(
+        &self,
+        source: &LayoutFindSource<'_>,
+        link: NestedLink<'_>,
+        rest: &[&str],
+        physical: &[&OsStr],
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+        located: &mut Option<FindDocument>,
+    ) -> Result<(), FindBuildError> {
+        if let [leaf] = rest {
+            // Последнее звено — само описание; описание верхнего владельца
+            // находит обычный поиск коллекции.
+            let Some(owner_descriptor) = &link.owner_descriptor else {
+                return Ok(());
+            };
+            for entry in matching_names(
+                link.parent,
+                leaf,
+                physical.first().copied(),
+                deadline,
+                cancellation,
+            )? {
+                let Some(stem) = entry.to_str().and_then(|name| name.strip_suffix(".xml")) else {
+                    continue;
+                };
+                let relative = link.parent_relative.join(&entry);
+                let file =
+                    match retain_enumerated_child(link.parent, &entry, deadline, cancellation)? {
+                        SourceEntry::RegularFile(file) => file,
+                        _ => return Err(unsafe_layout_entry()),
+                    };
+                let (_, synonym) = require_target_identity(self.read_target_identity(
+                    &file,
+                    &relative,
+                    source,
+                    link.kind,
+                    Some(stem),
+                    deadline,
+                    cancellation,
+                )?)?;
+                let mut segments = link.chain.clone();
+                segments.extend([link.kind.to_string(), stem.to_string()]);
+                add_path_match(
+                    located,
+                    find_document(
+                        source,
+                        &format!("{}:{}", source.name, segments.join(".")),
+                        link.kind,
+                        stem,
+                        synonym.as_deref(),
+                        &relative,
+                    )?
+                    .with_owner_descriptor(path_text(owner_descriptor)),
+                )?;
+            }
+            return Ok(());
+        }
+        let [owner_query, family_query, rest @ ..] = rest else {
+            return Ok(());
+        };
+        for owner_name in matching_names(
+            link.parent,
+            owner_query,
+            physical.first().copied(),
+            deadline,
+            cancellation,
+        )? {
+            let Some(owner_name_text) = owner_name.to_str() else {
+                continue;
+            };
+            let owner_root =
+                match retain_enumerated_child(link.parent, &owner_name, deadline, cancellation)? {
+                    SourceEntry::Directory(owner_root) => owner_root,
+                    SourceEntry::RegularFile(_) => continue,
+                    _ => return Err(unsafe_layout_entry()),
+                };
+            let mut families = Vec::new();
+            for family_name in matching_names(
+                &owner_root,
+                family_query,
+                physical.get(1).copied(),
+                deadline,
+                cancellation,
+            )? {
+                let Some(family_text) = family_name.to_str() else {
+                    continue;
+                };
+                if let Some(child_kind) =
+                    unica_address::kinds::nested_kind_by_directory(link.kind, family_text)
+                {
+                    families.push((family_name.clone(), family_text.to_string(), child_kind));
+                }
+            }
+            if families.is_empty() {
+                continue;
+            }
+            let descriptor_name = format!("{owner_name_text}.xml");
+            let descriptor_relative = link.parent_relative.join(&descriptor_name);
+            let Some(SourceEntry::RegularFile(owner_file)) = retain_optional_child(
+                link.parent,
+                OsStr::new(&descriptor_name),
+                deadline,
+                cancellation,
+            )?
+            else {
+                return Err(FindBuildError::new(
+                    RefusalCode::InvalidSource,
+                    format!(
+                        "owner descriptor `{}` of the requested object is missing",
+                        path_text(&descriptor_relative)
+                    ),
+                ));
+            };
+            let (logical_owner_name, _) = require_target_identity(self.read_target_identity(
+                &owner_file,
+                &descriptor_relative,
+                source,
+                link.kind,
+                Some(owner_name_text),
+                deadline,
+                cancellation,
+            )?)?;
+            let mut owner_chain = link.chain.clone();
+            owner_chain.extend([link.kind.to_string(), logical_owner_name]);
+            for (family_name, family_text, child_kind) in families {
+                let family = match retain_enumerated_child(
+                    &owner_root,
+                    &family_name,
+                    deadline,
+                    cancellation,
+                )? {
+                    SourceEntry::Directory(family) => family,
+                    _ => return Err(unsafe_layout_entry()),
+                };
+                let child = NestedLink {
+                    parent: &family,
+                    parent_relative: link
+                        .parent_relative
+                        .join(owner_name_text)
+                        .join(&family_text),
+                    kind: child_kind,
+                    chain: owner_chain.clone(),
+                    owner_descriptor: Some(descriptor_relative.clone()),
+                };
+                self.locate_declared_nested_link(
+                    source,
+                    child,
+                    rest,
+                    physical.get(2..).unwrap_or(&[]),
+                    deadline,
+                    cancellation,
+                    located,
+                )?;
             }
         }
         Ok(())
@@ -4051,6 +4286,72 @@ mod tests {
             )
             .expect_err("the existing external target must declare its actual kind");
         assert_eq!(error.code(), RefusalCode::InvalidSource);
+    }
+
+    /// Описания и модули вложенных объектов внешнего источника находятся по
+    /// пути выгрузки платформы на полной глубине.
+    /// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
+    #[test]
+    fn point_lookup_resolves_external_data_source_objects_at_full_depth() {
+        let export = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src")
+            .canonicalize()
+            .unwrap();
+        let root = unica_workspace::read::open_source_directory(&export).unwrap();
+        let source = [LayoutFindSource::new(
+            "main",
+            SourceSetKind::Configuration,
+            &root,
+        )];
+        let builder = WorkspaceFindDirectoryBuilder::default();
+        let at = "main:ExternalDataSource.AllKindsExternalSource";
+        for (path, expected) in [
+            (
+                "ExternalDataSources/AllKindsExternalSource/Tables/Items.xml",
+                format!("{at}.Table.Items"),
+            ),
+            (
+                "ExternalDataSources/AllKindsExternalSource/Tables/Items/Ext/RecordSetModule.bsl",
+                format!("{at}.Table.Items.Module.RecordSet"),
+            ),
+            (
+                "ExternalDataSources/AllKindsExternalSource/Cubes/Sales/Ext/ManagerModule.bsl",
+                format!("{at}.Cube.Sales.Module.Manager"),
+            ),
+            (
+                "ExternalDataSources/AllKindsExternalSource/Cubes/Sales/DimensionTables/Products.xml",
+                format!("{at}.Cube.Sales.DimensionTable.Products"),
+            ),
+            (
+                "ExternalDataSources/AllKindsExternalSource/Cubes/Sales/DimensionTables/Products/Ext/ObjectModule.bsl",
+                format!("{at}.Cube.Sales.DimensionTable.Products.Module.Object"),
+            ),
+            (
+                "ExternalDataSources/AllKindsExternalSource/Cubes/Sales/DimensionTables/Products/Ext/ManagerModule.bsl",
+                format!("{at}.Cube.Sales.DimensionTable.Products.Module.Manager"),
+            ),
+        ] {
+            let document = builder
+                .locate_path(
+                    &source,
+                    path,
+                    ProviderDeadline::from_budget(Duration::from_secs(7)),
+                    &CancellationToken::new(),
+                )
+                .unwrap_or_else(|error| panic!("{path}: {error:?}"))
+                .unwrap_or_else(|| panic!("{path} is not found"));
+            assert_eq!(document.at(), expected, "{path}");
+        }
+        // У куба нет модуля объекта: путь не ведёт ни к какому адресу.
+        assert!(builder
+            .locate_path(
+                &source,
+                "ExternalDataSources/AllKindsExternalSource/Cubes/Sales/Ext/ObjectModule.bsl",
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &CancellationToken::new(),
+            )
+            .unwrap()
+            .is_none());
     }
 
     #[test]

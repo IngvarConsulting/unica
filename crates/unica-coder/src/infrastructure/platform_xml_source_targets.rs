@@ -1178,6 +1178,23 @@ fn resolve_platform_xml_module(
     if !identity_proven {
         return Err(metadata_owner_evidence_error(target));
     }
+    // A module of a declared nested object is as real as its registration
+    // chain: the configuration registers the top owner and every owner lists
+    // the next link in its `ChildObjects`.
+    let parts = identity.address.segments().collect::<Vec<_>>();
+    if parts.len() >= 5 && unica_address::kinds::nested_place(parts[0], parts[2]).is_some() {
+        let owner = MetadataAddress::parse_logical(&parts[..parts.len() - 1].join("."))
+            .map_err(|_| metadata_owner_evidence_error(target))?;
+        if object_registration_evidence(context, &selected, &owner)?.is_none() {
+            return Err(SourceTargetError::new(
+                SourceTargetErrorCode::MetadataAddressNotFound,
+                format!(
+                    "metadataPath `{address}` was not found in sourceSet `{}`",
+                    target.source_set
+                ),
+            ));
+        }
+    }
 
     let workspace_root = normalize_path_identity(&context.workspace_root)
         .map_err(|_| target_containment_error(&target.source_set))?;
@@ -2213,6 +2230,15 @@ mod medium_tests {
         )
         .unwrap_err();
         assert_eq!(error.code, SourceTargetErrorCode::MetadataAddressNotFound);
+        let module = resolve_platform_xml_target(
+            &context,
+            &target(
+                "main",
+                "ExternalDataSource.AllKindsExternalSource.Cube.Sales.DimensionTable.Products.ObjectModule",
+            ),
+        )
+        .unwrap_err();
+        assert_eq!(module.code, SourceTargetErrorCode::MetadataAddressNotFound);
         cleanup(&context);
     }
 
