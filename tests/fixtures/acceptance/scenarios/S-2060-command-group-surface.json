@@ -1,0 +1,480 @@
+{
+  "id": "S-2060-command-group-surface",
+  "name": "command-group-surface",
+  "issue": 2060,
+  "area": "Создание и удаление объектов",
+  "task": "Группа команд на канонической поверхности: найти группы, прочитать настройки, создать новую как Конфигуратор 8.3.27, изменить представление, категорию, подсказку и синоним, удалить её; удаление группы, на которую ссылается свойство Группа общей команды или команды справочника, отказывает без записи",
+  "workspace": "tests/fixtures/acceptance/workspace-command-groups",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "file0": {
+          "kind": "sha256",
+          "file": "src/Configuration.xml"
+        },
+        "file1": {
+          "kind": "sha256",
+          "file": "src/CommandGroups/ГруппаА.xml"
+        },
+        "file2": {
+          "kind": "sha256",
+          "file": "src/CommandGroups/ГруппаБ.xml"
+        },
+        "file3": {
+          "kind": "sha256",
+          "file": "src/CommonCommands/КомандаА.xml"
+        },
+        "file4": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Справочник1.xml"
+        },
+        "file5": {
+          "kind": "sha256",
+          "file": "src/Subsystems/Подсистема1/Ext/CommandInterface.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommandGroup"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:CommandGroup.ГруппаА"
+        },
+        {
+          "pointer": "/data/items/1/at",
+          "eq": "main:CommandGroup.ГруппаБ"
+        },
+        {
+          "pointer": "/data/items/2/at",
+          "eq": "main:CommandGroup.ГруппаВ"
+        },
+        {
+          "pointer": "/data/items/3",
+          "absent": true
+        }
+      ],
+      "captures": {
+        "groupB": {
+          "pointer": "/data/items/1/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.groupB"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/kind",
+          "eq": "CommandGroup"
+        },
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": "ru = 'ГруппаБ'"
+        },
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/Representation",
+          "eq": "Auto"
+        },
+        {
+          "pointer": "/data/props/Category",
+          "eq": "ActionsPanel"
+        },
+        {
+          "pointer": "/data/props/ToolTip",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/Picture",
+          "absent": true
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        },
+        {
+          "pointer": "/data/can",
+          "eq": [
+            {
+              "op": "object.remove",
+              "args": "at"
+            },
+            {
+              "op": "props.set",
+              "args": "values"
+            },
+            {
+              "op": "supportRule.set",
+              "args": "values"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "object.create",
+            "args": {
+              "values": {
+                "kind": "CommandGroup",
+                "name": "Новая"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "xml",
+          "path": "src/CommandGroups/Новая.xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}CommandGroup/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Representation",
+          "eq": [
+            "Auto"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/CommandGroups/Новая.xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}CommandGroup/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Category",
+          "eq": [
+            "NavigationPanel"
+          ]
+        },
+        {
+          "kind": "xmlTags",
+          "path": "src/CommandGroups/Новая.xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}CommandGroup/{http://v8.1c.ru/8.3/MDClasses}Properties/*",
+          "eq": [
+            "Name",
+            "Synonym",
+            "Comment",
+            "Representation",
+            "ToolTip",
+            "Picture",
+            "Category"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/Configuration.xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}CommandGroup",
+          "eq": [
+            "ГруппаА",
+            "ГруппаБ",
+            "ГруппаВ",
+            "Новая"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommandGroup.Новая"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": "ru = 'Новая'"
+        },
+        {
+          "pointer": "/data/props/Representation",
+          "eq": "Auto"
+        },
+        {
+          "pointer": "/data/props/Category",
+          "eq": "NavigationPanel"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommandGroup.Новая",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Representation": "PictureAndText",
+                "Category": "FormCommandBar",
+                "ToolTip": "ru = 'Печатные формы'",
+                "Synonym": "ru = 'Печать'"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "xml",
+          "path": "src/CommandGroups/Новая.xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}CommandGroup/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Representation",
+          "eq": [
+            "PictureAndText"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/CommandGroups/Новая.xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}CommandGroup/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Category",
+          "eq": [
+            "FormCommandBar"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommandGroup.Новая"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": "ru = 'Печать'"
+        },
+        {
+          "pointer": "/data/props/ToolTip",
+          "eq": "ru = 'Печатные формы'"
+        },
+        {
+          "pointer": "/data/props/Representation",
+          "eq": "PictureAndText"
+        },
+        {
+          "pointer": "/data/props/Category",
+          "eq": "FormCommandBar"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommandGroup.Новая",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Category": "Toolbar"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: property `Category` value `Toolbar` is invalid; expected one of: NavigationPanel, ActionsPanel, FormNavigationPanel, FormCommandBar"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommandGroup.ГруппаА",
+        "ops": [
+          {
+            "op": "object.remove"
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_state: `main:CommandGroup.ГруппаА` is referenced by other metadata: `main:CommonCommand.КомандаА` → Group; remove these references first",
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommandGroups/ГруппаА.xml",
+          "eq": "$capture.file1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommandGroups/ГруппаБ.xml",
+          "eq": "$capture.file2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonCommands/КомандаА.xml",
+          "eq": "$capture.file3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Справочник1.xml",
+          "eq": "$capture.file4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Subsystems/Подсистема1/Ext/CommandInterface.xml",
+          "eq": "$capture.file5"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommandGroup.ГруппаВ",
+        "ops": [
+          {
+            "op": "object.remove"
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_state: `main:CommandGroup.ГруппаВ` is referenced by other metadata: `main:Catalog.Справочник1.Command.Команда1` → Group; remove these references first",
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommandGroups/ГруппаА.xml",
+          "eq": "$capture.file1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommandGroups/ГруппаБ.xml",
+          "eq": "$capture.file2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonCommands/КомандаА.xml",
+          "eq": "$capture.file3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Справочник1.xml",
+          "eq": "$capture.file4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Subsystems/Подсистема1/Ext/CommandInterface.xml",
+          "eq": "$capture.file5"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommandGroup.Новая",
+        "ops": [
+          {
+            "op": "object.remove"
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "exists",
+          "path": "src/CommandGroups/Новая.xml",
+          "eq": false
+        },
+        {
+          "kind": "xml",
+          "path": "src/Configuration.xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}CommandGroup",
+          "eq": [
+            "ГруппаА",
+            "ГруппаБ",
+            "ГруппаВ"
+          ]
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.file0"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommandGroups/ГруппаА.xml",
+          "eq": "$capture.file1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommandGroups/ГруппаБ.xml",
+          "eq": "$capture.file2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonCommands/КомандаА.xml",
+          "eq": "$capture.file3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Справочник1.xml",
+          "eq": "$capture.file4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Subsystems/Подсистема1/Ext/CommandInterface.xml",
+          "eq": "$capture.file5"
+        }
+      ]
+    }
+  ]
+}

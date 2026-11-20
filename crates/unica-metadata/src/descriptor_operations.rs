@@ -531,7 +531,6 @@ impl PropertiesSite {
             | NodeKind::FilterCriterion
             | NodeKind::SettingsStorage
             | NodeKind::CommonCommand
-            | NodeKind::CommandGroup
             | NodeKind::CommonTemplate
             | NodeKind::CommonPicture
             | NodeKind::IntegrationService
@@ -1538,7 +1537,6 @@ mod tests {
             "FilterCriterion",
             "SettingsStorage",
             "CommonCommand",
-            "CommandGroup",
             "CommonForm",
             "CommonTemplate",
             "CommonPicture",
