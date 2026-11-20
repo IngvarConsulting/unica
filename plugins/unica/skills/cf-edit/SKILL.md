@@ -13,7 +13,7 @@ allowed-tools:
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tool `unica.apply` по адресу корня набора (`<набор>:Configuration`): свойства правит `props.set`, состав — `object.create`/`object.remove`, порядок подсистем верхнего уровня — `subsystemOrder.set`; остальной командный интерфейс — на интерфейсе подсистемы через `/unica:interface-edit`.
+- Preferred path: use MCP `unica` tool `unica.apply` по адресу корня набора (`<набор>:Configuration`): свойства правит `props.set`, состав — `object.create`/`object.remove`, порядок и видимость подсистем верхнего уровня — `subsystemOrder.set` и `subsystemVisibility.set`; команды — на интерфейсе подсистемы через `/unica:interface-edit`.
 - Do not call internal MCP/CLI adapters directly. They are hidden behind `unica` and synchronized by the orchestrator.
 - Сначала вызови `unica.apply` с `at` и `ops`: это план без записи.
   Когда пользователь поручил внести эту правку, вызови `unica.apply` только
@@ -33,8 +33,15 @@ allowed-tools:
 | `props.set` | свойства корня: версия, поставщик, режим совместимости и прочие пары «ключ — значение» |
 | `object.create`, `object.remove` | состав конфигурации: объект метаданных заводится по виду и имени, снимается по своему адресу; общий макет снимается тем же `object.remove` |
 | `subsystemOrder.set` | порядок подсистем верхнего уровня: `values: {subsystems: […]}`; правила перестановки — в `/unica:interface-edit` |
+| `subsystemVisibility.set` | настройка видимости разделов из `props.interface.subsystemsVisibility`: `items` с адресом `subsystem`, общим флагом `common` и исключениями в `roles` |
 | `panels.set` | раскладка панелей: области `top`, `left`, `right`, `bottom`, в каждой панели и группы панелей |
 | `homePage.set` | начальная страница: шаблон и формы левой и правой колонок |
+
+Для `subsystemVisibility.set` бери квалифицированные адреса разделов и ролей
+из текущего набора. У каждого исключения укажи `role` и `visible`.
+Значение `null` сбрасывает исключение выбранной роли. Остальные роли
+сохраняются. При первом явном сохранении строки передай `common`.
+Отсутствие строки означает, что отдельная настройка раздела не сохранена.
 
 ```json
 {

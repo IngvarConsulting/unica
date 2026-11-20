@@ -3,6 +3,7 @@ use crate::client_interface::{
     parse_home_page, parse_panels, render_home_page, render_panels, HomePage, HomePageItem, Panel,
     PanelEntry, PanelLayout, CLIENT_INTERFACE_RELATIVE, HOME_PAGE_RELATIVE, SIDES,
 };
+use crate::configuration_section_visibility::{self, VisibilityUpdate};
 use crate::interface::{
     interface_order_membership, interface_text_direct_item_values, interface_text_do_group_order,
     interface_text_do_hide, interface_text_do_order, interface_text_do_place,
@@ -46,6 +47,7 @@ pub enum InterfaceEdit {
     },
     GroupOrder(Vec<String>),
     SubsystemOrder(Vec<String>),
+    SubsystemVisibility(Vec<VisibilityUpdate>),
 }
 
 #[derive(Debug, Clone)]
@@ -131,9 +133,9 @@ fn parse_command_interface_operation(
     };
     let target = &interface;
     let (address, relative) = match segments {
-        // Порядок подсистем верхнего уровня живёт в корневом документе.
+        // Настройки разделов верхнего уровня живут в корневом документе.
         [root] if root.kind() == NodeKind::Configuration => {
-            if section != "subsystemOrder" {
+            if !matches!(section, "subsystemOrder" | "subsystemVisibility") {
                 return Err(bad(
                     op_index,
                     "at",
@@ -155,11 +157,13 @@ fn parse_command_interface_operation(
                     .iter()
                     .all(|owner| owner.kind() == NodeKind::Subsystem) =>
         {
-            if section == "subsystemOrder" {
+            if matches!(section, "subsystemOrder" | "subsystemVisibility") {
                 return Err(bad(
                     op_index,
                     "at",
-                    "`subsystemOrder.set` targets the configuration root: `<set>:Configuration`",
+                    format!(
+                        "`{section}.set` targets the configuration root: `<set>:Configuration`"
+                    ),
                 ));
             }
             let mut relative = PathBuf::new();
@@ -263,6 +267,9 @@ fn parse_command_interface_operation(
             let values = required_values(args, op_index, &["groups"])?;
             InterfaceEdit::GroupOrder(listed_strings(values, "groups", op_index)?)
         }
+        "subsystemVisibility" => {
+            InterfaceEdit::SubsystemVisibility(section_visibility_updates(args, target, op_index)?)
+        }
         _ => {
             let values = required_values(args, op_index, &["subsystems"])?;
             InterfaceEdit::SubsystemOrder(listed_strings(values, "subsystems", op_index)?)
@@ -273,6 +280,64 @@ fn parse_command_interface_operation(
         relative,
         edit,
     })
+}
+
+fn section_visibility_updates(
+    args: &Map<String, Value>,
+    target: &QualifiedAddress,
+    op_index: usize,
+) -> Result<Vec<VisibilityUpdate>, ApplyPlanError> {
+    let reference = |raw: &Value, kind: NodeKind, path: &str| {
+        let address = raw
+            .as_str()
+            .and_then(|raw| QualifiedAddress::parse(raw).ok())
+            .filter(|address| {
+                address.source_set() == target.source_set()
+                    && matches!(address.segments(), [segment] if segment.kind() == kind && segment.name().is_some())
+            })
+            .ok_or_else(|| bad(op_index, path, format!("expected a qualified top-level {kind:?} address in {}", target.source_set())))?;
+        Ok::<_, ApplyPlanError>(address.logical_path())
+    };
+    let mut subsystems = std::collections::HashSet::new();
+    interface_items(args, op_index)?
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            let path = format!("items[{index}]");
+            let subsystem = reference(
+                &item["subsystem"],
+                NodeKind::Subsystem,
+                &format!("{path}.subsystem"),
+            )?;
+            if !subsystems.insert(subsystem.clone()) {
+                return Err(bad(
+                    op_index,
+                    &format!("{path}.subsystem"),
+                    "duplicate subsystem",
+                ));
+            }
+            let mut roles = std::collections::HashSet::new();
+            let roles = item["roles"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .enumerate()
+                .map(|(index, entry)| {
+                    let role_path = format!("{path}.roles[{index}].role");
+                    let role = reference(&entry["role"], NodeKind::Role, &role_path)?;
+                    if !roles.insert(role.clone()) {
+                        return Err(bad(op_index, &role_path, "duplicate role"));
+                    }
+                    Ok((role, entry["visible"].as_bool()))
+                })
+                .collect::<Result<_, _>>()?;
+            Ok(VisibilityUpdate {
+                subsystem,
+                common: item["common"].as_bool(),
+                roles,
+            })
+        })
+        .collect()
 }
 
 fn values_object(
@@ -675,8 +740,17 @@ pub fn parse_subsystem_operation(
         matches!(
             *section,
             "commandVisibility" | "commandPlacement" | "commandOrder" | "groupOrder"
-        ) || (*section == "subsystemOrder")
+        ) || matches!(*section, "subsystemOrder" | "subsystemVisibility")
     }) {
+        if section == "subsystemVisibility"
+            && source_kind != unica_source_contract::SourceSetKind::Configuration
+        {
+            return Err(bad(
+                op_index,
+                "at",
+                "section visibility belongs to a configuration root",
+            ));
+        }
         return parse_command_interface_operation(section, &target, args, op_index);
     }
     if matches!(operation, "panels.set" | "homePage.set") {
@@ -1404,6 +1478,7 @@ pub fn stage_metadata_resource_plan(
                     InterfaceEdit::Visibility(_)
                         | InterfaceEdit::Placement(_)
                         | InterfaceEdit::SubsystemOrder(_)
+                        | InterfaceEdit::SubsystemVisibility(_)
                 ) =>
                 {
                     return Err(ApplyPlanError::new(
@@ -1580,6 +1655,9 @@ pub fn stage_metadata_resource_plan(
                         &mut log,
                     )
                     .map_err(fail)?;
+                }
+                InterfaceEdit::SubsystemVisibility(updates) => {
+                    stage_section_visibility(staged, &mut text, updates, op_index)?;
                 }
             }
             let postimage = text.into_bytes();
@@ -1810,6 +1888,108 @@ fn command_interface_owner(relative: &std::path::Path) -> PathBuf {
         Some(directory) => directory.with_extension("xml"),
         None => PathBuf::from("Configuration.xml"),
     }
+}
+
+fn stage_section_visibility(
+    staged: &mut ApplyProposal<'_>,
+    text: &mut String,
+    updates: &[VisibilityUpdate],
+    op_index: usize,
+) -> Result<(), ApplyPlanError> {
+    use std::path::Path;
+    use unica_source_designer::owner::{
+        prove_already_read_metadata_owner, prove_already_read_source_set_owner,
+    };
+
+    let at_path = format!("ops[{op_index}].args.at");
+    let invalid_source = |error: String| {
+        ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, error).at_path(&at_path)
+    };
+    let configuration = Path::new("Configuration.xml");
+    let bytes = read_required(staged, configuration, "configuration descriptor", &at_path)?;
+    let root = prove_already_read_source_set_owner(
+        configuration,
+        &bytes,
+        unica_source_contract::SourceSetKind::Configuration,
+    )
+    .map_err(|error| invalid_source(error.message))?;
+    let interface =
+        crate::configuration::parse_cf_command_interface_xml(text).map_err(invalid_source)?;
+    if let Some(error) = interface.subsystems_visibility_error {
+        return Err(invalid_source(error));
+    }
+    let existing = interface.subsystems_visibility.unwrap_or_default();
+    if let Some(reference) = existing
+        .iter()
+        .flat_map(|row| {
+            std::iter::once(row.subsystem.as_str())
+                .chain(row.roles.iter().map(|role| role.role.as_str()))
+        })
+        .find(|reference| {
+            reference
+                .split_once('.')
+                .is_none_or(|(kind, name)| !root.registers(kind, name))
+        })
+    {
+        return Err(invalid_source(format!(
+            "unregistered visibility reference {reference}"
+        )));
+    }
+    let mut prove_reference = |reference: &str, path: &str, directory: &str| {
+        let (kind, name) = reference.split_once('.').expect("decoded reference");
+        if !root.registers(kind, name) {
+            return Err(bad(
+                op_index,
+                path,
+                format!("{kind} is not registered in this configuration"),
+            ));
+        }
+        let relative = PathBuf::from(directory).join(format!("{name}.xml"));
+        let argument_path = format!("ops[{op_index}].args.{path}");
+        let bytes = read_required(
+            staged,
+            &relative,
+            "registered owner descriptor",
+            &argument_path,
+        )?;
+        let owner = prove_already_read_metadata_owner(&relative, &bytes)
+            .map_err(|error| invalid_source(error.message))?;
+        if owner.artifact_kind() != kind || owner.artifact_name() != Some(name) {
+            return Err(bad(
+                op_index,
+                path,
+                "descriptor does not match the registered owner",
+            ));
+        }
+        Ok(())
+    };
+    for (index, update) in updates.iter().enumerate() {
+        let path = format!("items[{index}]");
+        prove_reference(
+            &update.subsystem,
+            &format!("{path}.subsystem"),
+            "Subsystems",
+        )?;
+        for (role_index, (role, _)) in update.roles.iter().enumerate() {
+            prove_reference(role, &format!("{path}.roles[{role_index}].role"), "Roles")?;
+        }
+        if update.common.is_none()
+            && update.roles.iter().any(|(_, visible)| visible.is_some())
+            && !existing
+                .iter()
+                .any(|entry| entry.subsystem == update.subsystem)
+        {
+            return Err(bad(
+                op_index,
+                &format!("{path}.common"),
+                "supply common when creating a visibility entry",
+            ));
+        }
+    }
+    for update in updates {
+        configuration_section_visibility::write(text, update).map_err(invalid_source)?;
+    }
+    Ok(())
 }
 
 /// Разделы командного интерфейса ссылками порядка: `Subsystem.<Имя>`.

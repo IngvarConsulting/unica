@@ -67,6 +67,9 @@ tests/fixtures/acceptance/workspace-whole-template-removal/** -text -whitespace
 /tests/fixtures/formats/platform_xml/2.20/template-new-xml/*.xml -text whitespace=cr-at-eol
 /tests/fixtures/formats/platform_xml/2.20/template-new-xml/seed/** -text whitespace=cr-at-eol
 
+# Root section visibility retains the exact native Designer-export bytes.
+tests/fixtures/acceptance/workspace-root-section-visibility/src/** -text whitespace=cr-at-eol
+
 # The empty configuration root is the same native seed without its Report.
 /tests/fixtures/formats/platform_xml/2.20/empty_configuration/src/** -text whitespace=cr-at-eol
 # The empty extension over it follows the cfe-init skill: BOM, CRLF, no role.

@@ -138,18 +138,32 @@ pub struct CfChildObjectCount {
     pub count: usize,
 }
 
-/// Командный интерфейс конфигурации.
-///
-/// В корневом `Ext/CommandInterface.xml` лежит только порядок подсистем
-/// верхнего уровня — команд там нет, они у подсистем. Поэтому интерфейс
-/// конфигурации это свойство корня, рядом с `homePage`, а не отдельный узел:
-/// листать и адресовать поштучно тут нечего.
+/// Сохранённые порядок и видимость разделов командного интерфейса корня.
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CfInterfaceData {
     /// Ссылки на подсистемы в объявленном порядке, как их пишет платформа:
     /// `Subsystem.Планирование`. Набором исходников их дополняет проекция.
     pub subsystem_order: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subsystems_visibility: Option<Vec<CfSubsystemVisibility>>,
+    #[serde(skip)]
+    pub subsystems_visibility_error: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CfSubsystemVisibility {
+    pub subsystem: String,
+    pub common: bool,
+    pub roles: Vec<CfSubsystemVisibilityRole>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CfSubsystemVisibilityRole {
+    pub role: String,
+    pub visible: bool,
 }
 
 #[derive(serde::Serialize)]

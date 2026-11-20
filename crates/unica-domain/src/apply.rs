@@ -660,6 +660,7 @@ operation_descriptors!(
     // маршрута `main:Interface` намеренно нет: корень описывается свойством,
     // а не узлом. Интерфейс подсистемы эту операцию не принимает.
     (InterfaceOperation::SubsystemOrderSet),
+    (InterfaceOperation::SubsystemVisibilitySet),
     // Панели и начальная страница — документы корня конфигурации, у
     // расширения их нет.
     (InterfaceOperation::PanelsSet),
@@ -1542,6 +1543,7 @@ mod tests {
             "commandOrder.set",
             "groupOrder.set",
             "subsystemOrder.set",
+            "subsystemVisibility.set",
             "panels.set",
             "homePage.set",
             "code.insert",
@@ -1549,7 +1551,7 @@ mod tests {
             "event.implement",
         ];
         let registry = crate::apply::operation_registry();
-        assert_eq!(expected.len(), 131);
+        assert_eq!(expected.len(), 132);
         assert_eq!(registry.names(), expected);
         // Реквизит и команда формы названы по своему узлу, как у объекта
         // метаданных, свойства формы — как свойства описания:
@@ -2051,7 +2053,7 @@ mod tests {
             "main:Catalog.Items.Module.Object.Event.OnWrite"
         ));
         // Панели и начальная страница — документы корня конфигурации.
-        for name in ["panels.set", "homePage.set"] {
+        for name in ["panels.set", "homePage.set", "subsystemVisibility.set"] {
             assert!(applies(name, "main:Configuration"), "{name}");
             assert!(!applies(name, "main:Subsystem.Sales.Interface"), "{name}");
             assert!(

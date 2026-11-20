@@ -1,0 +1,809 @@
+{
+  "id": "S-3168-root-section-visibility",
+  "issue": 3168,
+  "area": "Подсистемы и интерфейс",
+  "task": "Прочитать и точечно изменить видимость разделов корня, сохранить остальные исключения и порядок.",
+  "workspace": "tests/fixtures/acceptance/workspace-root-section-visibility",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/interface/subsystemsVisibility",
+          "eq": [
+            {
+              "subsystem": "main:Subsystem.Sales",
+              "common": false,
+              "roles": [
+                {
+                  "role": "main:Role.VisibleRole",
+                  "visible": true
+                },
+                {
+                  "role": "main:Role.HiddenRole",
+                  "visible": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "pointer": "/data/props/interface/subsystemOrder",
+          "eq": [
+            "main:Subsystem.Sales",
+            "main:Subsystem.Warehouse",
+            "main:Subsystem.Administration"
+          ]
+        }
+      ],
+      "captures": {
+        "initial": {
+          "file": "src/Ext/CommandInterface.xml",
+          "kind": "sha256"
+        },
+        "saved": {
+          "pointer": "/data/props/interface/subsystemsVisibility"
+        },
+        "cfg": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "panel": {
+          "file": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256"
+        },
+        "sales": {
+          "file": "src/Subsystems/Sales.xml",
+          "kind": "sha256"
+        },
+        "role": {
+          "file": "src/Roles/HiddenRole/Ext/Rights.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration.Can.subsystemVisibility.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/items/items/properties/common/type",
+          "eq": "boolean"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/items/items/properties/roles/items/properties/visible/anyOf",
+          "eq": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "subsystemVisibility.set",
+            "args": {
+              "items": "$capture.saved"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Ext/CommandInterface.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "subsystemVisibility.set",
+            "args": {
+              "items": [
+                {
+                  "subsystem": "main:Subsystem.Warehouse",
+                  "roles": [
+                    {
+                      "role": "main:Role.HiddenRole",
+                      "visible": null
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Ext/CommandInterface.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "subsystemVisibility.set",
+            "args": {
+              "items": [
+                {
+                  "subsystem": "main:Subsystem.Warehouse",
+                  "roles": [
+                    {
+                      "role": "main:Role.HiddenRole",
+                      "visible": true
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Ext/CommandInterface.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial"
+        }
+      ],
+      "refusal": "bad_value: supply common when creating a visibility entry"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "subsystemVisibility.set",
+            "args": {
+              "items": [
+                {
+                  "subsystem": "main:Subsystem.Sales",
+                  "common": true,
+                  "roles": []
+                },
+                {
+                  "subsystem": "main:Subsystem.Sales",
+                  "roles": [
+                    {
+                      "role": "main:Role.Unregistered",
+                      "visible": true
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Ext/CommandInterface.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial"
+        }
+      ],
+      "refusal": "bad_value: duplicate subsystem"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "subsystemVisibility.set",
+            "args": {
+              "items": [
+                {
+                  "subsystem": "main:Subsystem.Sales",
+                  "common": true,
+                  "roles": []
+                },
+                {
+                  "subsystem": "main:Subsystem.Warehouse",
+                  "common": false,
+                  "roles": [
+                    {
+                      "role": "main:Role.Unregistered",
+                      "visible": true
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Ext/CommandInterface.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial"
+        }
+      ],
+      "refusal": "bad_value: Role is not registered in this configuration"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "subsystemVisibility.set",
+            "args": {
+              "items": [
+                {
+                  "subsystem": "main:Subsystem.Sales",
+                  "common": true,
+                  "roles": []
+                },
+                {
+                  "subsystem": "main:Subsystem.Unregistered",
+                  "common": false,
+                  "roles": []
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Ext/CommandInterface.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial"
+        }
+      ],
+      "refusal": "bad_value: Subsystem is not registered in this configuration"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "subsystemVisibility.set",
+            "args": {
+              "items": [
+                {
+                  "subsystem": "main:Subsystem.Sales",
+                  "roles": [
+                    {
+                      "role": "other:Role.HiddenRole",
+                      "visible": false
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Ext/CommandInterface.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial"
+        }
+      ],
+      "refusal": "bad_value: expected a qualified top-level Role address in main"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "subsystemVisibility.set",
+            "args": {
+              "items": [
+                {
+                  "subsystem": "main:Subsystem.Sales",
+                  "common": true,
+                  "roles": [
+                    {
+                      "role": "main:Role.VisibleRole",
+                      "visible": false
+                    }
+                  ]
+                },
+                {
+                  "subsystem": "main:Subsystem.Warehouse",
+                  "common": false,
+                  "roles": [
+                    {
+                      "role": "main:Role.HiddenRole",
+                      "visible": true
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Ext/CommandInterface.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "writeToken": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.writeToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Ext/CommandInterface.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/xcf/extrnprops}SubsystemsVisibility/{http://v8.1c.ru/8.3/xcf/extrnprops}Subsystem[@name='Subsystem.Sales']/{http://v8.1c.ru/8.3/xcf/extrnprops}Visibility/{http://v8.1c.ru/8.3/xcf/readable}Value",
+          "eq": [
+            "false",
+            "false"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/interface/subsystemsVisibility",
+          "eq": [
+            {
+              "subsystem": "main:Subsystem.Sales",
+              "common": true,
+              "roles": [
+                {
+                  "role": "main:Role.VisibleRole",
+                  "visible": false
+                },
+                {
+                  "role": "main:Role.HiddenRole",
+                  "visible": false
+                }
+              ]
+            },
+            {
+              "subsystem": "main:Subsystem.Warehouse",
+              "common": false,
+              "roles": [
+                {
+                  "role": "main:Role.HiddenRole",
+                  "visible": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "pointer": "/data/props/interface/subsystemOrder",
+          "eq": [
+            "main:Subsystem.Sales",
+            "main:Subsystem.Warehouse",
+            "main:Subsystem.Administration"
+          ]
+        }
+      ],
+      "captures": {
+        "after": {
+          "file": "src/Ext/CommandInterface.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "subsystemVisibility.set",
+            "args": {
+              "items": [
+                {
+                  "subsystem": "main:Subsystem.Sales",
+                  "roles": [
+                    {
+                      "role": "main:Role.HiddenRole",
+                      "visible": null
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Ext/CommandInterface.xml",
+          "kind": "sha256",
+          "eq": "$capture.after"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "resetToken": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.resetToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Ext/CommandInterface.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/xcf/extrnprops}SubsystemsVisibility/{http://v8.1c.ru/8.3/xcf/extrnprops}Subsystem[@name='Subsystem.Sales']/{http://v8.1c.ru/8.3/xcf/extrnprops}Visibility/{http://v8.1c.ru/8.3/xcf/readable}Value",
+          "eq": [
+            "false"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/interface/subsystemsVisibility",
+          "eq": [
+            {
+              "subsystem": "main:Subsystem.Sales",
+              "common": true,
+              "roles": [
+                {
+                  "role": "main:Role.VisibleRole",
+                  "visible": false
+                }
+              ]
+            },
+            {
+              "subsystem": "main:Subsystem.Warehouse",
+              "common": false,
+              "roles": [
+                {
+                  "role": "main:Role.HiddenRole",
+                  "visible": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "pointer": "/data/props/interface/subsystemOrder",
+          "eq": [
+            "main:Subsystem.Sales",
+            "main:Subsystem.Warehouse",
+            "main:Subsystem.Administration"
+          ]
+        }
+      ],
+      "captures": {
+        "afterReset": {
+          "file": "src/Ext/CommandInterface.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "subsystemVisibility.set",
+            "args": {
+              "items": [
+                {
+                  "subsystem": "main:Subsystem.Sales",
+                  "roles": [
+                    {
+                      "role": "main:Role.HiddenRole",
+                      "visible": null
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Ext/CommandInterface.xml",
+          "kind": "sha256",
+          "eq": "$capture.afterReset"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "subsystemOrder.set",
+            "args": {
+              "values": {
+                "subsystems": [
+                  "Subsystem.Administration",
+                  "Subsystem.Sales",
+                  "Subsystem.Warehouse"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Ext/CommandInterface.xml",
+          "kind": "sha256",
+          "eq": "$capture.afterReset"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "orderToken": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.orderToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Ext/CommandInterface.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/xcf/extrnprops}SubsystemsOrder/{http://v8.1c.ru/8.3/xcf/extrnprops}Subsystem",
+          "eq": [
+            "Subsystem.Administration",
+            "Subsystem.Sales",
+            "Subsystem.Warehouse"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/interface/subsystemsVisibility",
+          "eq": [
+            {
+              "subsystem": "main:Subsystem.Sales",
+              "common": true,
+              "roles": [
+                {
+                  "role": "main:Role.VisibleRole",
+                  "visible": false
+                }
+              ]
+            },
+            {
+              "subsystem": "main:Subsystem.Warehouse",
+              "common": false,
+              "roles": [
+                {
+                  "role": "main:Role.HiddenRole",
+                  "visible": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "pointer": "/data/props/interface/subsystemOrder",
+          "eq": [
+            "main:Subsystem.Administration",
+            "main:Subsystem.Sales",
+            "main:Subsystem.Warehouse"
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.cfg"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "$capture.panel"
+        },
+        {
+          "path": "src/Subsystems/Sales.xml",
+          "kind": "sha256",
+          "eq": "$capture.sales"
+        },
+        {
+          "path": "src/Roles/HiddenRole/Ext/Rights.xml",
+          "kind": "sha256",
+          "eq": "$capture.role"
+        }
+      ]
+    }
+  ]
+}

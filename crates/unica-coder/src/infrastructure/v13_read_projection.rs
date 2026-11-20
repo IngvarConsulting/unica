@@ -724,8 +724,8 @@ pub(super) fn project_configuration_with_counts(
     }
     // `interface` идёт рядом с `homePage` не по сходству имён: оба живут
     // отдельным документом рядом с `Configuration.xml` и оба описывают корень
-    // целиком. Командного интерфейса как узла у конфигурации нет — внутри
-    // корневого документа только порядок подсистем, листать там нечего.
+    // целиком. Командный интерфейс корня показывает сохранённые порядок и
+    // настройки видимости разделов.
     if let Some(Value::Object(interface)) = payload.get("interface") {
         let mut interface = interface.clone();
         // Ссылка `Subsystem.Планирование` дополняется до адреса: читателю
@@ -737,6 +737,24 @@ pub(super) fn project_configuration_with_counts(
                 .map(|reference| Value::String(format!("{}:{reference}", address.source_set())))
                 .collect();
             interface.insert("subsystemOrder".to_string(), Value::Array(qualified));
+        }
+        let qualify = |row: &mut Value, key: &str| {
+            if let Some(reference) = row[key].as_str() {
+                row[key] = Value::String(format!("{}:{reference}", address.source_set()));
+            }
+        };
+        if let Some(rows) = interface
+            .get_mut("subsystemsVisibility")
+            .and_then(Value::as_array_mut)
+        {
+            for row in rows {
+                qualify(row, "subsystem");
+                if let Some(roles) = row["roles"].as_array_mut() {
+                    for role in roles {
+                        qualify(role, "role");
+                    }
+                }
+            }
         }
         props.insert("interface".to_string(), Value::Object(interface));
     }

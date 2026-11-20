@@ -1732,9 +1732,11 @@ mod tests {
             count += 1;
             let op = descriptor.name();
             let at = match op {
-                "subsystem.create" | "subsystemOrder.set" | "panels.set" | "homePage.set" => {
-                    "main:Configuration"
-                }
+                "subsystem.create"
+                | "subsystemOrder.set"
+                | "subsystemVisibility.set"
+                | "panels.set"
+                | "homePage.set" => "main:Configuration",
                 "childSubsystem.remove" => "main:Subsystem.Sales.Subsystem.Orders",
                 "commandOrder.set" => {
                     "main:Subsystem.Sales.Interface.Group.NavigationPanelImportant"
@@ -1772,7 +1774,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(count, 12);
+        assert_eq!(count, 13);
         for (op, key, value) in [
             ("content.add", "object", "Catalog.X"),
             ("content.remove", "object", "Catalog.X"),

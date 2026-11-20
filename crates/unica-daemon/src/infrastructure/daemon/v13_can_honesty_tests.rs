@@ -599,6 +599,10 @@ fn node_args(
                 })
                 .unwrap_or_else(|| sample_args(descriptor))
         }
+        "subsystemVisibility.set" => crate::domain::apply::operation_site(at, traits)
+            .and_then(|site| descriptor.argument_contract_at(&site))
+            .map(|contract| contract.example_args)
+            .unwrap_or_else(|| sample_args(descriptor)),
         "item.remove" => json!({"at": ""}),
         // Место вставки у метода — до или после него (#1354).
         "code.insert" if method_address => {
@@ -2288,6 +2292,11 @@ fn subsystem_interface_contracts_preview_all_operations_without_source_writes() 
             "main:Configuration".to_string(),
             "subsystemOrder.set",
             json!({"values":{"subsystems":["Subsystem.Администрирование"]}}),
+        ),
+        (
+            "main:Configuration".to_string(),
+            "subsystemVisibility.set",
+            json!({"items":[{"subsystem":subsystem,"common":false}]}),
         ),
     ] {
         let detailed = invoke(
