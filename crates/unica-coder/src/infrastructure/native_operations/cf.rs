@@ -1454,4 +1454,37 @@ pub(super) mod medium_cf_read_selector_bridge_tests {
         assert_eq!(logical.errors, physical.errors);
         let _ = fs::remove_dir_all(&context.workspace_root);
     }
+
+    #[test]
+    fn cf_validate_recognizes_websocket_client_in_platform_exports() {
+        for fixture in [
+            "../../tests/fixtures/formats/platform_xml/2.20/all_kinds",
+            "../../tests/fixtures/formats/platform_xml/2.21/all_kinds",
+            "../../tests/fixtures/formats/platform_xml/2.22/all_kinds",
+        ] {
+            let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join(fixture)
+                .canonicalize()
+                .unwrap();
+            let context = WorkspaceContext {
+                cwd: root.clone(),
+                workspace_root: root.clone(),
+                cache_root: root.join(".unica-cache"),
+                workspace_epoch: 1,
+            };
+            let outcome = validate_cf(
+                &Map::from_iter([
+                    ("ConfigPath".to_string(), json!("src")),
+                    ("Detailed".to_string(), json!(true)),
+                ]),
+                &context,
+            );
+            let stdout = outcome.stdout.as_deref().unwrap();
+            assert!(
+                !stdout.contains("Unknown type 'WebSocketClient'")
+                    && stdout.contains("8. Object directories:"),
+                "{fixture}: {stdout}"
+            );
+        }
+    }
 }

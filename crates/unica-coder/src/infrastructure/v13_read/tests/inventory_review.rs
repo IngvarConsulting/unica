@@ -317,7 +317,7 @@ fn review_role_rejects_non_platform_metadata_node_kinds() {
         fixture.source.join("Roles/SalesReader/Ext/Rights.xml"),
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <Rights xmlns="http://v8.1c.ru/8.2/roles" version="2.20">
-  <object><name>WebSocketClient.Telephony</name><right><name>Read</name><value>true</value></right></object>
+  <object><name>Module.Telephony</name><right><name>Read</name><value>true</value></right></object>
 </Rights>"#,
     )
     .unwrap();

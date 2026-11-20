@@ -117,6 +117,12 @@ fn module_paths_map_to_the_logical_module_view_reads() {
         (
             "main",
             SourceSetKind::Configuration,
+            "WebSocketClients/Клиент/Ext/Module.bsl",
+            "main:WebSocketClient.Клиент.Module.WebSocketClient",
+        ),
+        (
+            "main",
+            SourceSetKind::Configuration,
             "IntegrationServices/Шина/Ext/Module.bsl",
             "main:IntegrationService.Шина.Module.IntegrationService",
         ),
@@ -201,11 +207,9 @@ fn files_outside_the_module_layout_have_no_logical_address() {
             "UnknownKinds/X/Ext/Module.bsl",
         ),
         (SourceSetKind::Configuration, "tests/Сценарий.bsl"),
-        // The 8.3.27 profile does not specify a WebSocketClient module
-        // layout, so `view` cannot read one either.
         (
             SourceSetKind::Configuration,
-            "WebSocketClients/Клиент/Ext/Module.bsl",
+            "WebSocketClients/Клиент/Ext/ObjectModule.bsl",
         ),
         (
             SourceSetKind::Configuration,

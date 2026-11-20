@@ -710,7 +710,7 @@ fn real_typed_readers_cover_every_task14_profile_without_skipping() {
 
 /// rule: INV.SOURCE.PLATFORM-CAPABILITY-EXISTENCE
 #[test]
-fn websocket_client_source_view_is_an_explicit_provider_gap() {
+fn registered_websocket_client_requires_its_descriptor_before_reading_the_module() {
     let fixture = RealReaderFixture::new();
     let configuration_path = fixture.source.join("Configuration.xml");
     let configuration = fs::read_to_string(&configuration_path).unwrap();
@@ -740,7 +740,7 @@ fn websocket_client_source_view_is_an_explicit_provider_gap() {
 
     assert!(!result.ok);
     assert!(result.data.is_none());
-    assert_eq!(result.diagnostics[0]["code"], "provider_unavailable");
+    assert_eq!(result.diagnostics[0]["detailCode"], "source_unreadable");
 }
 
 #[test]

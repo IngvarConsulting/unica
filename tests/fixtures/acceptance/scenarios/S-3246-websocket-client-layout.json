@@ -1,0 +1,115 @@
+{
+  "id": "S-3246-websocket-client-layout",
+  "issue": 3246,
+  "area": "Метаданные",
+  "task": "Прочитать описание WebSocket-клиента и его модуль в нативной выгрузке. Сопоставить логический адрес модуля с файлом в обе стороны.",
+  "workspace": "tests/fixtures/acceptance/workspace-all-kinds",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:WebSocketКлиент.AllKindsWebSocketClient"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:WebSocketClient.AllKindsWebSocketClient"
+        },
+        {
+          "pointer": "/data/props/Predefined",
+          "eq": false
+        }
+      ],
+      "captures": {
+        "moduleHash": {
+          "file": "src/WebSocketClients/AllKindsWebSocketClient/Ext/Module.bsl",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:WebSocketClient.AllKindsWebSocketClient.Module.WebSocketClient.Body"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Body"
+        },
+        {
+          "pointer": "/data/can",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "at": "main:WebSocketClient.AllKindsWebSocketClient.Module.WebSocketClient"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/path",
+          "eq": "WebSocketClients/AllKindsWebSocketClient/Ext/Module.bsl"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "src/WebSocketClients/AllKindsWebSocketClient/Ext/Module.bsl"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:WebSocketClient.AllKindsWebSocketClient.Module.WebSocketClient"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:WebSocketClient.AllKindsWebSocketClient.Module.WebSocketClient.Body",
+        "ops": [
+          {
+            "op": "code.replace",
+            "args": {
+              "at": "main:WebSocketClient.AllKindsWebSocketClient.Module.WebSocketClient.Body",
+              "text": "// Probe"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/WebSocketClients/AllKindsWebSocketClient/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.moduleHash"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "refusal": "bad_value: apply operation `code.replace` does not apply to Body `main:WebSocketClient.AllKindsWebSocketClient.Module.WebSocketClient.Body`; it addresses a module address,"
+    }
+  ]
+}

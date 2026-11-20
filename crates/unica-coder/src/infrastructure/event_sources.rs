@@ -285,7 +285,7 @@ fn render_segments(segments: &[AddressSegment]) -> String {
 /// The candidate comes from the same layout tables the readers use, and is
 /// accepted only when the forward mapping for that address renders the very
 /// same relative path. A file outside the module layout (a stray `.bsl`, a
-/// WebSocketClient module, a mismatched name) has no address rather than a
+/// mismatched name) has no address rather than a
 /// guessed one. Registration of the owner is proved later by `view`; this
 /// mapping reads nothing.
 pub fn module_address_for_relative(

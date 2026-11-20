@@ -107,6 +107,10 @@ const PROFILE: &[(&str, &[(&str, Fact)])] = &[
     ),
     ("IntegrationService", &[("Synonym", Fact::Localized)]),
     ("WSReference", &[("Synonym", Fact::Localized)]),
+    (
+        "WebSocketClient",
+        &[("Synonym", Fact::Localized), ("Predefined", Fact::Boolean)],
+    ),
 ];
 
 /// Виды, у которых профиль читает базовые факты корня.

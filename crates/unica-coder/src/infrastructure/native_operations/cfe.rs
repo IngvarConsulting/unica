@@ -819,6 +819,7 @@ fn cfe_validate_module_layouts(
                 | ModuleRouteKind::Common
                 | ModuleRouteKind::Service
                 | ModuleRouteKind::Bot
+                | ModuleRouteKind::WebSocketClient
                 | ModuleRouteKind::CommonCommand
         ) {
             continue;
@@ -1291,6 +1292,7 @@ pub(crate) mod tests {
             ("CommonModule", "Module"),
             ("SettingsStorage", "ManagerModule"),
             ("Bot", "Module"),
+            ("WebSocketClient", "Module"),
             ("HTTPService", "Module"),
             ("WebService", "Module"),
             ("IntegrationService", "Module"),
