@@ -98,6 +98,15 @@ impl MetadataReadCodec for DesignerMetadataReadCodec {
         crate::queue_read::enrich_queue(descriptor, payload)
     }
 
+    fn identity_root_facts(
+        &self,
+        descriptor: &[u8],
+        kind: &str,
+        payload: &mut Value,
+    ) -> Result<(), String> {
+        crate::identity_root_facts::enrich_identity_root_facts(descriptor, kind, payload)
+    }
+
     fn style_properties(
         &self,
         descriptor: &str,

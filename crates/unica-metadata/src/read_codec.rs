@@ -72,6 +72,14 @@ pub trait MetadataReadCodec: Send + Sync {
     /// Дополняет ответ чтения очереди её синонимом, свойствами
     /// обработки и дочерними.
     fn queue(&self, descriptor: &[u8], payload: &mut Value) -> Result<(), String>;
+    /// Синоним и выбранные свойства корня видов без собственного профиля
+    /// чтения (#1568). Вид вне профиля `payload` не меняет.
+    fn identity_root_facts(
+        &self,
+        descriptor: &[u8],
+        kind: &str,
+        payload: &mut Value,
+    ) -> Result<(), String>;
 
     /// Комментарий и цвет элемента стиля `name`. `relative` — путь
     /// дескриптора в источнике: по нему кодек узнаёт профиль записи.

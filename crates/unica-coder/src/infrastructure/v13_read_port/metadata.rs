@@ -313,6 +313,16 @@ impl ProviderReadAuthority {
                 .palette_color(&descriptor, &mut payload)
                 .map_err(|message| ViewError::detailed(RefusalDetail::SourceUnreadable, message))?;
         }
+        if let Err(message) = crate::infrastructure::family_codecs::metadata_read_codec()
+            .identity_root_facts(&descriptor, evidence.artifact_kind(), &mut payload)
+        {
+            let finding = json!({"field": "properties", "message": message});
+            if let Some(unreadable) = payload["unreadable"].as_array_mut() {
+                unreadable.push(finding);
+            } else {
+                payload["unreadable"] = json!([finding]);
+            }
+        }
         if evidence.artifact_kind() == "Queue" {
             crate::infrastructure::family_codecs::metadata_read_codec()
                 .queue(&descriptor, &mut payload)
