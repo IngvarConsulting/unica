@@ -141,6 +141,7 @@ const OWNER_MODULE_KINDS: &[&str] = &[
     "HTTPService",
     "WebService",
     "IntegrationService",
+    "WebSocketClient",
 ];
 
 #[derive(Debug, Clone, Copy)]
@@ -762,11 +763,10 @@ pub fn module_descriptor_requirements(
         | ModuleRouteKind::CommonForm
         | ModuleRouteKind::CommonCommand
         | ModuleRouteKind::Service
-        | ModuleRouteKind::Bot => parts[..2].join("."),
+        | ModuleRouteKind::Bot
+        | ModuleRouteKind::WebSocketClient => parts[..2].join("."),
         ModuleRouteKind::NestedForm | ModuleRouteKind::NestedCommand => parts[..4].join("."),
-        ModuleRouteKind::Root
-        | ModuleRouteKind::NestedObject
-        | ModuleRouteKind::WebSocketClient => {
+        ModuleRouteKind::Root | ModuleRouteKind::NestedObject => {
             return Err(String::from(
                 "module descriptor requirements are unavailable for this layout",
             ))
@@ -870,7 +870,7 @@ pub fn module_source_address(
             logical.push(format!("{}Module", role.as_str()));
             logical.join(".")
         }
-        ModuleRouteKind::Service | ModuleRouteKind::Bot => {
+        ModuleRouteKind::Service | ModuleRouteKind::Bot | ModuleRouteKind::WebSocketClient => {
             let owner = segments
                 .first()
                 .ok_or_else(|| unsupported_logical_module_layout(owner_kind, role))?;
@@ -878,12 +878,6 @@ pub fn module_source_address(
                 "{}.{}.Module",
                 owner.kind().as_str(),
                 required_segment_name(Some(owner), owner_kind, role)?
-            )
-        }
-        ModuleRouteKind::WebSocketClient => {
-            return Err(
-                "WebSocketClient source layout is not specified for platform profile 8.3.27"
-                    .to_string(),
             )
         }
     };

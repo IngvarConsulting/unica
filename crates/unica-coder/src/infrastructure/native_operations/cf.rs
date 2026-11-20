@@ -1437,6 +1437,64 @@ pub(super) mod medium_cf_read_selector_bridge_tests {
         }
     }
 
+    fn copy_tree(from: &Path, to: &Path) {
+        fs::create_dir_all(to).unwrap();
+        for entry in fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let target = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_tree(&entry.path(), &target);
+            } else {
+                fs::copy(entry.path(), target).unwrap();
+            }
+        }
+    }
+
+    /// The platform export of every root kind validates its WebSocket client
+    /// as a known kind whose objects live in `WebSocketClients/` (#3246).
+    #[test]
+    fn cf_validate_knows_the_web_socket_client_of_the_platform_export() {
+        for (format, export) in [
+            (
+                "2.20",
+                "../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src",
+            ),
+            (
+                "2.21",
+                "../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src",
+            ),
+            (
+                "2.22",
+                "../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src",
+            ),
+        ] {
+            let context = workspace(&format!("all-kinds-{format}"));
+            let source = context.workspace_root.join("src");
+            fs::remove_dir_all(&source).unwrap();
+            copy_tree(&Path::new(env!("CARGO_MANIFEST_DIR")).join(export), &source);
+            let outcome = validate_cf(
+                &Map::from_iter([("ConfigPath".to_string(), json!("src"))]),
+                &context,
+            );
+            let report = format!("{outcome:?}");
+            assert!(outcome.ok, "{format}: {report}");
+
+            // The kind's directory is checked as for any laid-out kind.
+            fs::remove_dir_all(source.join("WebSocketClients")).unwrap();
+            let missing = validate_cf(
+                &Map::from_iter([("ConfigPath".to_string(), json!("src"))]),
+                &context,
+            );
+            assert!(
+                missing.stdout.as_deref().is_some_and(
+                    |report| report.contains("Missing directory: WebSocketClients (1 objects)")
+                ),
+                "{format}: {missing:?}"
+            );
+            let _ = fs::remove_dir_all(&context.workspace_root);
+        }
+    }
+
     #[test]
     pub(crate) fn cf_validate_answers_identically_for_a_source_set_and_a_config_path() {
         let context = workspace("validate");
