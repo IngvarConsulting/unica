@@ -144,3 +144,28 @@ fn a_module_of_an_unregistered_dimension_table_is_not_readable() {
     );
     assert_eq!(refusal_codes(&r), ["not_found"], "{r:?}");
 }
+
+/// Таблицы, кубы, таблицы измерения и функции живут во внешнем источнике:
+/// корень конфигурации их ветвей не выдаёт, ни пустыми, ни со счётом.
+/// rule: CTR.SOURCE.EMPTY-BRANCHES
+#[test]
+fn the_configuration_root_has_no_branches_of_nested_kinds() {
+    let f = fixture();
+    let root = read(&f, "main:Configuration");
+    let branches = root["branches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|branch| branch["at"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert!(
+        branches.contains(&"main:ExternalDataSource"),
+        "{branches:?}"
+    );
+    for kind in ["Table", "Cube", "DimensionTable", "Function"] {
+        assert!(
+            !branches.contains(&format!("main:{kind}").as_str()),
+            "{kind}: {branches:?}"
+        );
+    }
+}
