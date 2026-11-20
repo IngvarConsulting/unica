@@ -16,7 +16,9 @@ fn fixture() -> RealReaderFixture {
     );
     write(
         &f.source.join(LEDGER),
-        &fixture_text("acceptance/workspace-chart-of-accounts-flags/src/ChartsOfAccounts/Ledger.xml"),
+        &fixture_text(
+            "acceptance/workspace-chart-of-accounts-flags/src/ChartsOfAccounts/Ledger.xml",
+        ),
     );
     f
 }
@@ -45,7 +47,10 @@ fn accounting_flags_are_owner_branches_with_addressable_members() {
         );
     }
     for (kind, names) in [
-        ("AccountingFlag", &["Currency", "Quantity", "TaxAccounting"][..]),
+        (
+            "AccountingFlag",
+            &["Currency", "Quantity", "TaxAccounting"][..],
+        ),
         ("ExtDimensionAccountingFlag", &["Amount", "Currency"][..]),
     ] {
         let collection = read(&f, &format!("main:ChartOfAccounts.Ledger.{kind}"));
