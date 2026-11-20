@@ -2,7 +2,7 @@
   "format": "2.22",
   "build": "8.5.4.2028",
   "seed": "2.20/all_kinds",
-  "runner": "v8-runner 0.17.1",
+  "runner": "v8-runner 0.18.1",
   "steps": [
     {
       "step": "package",

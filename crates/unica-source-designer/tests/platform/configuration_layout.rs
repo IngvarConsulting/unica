@@ -4,6 +4,7 @@ use std::collections::HashSet;
 fn cf_consumers_share_the_canonical_metadata_kind_order() {
     let validate_kinds = cf_validate_child_object_types();
 
+    assert_eq!(validate_kinds.len(), 49);
     assert!(validate_kinds.contains(&"WebSocketClient"));
     assert_eq!(validate_kinds, cf_type_order());
     let bot_index = validate_kinds
@@ -14,6 +15,16 @@ fn cf_consumers_share_the_canonical_metadata_kind_order() {
     assert_eq!(validate_kinds[bot_index + 1], "PaletteColor");
     assert_eq!(cf_validate_child_type_dir("Bot"), Some("Bots"));
     assert_eq!(cf_type_ru_name("Bot"), "Боты");
+    let source_index = validate_kinds
+        .iter()
+        .position(|kind| *kind == "ExternalDataSource")
+        .expect("ExternalDataSource must be a modeled metadata kind");
+    assert_eq!(validate_kinds[source_index - 1], "Task");
+    assert_eq!(validate_kinds[source_index + 1], "IntegrationService");
+    assert_eq!(
+        cf_validate_child_type_dir("ExternalDataSource"),
+        Some("ExternalDataSources")
+    );
     assert_eq!(cf_validate_child_type_dir("SyntheticMetadata"), None);
 
     let directories = validate_kinds

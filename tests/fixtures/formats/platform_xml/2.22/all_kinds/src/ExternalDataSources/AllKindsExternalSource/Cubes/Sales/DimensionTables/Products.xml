@@ -1,0 +1,83 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:pal="http://v8.1c.ru/8.1/data/ui/colors/palette" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.22">
+	<DimensionTable uuid="08e74782-df96-522d-bd90-f8782d2498c2">
+		<InternalInfo>
+			<xr:GeneratedType name="ExternalDataSourceCubeDimensionTableManager.AllKindsExternalSource.Sales.Products" category="Manager">
+				<xr:TypeId>2a908110-5279-5f80-ba81-81ca91a0470d</xr:TypeId>
+				<xr:ValueId>be9c6855-eac8-5f38-ad66-6768e90c0dbe</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="ExternalDataSourceCubeDimensionTableObject.AllKindsExternalSource.Sales.Products" category="Object">
+				<xr:TypeId>652b3242-34bb-5d00-b452-304df6b45172</xr:TypeId>
+				<xr:ValueId>3d459c46-78c2-515f-9ede-0b0a56b46871</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="ExternalDataSourceCubeDimensionTableRef.AllKindsExternalSource.Sales.Products" category="Ref">
+				<xr:TypeId>54ff017d-36b9-54da-8682-3a836f5e3d44</xr:TypeId>
+				<xr:ValueId>d3dd7afe-c577-5380-a1ec-a3c61c4d388d</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="ExternalDataSourceCubeDimensionTableList.AllKindsExternalSource.Sales.Products" category="List">
+				<xr:TypeId>b30ad86f-2a52-5ae7-82bf-d7d256228d17</xr:TypeId>
+				<xr:ValueId>bdf539aa-4464-56b3-bbb5-3da5af86b6de</xr:ValueId>
+			</xr:GeneratedType>
+		</InternalInfo>
+		<Properties>
+			<Name>Products</Name>
+			<Synonym/>
+			<Comment/>
+			<NameInDataSource>products</NameInDataSource>
+			<PresentationField/>
+			<HierarchyNameInDataSource/>
+			<LevelNumber>0</LevelNumber>
+			<Hierarchical>false</Hierarchical>
+			<UnfilledParentValue xsi:nil="true"/>
+			<UseStandardCommands>false</UseStandardCommands>
+			<QuickChoice>false</QuickChoice>
+			<DefaultObjectForm/>
+			<DefaultListForm/>
+			<DefaultChoiceForm/>
+			<ObjectPresentation/>
+			<ExtendedObjectPresentation/>
+			<ListPresentation/>
+			<ExtendedListPresentation/>
+			<Explanation/>
+			<IncludeHelpInContents>false</IncludeHelpInContents>
+		</Properties>
+		<ChildObjects>
+			<Field uuid="e6f96924-5317-54bb-b309-c4ad5c9863fa">
+				<Properties>
+					<Name>Code</Name>
+					<Synonym/>
+					<Comment/>
+					<Type>
+						<v8:Type>xs:string</v8:Type>
+						<v8:StringQualifiers>
+							<v8:Length>10</v8:Length>
+							<v8:AllowedLength>Variable</v8:AllowedLength>
+						</v8:StringQualifiers>
+					</Type>
+					<PasswordMode>false</PasswordMode>
+					<Format/>
+					<EditFormat/>
+					<ToolTip/>
+					<MarkNegatives>false</MarkNegatives>
+					<Mask/>
+					<MultiLine>false</MultiLine>
+					<ExtendedEdit>false</ExtendedEdit>
+					<MinValue xsi:nil="true"/>
+					<MaxValue xsi:nil="true"/>
+					<FillFromFillingValue>false</FillFromFillingValue>
+					<FillValue xsi:type="xs:string"/>
+					<FillChecking>DontCheck</FillChecking>
+					<ChoiceParameterLinks/>
+					<ChoiceParameters/>
+					<QuickChoice>Auto</QuickChoice>
+					<CreateOnInput>Auto</CreateOnInput>
+					<ChoiceHistoryOnInput>Auto</ChoiceHistoryOnInput>
+					<ChoiceForm/>
+					<NameInDataSource>code</NameInDataSource>
+					<ReadOnly>false</ReadOnly>
+					<AllowNull>true</AllowNull>
+				</Properties>
+			</Field>
+		</ChildObjects>
+	</DimensionTable>
+</MetaDataObject>

@@ -1,14 +1,15 @@
 //! Базовые факты корня у видов без собственного профиля чтения: синоним
-//! и выбранные свойства платформы (#1568).
+//! и выбранные свойства платформы (#1568), настройки общей команды и группы
+//! команд (#1616).
 //!
 //! Вид без записи в профиле не получает здесь ничего. Каждое свойство
 //! читается независимо: порча одного не скрывает остальные и не становится
 //! отсутствием, а называется в `unreadable` своим полем.
 
 use crate::info_projection::{
-    direct_md_child, direct_meta_info_property, direct_text_content, localized_property_as_nstr,
+    direct_meta_info_property, direct_text_content, localized_property_as_nstr,
     meta_info_property_value_is_valid, node_is_empty_placeholder,
-    observed_type_is_strict_but_unmodelled, parse_observed_metadata_type_node,
+    observed_type_container_is_strict_but_unmodelled, parse_observed_metadata_type_container_node,
 };
 use roxmltree::{Document, Node};
 use serde_json::{json, Value};
@@ -22,9 +23,26 @@ enum Fact {
     UnsignedInteger,
     /// Непустое слово без вложенных элементов.
     Text,
-    /// Описание типа в форме, которую читает и `Type` константы.
+    /// Одно из значений перечисления платформы.
+    Enum(&'static [&'static str]),
+    /// Описание типа в форме, которую читает и `Type` константы; контейнер
+    /// называется именем свойства (`Type`, `CommandParameterType`).
     Type,
+    /// Картинка: ссылка `xr:Ref` и признак `xr:LoadTransparent`.
+    Picture,
 }
+
+/// ButtonRepresentation платформы.
+const REPRESENTATION: Fact = Fact::Enum(&["Auto", "Text", "Picture", "PictureAndText"]);
+const PARAMETER_USE_MODE: Fact = Fact::Enum(&["Single", "Multiple"]);
+/// CommandGroupCategory платформы.
+const COMMAND_GROUP_CATEGORY: Fact = Fact::Enum(&[
+    "NavigationPanel",
+    "ActionsPanel",
+    "FormNavigationPanel",
+    "FormCommandBar",
+]);
+const READABLE: &str = "http://v8.1c.ru/8.3/xcf/readable";
 
 /// Закрытый профиль: вид, затем его свойства в порядке XML.
 const PROFILE: &[(&str, &[(&str, Fact)])] = &[
@@ -59,7 +77,26 @@ const PROFILE: &[(&str, &[(&str, Fact)])] = &[
     ),
     (
         "CommonCommand",
-        &[("Synonym", Fact::Localized), ("Group", Fact::Text)],
+        &[
+            ("Synonym", Fact::Localized),
+            ("Group", Fact::Text),
+            ("Representation", REPRESENTATION),
+            ("ToolTip", Fact::Localized),
+            ("Picture", Fact::Picture),
+            ("CommandParameterType", Fact::Type),
+            ("ParameterUseMode", PARAMETER_USE_MODE),
+            ("ModifiesData", Fact::Boolean),
+        ],
+    ),
+    (
+        "CommandGroup",
+        &[
+            ("Synonym", Fact::Localized),
+            ("Representation", REPRESENTATION),
+            ("ToolTip", Fact::Localized),
+            ("Picture", Fact::Picture),
+            ("Category", COMMAND_GROUP_CATEGORY),
+        ],
     ),
     (
         "DocumentNumerator",
@@ -129,32 +166,79 @@ fn observe(
             // Пустое значение свойства не создаёт.
             Ok((!value.is_empty()).then(|| json!(MetaObservedPropertyValue::Text { value })))
         }
-        Fact::Type => observe_type(properties, kind),
+        Fact::Enum(values) => {
+            let value = direct_text_content(node);
+            if !meta_info_property_value_is_valid(node, MetaInfoPropertyValueKind::String)
+                || !values.contains(&value.as_str())
+            {
+                return Err(malformed());
+            }
+            Ok(Some(json!(MetaObservedPropertyValue::Text { value })))
+        }
+        Fact::Type => observe_type(node, kind, name),
+        Fact::Picture => observe_picture(node).map_err(|_| malformed()),
     }
 }
 
-fn observe_type(properties: Node<'_, '_>, kind: &str) -> Result<Option<Value>, String> {
-    let Some(container) = direct_md_child(properties, "Type") else {
-        return Ok(None);
-    };
+fn observe_type(container: Node<'_, '_>, kind: &str, name: &str) -> Result<Option<Value>, String> {
     if node_is_empty_placeholder(container) {
         return Ok(None);
     }
-    match parse_observed_metadata_type_node(properties) {
+    match parse_observed_metadata_type_container_node(container) {
         Ok(observed) => serde_json::to_value(observed)
             .map(Some)
             .map_err(|error| error.to_string()),
         // Корректный, но не моделируемый тип платформы не сводится к модели
         // записи и не выдаётся за отсутствие: ответ называет предел.
-        Err(diagnostic) if observed_type_is_strict_but_unmodelled(properties) => Err(format!(
-            "{kind} type composition is incomplete: {}",
-            diagnostic.message
-        )),
+        Err(diagnostic) if observed_type_container_is_strict_but_unmodelled(container) => {
+            Err(format!(
+                "{kind} type composition is incomplete: {}",
+                diagnostic.message
+            ))
+        }
         Err(diagnostic) => Err(format!(
-            "{kind} contains a malformed Type: {}",
+            "{kind} contains a malformed {name}: {}",
             diagnostic.message
         )),
     }
+}
+
+/// Пустая картинка свойства не создаёт. Ссылка обязательна; признак
+/// прозрачности публикуется, только если записан, и не подставляется.
+fn observe_picture(node: Node<'_, '_>) -> Result<Option<Value>, ()> {
+    if node_is_empty_placeholder(node) {
+        return Ok(None);
+    }
+    if node.attributes().len() != 0
+        || node
+            .children()
+            .any(|child| child.is_text() && !child.text().unwrap_or_default().trim().is_empty())
+    {
+        return Err(());
+    }
+    let mut picture = serde_json::Map::new();
+    for child in node.children().filter(Node::is_element) {
+        let name = child.tag_name().name();
+        if child.tag_name().namespace() != Some(READABLE)
+            || !["Ref", "LoadTransparent"].contains(&name)
+            || picture.contains_key(name)
+            || child.attributes().len() != 0
+            || child.children().any(|nested| nested.is_element())
+        {
+            return Err(());
+        }
+        let text = direct_text_content(child);
+        let value = match name {
+            "Ref" if !text.is_empty() && !text.contains(char::is_whitespace) => json!(text),
+            "LoadTransparent" if text == "true" || text == "false" => json!(text == "true"),
+            _ => return Err(()),
+        };
+        picture.insert(name.to_string(), value);
+    }
+    if !picture.contains_key("Ref") {
+        return Err(());
+    }
+    Ok(Some(Value::Object(picture)))
 }
 
 /// Добавляет в `payload` факты профиля вида `kind`. Вид вне профиля
@@ -206,6 +290,7 @@ mod tests {
         format!(
             "<MetaDataObject xmlns=\"{MD}\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" \
              xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" \
+             xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" \
              xmlns:cfg=\"http://v8.1c.ru/8.1/data/enterprise/current-config\">\
              <{kind}><Properties><Name>Probe</Name>{properties}</Properties></{kind}>\
              </MetaDataObject>"
@@ -379,5 +464,173 @@ mod tests {
         enrich_identity_root_facts(&descriptor("Language", SYNONYM), "Language", &mut payload)
             .unwrap();
         assert_eq!(payload, json!({"properties": []}));
+    }
+
+    const EXPORT_COMMAND: &str = "<Representation>Auto</Representation>\
+        <ToolTip><v8:item><v8:lang>ru</v8:lang><v8:content>Выгрузить</v8:content></v8:item></ToolTip>\
+        <Picture><xr:Ref>CommonPicture.Export</xr:Ref><xr:LoadTransparent>true</xr:LoadTransparent></Picture>\
+        <CommandParameterType><v8:TypeSet>cfg:DefinedType.Organization</v8:TypeSet></CommandParameterType>\
+        <ParameterUseMode>Multiple</ParameterUseMode><ModifiesData>true</ModifiesData>";
+
+    /// rule: INV.SOURCE.METADATA-NODE-PROPERTIES
+    #[test]
+    fn common_command_settings_keep_their_platform_roles() {
+        let payload = read("CommonCommand", EXPORT_COMMAND);
+        assert!(unreadable(&payload).is_empty(), "{payload}");
+        assert_eq!(
+            property(&payload, "Representation"),
+            Some(&json!({"kind": "text", "value": "Auto"}))
+        );
+        assert_eq!(
+            property(&payload, "ToolTip"),
+            Some(&json!({"kind": "text", "value": "ru = 'Выгрузить'"}))
+        );
+        assert_eq!(
+            property(&payload, "Picture"),
+            Some(&json!({"Ref": "CommonPicture.Export", "LoadTransparent": true}))
+        );
+        assert_eq!(
+            property(&payload, "CommandParameterType"),
+            Some(&json!({"variants": [
+                {"kind": "definedType", "metadataPath": "DefinedType.Organization"},
+            ], "mutationCapability": "editable"}))
+        );
+        assert_eq!(
+            property(&payload, "ParameterUseMode"),
+            Some(&json!({"kind": "text", "value": "Multiple"}))
+        );
+        assert_eq!(
+            property(&payload, "ModifiesData"),
+            Some(&json!({"kind": "boolean", "value": true}))
+        );
+        let single = read(
+            "CommonCommand",
+            "<ParameterUseMode>Single</ParameterUseMode><ModifiesData>false</ModifiesData>",
+        );
+        assert_eq!(
+            property(&single, "ParameterUseMode"),
+            Some(&json!({"kind": "text", "value": "Single"}))
+        );
+        assert_eq!(
+            property(&single, "ModifiesData"),
+            Some(&json!({"kind": "boolean", "value": false}))
+        );
+    }
+
+    /// rule: INV.SOURCE.METADATA-NODE-PROPERTIES
+    #[test]
+    fn command_group_reads_only_its_own_settings() {
+        let payload = read(
+            "CommandGroup",
+            &format!(
+                "{SYNONYM}<Comment>Печать</Comment><Representation>Picture</Representation>\
+                 <ToolTip/><Picture><xr:Ref>StdPicture.Print</xr:Ref>\
+                 <xr:LoadTransparent>false</xr:LoadTransparent></Picture>\
+                 <Category>FormCommandBar</Category>\
+                 <ParameterUseMode>Single</ParameterUseMode><ModifiesData>true</ModifiesData>"
+            ),
+        );
+        assert!(unreadable(&payload).is_empty(), "{payload}");
+        assert_eq!(
+            property(&payload, "Representation"),
+            Some(&json!({"kind": "text", "value": "Picture"}))
+        );
+        assert_eq!(
+            property(&payload, "Picture"),
+            Some(&json!({"Ref": "StdPicture.Print", "LoadTransparent": false}))
+        );
+        assert_eq!(
+            property(&payload, "Category"),
+            Some(&json!({"kind": "text", "value": "FormCommandBar"}))
+        );
+        assert!(property(&payload, "Synonym").is_some());
+        for foreign in [
+            "ToolTip",
+            "ParameterUseMode",
+            "ModifiesData",
+            "CommandParameterType",
+        ] {
+            assert_eq!(property(&payload, foreign), None, "{foreign}");
+        }
+    }
+
+    #[test]
+    fn empty_command_settings_create_no_property() {
+        let payload = read(
+            "CommonCommand",
+            "<ToolTip/><Picture/><CommandParameterType/>",
+        );
+        assert_eq!(
+            payload["properties"].as_array().unwrap().len(),
+            1,
+            "{payload}"
+        );
+        assert!(unreadable(&payload).is_empty(), "{payload}");
+        let reference_only = read(
+            "CommandGroup",
+            "<Picture><xr:Ref>StdPicture.Print</xr:Ref></Picture>",
+        );
+        assert_eq!(
+            property(&reference_only, "Picture"),
+            Some(&json!({"Ref": "StdPicture.Print"}))
+        );
+    }
+
+    #[test]
+    fn damaged_command_settings_are_unreadable_and_spare_the_rest() {
+        for (kind, damaged, field) in [
+            ("CommonCommand", "<Representation>Sometimes</Representation>", "Representation"),
+            ("CommonCommand", "<Representation/>", "Representation"),
+            ("CommonCommand", "<ParameterUseMode>Many</ParameterUseMode>", "ParameterUseMode"),
+            ("CommonCommand", "<ModifiesData>bad</ModifiesData>", "ModifiesData"),
+            ("CommonCommand", "<Picture><xr:Ref>CommonPicture.A</xr:Ref><xr:LoadTransparent>yes</xr:LoadTransparent></Picture>", "Picture"),
+            ("CommonCommand", "<Picture><xr:LoadTransparent>true</xr:LoadTransparent></Picture>", "Picture"),
+            ("CommandGroup", "<Picture><xr:Ref>StdPicture.A</xr:Ref><xr:Ref>StdPicture.B</xr:Ref></Picture>", "Picture"),
+            ("CommandGroup", "<Picture>StdPicture.A</Picture>", "Picture"),
+            ("CommandGroup", "<Category>Toolbar</Category>", "Category"),
+            ("CommonCommand", "<CommandParameterType><v8:Type>xs:string</v8:Type><v8:StringQualifiers><v8:Length>bad</v8:Length><v8:AllowedLength>Variable</v8:AllowedLength></v8:StringQualifiers></CommandParameterType>", "CommandParameterType"),
+        ] {
+            let payload = read(kind, &format!("{SYNONYM}{damaged}"));
+            assert_eq!(unreadable(&payload), [format!("properties.{field}")], "{kind}: {damaged}");
+            assert_eq!(property(&payload, field), None, "{kind}: {damaged}");
+            assert!(property(&payload, "Synonym").is_some(), "{kind}: {damaged}");
+        }
+        let mixed = read(
+            "CommonCommand",
+            "<Representation>Text</Representation><ModifiesData>bad</ModifiesData>",
+        );
+        assert_eq!(unreadable(&mixed), ["properties.ModifiesData"]);
+        assert_eq!(
+            property(&mixed, "Representation"),
+            Some(&json!({"kind": "text", "value": "Text"}))
+        );
+    }
+
+    /// rule: INV.SOURCE.OBSERVED-TYPE-CAPABILITY
+    #[test]
+    fn command_parameter_type_keeps_read_only_and_unmodelled_types() {
+        let read_only = read(
+            "CommonCommand",
+            "<CommandParameterType><v8:TypeId>16160000-0000-4000-8000-000000000002</v8:TypeId></CommandParameterType>",
+        );
+        assert!(unreadable(&read_only).is_empty(), "{read_only}");
+        let observed = property(&read_only, "CommandParameterType").unwrap();
+        assert_eq!(observed["mutationCapability"], "readOnly");
+        assert_eq!(observed["variants"][0]["kind"], "typeId");
+
+        let future = read(
+            "CommonCommand",
+            "<CommandParameterType><v8:Type>xs:futureType</v8:Type></CommandParameterType>\
+             <ModifiesData>false</ModifiesData>",
+        );
+        assert_eq!(unreadable(&future), ["properties.CommandParameterType"]);
+        assert!(future["unreadable"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("incomplete"));
+        assert_eq!(
+            property(&future, "ModifiesData"),
+            Some(&json!({"kind": "boolean", "value": false}))
+        );
     }
 }
