@@ -145,6 +145,18 @@ pub fn nested_place(owner: &str, child: &str) -> Option<&'static NestedPlace> {
     })
 }
 
+/// Вложенный вид, описанный своим файлом в каталоге владельца хотя бы
+/// у одного владельца: таблица, куб, таблица измерения куба.
+pub fn is_described_nested_kind(kind: &str) -> bool {
+    DECLARED.iter().any(|(_, declaration)| {
+        declaration.tag == kind
+            && declaration
+                .nested
+                .as_ref()
+                .is_some_and(|place| place.directory.is_some())
+    })
+}
+
 /// Вложенный вид владельца `owner`, чьи описания лежат в каталоге
 /// `directory` каталога владельца.
 pub fn nested_kind_by_directory(owner: &str, directory: &str) -> Option<&'static str> {

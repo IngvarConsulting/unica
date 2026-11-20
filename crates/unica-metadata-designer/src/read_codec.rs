@@ -98,6 +98,18 @@ impl MetadataReadCodec for DesignerMetadataReadCodec {
         crate::queue_read::enrich_queue(descriptor, payload)
     }
 
+    fn external_data_source_members(
+        &self,
+        descriptor: &[u8],
+        kind: &str,
+        target: &unica_address::source_target::MetadataAddress,
+        payload: &mut Value,
+    ) -> Result<(), String> {
+        crate::external_data_source_read::enrich_external_data_source_members(
+            descriptor, kind, target, payload,
+        )
+    }
+
     fn identity_root_facts(
         &self,
         descriptor: &[u8],
