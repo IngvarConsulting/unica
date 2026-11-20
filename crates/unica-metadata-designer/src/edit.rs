@@ -4822,7 +4822,7 @@ mod export_format_tests {
                 language: "ru".to_owned(),
             };
             let (catalog, _) = crate::template_catalog::minimal_metadata_xml(
-                MetadataKind::Catalog,
+                unica_metadata::CreatableKind::Typed(MetadataKind::Catalog),
                 "New",
                 version,
                 &context,
@@ -4869,7 +4869,7 @@ mod export_format_tests {
                 language: "ru".to_owned(),
             };
             let (report, _) = crate::template_catalog::minimal_metadata_xml(
-                MetadataKind::Report,
+                unica_metadata::CreatableKind::Typed(MetadataKind::Report),
                 "New",
                 version,
                 &context,

@@ -5,7 +5,7 @@ pub use predefined_code_type_plan::PredefinedCodeTypePlan;
 use crate::decode::*;
 use crate::dialect::root_version;
 use crate::edit::apply_typed_operations_to_image_with_seed;
-use crate::layout::metadata_layout;
+use crate::layout::creatable_layout;
 use crate::template_catalog::MetadataTemplateSource;
 use serde_json::{json, Map, Value};
 use sha2::Digest;
@@ -800,16 +800,16 @@ pub fn stage_object_create<R: MetadataPlanningRead>(
     source_kind: SourceSetKind,
     source_set_name: &str,
     root: &std::path::Path,
-    kind: MetadataKind,
+    kind: unica_metadata::CreatableKind,
     name: &str,
     op_index: usize,
     provisional: &mut Vec<ProvisionalApplyEffect>,
 ) -> Result<(), ApplyPlanError> {
-    let own = match kind {
-        MetadataKind::Catalog => {
+    let own = match kind.typed() {
+        Some(MetadataKind::Catalog) => {
             Some(unica_source_contract::compatibility::ExtensionOperation::AddOwnCatalog)
         }
-        MetadataKind::InformationRegister => Some(
+        Some(MetadataKind::InformationRegister) => Some(
             unica_source_contract::compatibility::ExtensionOperation::AddOwnInformationRegister,
         ),
         _ => None,
@@ -841,7 +841,7 @@ pub fn stage_object_create<R: MetadataPlanningRead>(
         .map_err(|failure| meta_failure_to_plan_error(failure, op_index))?;
         let owner_relative = staged_relative(root, source.owner_path, op_index)?;
         let descriptor_relative =
-            PathBuf::from(metadata_layout(kind).directory).join(format!("{name}.xml"));
+            PathBuf::from(creatable_layout(kind).directory).join(format!("{name}.xml"));
         let existing = staged.read(&descriptor_relative).map_err(|error| {
             ApplyPlanError::staging(error, format!("ops[{op_index}].args.values.name"))
         })?;

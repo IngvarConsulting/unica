@@ -1,3 +1,4 @@
+mod creation;
 mod diagnostics;
 mod event_subscription;
 mod info;
@@ -12,6 +13,7 @@ mod schema;
 mod types;
 pub mod wsdl;
 
+pub use creation::*;
 pub use diagnostics::*;
 pub use event_subscription::*;
 pub use info::*;

@@ -1,0 +1,69 @@
+{
+  "id": "S-2994-queue-create",
+  "issue": 2994,
+  "area": "Создание и удаление объектов",
+  "task": "Создать очередь в наборе формата 2.22: объект пишется с порождёнными типами сообщения и менеджера и значениями свойств, которые даёт платформа, регистрируется в конфигурации и читается.",
+  "workspace": "tests/fixtures/acceptance/workspace-all-kinds",
+  "formats": [
+    "2.22"
+  ],
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "object.create",
+            "args": {
+              "values": {
+                "kind": "Queue",
+                "name": "Inbox"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "token": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Queue.Inbox"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Transactioned",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/ProcessingPortionSize",
+          "eq": 1000
+        },
+        {
+          "pointer": "/data/props/AutoProcessing",
+          "eq": true
+        }
+      ]
+    }
+  ]
+}

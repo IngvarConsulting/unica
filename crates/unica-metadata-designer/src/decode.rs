@@ -52,7 +52,7 @@ pub enum MetadataPlanKind {
         change: PredefinedChange,
     },
     Create {
-        kind: MetadataKind,
+        kind: unica_metadata::CreatableKind,
         name: String,
     },
     Remove {
@@ -808,7 +808,13 @@ pub fn parse_object_create(
         )
         .at_path(format!("ops[{op_index}].args.values.kind"))
     })?;
-    let kind = MetadataKind::parse(kind_text).map_err(|diagnostic| {
+    // A kind the set's line does not have is refused before whether Unica
+    // creates it: the platform would not take it (INV.SOURCE.PROFILE-CAPABILITIES).
+    if let Some(reason) = unica_metadata::kind_line_refusal(kind_text, binding.source_line) {
+        return Err(ApplyPlanError::new(ApplyPlanErrorKind::BadValue, reason)
+            .at_path(format!("ops[{op_index}].args.values.kind")));
+    }
+    let kind = unica_metadata::CreatableKind::parse(kind_text).map_err(|diagnostic| {
         ApplyPlanError::new(ApplyPlanErrorKind::BadValue, diagnostic.message)
             .at_path(format!("ops[{op_index}].args.values.kind"))
     })?;
