@@ -252,6 +252,7 @@
 			<CommandGroup>ГруппаА</CommandGroup>
 			<CommandGroup>ГруппаБ</CommandGroup>
 			<CommandGroup>ГруппаВ</CommandGroup>
+			<CommandGroup>ГруппаГ</CommandGroup>
 			<Catalog>Справочник1</Catalog>
 		</ChildObjects>
 	</Configuration>
