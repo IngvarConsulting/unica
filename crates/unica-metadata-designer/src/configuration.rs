@@ -2617,9 +2617,8 @@ pub fn validate_cf_source(
             let properties = document
                 .descendants()
                 .find(|node| node.is_element() && node.tag_name().name() == "Properties");
-            let property = properties.and_then(|node| {
-                unica_xml_format::read::child_element(node, required.property)
-            });
+            let property = properties
+                .and_then(|node| unica_xml_format::read::child_element(node, required.property));
             let set = property.is_some_and(|node| {
                 node.children().any(|child| child.is_element())
                     || unica_xml_format::read::direct_text(node).trim() != ""

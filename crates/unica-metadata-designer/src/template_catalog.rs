@@ -594,7 +594,11 @@ pub fn place_register_record(
 fn first_free_language_code(prefix: &str, codes: &[String]) -> String {
     (1usize..)
         .map(|number| format!("{prefix}{number}"))
-        .find(|code| !codes.iter().any(|used| crate::language_code::same(used, code)))
+        .find(|code| {
+            !codes
+                .iter()
+                .any(|used| crate::language_code::same(used, code))
+        })
         .expect("a free numbered code")
 }
 
@@ -776,7 +780,9 @@ pub fn minimal_metadata_xml<G>(
             }
             if template.numbered_language_code.is_some() {
                 let code = context.new_language_code.as_deref().ok_or_else(|| {
-                    format!("metadata kind `{object_type}` needs the language codes of the source set")
+                    format!(
+                        "metadata kind `{object_type}` needs the language codes of the source set"
+                    )
                 })?;
                 lines.push(format!(
                     "\t\t\t<LanguageCode>{}</LanguageCode>",
@@ -3158,7 +3164,12 @@ pub fn minimal_object<G>(
         })?;
     let context = match kind {
         CreatableKind::Typed(typed) => MinimalTemplateContext::from_source(
-            source, typed, name, overrides.clone(), source_set, language,
+            source,
+            typed,
+            name,
+            overrides.clone(),
+            source_set,
+            language,
         )?,
         CreatableKind::Declared(_) => {
             let mut context = MinimalTemplateContext::without_dependencies(language);
@@ -3178,7 +3189,9 @@ pub fn minimal_object<G>(
                     let code = crate::language_code::read_code(&file.bytes).map_err(|message| {
                         template_failure(
                             &metadata_path,
-                            format!("language `{language}` has no readable LanguageCode: {message}"),
+                            format!(
+                                "language `{language}` has no readable LanguageCode: {message}"
+                            ),
                         )
                     })?;
                     codes.push(code);
@@ -3271,10 +3284,21 @@ mod typed_template_tests {
     /// whatever the languages of the configuration: the first free number.
     #[test]
     fn new_language_takes_the_first_free_numbered_code() {
-        let codes = |codes: &[&str]| codes.iter().map(|code| code.to_string()).collect::<Vec<_>>();
+        let codes = |codes: &[&str]| {
+            codes
+                .iter()
+                .map(|code| code.to_string())
+                .collect::<Vec<_>>()
+        };
         assert_eq!(first_free_language_code("ru", &codes(&["ru", "en"])), "ru1");
-        assert_eq!(first_free_language_code("ru", &codes(&["ru", "ru1"])), "ru2");
-        assert_eq!(first_free_language_code("ru", &codes(&["en", "ru2"])), "ru1");
+        assert_eq!(
+            first_free_language_code("ru", &codes(&["ru", "ru1"])),
+            "ru2"
+        );
+        assert_eq!(
+            first_free_language_code("ru", &codes(&["en", "ru2"])),
+            "ru1"
+        );
         assert_eq!(first_free_language_code("ru", &codes(&["RU1"])), "ru2");
     }
 
