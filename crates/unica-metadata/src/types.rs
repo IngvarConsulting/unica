@@ -497,7 +497,7 @@ mod tests {
     }
 
     #[test]
-    fn metadata_kind_accepts_exactly_the_24_creation_spellings() {
+    fn metadata_kind_accepts_exactly_its_creation_spellings() {
         const EXPECTED: &[&str] = &[
             "Catalog",
             "Document",

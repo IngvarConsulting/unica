@@ -1919,6 +1919,14 @@ pub fn apply_typed_properties(
             (MetaPropertyKey::Comment, MetaPropertyValue::String(value)) if value.is_empty() => {
                 format!("{indent}{opening}/>")
             }
+            // Чтение XML нормализует литеральный CR; ссылка сохраняет
+            // переводы строк комментария такими, какими их передали.
+            (MetaPropertyKey::Comment, MetaPropertyValue::String(value)) => {
+                format!(
+                    "{indent}{opening}>{}</{qname}>",
+                    unica_xml_format::text::escape_xml(value).replace('\r', "&#13;")
+                )
+            }
             (_, MetaPropertyValue::String(value)) => {
                 format!(
                     "{indent}{opening}>{}</{qname}>",
