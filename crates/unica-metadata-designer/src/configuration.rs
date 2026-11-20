@@ -2046,6 +2046,37 @@ impl CfValidationReporter {
     }
 }
 
+/// A property the platform requires before it loads an object of the kind,
+/// although the Configurator creates the object without it.
+struct CfValidateRequiredProperty {
+    kind: &'static str,
+    directory: &'static str,
+    property: &'static str,
+    /// The platform's refusal when it loads the object without the property.
+    platform: &'static str,
+}
+
+const CF_VALIDATE_REQUIRED_PROPERTIES: &[CfValidateRequiredProperty] = &[
+    CfValidateRequiredProperty {
+        kind: "FunctionalOption",
+        directory: "FunctionalOptions",
+        property: "Location",
+        platform: "Не установлено Хранение функциональной опции",
+    },
+    CfValidateRequiredProperty {
+        kind: "FunctionalOptionsParameter",
+        directory: "FunctionalOptionsParameters",
+        property: "Use",
+        platform: "Не установлено Использование параметра функциональной опции",
+    },
+    CfValidateRequiredProperty {
+        kind: "Sequence",
+        directory: "Sequences",
+        property: "Documents",
+        platform: "Не один документ не участвует в последовательности",
+    },
+];
+
 pub fn validate_cf_source(
     reader: &dyn ProjectDiscoveryRead,
     args: &Map<String, Value>,
@@ -2058,6 +2089,7 @@ pub fn validate_cf_source(
     const HP_NS: &str = "http://v8.1c.ru/8.3/xcf/extrnprops";
 
     let config_dir = resolved_path.parent().unwrap_or(cwd);
+    let mut required_to_check = Vec::<(&CfValidateRequiredProperty, String)>::new();
     let detailed = unica_operation_contract::input::bool_arg(args, &["detailed", "Detailed"]);
     let owner_shape_only = scope == CfValidationScope::OwnerShape;
     let max_errors = unica_operation_contract::input::int_arg(args, &["maxErrors", "MaxErrors"])
@@ -2444,6 +2476,14 @@ pub fn validate_cf_source(
             if type_name == "Language" {
                 continue;
             }
+            if let Some(required) = CF_VALIDATE_REQUIRED_PROPERTIES
+                .iter()
+                .find(|required| required.kind == type_name)
+            {
+                if let Some(name) = child.text().map(str::trim).filter(|name| !name.is_empty()) {
+                    required_to_check.push((required, name.to_string()));
+                }
+            }
             if let Some(dir_name) = cf_validate_child_type_dir(type_name) {
                 if let Some((_, count)) = dirs_to_check
                     .iter_mut()
@@ -2544,6 +2584,45 @@ pub fn validate_cf_source(
     } else {
         for error in form_ref_errors {
             report.error(format!("9. {error}"));
+        }
+    }
+
+    if !owner_shape_only {
+        let mut unset = 0usize;
+        for (required, name) in &required_to_check {
+            let path = config_dir
+                .join(required.directory)
+                .join(format!("{name}.xml"));
+            // A missing or unreadable descriptor is reported by its own step.
+            let Ok(text) = read_utf8_sig(reader, &path) else {
+                continue;
+            };
+            let Ok(document) = Document::parse(&text) else {
+                continue;
+            };
+            let properties = document
+                .descendants()
+                .find(|node| node.is_element() && node.tag_name().name() == "Properties");
+            let property = properties.and_then(|node| {
+                unica_xml_format::read::child_element(node, required.property)
+            });
+            let set = property.is_some_and(|node| {
+                node.children().any(|child| child.is_element())
+                    || unica_xml_format::read::direct_text(node).trim() != ""
+            });
+            if !set {
+                unset += 1;
+                report.error(format!(
+                    "10. {}.{name}: {} is not set; the platform refuses to load it: «{}»",
+                    required.kind, required.property, required.platform
+                ));
+            }
+        }
+        if unset == 0 {
+            report.ok(format!(
+                "10. Required properties: {} objects checked",
+                required_to_check.len()
+            ));
         }
     }
 

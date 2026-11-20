@@ -247,7 +247,12 @@ impl unica_operations::FamilyOperation for MetadataOperation {
         }
         if self == Self::ObjectCreate {
             let line = site.source().classification_profile().semantic_line();
-            offer_creatable_kinds(&mut contract.schema["properties"]["values"], line);
+            let extension = site.source().kind() == unica_source_contract::SourceSetKind::Extension;
+            offer_creatable_kinds(
+                &mut contract.schema["properties"]["values"],
+                line,
+                extension,
+            );
         }
         Some(contract)
     }
@@ -255,13 +260,16 @@ impl unica_operations::FamilyOperation for MetadataOperation {
 
 /// A kind exists from the line that adds it: `can` offers its creation in
 /// a set of that line or later and otherwise names the line it exists from
-/// (INV.SOURCE.PROFILE-CAPABILITIES).
+/// (INV.SOURCE.PROFILE-CAPABILITIES). An extension is not offered the kinds
+/// it borrows instead of creating.
 fn offer_creatable_kinds(
     values: &mut serde_json::Value,
     line: Option<unica_source_contract::format_identity::PlatformLine>,
+    extension: bool,
 ) {
     use unica_source_contract::format_identity::{metadata_kind_exists, metadata_kind_since};
     let (offered, later): (Vec<_>, Vec<_>) = crate::CreatableKind::all()
+        .filter(|kind| !extension || kind.created_in_extension())
         .map(crate::CreatableKind::as_str)
         .partition(|kind| metadata_kind_exists(line, kind));
     values["properties"]["kind"]["enum"] = serde_json::json!(offered);

@@ -38,10 +38,14 @@ pub trait MetadataTemplateRead {
         relative: &Path,
     ) -> Result<Vec<u8>, crate::resource_plan::MetadataReadFailure>;
 }
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct MetadataTemplateOperationOverrides {
     pub source: bool,
     pub handler: bool,
+    /// The `LanguageCode` of every language of the staged image. A batch
+    /// passes it so a new language skips the codes an earlier operation
+    /// took; without it the template reads the languages on disk.
+    pub language_codes: Option<Vec<String>>,
 }
 
 pub struct MetadataPostImage<G = ()> {
@@ -104,6 +108,8 @@ pub struct MinimalTemplateContext<G = ()> {
     pub dependencies: Vec<MetadataTemplateFile<G>>,
     /// `LanguageCode` of the source set's default language.
     pub language: String,
+    /// `LanguageCode` of a new language: the first free numbered code.
+    pub new_language_code: Option<String>,
 }
 
 impl<G> MinimalTemplateContext<G> {
@@ -119,6 +125,7 @@ impl<G> MinimalTemplateContext<G> {
             event_source: None,
             event_handler: None,
             dependencies: Vec::new(),
+            new_language_code: None,
         }
     }
 
@@ -582,6 +589,15 @@ pub fn place_register_record(
     Some(output)
 }
 
+/// The code the Configurator gives a new language: the prefix and the first
+/// `N` from 1 that no language of the set uses.
+fn first_free_language_code(prefix: &str, codes: &[String]) -> String {
+    (1usize..)
+        .map(|number| format!("{prefix}{number}"))
+        .find(|code| !codes.iter().any(|used| used == code))
+        .expect("a free numbered code")
+}
+
 pub fn template_failure(
     target: &MetadataAddress,
     message: String,
@@ -758,6 +774,15 @@ pub fn minimal_metadata_xml<G>(
             for property in template.properties {
                 lines.push(format!("\t\t\t{property}"));
             }
+            if template.numbered_language_code.is_some() {
+                let code = context.new_language_code.as_deref().ok_or_else(|| {
+                    format!("metadata kind `{object_type}` needs the language codes of the source set")
+                })?;
+                lines.push(format!(
+                    "\t\t\t<LanguageCode>{}</LanguageCode>",
+                    unica_xml_format::text::escape_xml(code)
+                ));
+            }
             return Ok(close_minimal_object(
                 lines,
                 object_type,
@@ -917,6 +942,7 @@ pub fn minimal_metadata_xml_for_tests(
             event_handler: None,
             dependencies: Vec::new(),
             language: "ru".to_string(),
+            new_language_code: None,
         },
         metadata_fixture_uuid,
     )
@@ -3132,9 +3158,37 @@ pub fn minimal_object<G>(
         })?;
     let context = match kind {
         CreatableKind::Typed(typed) => MinimalTemplateContext::from_source(
-            source, typed, name, overrides, source_set, language,
+            source, typed, name, overrides.clone(), source_set, language,
         )?,
-        CreatableKind::Declared(_) => MinimalTemplateContext::without_dependencies(language),
+        CreatableKind::Declared(_) => {
+            let mut context = MinimalTemplateContext::without_dependencies(language);
+            if let Some(prefix) = kind
+                .template()
+                .and_then(|template| template.numbered_language_code)
+            {
+                let mut codes = Vec::new();
+                for language in registered_names(source.owner_preimage, "Language") {
+                    let file = read_dependency(
+                        source,
+                        "Language",
+                        &language,
+                        MetadataTemplateFileMode::Guard,
+                        None,
+                    )?;
+                    let code = crate::language_code::read_code(&file.bytes).map_err(|message| {
+                        template_failure(
+                            &metadata_path,
+                            format!("language `{language}` has no readable LanguageCode: {message}"),
+                        )
+                    })?;
+                    codes.push(code);
+                    context.dependencies.push(file);
+                }
+                let codes = overrides.language_codes.clone().unwrap_or(codes);
+                context.new_language_code = Some(first_free_language_code(prefix, &codes));
+            }
+            context
+        }
     };
     let (xml, _) = minimal_metadata_xml(
         kind,
@@ -3209,7 +3263,18 @@ mod typed_template_tests {
             event_handler: Some("CommonModule.MetaAddHandlers.Handle".to_string()),
             dependencies: Vec::new(),
             language: "ru".to_string(),
+            new_language_code: Some("ru1".to_string()),
         }
+    }
+
+    /// The Configurator 8.3.27 gives new languages «ru1», then «ru2»,
+    /// whatever the languages of the configuration: the first free number.
+    #[test]
+    fn new_language_takes_the_first_free_numbered_code() {
+        let codes = |codes: &[&str]| codes.iter().map(|code| code.to_string()).collect::<Vec<_>>();
+        assert_eq!(first_free_language_code("ru", &codes(&["ru", "en"])), "ru1");
+        assert_eq!(first_free_language_code("ru", &codes(&["ru", "ru1"])), "ru2");
+        assert_eq!(first_free_language_code("ru", &codes(&["en", "ru2"])), "ru1");
     }
 
     #[test]
