@@ -1315,8 +1315,8 @@ mod tests {
                 .iter()
                 .filter(|operation| operation.implemented)
                 .count()
-                == 11,
-            "only the proven runner 0.14 subset is implemented"
+                == 13,
+            "the implemented runtime dictionary includes both debug-server operations"
         );
     }
 
