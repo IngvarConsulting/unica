@@ -573,6 +573,7 @@ const CREATABLE_KINDS: &[(&str, &str)] = &[
     ("HTTPService", "HTTPServices"),
     ("WebService", "WebServices"),
     ("DefinedType", "DefinedTypes"),
+    ("CommandGroup", "CommandGroups"),
 ];
 
 /// A vendor-support marker with changes disabled for the whole configuration.

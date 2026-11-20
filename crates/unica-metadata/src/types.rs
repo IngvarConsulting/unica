@@ -59,6 +59,7 @@ metadata_kinds! {
     HTTPService,
     WebService,
     DefinedType,
+    CommandGroup,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
@@ -496,7 +497,7 @@ mod tests {
     }
 
     #[test]
-    fn metadata_kind_accepts_exactly_the_23_creation_spellings() {
+    fn metadata_kind_accepts_exactly_the_24_creation_spellings() {
         const EXPECTED: &[&str] = &[
             "Catalog",
             "Document",
@@ -521,6 +522,7 @@ mod tests {
             "HTTPService",
             "WebService",
             "DefinedType",
+            "CommandGroup",
         ];
 
         assert_eq!(

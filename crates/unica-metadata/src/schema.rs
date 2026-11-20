@@ -70,7 +70,7 @@ pub fn metadata_property_schemas(kind: Option<MetadataKind>) -> Map<String, Valu
     }
     for spec in METADATA_PROPERTY_SPECS
         .iter()
-        .filter(|spec| spec.key == crate::MetaPropertyKey::Synonym)
+        .filter(|spec| spec.key.is_localized())
     {
         if let Some(entry) = root_properties.get_mut(spec.public_name) {
             *entry = crate::properties::localized_value_schema();

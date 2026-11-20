@@ -60,7 +60,7 @@ metadata_operations!(
     RelationAdd => ("relation.add", MetadataRelations, Values),
     RelationRemove => ("relation.remove", MetadataRelations, Values),
     RelationReplace => ("relation.replace", MetadataRelations, Values),
-    HelpCreate => ("help.create", Metadata, Values),
+    HelpCreate => ("help.create", MetadataWithHelp, Values),
     AttributeAdd => ("attribute.add", MetadataAttributeContainer, Items),
     AttributeSet => ("attribute.set", MetadataAttribute, Values),
     AttributeRemove => ("attribute.remove", MetadataAttribute, Target),
