@@ -4,7 +4,7 @@ const SOURCE: &str = "ExternalDataSources/AllKindsExternalSource.xml";
 const EXPORT: &str = "formats/platform_xml/2.20/all_kinds/src";
 
 /// Рабочая область с внешним источником данных из выгрузки платформы:
-/// описание источника и файлы его таблиц, кубов и функций.
+/// описание источника и файлы его таблиц и кубов.
 fn fixture() -> RealReaderFixture {
     let f = RealReaderFixture::new();
     let config_path = f.source.join("Configuration.xml");
@@ -18,10 +18,12 @@ fn fixture() -> RealReaderFixture {
         ),
     );
     let export = fixture_path(EXPORT);
-    let owner = export.join("ExternalDataSources");
-    for entry in walk(&owner) {
+    for entry in walk(&export.join("ExternalDataSources")) {
         let relative = entry.strip_prefix(&export).unwrap();
-        write(&f.source.join(relative), &fs::read_to_string(&entry).unwrap());
+        write(
+            &f.source.join(relative),
+            &fs::read_to_string(&entry).unwrap(),
+        );
     }
     f
 }
@@ -45,62 +47,28 @@ fn read(f: &RealReaderFixture, at: &str) -> serde_json::Value {
     r.data.unwrap()
 }
 
-/// Число объектов вида в `ChildObjects` описания источника: таблицы и кубы
-/// он называет по имени, функции описывает на месте.
-fn registered(f: &RealReaderFixture, kind: &str) -> usize {
-    let text = fs::read_to_string(f.source.join(SOURCE)).unwrap();
-    text.matches(&format!("<{kind}>")).count() + text.matches(&format!("<{kind} uuid=")).count()
-}
-
-/// rule: CTR.SOURCE.EMPTY-BRANCHES
 #[test]
-fn an_external_data_source_lists_its_tables_cubes_and_functions() {
+fn an_external_data_source_is_a_readable_root_object() {
     let f = fixture();
     let before = fs::read(f.source.join(SOURCE)).unwrap();
-    let root = read(&f, "main:ExternalDataSource.AllKindsExternalSource");
-    assert_eq!(root["kind"], "ExternalDataSource");
-    let branches = root["branches"].as_array().unwrap();
-    for kind in ["Table", "Cube", "Function"] {
-        let at = format!("main:ExternalDataSource.AllKindsExternalSource.{kind}");
-        let count = registered(&f, kind);
-        assert!(
-            branches.contains(&json!({"at": at, "count": count})),
-            "{at}: {branches:?}"
-        );
-    }
-    let tables = read(&f, "main:ExternalDataSource.AllKindsExternalSource.Table");
-    assert_eq!(
-        tables["items"][0]["at"],
-        "main:ExternalDataSource.AllKindsExternalSource.Table.Items"
-    );
+    let source = read(&f, "main:ExternalDataSource.AllKindsExternalSource");
+    assert_eq!(source["kind"], "ExternalDataSource");
     // Русское написание вида ведёт к тому же узлу.
     let russian = read(&f, "main:ВнешнийИсточникДанных.AllKindsExternalSource");
     assert_eq!(
         russian["at"],
         "main:ExternalDataSource.AllKindsExternalSource"
     );
+    let branch = read(&f, "main:ExternalDataSource");
+    assert!(
+        branch["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["at"] == "main:ExternalDataSource.AllKindsExternalSource"),
+        "{branch}"
+    );
     assert_eq!(fs::read(f.source.join(SOURCE)).unwrap(), before);
-}
-
-/// rule: CTR.SOURCE.EMPTY-BRANCHES
-#[test]
-fn a_source_without_cubes_and_functions_offers_their_empty_branches() {
-    let f = fixture();
-    let path = f.source.join(SOURCE);
-    let xml = fs::read_to_string(&path).unwrap();
-    let start = xml.find("<Cube>").unwrap();
-    let end = xml.find("</ChildObjects>").unwrap();
-    write(&path, &format!("{}{}", &xml[..start], &xml[end..]));
-    let root = read(&f, "main:ExternalDataSource.AllKindsExternalSource");
-    let branches = root["branches"].as_array().unwrap();
-    for kind in ["Cube", "Function"] {
-        let at = format!("main:ExternalDataSource.AllKindsExternalSource.{kind}");
-        assert!(
-            branches.contains(&json!({"at": at, "count": 0})),
-            "{at}: {branches:?}"
-        );
-        assert_eq!(read(&f, &at)["items"], json!([]));
-    }
 }
 
 /// Роль с правом на внешний источник читается целиком: вид владельца права

@@ -1412,11 +1412,19 @@ pub(super) mod medium_cf_read_selector_bridge_tests {
             };
 
             let outcome = validate_cf(
-                &Map::from_iter([("ConfigPath".to_string(), json!("src"))]),
+                &Map::from_iter([
+                    ("ConfigPath".to_string(), json!("src")),
+                    ("Detailed".to_string(), json!(true)),
+                ]),
                 &context,
             );
 
             let stdout = outcome.stdout.as_deref().unwrap_or_default();
+            // Проверка дошла до каталогов объектов: она прошла и `ChildObjects`.
+            assert!(
+                stdout.contains("8. Object directories:"),
+                "{format}: {stdout}"
+            );
             assert!(
                 !stdout.contains("Unknown type 'ExternalDataSource'"),
                 "{format}: {stdout}"

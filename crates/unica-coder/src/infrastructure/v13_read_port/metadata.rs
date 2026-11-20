@@ -511,20 +511,12 @@ pub(super) fn identity_metadata_payload_from_evidence(
     let mut forms = Vec::new();
     let mut templates = Vec::new();
     let mut commands = Vec::new();
-    let mut tables = Vec::new();
-    let mut cubes = Vec::new();
-    let mut functions = Vec::new();
     for (kind, name) in evidence.registrations() {
         let value = json!({"name": name});
         match kind {
             "Form" => forms.push(value),
             "Template" => templates.push(value),
             "Command" => commands.push(value),
-            // Таблицы, кубы и функции внешнего источника лежат в своих файлах;
-            // описание источника называет их по имени.
-            "Table" => tables.push(value),
-            "Cube" => cubes.push(value),
-            "Function" => functions.push(value),
             _ => {}
         }
     }
@@ -542,9 +534,6 @@ pub(super) fn identity_metadata_payload_from_evidence(
             "resources": [],
             "enumValues": [],
             "columns": [],
-            "tables": tables,
-            "cubes": cubes,
-            "functions": functions,
             "forms": forms,
             "templates": templates,
             "commands": commands
