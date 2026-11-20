@@ -381,6 +381,38 @@ directory in the Desktop marketplace UI; do not install the source checkout's
 Cargo launcher as the local binary package. Registration, installation and
 fresh-task acceptance are manual steps. No global ZCode CLI is required.
 
+## Internal error reports
+
+Versions containing the error reporter send internal Unica failures to
+`https://glitch.ingvar.pro` (Ingvar Consulting's GlitchTip). Reporting is on by
+default. It covers Rust panics and explicitly classified internal failures;
+ordinary operation refusals and diagnostics in your BSL code are not reports.
+
+Reports contain the Unica version, operating system/architecture, a fixed failure
+category and cleaned frames from Unica's own code. They exclude panic/error text,
+source contents, project paths and object names, MCP arguments, 1C data, user or
+computer names, logs, breadcrumbs and persistent installation identifiers. The
+receiving server necessarily sees technical connection information, including
+the network IP address. Performance, session and usage tracking are disabled.
+
+To disable reporting, set `UNICA_ERROR_REPORTING=0` in the environment of the
+application that starts Unica, for example:
+
+```sh
+UNICA_ERROR_REPORTING=0 codex
+UNICA_ERROR_REPORTING=0 claude
+```
+
+For a desktop host, configure its process environment before starting it. Close
+all Unica sessions and stop remaining Unica processes before restarting the host:
+an existing shared daemon retains its old environment. The setting is inherited
+by newly launched child processes. Disabled reporting makes no reporting network
+requests. A full queue or unavailable receiver drops reports; it never prevents
+working locally. Reports are not queued on disk.
+
+The public data policy is available in [Russian](https://ingvar.pro/products/unica/privacy)
+and [English](https://ingvar.pro/products/unica/privacy/en).
+
 ## Release pipeline
 
 The source workflow builds the core and `unica-bootstrap` natively on each

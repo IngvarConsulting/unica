@@ -28,6 +28,8 @@ concurrency:
 # Переменные `CARGO*` входят в ключ rust-cache. Те же значения у ночного контура,
 # который этот кэш пишет: иначе он сюда не подойдёт.
 env:
+  # Synthetic failures in tests must not reach the production error project.
+  UNICA_ERROR_REPORTING: "0"
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
   PYTHONUTF8: "1"
   GATE_PROFILE: ${{ github.event_name == 'merge_group' && 'queue' || 'pr' }}

@@ -28,6 +28,7 @@ path = "tests/research/xml_corpus.rs"
 required-features = ["research"]
 
 [dependencies]
+unica-error-reporting = { path = "../unica-error-reporting" }
 unica-daemon = { path = "../unica-daemon" }
 unica-dap = { path = "../unica-dap" }
 unica-lsp = { path = "../unica-lsp" }

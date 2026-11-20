@@ -17,6 +17,7 @@ use unica_artifact_delivery::{
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn main() -> ExitCode {
+    let _reporting = unica_error_reporting::init(unica_error_reporting::Component::Bootstrap);
     unica_bootstrap::run_platform_main(run_main)
 }
 
@@ -24,6 +25,11 @@ fn run_main() -> ExitCode {
     match run(env::args().skip(1).collect()) {
         Ok(code) => ExitCode::from(normalize_exit_code(code)),
         Err(error) => {
+            if error.failure() == unica_artifact_delivery::Failure::Internal {
+                unica_error_reporting::capture_internal(
+                    unica_error_reporting::InternalError::BootstrapInternal,
+                );
+            }
             // Причина, место и лечение в потоке ошибок, различимый номер — в
             // коде выхода: убитая сессия текста не увидит, а код увидит хост.
             eprintln!("unica-bootstrap: {}", error.diagnosis());
