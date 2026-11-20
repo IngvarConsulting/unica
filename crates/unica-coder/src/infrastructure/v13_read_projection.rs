@@ -857,65 +857,6 @@ pub(super) struct MemberSupport {
     pub(super) limits: Vec<String>,
 }
 
-/// Порядок групп дерева Конфигуратора 8.3.27: «Общие» (от подсистем до
-/// языков), затем константы, справочники, документы с нумераторами и
-/// последовательностями, журналы и далее до задач. Выгрузка пишет виды
-/// в другом порядке; дерево показывает этот.
-const CONFIGURATOR_ROOT_ORDER: &[NodeKind] = &[
-    NodeKind::Subsystem,
-    NodeKind::CommonModule,
-    NodeKind::SessionParameter,
-    NodeKind::Role,
-    NodeKind::CommonAttribute,
-    NodeKind::ExchangePlan,
-    NodeKind::FilterCriterion,
-    NodeKind::EventSubscription,
-    NodeKind::ScheduledJob,
-    // Очереди: дерево Конфигуратора 8.5.4, между регламентными
-    // заданиями и ботами.
-    NodeKind::Queue,
-    NodeKind::Bot,
-    NodeKind::FunctionalOption,
-    NodeKind::FunctionalOptionsParameter,
-    NodeKind::DefinedType,
-    NodeKind::SettingsStorage,
-    NodeKind::CommonCommand,
-    NodeKind::CommandGroup,
-    NodeKind::CommonForm,
-    NodeKind::CommonTemplate,
-    NodeKind::CommonPicture,
-    NodeKind::XdtoPackage,
-    NodeKind::WebService,
-    NodeKind::HttpService,
-    NodeKind::WsReference,
-    NodeKind::WebSocketClient,
-    NodeKind::IntegrationService,
-    // Цвета палитры: дерево Конфигуратора 8.5.4, между сервисами интеграции
-    // и элементами стиля.
-    NodeKind::PaletteColor,
-    NodeKind::StyleItem,
-    NodeKind::Style,
-    NodeKind::Language,
-    NodeKind::Constant,
-    NodeKind::Catalog,
-    NodeKind::Document,
-    NodeKind::DocumentNumerator,
-    NodeKind::Sequence,
-    NodeKind::DocumentJournal,
-    NodeKind::Enum,
-    NodeKind::Report,
-    NodeKind::DataProcessor,
-    NodeKind::ChartOfCharacteristicTypes,
-    NodeKind::ChartOfAccounts,
-    NodeKind::ChartOfCalculationTypes,
-    NodeKind::InformationRegister,
-    NodeKind::AccumulationRegister,
-    NodeKind::AccountingRegister,
-    NodeKind::CalculationRegister,
-    NodeKind::BusinessProcess,
-    NodeKind::Task,
-];
-
 /// Ветви корня: каждый вид метаданных, который профиль платформы допускает
 /// в корне, в порядке дерева Конфигуратора, в том числе пустой (`count: 0`),
 /// чтобы «пусто» отличалось от «вид не поддержан» (#2153). Вид вне этого
@@ -942,8 +883,8 @@ fn root_branches(
     let mut branches = Vec::new();
     let remaining = NodeKind::metadata_kinds()
         .iter()
-        .filter(|kind| !CONFIGURATOR_ROOT_ORDER.contains(kind));
-    for kind in CONFIGURATOR_ROOT_ORDER.iter().chain(remaining) {
+        .filter(|kind| !NodeKind::configurator_tree_order().contains(kind));
+    for kind in NodeKind::configurator_tree_order().iter().chain(remaining) {
         let kind = kind.as_str();
         let count = counts.remove(kind).unwrap_or(0);
         let at = format!("{source_set}:{kind}");

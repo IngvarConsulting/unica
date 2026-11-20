@@ -2,90 +2,13 @@ use std::path::{Path, PathBuf};
 use unica_address::source_target::MetadataAddress;
 use unica_source_contract::SourceSetKind;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MetadataLayout {
-    pub tag: &'static str,
-    pub directory: &'static str,
-    pub display_name_ru: &'static str,
-    // ConfigDumpInfo is not mutated today; optional fields record only established facts.
-    #[allow(dead_code)]
-    pub config_dump_prefix: Option<&'static str>,
-    #[allow(dead_code)]
-    pub config_dump_module_suffix: Option<&'static str>,
-}
+/// Раскладки видов объявлены в `unica_address::kinds`, по файлу на вид.
+pub use unica_address::kinds::MetadataLayout;
 
-macro_rules! metadata_kind_registry {
-    ($(
-        $tag:literal => {
-            directory: $directory:literal,
-            display_name_ru: $display_name_ru:literal,
-            config_dump_prefix: $config_dump_prefix:expr,
-            config_dump_module_suffix: $config_dump_module_suffix:expr $(,)?
-        }
-    ),+ $(,)?) => {
-        pub const METADATA_KINDS: &[MetadataLayout] = &[
-            $(MetadataLayout {
-                tag: $tag,
-                directory: $directory,
-                display_name_ru: $display_name_ru,
-                config_dump_prefix: $config_dump_prefix,
-                config_dump_module_suffix: $config_dump_module_suffix,
-            }),+
-        ];
+/// Виды с раскладкой в порядке, в котором платформа пишет их в `ChildObjects`.
+pub const METADATA_KINDS: &[MetadataLayout] = &unica_address::kinds::METADATA_LAYOUTS;
 
-        pub const METADATA_KIND_TAGS: &[&str] = &[$($tag),+];
-    };
-}
-
-metadata_kind_registry! {
-    "Language" => { directory: "Languages", display_name_ru: "Языки", config_dump_prefix: None, config_dump_module_suffix: None },
-    "Subsystem" => { directory: "Subsystems", display_name_ru: "Подсистемы", config_dump_prefix: None, config_dump_module_suffix: None },
-    "StyleItem" => { directory: "StyleItems", display_name_ru: "Элементы стиля", config_dump_prefix: None, config_dump_module_suffix: None },
-    "Style" => { directory: "Styles", display_name_ru: "Стили", config_dump_prefix: None, config_dump_module_suffix: None },
-    "CommonPicture" => { directory: "CommonPictures", display_name_ru: "Общие картинки", config_dump_prefix: None, config_dump_module_suffix: None },
-    "SessionParameter" => { directory: "SessionParameters", display_name_ru: "Параметры сеанса", config_dump_prefix: None, config_dump_module_suffix: None },
-    "Role" => { directory: "Roles", display_name_ru: "Роли", config_dump_prefix: None, config_dump_module_suffix: None },
-    "CommonTemplate" => { directory: "CommonTemplates", display_name_ru: "Общие макеты", config_dump_prefix: None, config_dump_module_suffix: None },
-    "FilterCriterion" => { directory: "FilterCriteria", display_name_ru: "Критерии отбора", config_dump_prefix: None, config_dump_module_suffix: None },
-    "CommonModule" => { directory: "CommonModules", display_name_ru: "Общие модули", config_dump_prefix: None, config_dump_module_suffix: None },
-    "CommonAttribute" => { directory: "CommonAttributes", display_name_ru: "Общие реквизиты", config_dump_prefix: None, config_dump_module_suffix: None },
-    "ExchangePlan" => { directory: "ExchangePlans", display_name_ru: "Планы обмена", config_dump_prefix: None, config_dump_module_suffix: None },
-    "XDTOPackage" => { directory: "XDTOPackages", display_name_ru: "XDTO-пакеты", config_dump_prefix: None, config_dump_module_suffix: None },
-    "WebService" => { directory: "WebServices", display_name_ru: "Веб-сервисы", config_dump_prefix: None, config_dump_module_suffix: None },
-    "HTTPService" => { directory: "HTTPServices", display_name_ru: "HTTP-сервисы", config_dump_prefix: None, config_dump_module_suffix: None },
-    "WSReference" => { directory: "WSReferences", display_name_ru: "WS-ссылки", config_dump_prefix: None, config_dump_module_suffix: None },
-    "EventSubscription" => { directory: "EventSubscriptions", display_name_ru: "Подписки на события", config_dump_prefix: None, config_dump_module_suffix: None },
-    "ScheduledJob" => { directory: "ScheduledJobs", display_name_ru: "Регламентные задания", config_dump_prefix: None, config_dump_module_suffix: None },
-    "SettingsStorage" => { directory: "SettingsStorages", display_name_ru: "Хранилища настроек", config_dump_prefix: None, config_dump_module_suffix: None },
-    "FunctionalOption" => { directory: "FunctionalOptions", display_name_ru: "Функциональные опции", config_dump_prefix: None, config_dump_module_suffix: None },
-    "FunctionalOptionsParameter" => { directory: "FunctionalOptionsParameters", display_name_ru: "Параметры ФО", config_dump_prefix: None, config_dump_module_suffix: None },
-    "DefinedType" => { directory: "DefinedTypes", display_name_ru: "Определяемые типы", config_dump_prefix: None, config_dump_module_suffix: None },
-    "Bot" => { directory: "Bots", display_name_ru: "Боты", config_dump_prefix: Some("Bot"), config_dump_module_suffix: Some(".Module") },
-    "PaletteColor" => { directory: "PaletteColors", display_name_ru: "Цвета палитры", config_dump_prefix: None, config_dump_module_suffix: None },
-    "Queue" => { directory: "Queues", display_name_ru: "Очереди", config_dump_prefix: None, config_dump_module_suffix: None },
-    "CommonCommand" => { directory: "CommonCommands", display_name_ru: "Общие команды", config_dump_prefix: None, config_dump_module_suffix: None },
-    "CommandGroup" => { directory: "CommandGroups", display_name_ru: "Группы команд", config_dump_prefix: None, config_dump_module_suffix: None },
-    "Constant" => { directory: "Constants", display_name_ru: "Константы", config_dump_prefix: None, config_dump_module_suffix: None },
-    "CommonForm" => { directory: "CommonForms", display_name_ru: "Общие формы", config_dump_prefix: None, config_dump_module_suffix: None },
-    "Catalog" => { directory: "Catalogs", display_name_ru: "Справочники", config_dump_prefix: None, config_dump_module_suffix: None },
-    "Document" => { directory: "Documents", display_name_ru: "Документы", config_dump_prefix: None, config_dump_module_suffix: None },
-    "DocumentNumerator" => { directory: "DocumentNumerators", display_name_ru: "Нумераторы", config_dump_prefix: None, config_dump_module_suffix: None },
-    "Sequence" => { directory: "Sequences", display_name_ru: "Последовательности", config_dump_prefix: None, config_dump_module_suffix: None },
-    "DocumentJournal" => { directory: "DocumentJournals", display_name_ru: "Журналы документов", config_dump_prefix: None, config_dump_module_suffix: None },
-    "Enum" => { directory: "Enums", display_name_ru: "Перечисления", config_dump_prefix: None, config_dump_module_suffix: None },
-    "Report" => { directory: "Reports", display_name_ru: "Отчёты", config_dump_prefix: None, config_dump_module_suffix: None },
-    "DataProcessor" => { directory: "DataProcessors", display_name_ru: "Обработки", config_dump_prefix: None, config_dump_module_suffix: None },
-    "InformationRegister" => { directory: "InformationRegisters", display_name_ru: "Регистры сведений", config_dump_prefix: None, config_dump_module_suffix: None },
-    "AccumulationRegister" => { directory: "AccumulationRegisters", display_name_ru: "Регистры накопления", config_dump_prefix: None, config_dump_module_suffix: None },
-    "ChartOfCharacteristicTypes" => { directory: "ChartsOfCharacteristicTypes", display_name_ru: "ПВХ", config_dump_prefix: None, config_dump_module_suffix: None },
-    "ChartOfAccounts" => { directory: "ChartsOfAccounts", display_name_ru: "Планы счетов", config_dump_prefix: None, config_dump_module_suffix: None },
-    "AccountingRegister" => { directory: "AccountingRegisters", display_name_ru: "Регистры бухгалтерии", config_dump_prefix: None, config_dump_module_suffix: None },
-    "ChartOfCalculationTypes" => { directory: "ChartsOfCalculationTypes", display_name_ru: "ПВР", config_dump_prefix: None, config_dump_module_suffix: None },
-    "CalculationRegister" => { directory: "CalculationRegisters", display_name_ru: "Регистры расчёта", config_dump_prefix: None, config_dump_module_suffix: None },
-    "BusinessProcess" => { directory: "BusinessProcesses", display_name_ru: "Бизнес-процессы", config_dump_prefix: None, config_dump_module_suffix: None },
-    "Task" => { directory: "Tasks", display_name_ru: "Задачи", config_dump_prefix: None, config_dump_module_suffix: None },
-    "IntegrationService" => { directory: "IntegrationServices", display_name_ru: "Сервисы интеграции", config_dump_prefix: None, config_dump_module_suffix: None },
-}
+pub const METADATA_KIND_TAGS: &[&str] = &unica_address::kinds::METADATA_LAYOUT_TAGS;
 
 pub fn metadata_kind(tag: &str) -> Option<&'static MetadataLayout> {
     METADATA_KINDS.iter().find(|kind| kind.tag == tag)
@@ -101,23 +24,26 @@ pub fn metadata_kind_index(tag: &str) -> Option<usize> {
     METADATA_KINDS.iter().position(|kind| kind.tag == tag)
 }
 
-/// Root kinds the platform exports that have no layout in the registry, each
-/// with the registry kind after which the platform writes it in the
-/// configuration's `ChildObjects`. They are never created; their place only
-/// keeps a new entry of another kind from landing on the wrong side of them.
-pub const UNLAID_ROOT_KINDS: &[(&str, &str)] = &[
-    ("WebSocketClient", "WSReference"),
-    ("ExternalDataSource", "Task"),
-];
+/// Root kinds the platform exports that have no layout in the registry:
+/// declared kinds without a layout and kinds Unica does not know. They are
+/// never created; their place only keeps a new entry of another kind from
+/// landing on the wrong side of them.
+pub fn unlaid_root_kinds() -> impl Iterator<Item = &'static str> {
+    unica_address::kinds::DECLARED_ROOT_KINDS
+        .iter()
+        .filter(|tag| metadata_kind(tag).is_none())
+        .copied()
+        .chain(
+            unica_address::kinds::UNDECLARED_ROOT_KINDS
+                .iter()
+                .map(|(tag, _)| *tag),
+        )
+}
 
 /// Place of a root kind in the configuration's `ChildObjects` as the platform
 /// writes it: the registry kinds and the kinds without a layout between them.
 pub fn root_child_objects_order(tag: &str) -> Option<usize> {
-    if let Some(index) = metadata_kind_index(tag) {
-        return Some(index * 2);
-    }
-    let (_, after) = UNLAID_ROOT_KINDS.iter().find(|(kind, _)| *kind == tag)?;
-    metadata_kind_index(after).map(|index| index * 2 + 1)
+    unica_address::kinds::root_child_objects_place(tag).map(|place| place as usize)
 }
 
 /// Whether platform 8.3.27 requires a root `ChildObjects` container for this
@@ -127,56 +53,7 @@ pub fn root_child_objects_order(tag: &str) -> Option<usize> {
 /// childless. This profile covers the complete physical registry used by
 /// `cfe.borrow`, which is wider than the typed [`MetadataKind`] surface.
 pub fn metadata_kind_requires_child_objects_8_3_27(tag: &str) -> Option<bool> {
-    match tag {
-        "Subsystem"
-        | "FilterCriterion"
-        | "ExchangePlan"
-        | "WebService"
-        | "HTTPService"
-        | "SettingsStorage"
-        | "Catalog"
-        | "Document"
-        | "Sequence"
-        | "DocumentJournal"
-        | "Enum"
-        | "Report"
-        | "DataProcessor"
-        | "InformationRegister"
-        | "AccumulationRegister"
-        | "ChartOfCharacteristicTypes"
-        | "ChartOfAccounts"
-        | "AccountingRegister"
-        | "ChartOfCalculationTypes"
-        | "CalculationRegister"
-        | "BusinessProcess"
-        | "Task"
-        | "IntegrationService"
-        | "Queue" => Some(true),
-        "Language"
-        | "StyleItem"
-        | "Style"
-        | "CommonPicture"
-        | "SessionParameter"
-        | "Role"
-        | "CommonTemplate"
-        | "CommonModule"
-        | "Bot"
-        | "CommonAttribute"
-        | "XDTOPackage"
-        | "WSReference"
-        | "EventSubscription"
-        | "ScheduledJob"
-        | "FunctionalOption"
-        | "FunctionalOptionsParameter"
-        | "DefinedType"
-        | "PaletteColor"
-        | "CommonCommand"
-        | "CommandGroup"
-        | "Constant"
-        | "CommonForm"
-        | "DocumentNumerator" => Some(false),
-        _ => None,
-    }
+    metadata_kind(tag).map(|kind| kind.requires_child_objects)
 }
 
 pub fn attached_resource_relative(
@@ -618,58 +495,18 @@ mod tests {
     use std::collections::HashSet;
     #[test]
     fn registry_has_unique_canonical_tags_and_directories() {
-        const EXPECTED_TAGS: &[&str] = &[
-            "Language",
-            "Subsystem",
-            "StyleItem",
-            "Style",
-            "CommonPicture",
-            "SessionParameter",
-            "Role",
-            "CommonTemplate",
-            "FilterCriterion",
-            "CommonModule",
-            "CommonAttribute",
-            "ExchangePlan",
-            "XDTOPackage",
-            "WebService",
-            "HTTPService",
-            "WSReference",
-            "EventSubscription",
-            "ScheduledJob",
-            "SettingsStorage",
-            "FunctionalOption",
-            "FunctionalOptionsParameter",
-            "DefinedType",
+        // Виды объявлены в `unica_address::kinds`, по файлу на вид: список здесь
+        // не повторяется. Порядок раскладки сверяет с выгрузками платформы
+        // `tests/platform/configuration_layout.rs`.
+        for tag in [
+            "Catalog",
             "Bot",
             "PaletteColor",
             "Queue",
-            "CommonCommand",
-            "CommandGroup",
-            "Constant",
-            "CommonForm",
-            "Catalog",
-            "Document",
-            "DocumentNumerator",
-            "Sequence",
-            "DocumentJournal",
-            "Enum",
-            "Report",
-            "DataProcessor",
-            "InformationRegister",
-            "AccumulationRegister",
-            "ChartOfCharacteristicTypes",
-            "ChartOfAccounts",
-            "AccountingRegister",
-            "ChartOfCalculationTypes",
-            "CalculationRegister",
-            "BusinessProcess",
-            "Task",
             "IntegrationService",
-        ];
-
-        assert_eq!(METADATA_KINDS.len(), 47);
-        assert_eq!(METADATA_KIND_TAGS, EXPECTED_TAGS);
+        ] {
+            assert!(METADATA_KIND_TAGS.contains(&tag), "{tag} has no layout");
+        }
         assert_eq!(METADATA_KIND_TAGS.len(), METADATA_KINDS.len());
         assert_eq!(
             METADATA_KIND_TAGS,

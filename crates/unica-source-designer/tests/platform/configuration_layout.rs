@@ -70,8 +70,8 @@ fn the_registry_follows_the_child_objects_order_of_the_platform_export() {
         ),
     ] {
         let exported = exported_root_kinds(export);
-        for (kind, _) in crate::layout::UNLAID_ROOT_KINDS {
-            assert!(exported.contains(kind), "{format}: no {kind} in the export");
+        for kind in crate::layout::unlaid_root_kinds() {
+            assert!(exported.contains(&kind), "{format}: no {kind} in the export");
         }
         let places = exported
             .iter()
