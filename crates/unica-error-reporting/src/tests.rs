@@ -204,6 +204,9 @@ fn medium_process_environment_optout_installs_no_client_or_transport() {
             String::from_utf8_lossy(&output.stderr)
         );
         assert!(output.stderr.is_empty());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("test tests::medium_optout_child ... ok"));
+        assert!(stdout.contains("1 passed; 0 failed"));
     }
 }
 
