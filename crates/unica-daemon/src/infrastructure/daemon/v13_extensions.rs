@@ -569,8 +569,22 @@ fn validate_arguments(op: Operation, args: &Map<String, Value>) -> Result<(), &'
 /// (#3238). Ответ раннера отклоняется только при пустом имени, имени длиннее
 /// текстового поля записи или с управляющими символами.
 fn valid_inventory_name(name: &str) -> bool {
-    !name.trim().is_empty() && name.len() <= 4096 && !name.chars().any(char::is_control)
+    !name.trim().is_empty()
+        && name.len() <= EXTENSION_FIELD_BYTES
+        && !name.chars().any(char::is_control)
 }
+
+// resource-limit: extensions.field-bytes
+// class: format
+// unit: bytes
+// scope: record
+// value: 4096
+// resource: Байты одного текстового поля записи расширения (имя, синоним, префикс и др.) в ответе раннера.
+// status: unproven
+// origin: неизвестно
+// problem: неизвестно
+// on-reach: запись с длинным полем считается некорректным ответом раннера
+const EXTENSION_FIELD_BYTES: usize = 4096;
 fn valid_inventory_record(item: &Value) -> bool {
     // Пакетный Конфигуратор называет только имя расширения (раннер 0.17,
     // `ExtensionInventoryEntry::NameOnly`).
@@ -585,27 +599,22 @@ fn valid_inventory_record(item: &Value) -> bool {
     ]
     .iter()
     .all(|k| item[k].is_boolean())
-        && ["purpose", "scope", "hash_sum"]
-            .iter()
-            // resource-limit: extensions.field-bytes
-            // class: format
-            // unit: bytes
-            // scope: record
-            // value: 4096
-            // literal: len() <= 4096
-            // count: 3
-            // expr: 4096
-            // resource: Байты одного текстового поля записи расширения (имя, синоним, префикс и др.) в ответе раннера.
-            // status: unproven
-            // origin: неизвестно
-            // problem: неизвестно
-            // on-reach: запись с длинным полем считается некорректным ответом раннера
-            .all(|k| item[k].as_str().is_some_and(|v| v.len() <= 4096))
-        && ["version", "security_profile_name"]
-            .iter()
-            .all(|k| item[k].is_null() || item[k].as_str().is_some_and(|v| v.len() <= 4096))
+        && ["purpose", "scope", "hash_sum"].iter().all(|k| {
+            item[k]
+                .as_str()
+                .is_some_and(|v| v.len() <= EXTENSION_FIELD_BYTES)
+        })
+        && ["version", "security_profile_name"].iter().all(|k| {
+            item[k].is_null()
+                || item[k]
+                    .as_str()
+                    .is_some_and(|v| v.len() <= EXTENSION_FIELD_BYTES)
+        })
         && item.get("name_prefix").is_some_and(|prefix| {
-            prefix.is_null() || prefix.as_str().is_some_and(|value| value.len() <= 4096)
+            prefix.is_null()
+                || prefix
+                    .as_str()
+                    .is_some_and(|value| value.len() <= EXTENSION_FIELD_BYTES)
         })
 }
 /// A record of batch Designer: the name and nothing else.
