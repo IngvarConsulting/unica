@@ -1399,11 +1399,12 @@ pub(super) mod medium_cf_read_selector_bridge_tests {
     /// знает: ни «неизвестного типа», ни пропавшего каталога.
     #[test]
     fn cf_validate_knows_the_external_data_source_of_the_platform_export() {
-        for format in ["2.20", "2.21", "2.22"] {
-            let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../tests/fixtures/formats/platform_xml")
-                .join(format)
-                .join("all_kinds");
+        for export in [
+            "../../tests/fixtures/formats/platform_xml/2.20/all_kinds",
+            "../../tests/fixtures/formats/platform_xml/2.21/all_kinds",
+            "../../tests/fixtures/formats/platform_xml/2.22/all_kinds",
+        ] {
+            let root = Path::new(env!("CARGO_MANIFEST_DIR")).join(export);
             let context = WorkspaceContext {
                 cwd: root.clone(),
                 workspace_root: root.clone(),
@@ -1423,15 +1424,15 @@ pub(super) mod medium_cf_read_selector_bridge_tests {
             // Проверка дошла до каталогов объектов: она прошла и `ChildObjects`.
             assert!(
                 stdout.contains("8. Object directories:"),
-                "{format}: {stdout}"
+                "{export}: {stdout}"
             );
             assert!(
                 !stdout.contains("Unknown type 'ExternalDataSource'"),
-                "{format}: {stdout}"
+                "{export}: {stdout}"
             );
             assert!(
                 !stdout.contains("Missing directory: ExternalDataSources"),
-                "{format}: {stdout}"
+                "{export}: {stdout}"
             );
         }
     }
