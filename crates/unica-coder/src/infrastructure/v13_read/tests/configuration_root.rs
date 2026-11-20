@@ -708,39 +708,71 @@ fn real_typed_readers_cover_every_task14_profile_without_skipping() {
     }
 }
 
+/// The WebSocket client of the platform export is read by its layout: the
+/// branch, the descriptor under its English and Russian kind and its module
+/// (#3246).
 /// rule: INV.SOURCE.PLATFORM-CAPABILITY-EXISTENCE
 #[test]
-fn websocket_client_source_view_is_an_explicit_provider_gap() {
-    let fixture = RealReaderFixture::new();
-    let configuration_path = fixture.source.join("Configuration.xml");
-    let configuration = fs::read_to_string(&configuration_path).unwrap();
-    fs::write(
-        &configuration_path,
-        configuration.replacen(
-            "</ChildObjects>",
-            "<WebSocketClient>Телефония</WebSocketClient></ChildObjects>",
-            1,
+fn websocket_client_of_the_platform_export_is_read_by_its_layout() {
+    for (format, export) in [
+        (
+            "2.20",
+            "../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src",
         ),
-    )
-    .unwrap();
-    let cancellation = CancellationToken::new();
-    let source_root =
-        Arc::new(unica_workspace::read::open_source_directory(&fixture.source).unwrap());
-    let authority = LogicalViewReadAuthority::new(
-        &cancellation,
-        "main",
-        "actor-fixture-main",
-        SourceSetKind::Configuration,
-        source_root,
-        PlatformProfile::v8_3_27(),
-    );
-
-    let result = ViewService::new(authority, ViewCursorStore::default())
-        .view(ViewRequest::new("main:WebSocketClient.Телефония.Module.WebSocketClient").unwrap());
-
-    assert!(!result.ok);
-    assert!(result.data.is_none());
-    assert_eq!(result.diagnostics[0]["code"], "provider_unavailable");
+        (
+            "2.21",
+            "../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src",
+        ),
+        (
+            "2.22",
+            "../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src",
+        ),
+    ] {
+        let source =
+            std::fs::canonicalize(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(export))
+                .unwrap();
+        let cancellation = CancellationToken::new();
+        let source_root = Arc::new(unica_workspace::read::open_source_directory(&source).unwrap());
+        let authority = LogicalViewReadAuthority::new(
+            &cancellation,
+            "main",
+            "actor-fixture-main",
+            SourceSetKind::Configuration,
+            source_root,
+            PlatformProfile::v8_3_27(),
+        );
+        let service = ViewService::new(authority, ViewCursorStore::default());
+        let view = |address: &str| {
+            let viewed = service.view(ViewRequest::new(address).unwrap());
+            assert!(viewed.ok, "{format} {address}: {:?}", viewed.diagnostics);
+            viewed.data.unwrap()
+        };
+        let client = "main:WebSocketClient.AllKindsWebSocketClient";
+        assert_eq!(
+            view("main:WebSocketClient")["items"],
+            json!([{"at": client, "kind": "WebSocketClient", "title": "AllKindsWebSocketClient"}]),
+            "{format}"
+        );
+        let descriptor = view(client);
+        assert_eq!(descriptor["props"]["kind"], "WebSocketClient", "{format}");
+        assert_eq!(
+            descriptor["branches"],
+            json!([{"at": format!("{client}.Module"), "count": 1}]),
+            "{format}"
+        );
+        assert_eq!(
+            view("main:WebSocketКлиент.AllKindsWebSocketClient"),
+            descriptor,
+            "{format}"
+        );
+        let module = view(&format!("{client}.Module.WebSocketClient"));
+        assert_eq!(module["kind"], "Module", "{format}");
+        assert_eq!(
+            module["props"],
+            json!({"ownerKind": "WebSocketClient", "role": "WebSocketClient"}),
+            "{format}"
+        );
+    }
 }
 
 #[test]

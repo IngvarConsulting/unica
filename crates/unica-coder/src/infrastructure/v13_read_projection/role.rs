@@ -373,11 +373,7 @@ mod tests {
             );
             assert!(metadata_kind(kind).is_some());
         }
-        for kind in [
-            NodeKind::WebSocketClient,
-            NodeKind::ExternalDataProcessor,
-            NodeKind::ExternalReport,
-        ] {
+        for kind in [NodeKind::ExternalDataProcessor, NodeKind::ExternalReport] {
             assert!(metadata_kind(kind.as_str()).is_none());
         }
     }

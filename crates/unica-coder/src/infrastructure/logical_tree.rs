@@ -146,7 +146,6 @@ pub fn route_logical_address(
             }
 
             if matches!(segments, [branch] if branch.kind().is_metadata_kind() && branch.name().is_none())
-                || matches!(segments, [owner] if owner.kind() == NodeKind::WebSocketClient && owner.name().is_some())
             {
                 return Ok(route(address, class, None, None));
             }
