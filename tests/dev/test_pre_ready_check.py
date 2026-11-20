@@ -942,6 +942,33 @@ class MainTests(unittest.TestCase):
         self.assertIn("Новые падения в досчитанных проверках: 1", output)
         self.assertNotIn("Новые падения: ", output)
 
+    def test_cargo_builds_without_incremental_artifacts_as_in_ci(self):
+        """Шаги гейта получают `CARGO_INCREMENTAL=0`, как в CI; явное значение остаётся."""
+        def step_env(extra):
+            seen = []
+            def run_check(check, root, env, *rest):
+                seen.append(env)
+                return CHECK.Result([])
+
+            with (tempfile.TemporaryDirectory() as directory,
+                  mock.patch.dict(os.environ, {"CARGO_TARGET_DIR": directory, **extra}),
+                  mock.patch.object(CHECK, "git", side_effect=lambda root, *args: {
+                      "merge-base": "abc123\n", "status": ""}.get(args[0], "")),
+                  mock.patch.object(CHECK, "workspace_packages", return_value={}),
+                  mock.patch.object(CHECK, "run_check", side_effect=run_check),
+                  mock.patch.object(CHECK, "baseline", return_value=({}, [])),
+                  mock.patch.object(CHECK, "removed_reminder", return_value="Исчезнувшие тесты: нет"),
+                  mock.patch.object(CHECK, "parity", return_value=[]),
+                  redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO())):
+                if not extra:
+                    os.environ.pop("CARGO_INCREMENTAL", None)
+                CHECK.main([])
+            self.assertTrue(seen)
+            return {env.get("CARGO_INCREMENTAL") for env in seen}
+
+        self.assertEqual(step_env({}), {"0"})
+        self.assertEqual(step_env({"CARGO_INCREMENTAL": "1"}), {"1"})
+
     def test_without_the_build_directory_the_check_refuses(self):
         err = io.StringIO()
         with mock.patch.dict(os.environ), redirect_stderr(err):
