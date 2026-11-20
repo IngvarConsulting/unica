@@ -54,26 +54,52 @@ class ActionPinTests(unittest.TestCase):
                     self.assertRegex(found["ref"], r"^[0-9a-f]{40}$", line)
                     self.assertIsNotNone(found["version"], line)
 
-    def test_rust_toolchain_is_pinned_to_a_release_tag_with_the_toolchain_named(self) -> None:
-        # Ветки `stable`, `nightly`, `1.89` у dtolnay/rust-toolchain собираются
-        # заново на каждый коммит master и перезаписываются: хеш с такой ветки
-        # выпадает из истории, и zizmor видит подменённый коммит. Пин идёт
-        # по тегу `vN` из master, а без ветки-тулчейна `toolchain` обязателен.
+    def test_rust_comes_from_the_pinned_file_through_the_own_action(self) -> None:
+        # Плавающий `stable` и чужое действие каждый прогон спрашивали
+        # static.rust-lang.org: на раннерах PVE обрыв загрузки манифеста
+        # выбивал PR из очереди (#3269). Версию называет только
+        # rust-toolchain.toml, ставит её своё действие.
+        toolchain = (REPO_ROOT / "rust-toolchain.toml").read_text(encoding="utf-8")
+        self.assertRegex(toolchain, r'(?m)^channel = "\d+\.\d+\.\d+"$')
+        self.assertRegex(toolchain, r'(?m)^components = \[.*"rustfmt".*"clippy".*\]$')
+        uses = 0
         for path in WORKFLOWS:
             text = path.read_text(encoding="utf-8")
-            for line in text.splitlines():
-                uses = USES_LINE.match(line)
-                found = PINNED.match(uses["spec"]) if uses else None
-                if not found or found["action"] != "dtolnay/rust-toolchain":
-                    continue
-                with self.subTest(workflow=path.name, line=line.strip()):
-                    self.assertRegex(found["version"] or "", r"^v\d+$")
-            for job_name, job in yaml.safe_load(text)["jobs"].items():
-                for index, step in enumerate(job.get("steps", [])):
-                    if not step.get("uses", "").startswith("dtolnay/rust-toolchain@"):
-                        continue
-                    with self.subTest(workflow=path.name, job=job_name, step=index):
-                        self.assertTrue((step.get("with") or {}).get("toolchain"))
+            self.assertNotIn("dtolnay/rust-toolchain", text, path.name)
+            self.assertNotRegex(text, r"toolchain:\s*stable", path.name)
+            for step in steps(yaml.safe_load(text)):
+                if step.get("uses") == "./.github/actions/rust-toolchain":
+                    uses += 1
+                    self.assertNotIn("with", step, path.name)
+        self.assertEqual(uses, 11)
+
+    def test_the_rust_action_stays_offline_on_pve_and_retries_on_github(self) -> None:
+        action = yaml.safe_load(
+            (REPO_ROOT / ".github" / "actions" / "rust-toolchain" / "action.yml").read_text(encoding="utf-8")
+        )
+        by_if: dict[str, list[dict]] = {}
+        for step in action["runs"]["steps"]:
+            by_if.setdefault(step.get("if", ""), []).append(step)
+        (pve,) = by_if["runner.environment == 'self-hosted'"]
+        (hosted,) = by_if["runner.environment != 'self-hosted'"]
+        # На PVE версия стоит заранее: шаг только проверяет и не скачивает.
+        self.assertNotIn("toolchain install", pve["run"].split("echo", 1)[0])
+        self.assertNotIn("curl", pve["run"])
+        self.assertEqual(pve["env"]["RUSTUP_AUTO_INSTALL"], "0")
+        # В рабочей копии rustup доставил бы компоненты из rust-toolchain.toml.
+        self.assertEqual(pve["working-directory"], "${{ runner.temp }}")
+        self.assertIn("exit 1", pve["run"])
+        # На GitHub-hosted любой сбой установки повторяется.
+        self.assertIn("rustup toolchain install", hosted["run"])
+        self.assertIn("for attempt in 1 2 3 4 5", hosted["run"])
+        self.assertIn("sleep", hosted["run"])
+        # Общие шаги после установки тоже не зовут сеть.
+        for step in by_if[""]:
+            self.assertNotIn("toolchain install", step["run"])
+        # `CARGO*` входят в ключ rust-cache: те же переменные, что ставил dtolnay.
+        exported = "\n".join(step["run"] for step in by_if[""])
+        for variable in ("CARGO_HOME", "CARGO_INCREMENTAL=0", "CARGO_TERM_COLOR=always"):
+            self.assertIn(variable, exported)
 
     def test_every_checkout_leaves_no_token_in_the_tree(self) -> None:
         for path in WORKFLOWS:
