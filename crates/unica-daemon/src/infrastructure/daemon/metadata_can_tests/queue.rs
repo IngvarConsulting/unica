@@ -280,3 +280,22 @@ fn creation_refusals_tell_a_missing_kind_from_one_unica_does_not_create() {
         "`Queue` is a metadata kind of 1C 8.5.4 and later; this source set is 1C 8.3.27, where the kind does not exist. Only a set re-exported from 8.5.4 or later can hold a queue.",
     );
 }
+
+/// Borrowing a kind the parent's line does not have names both lines, not
+/// an unregistered object.
+/// rule: INV.SOURCE.PROFILE-CAPABILITIES
+#[test]
+fn borrowing_a_kind_of_a_later_line_names_the_parent_line() {
+    let fixture = Fixture::with_extension();
+    let runtime = runtime();
+    let refused = refusal(
+        &runtime,
+        &fixture,
+        json!({"at":"ext:Configuration","ops":[{"op":"object.borrow","args":{"from":"main:Queue.Probe"}}]}),
+    );
+    assert_eq!(refused["code"], "bad_value", "{refused}");
+    assert_eq!(
+        refused["message"],
+        "`Queue` is a metadata kind of 1C 8.5.4 and later; this source set is 1C 8.3.27, where the kind does not exist. Only a set re-exported from 8.5.4 or later can hold a queue.",
+    );
+}
