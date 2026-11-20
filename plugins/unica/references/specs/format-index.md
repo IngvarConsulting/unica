@@ -56,6 +56,7 @@
 | `HTTPService` | `HTTPServices/` | HTTP-сервисы | [1c-config-objects-spec.md § 24](1c-config-objects-spec.md#24-http-сервисы-httpservices) |
 | `WSReference` | `WSReferences/` | WS-ссылки | [1c-configuration-spec.md § 6.15](1c-configuration-spec.md#615-wsreference--ws-ссылка) |
 | `IntegrationService` | `IntegrationServices/` | Сервисы интеграции | [1c-configuration-spec.md § 6.13](1c-configuration-spec.md#613-integrationservice--сервис-интеграции) |
+| `ExternalDataSource` | `ExternalDataSources/` | Внешние источники данных | [1c-configuration-spec.md § 6.18](1c-configuration-spec.md#618-externaldatasource--внешний-источник-данных) |
 
 ### Поведение и параметризация
 

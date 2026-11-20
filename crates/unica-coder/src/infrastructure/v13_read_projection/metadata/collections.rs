@@ -3,7 +3,8 @@ use unica_address::address::NodeKind;
 
 /// Ветви объекта в порядке дерева Конфигуратора: измерения, ресурсы,
 /// реквизиты, табличные части, признаки учёта, значения, графы, перерасчёты, операции,
-/// шаблоны URL, затем формы, команды и макеты. Стандартные реквизиты и
+/// шаблоны URL, таблицы, кубы и функции внешнего источника, затем формы,
+/// команды и макеты. Стандартные реквизиты и
 /// табличные части идут за своими видами; характеристики и предопределённые
 /// элементы, которых дерево не показывает, — в конце.
 pub(super) fn metadata_branch_kinds() -> &'static [NodeKind] {
@@ -22,6 +23,9 @@ pub(super) fn metadata_branch_kinds() -> &'static [NodeKind] {
         NodeKind::Recalculation,
         NodeKind::Operation,
         NodeKind::UrlTemplate,
+        NodeKind::Table,
+        NodeKind::Cube,
+        NodeKind::Function,
         NodeKind::Form,
         NodeKind::Command,
         NodeKind::Template,
@@ -54,6 +58,9 @@ pub(super) fn metadata_collection(payload: &Value, kind: NodeKind) -> Option<&Va
         NodeKind::ExtDimensionAccountingFlag => collections.get("extDimensionAccountingFlags"),
         NodeKind::EnumValue => collections.get("enumValues"),
         NodeKind::Column => collections.get("columns"),
+        NodeKind::Table => collections.get("tables"),
+        NodeKind::Cube => collections.get("cubes"),
+        NodeKind::Function => collections.get("functions"),
         NodeKind::Form => collections.get("forms"),
         NodeKind::Template => collections.get("templates"),
         NodeKind::Command => collections.get("commands"),

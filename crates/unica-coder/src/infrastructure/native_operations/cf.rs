@@ -1395,6 +1395,39 @@ pub(super) mod medium_cf_read_selector_bridge_tests {
         let _ = fs::remove_dir_all(&context.workspace_root);
     }
 
+    /// Внешний источник данных из выгрузки платформы проверка конфигурации
+    /// знает: ни «неизвестного типа», ни пропавшего каталога.
+    #[test]
+    fn cf_validate_knows_the_external_data_source_of_the_platform_export() {
+        for format in ["2.20", "2.21", "2.22"] {
+            let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures/formats/platform_xml")
+                .join(format)
+                .join("all_kinds");
+            let context = WorkspaceContext {
+                cwd: root.clone(),
+                workspace_root: root.clone(),
+                cache_root: std::env::temp_dir().join("unica-cf-validate-all-kinds"),
+                workspace_epoch: 1,
+            };
+
+            let outcome = validate_cf(
+                &Map::from_iter([("ConfigPath".to_string(), json!("src"))]),
+                &context,
+            );
+
+            let stdout = outcome.stdout.as_deref().unwrap_or_default();
+            assert!(
+                !stdout.contains("Unknown type 'ExternalDataSource'"),
+                "{format}: {stdout}"
+            );
+            assert!(
+                !stdout.contains("Missing directory: ExternalDataSources"),
+                "{format}: {stdout}"
+            );
+        }
+    }
+
     #[test]
     pub(crate) fn cf_validate_answers_identically_for_a_source_set_and_a_config_path() {
         let context = workspace("validate");
