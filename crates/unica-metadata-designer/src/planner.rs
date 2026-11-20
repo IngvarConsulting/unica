@@ -1020,9 +1020,10 @@ fn stage_object_remove<R: MetadataPlanningRead>(
     provisional: &mut Vec<ProvisionalApplyEffect>,
 ) -> Result<(), ApplyPlanError> {
     use crate::remove::{
-        meta_remove_composition, meta_remove_composition_image, meta_remove_references,
-        meta_remove_referrer, meta_remove_search_patterns, meta_remove_should_skip_file,
-        plan_meta_remove_subsystem_replacements, remove_composition_entries, MetaRemoveReference,
+        meta_remove_composition, meta_remove_composition_image, meta_remove_is_form,
+        meta_remove_references, meta_remove_referrer, meta_remove_search_patterns,
+        meta_remove_should_skip_file, plan_meta_remove_subsystem_replacements,
+        remove_composition_entries, remove_form_command_group_entries, MetaRemoveReference,
         MetaRemoveSearch,
     };
     let at_path = format!("ops[{op_index}].args.at");
@@ -1127,7 +1128,9 @@ fn stage_object_remove<R: MetadataPlanningRead>(
         );
         let composition =
             meta_remove_composition(relative).filter(|_| !absolute.starts_with(&object_dir));
-        if skipped && composition.is_none() {
+        // A form's command interface places commands into command groups.
+        let form_groups = kind == "CommandGroup" && meta_remove_is_form(relative);
+        if skipped && composition.is_none() && !form_groups {
             continue;
         }
         let bytes = staged
@@ -1157,6 +1160,23 @@ fn stage_object_remove<R: MetadataPlanningRead>(
             if removed_entries > 0 {
                 let (referrer, _) = meta_remove_referrer(relative);
                 cleaned.push((format!("{source_set}:{referrer}"), property));
+                cleaned_files.push((
+                    relative.clone(),
+                    bytes.clone(),
+                    meta_remove_composition_image(&bytes, updated.clone()),
+                ));
+                text = updated;
+            }
+        }
+        if form_groups {
+            let (updated, removed_entries) = remove_form_command_group_entries(&text, &qualified)
+                .map_err(|error| {
+                ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, error)
+                    .at_path(at_path.clone())
+            })?;
+            if removed_entries > 0 {
+                let (referrer, _) = meta_remove_referrer(relative);
+                cleaned.push((format!("{source_set}:{referrer}"), "CommandInterface"));
                 cleaned_files.push((
                     relative.clone(),
                     bytes.clone(),
@@ -1356,7 +1376,13 @@ fn stage_object_remove<R: MetadataPlanningRead>(
                 .take(20)
                 .map(|(at, property)| serde_json::json!({"at": at, "property": property}))
                 .collect::<Vec<_>>(),
-            "message": format!("the removal also takes `{removed}` out of {shown}"),
+            "message": if kind == "CommandGroup" {
+                format!(
+                    "the removal also takes `{removed}` out of {shown}; the commands placed in it return to their default groups"
+                )
+            } else {
+                format!("the removal also takes `{removed}` out of {shown}")
+            },
         }));
     }
     provisional.push(effect);
