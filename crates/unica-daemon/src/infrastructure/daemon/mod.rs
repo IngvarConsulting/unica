@@ -20,8 +20,10 @@ mod v13_can_honesty_tests;
 mod v13_client_run;
 mod v13_documentation;
 mod v13_extensions;
+mod v13_infobase_another_copy;
 mod v13_infobase_create;
 mod v13_infobase_exports;
+mod v13_infobase_sessions;
 mod v13_read_modes;
 mod v13_run_dictionary;
 mod v13_search_admission;
@@ -940,5 +942,6 @@ mod tests {
     }
 }
 
-mod runner_015;
+mod live_agent;
+mod runner;
 mod runner_secrets;

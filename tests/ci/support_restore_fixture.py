@@ -13,7 +13,7 @@ import sys
 from tests.ci.acceptance_profiles import REPO, host_target, isolated_environment
 
 WORKSPACE = "tests/fixtures/acceptance/workspace-support-restore"
-NATIVE = REPO / "tests/fixtures/platform_8_3_27/support-edit-bin-only/src"
+NATIVE = REPO / "tests/fixtures/formats/platform_xml/2.20/support-edit-bin-only/src"
 PRODUCER = REPO / "tests/fixtures/runtime/support-restore/producer.py"
 LAUNCHER = REPO / "tests/fixtures/runtime/support-restore/launcher.rs"
 

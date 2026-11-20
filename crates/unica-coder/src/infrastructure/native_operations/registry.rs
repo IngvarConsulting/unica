@@ -267,21 +267,57 @@ mod medium_tests {
         );
     }
 
-    fn mutation_probe_context(operation: &str) -> WorkspaceContext {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "unica-mutation-probe-{operation}-{}-{nanos}",
-            std::process::id()
-        ));
+    struct MutationProbeContext {
+        context: WorkspaceContext,
+        _directory: tempfile::TempDir,
+    }
+
+    impl std::ops::Deref for MutationProbeContext {
+        type Target = WorkspaceContext;
+
+        fn deref(&self) -> &Self::Target {
+            &self.context
+        }
+    }
+
+    fn mutation_probe_context(operation: &str) -> MutationProbeContext {
+        let directory = tempfile::Builder::new()
+            .prefix(&format!("unica-mutation-probe-{operation}-"))
+            .tempdir()
+            .expect("mutation probe test directory");
+        let root = directory.path();
         std::fs::create_dir_all(root.join("src")).unwrap();
-        WorkspaceContext {
-            cwd: root.clone(),
-            workspace_root: root.clone(),
-            cache_root: root.join(".build").join("unica"),
-            workspace_epoch: 1,
+        MutationProbeContext {
+            context: WorkspaceContext {
+                cwd: root.to_path_buf(),
+                workspace_root: root.to_path_buf(),
+                cache_root: root.join(".build").join("unica"),
+                workspace_epoch: 1,
+            },
+            _directory: directory,
+        }
+    }
+
+    #[test]
+    fn mutation_probe_context_removes_directory_after_return_and_unwind() {
+        for should_panic in [false, true] {
+            let mut observed_root = None;
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let context = mutation_probe_context("cleanup");
+                assert!(context.cwd.is_dir());
+                observed_root = Some(context.cwd.clone());
+                std::fs::write(context.cwd.join("src/Module.bsl"), "// fixture").unwrap();
+                if should_panic {
+                    panic!("controlled mutation probe panic");
+                }
+            }));
+            assert_eq!(outcome.is_err(), should_panic);
+            let root = observed_root.expect("the fixture was created before the panic");
+            assert!(
+                !root.exists(),
+                "mutation probe directory remains: {}",
+                root.display()
+            );
         }
     }
 }

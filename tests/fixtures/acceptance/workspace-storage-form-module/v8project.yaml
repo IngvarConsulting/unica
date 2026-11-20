@@ -1,0 +1,8 @@
+format: DESIGNER
+source-set:
+  - name: main
+    type: CONFIGURATION
+    path: src
+tools:
+  platform:
+    version: "8.3.27"

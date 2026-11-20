@@ -13,7 +13,7 @@ ZCode prefers its native manifest rather than loading a second plugin.
 ## Public installation
 
 Prerequisites are Git 2.31 or newer (2.46 or newer for a partial clone) and one host: Codex CLI, Claude Code 2.1.69 or newer,
-or ZCode Desktop with native plugin support (the integration contract targets 3.14.4).
+or ZCode Desktop.
 Node.js, Python, download utilities, and archive utilities are not consumer
 dependencies.
 
@@ -348,8 +348,8 @@ scripts/dev/install-local-unica.sh
 ```
 
 On native Windows x64, run the script from **Git Bash** included with 64-bit Git
-for Windows. The local build requires Python 3.12 or newer, stable Rust with the
-native MSVC toolchain, Microsoft C++ Build Tools, and the Windows SDK. A current
+for Windows. The local build requires Python 3.12 or newer, Rust of the version
+pinned in `rust-toolchain.toml` with the native MSVC toolchain, Microsoft C++ Build Tools, and the Windows SDK. A current
 Codex CLI is required for the install and fresh-prompt verification steps.
 
 WSL keeps Linux semantics and builds `linux-x64`. MSYS2 and Cygwin are not

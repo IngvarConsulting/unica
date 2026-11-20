@@ -35,13 +35,9 @@ class CargoTargetTests(unittest.TestCase):
         with mock.patch.dict(os.environ):
             os.environ.pop("CARGO_TARGET_DIR", None)
             self.assertEqual(cargo_target.cargo_target_dir(root), root / "target")
-            self.assertEqual(cargo_target.vendor_target_dir(root, "ureq"), root / "vendor/ureq/target")
-            self.assertEqual(cargo_target.vendor_target_arg(root, "ureq"), "target")
             absolute = Path("/builds/session").resolve()
             os.environ["CARGO_TARGET_DIR"] = str(absolute)
             self.assertEqual(cargo_target.cargo_target_dir(root), absolute)
-            self.assertEqual(cargo_target.vendor_target_dir(root, "ureq"), absolute / "ureq")
-            self.assertEqual(cargo_target.vendor_target_arg(root, "ureq"), str(absolute / "ureq"))
             os.environ["CARGO_TARGET_DIR"] = "out"
             self.assertEqual(cargo_target.cargo_target_dir(root), root / "out")
 

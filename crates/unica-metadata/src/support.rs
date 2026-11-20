@@ -12,6 +12,13 @@ pub struct SupportRestorationData {
     pub at: String,
     pub suppliers: Vec<RestorationSupplier>,
     pub files_compared: usize,
+    pub files_to_restore: Vec<RestorationFile>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct RestorationFile {
+    pub path: String,
+    pub action: &'static str,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -73,10 +80,10 @@ impl SupportOperation {
     pub fn contract(self) -> OperationContract {
         if self == Self::RuleRestore {
             return OperationContract {
-                schema: object(&[("at", text(true))], &[]),
+                schema: object(&[("at", text(true)), ("replaceFromSupplier", json!({"type":"boolean"}))], &[]),
                 target: "One existing metadata object or its named form in a configuration on vendor support.",
-                effect: "Restore the locked rule only after every file of the object is byte-for-byte equal to its own version at every supporting supplier.",
-                notes: "The preview checks descriptor, complete companion trees, modules, forms, templates and unknown files. Formatting differences also prevent restoration. The saved plan checks that sources and supplier payloads are unchanged before applying only the support rule. Ordinary supportRule.set keeps its existing behavior. Use a separate Support-only apply.",
+                effect: "Preview a checked lock or a full object restore and lock in one saved plan.",
+                notes: "With replaceFromSupplier true, the preview lists files to create, replace, or remove and executionToken publishes them with locked. Omit the flag to require byte equality. Divergent suppliers or unavailable payloads refuse. Use this as the only operation in the plan.",
                 example_args: json!({}),
                 help: "skills/release-support/SKILL.md",
                 format_validators: &[],
@@ -95,9 +102,9 @@ impl SupportOperation {
             ),
             Self::RuleSet => (
                 object(&[("rule",json!({"type":"string","enum":["locked","editable","off-support","NotEditable","EditableWithSupport","NotSupported"]}))], &["rule"]),
-                "One existing top-level metadata object or its named form: <source-set>:<Kind>.<Name>[.Form.<FormName>].",
-                "Set the vendor support rule for the addressed object's registered UUID. Other object rules stay unchanged.",
-                "locked/NotEditable prohibit edits; editable/EditableWithSupport allow edits while keeping vendor support; off-support/NotSupported remove the object from vendor support. This Support-only apply must be separate from ordinary edits; source profile, registration and support state are still checked.",
+                "One existing node with its own vendor support record: the root <source-set>:Configuration for a configuration source set, a top-level metadata object <source-set>:<Kind>.<Name>, or below it .Form.<F>, .Template.<T>, .Command.<C>, .Attribute.<A>, .TabularSection.<T>[.Attribute.<A>], .Dimension.<D>, .Resource.<R>; a nested subsystem <source-set>:Subsystem.<A>.Subsystem.<B>….",
+                "Set the vendor support rule for the addressed node's registered UUID. The rules of other nodes, its object and its own children included, stay unchanged.",
+                "locked/NotEditable prohibit edits; editable/EditableWithSupport allow edits while keeping vendor support; off-support/NotSupported remove the addressed record from vendor support. At Configuration this changes only its root rule. This Support-only apply must be separate from ordinary edits; source profile, registration and support state are still checked.",
                 json!({"values":{"rule":"editable"}}),
             ),
             Self::RuleRestore => unreachable!("restoration has no values"),

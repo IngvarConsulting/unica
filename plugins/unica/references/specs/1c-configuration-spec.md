@@ -285,7 +285,8 @@ ClassId — фиксированные идентификаторы классо
 | 41 | `CalculationRegister` | `CalculationRegisters/` | Регистры расчёта |
 | 42 | `BusinessProcess` | `BusinessProcesses/` | Бизнес-процессы |
 | 43 | `Task` | `Tasks/` | Задачи |
-| 44 | `IntegrationService` | `IntegrationServices/` | Сервисы интеграции |
+| 44 | `ExternalDataSource` | `ExternalDataSources/` | Внешние источники данных |
+| 45 | `IntegrationService` | `IntegrationServices/` | Сервисы интеграции |
 
 Внутри одного типа объекты отсортированы по имени (алфавитный порядок). Типы, для которых нет объектов, в ChildObjects не записываются.
 
@@ -1058,6 +1059,77 @@ Type/Value, отсутствие явного значения и Font/Border н
 ```
 
 Присутствует только в конфигурациях с поддержкой устаревших стилей (ERP). Не имеет специфичных свойств в метаданных; содержимое в `Ext/Style.xml`.
+
+### 6.18. ExternalDataSource — внешний источник данных
+
+Каталог: `ExternalDataSources/`. Раскладка по выгрузке `all_kinds` 2.20–2.22
+(`tests/fixtures/formats/platform_xml/<формат>/all_kinds`):
+
+```text
+ExternalDataSources/<Источник>.xml
+ExternalDataSources/<Источник>/Tables/<Таблица>.xml
+ExternalDataSources/<Источник>/Tables/<Таблица>/Ext/ObjectModule.bsl
+ExternalDataSources/<Источник>/Tables/<Таблица>/Ext/ManagerModule.bsl
+ExternalDataSources/<Источник>/Tables/<Таблица>/Ext/RecordSetModule.bsl
+ExternalDataSources/<Источник>/Cubes/<Куб>.xml
+ExternalDataSources/<Источник>/Cubes/<Куб>/Ext/ManagerModule.bsl
+ExternalDataSources/<Источник>/Cubes/<Куб>/Ext/RecordSetModule.bsl
+ExternalDataSources/<Источник>/Cubes/<Куб>/DimensionTables/<Таблица>.xml
+ExternalDataSources/<Источник>/Cubes/<Куб>/DimensionTables/<Таблица>/Ext/ObjectModule.bsl
+ExternalDataSources/<Источник>/Cubes/<Куб>/DimensionTables/<Таблица>/Ext/ManagerModule.bsl
+```
+
+`ChildObjects` источника называют таблицы (`<Table>`) и кубы (`<Cube>`) по
+имени: каждый лежит в своём файле. Функция (`<Function>`) описана на месте,
+с `uuid` и `Properties` (`ReturnValue`, `Type`, `ExpressionInDataSource`);
+подчинённых в выгрузке у неё нет, и импорт отвергает `ChildObjects` внутри
+функции. Поля таблицы (`<Field>`) описаны на месте в её файле. Куб так же
+называет по имени таблицы измерения (`<DimensionTable>`) и описывает на месте
+измерения (`<Dimension>`) и ресурсы (`<Resource>`). Тип измерения — ссылка на
+таблицу измерения: без типа или с примитивным типом импорт отвергает куб.
+
+Порождённые типы (`xr:GeneratedType`, категория в скобках):
+
+| Объект | Типы |
+| --- | --- |
+| Источник | `ExternalDataSourceManager` (`Manager`), `ExternalDataSourceTablesManager` (`TablesManager`), `ExternalDataSourceCubesManager` (`CubesManager`) |
+| Таблица | `ExternalDataSourceTable{Manager,Object,Ref,List,Record,RecordSet,RecordKey,RecordManager}` — категория по суффиксу |
+| Куб | `ExternalDataSourceCube{Manager,List,Record,RecordSet,RecordKey,RecordManager}` — по суффиксу; `ExternalDataSourceCubeDimensionsTablesManager` (`DimensionTables`) |
+| Таблица измерения | `ExternalDataSourceCubeDimensionTable{Ref,Object,Manager,List}` — по суффиксу |
+
+Без них импорт отвергает объект: «отсутствует один или более типов объекта».
+
+Адреса вложенных объектов чередуют пары `Вид.Имя`, модуль — последним
+сегментом:
+
+| Адрес | Модули |
+| --- | --- |
+| `ExternalDataSource.<Источник>.Table.<Таблица>` | `ObjectModule`, `ManagerModule`, `RecordSetModule` |
+| `ExternalDataSource.<Источник>.Cube.<Куб>` | `ManagerModule`, `RecordSetModule` |
+| `ExternalDataSource.<Источник>.Cube.<Куб>.DimensionTable.<Таблица>` | `ObjectModule`, `ManagerModule` |
+| `ExternalDataSource.<Источник>.Function.<Функция>` | нет |
+
+Русские написания: `ВнешнийИсточникДанных`, `Таблица`, `Куб`,
+`ТаблицаИзмерения`, `Функция`. Объект доказывается цепочкой: источник
+зарегистрирован в конфигурации, каждый владелец называет следующее звено
+в своих `ChildObjects`, и файл каждого звена описывает свой вид и имя.
+Функция своего файла не имеет и целью исходников не служит.
+
+Члены, описанные прямо в `ChildObjects` владельца, адресуются следующей
+парой за ним:
+
+| Владелец | Члены |
+| --- | --- |
+| Источник | `Function.<Имя>` — тип возвращаемого значения |
+| Таблица, таблица измерения | `Field.<Имя>` (`Поле`) |
+| Куб | `Dimension.<Имя>`, `Resource.<Имя>` |
+
+`view` читает таблицу, куб и таблицу измерения их собственными описаниями,
+а функции, поля, измерения и ресурсы — из описания владельца. Тип измерения
+куба ссылается на таблицу измерения (`ExternalDataSourceCubeDimensionTableRef`)
+и в модели наблюдаемого типа пока не выражается: узел называет его пределом.
+Формы, команды и макеты вложенных объектов не адресуются; зарегистрированные
+называются пределом узла.
 
 ---
 

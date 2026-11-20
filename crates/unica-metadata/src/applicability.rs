@@ -16,6 +16,9 @@ pub enum OperationApplicability {
     Interface,
     InterfaceGroup,
     Metadata,
+    /// A typed metadata object whose descriptor may carry `Ext/Help`.
+    MetadataWithHelp,
+    MetadataRelations,
     MetadataOrCommonTemplate,
     MetadataAttribute,
     MetadataAttributeContainer,
@@ -43,6 +46,45 @@ pub enum OperationApplicability {
     SupportRule,
     SupportRestore,
 }
+pub fn support_configuration_root(segments: &[unica_address::address::AddressSegment]) -> bool {
+    matches!(segments, [root] if root.kind() == NodeKind::Configuration && root.name().is_none())
+}
+
+/// The nodes that carry an own vendor support record: a top-level metadata
+/// object, and below it a form, template or command, an attribute, a tabular
+/// section and its attribute, a dimension, a resource, and a nested
+/// subsystem. Every segment names its node.
+pub fn support_record_path(segments: &[unica_address::address::AddressSegment]) -> bool {
+    let [owner, rest @ ..] = segments else {
+        return false;
+    };
+    if owner.name().is_none()
+        || !owner.kind().is_metadata_kind()
+        || matches!(
+            owner.kind(),
+            NodeKind::Form | NodeKind::Template | NodeKind::Command | NodeKind::Configuration
+        )
+        || rest.iter().any(|segment| segment.name().is_none())
+    {
+        return false;
+    }
+    let kinds = rest
+        .iter()
+        .map(|segment| segment.kind())
+        .collect::<Vec<_>>();
+    match kinds.as_slice() {
+        [] => true,
+        [NodeKind::Form | NodeKind::Template | NodeKind::Command | NodeKind::Attribute]
+        | [NodeKind::TabularSection]
+        | [NodeKind::TabularSection, NodeKind::Attribute]
+        | [NodeKind::Dimension | NodeKind::Resource] => owner.kind() != NodeKind::Subsystem,
+        nested if owner.kind() == NodeKind::Subsystem => {
+            nested.iter().all(|kind| *kind == NodeKind::Subsystem)
+        }
+        _ => false,
+    }
+}
+
 impl OperationApplicability {
     pub const fn shape(self) -> &'static str {
         match self {
@@ -51,11 +93,15 @@ impl OperationApplicability {
             Self::ConfigurationRoot => "`Configuration` of a configuration, not of an extension",
             Self::ExtensionRoot => "`Configuration` of an extension",
             Self::Metadata => "`Kind.Name`",
+            Self::MetadataRelations => "`Kind.Name` of a kind with supported relations",
+            Self::MetadataWithHelp => "`Kind.Name` of a kind with a help page",
             Self::MetadataOrCommonTemplate => "`Kind.Name` or `CommonTemplate.Name`",
-            Self::SupportRule => "`Kind.Name` or `Kind.Name.Form.F`",
+            Self::SupportRule => {
+                "`Configuration` of a configuration, `Kind.Name` or its node with an own support record: `.Form.F`, `.Template.T`, `.Command.C`, `.Attribute.A`, `.TabularSection.T[.Attribute.A]`, `.Dimension.D`, `.Resource.R`; `Subsystem.A[.Subsystem.B…]`"
+            }
             Self::SupportRestore => "`Kind.Name` or `Kind.Name.Form.F` in a configuration",
             Self::MetadataOrRoleOrSubsystem => {
-                "`Configuration`, `Kind.Name`, `CommonForm.Name.Metadata`, `Role.Name` or `Subsystem.Name[.Subsystem.Child]`"
+                "`Configuration`, `Kind.Name`, `CommonForm.Name.Metadata`, `Kind.Name.Form.Name.Metadata`, `Role.Name`, `Subsystem.Name[.Subsystem.Child]` or `Catalog.Name.StandardAttribute.Owner`"
             }
             Self::MetadataAttributeContainer => {
                 "`Kind.Name` of a kind with attributes or `Kind.Name.TabularSection.T`"
@@ -104,6 +150,12 @@ impl OperationApplicability {
                     && site.source().kind() == SourceSetKind::Extension
             }
             Self::Metadata => site.metadata_object().is_some(),
+            Self::MetadataWithHelp => site
+                .metadata_object()
+                .is_some_and(crate::metadata_kind_has_help),
+            Self::MetadataRelations => site
+                .metadata_object()
+                .is_some_and(|kind| !crate::metadata_relation_specs(kind).is_empty()),
             // A common template is a top-level object the configurator
             // removes like any other, though it has no typed metadata kind.
             Self::MetadataOrCommonTemplate => {
@@ -208,23 +260,17 @@ impl OperationApplicability {
                             segment.kind() == NodeKind::Subsystem && segment.name().is_some()
                         }))
             }
+            Self::SupportRule => {
+                (site.source().kind() == SourceSetKind::Configuration
+                    && support_configuration_root(segments))
+                    || support_record_path(segments)
+            }
             Self::SupportRestore => {
                 site.source().kind() == SourceSetKind::Configuration
-                    && Self::SupportRule.matches(site)
+                    && support_record_path(segments)
+                    && (segments.len() == 1
+                        || (segments.len() == 2 && terminal.kind() == NodeKind::Form))
             }
-            Self::SupportRule => match segments {
-                [owner] | [owner, _] => {
-                    owner.name().is_some()
-                        && owner.kind().is_metadata_kind()
-                        && !matches!(
-                            owner.kind(),
-                            NodeKind::Form | NodeKind::Template | NodeKind::Command
-                        )
-                        && (segments.len() == 1
-                            || (terminal.kind() == NodeKind::Form && terminal.name().is_some()))
-                }
-                _ => false,
-            },
             Self::Event => {
                 terminal.kind() == NodeKind::Event
                     && terminal.name().is_some()

@@ -170,6 +170,7 @@ static MUTATOR_REGISTRY: &[MutatorRegistryEntry] = &[
             "meta-compile-http-service",
             "meta-compile-web-service",
             "meta-compile-defined-type",
+            "meta-compile-command-group",
         ],
         required_branches: &[
             "Catalog",
@@ -195,6 +196,7 @@ static MUTATOR_REGISTRY: &[MutatorRegistryEntry] = &[
             "HTTPService",
             "WebService",
             "DefinedType",
+            "CommandGroup",
         ],
     },
     MutatorRegistryEntry {
@@ -455,6 +457,11 @@ pub(crate) static EXECUTABLE_CASES: &[ExecutableCase] = &[
         id: "meta-compile-defined-type",
         tool: CANONICAL_APPLY_TOOL,
         branch: "DefinedType",
+    },
+    ExecutableCase {
+        id: "meta-compile-command-group",
+        tool: CANONICAL_APPLY_TOOL,
+        branch: "CommandGroup",
     },
     ExecutableCase {
         id: "meta-edit-predefined-items",
@@ -1462,7 +1469,7 @@ fn copy_fixture_tree(source: &Path, destination: &Path) -> Result<(), String> {
 
 fn seed_platform_support_fixture(workspace: &Path) -> Result<(), String> {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/fixtures/platform_8_3_27/support-edit-bin-only/src");
+        .join("../../tests/fixtures/formats/platform_xml/2.20/support-edit-bin-only/src");
     let destination = workspace.join("src");
     copy_fixture_tree(&fixture, &destination)?;
     write_designer_project(workspace, &[("main", "CONFIGURATION", "src")])?;
@@ -1632,7 +1639,7 @@ fn dcs_component_ops(template: &str) -> Vec<Value> {
         "",
         "calculatedField.add",
         json!({"items":[{
-            "name":"CalculatedAmount","expression":"Amount * 2","title":"Calculated amount","type":"decimal(15,2)",
+            "name":"CalculatedAmount","expression":"Amount * 2","title":"ru = 'Calculated amount'","type":"decimal(15,2)",
             "useRestriction":{"condition":true,"group":true,"field":true,"order":true}
         }]}),
     );
@@ -1641,11 +1648,11 @@ fn dcs_component_ops(template: &str) -> Vec<Value> {
         "parameter.add",
         json!({"items":[
             {"name":"Период","type":"StandardPeriod","value":"LastMonth"},
-            {"name":"ДатаНачала","title":"Начало периода","type":"dateTime","value":"0001-01-01T00:00:00","expression":"&Период.ДатаНачала","useRestriction":true},
-            {"name":"ДатаОкончания","title":"Конец периода","type":"dateTime","value":"0001-01-01T00:00:00","expression":"&Период.ДатаОкончания","useRestriction":true},
+            {"name":"ДатаНачала","title":"ru = 'Начало периода'","type":"dateTime","value":"0001-01-01T00:00:00","expression":"&Период.ДатаНачала","useRestriction":true},
+            {"name":"ДатаОкончания","title":"ru = 'Конец периода'","type":"dateTime","value":"0001-01-01T00:00:00","expression":"&Период.ДатаОкончания","useRestriction":true},
             {"name":"ТипКорпуса","type":"string(16)","availableAsField":false,"use":"Always"},
-            {"name":"Режим","title":"Mode","type":"string(16)","value":"A","useRestriction":true,"expression":"&Source.Mode",
-             "availableValues":[{"value":"A","presentation":"Alpha"},{"value":"B","presentation":"Beta"}],
+            {"name":"Режим","title":"ru = 'Mode'","type":"string(16)","value":"A","useRestriction":true,"expression":"&Source.Mode",
+             "availableValues":[{"value":"A","presentation":"ru = 'Alpha'"},{"value":"B","presentation":"ru = 'Beta'"}],
              "valueListAllowed":true,"availableAsField":false,"denyIncompleteValues":true,"use":"Always"}
         ]}),
     );
@@ -1653,7 +1660,7 @@ fn dcs_component_ops(template: &str) -> Vec<Value> {
     add(
         "",
         "variant.add",
-        json!({"items":[{"name":"Main","presentation":"Corpus settings"}]}),
+        json!({"items":[{"name":"Main","presentation":"ru = 'Corpus settings'"}]}),
     );
     add(
         ".Setting.Main",
@@ -1690,7 +1697,7 @@ fn dcs_component_ops(template: &str) -> Vec<Value> {
         add(
             container,
             "outputParameter.set",
-            json!({"values":{"name":"Заголовок","value":if container.ends_with("group"){"Corpus group"}else{"Corpus report"}}}),
+            json!({"values":{"name":"Заголовок","value":if container.ends_with("group"){"ru = 'Corpus group'"}else{"ru = 'Corpus report'"}}}),
         );
     }
     add(
@@ -1720,14 +1727,14 @@ fn dcs_mutation_ops(case_id: &str) -> Vec<Value> {
         ],
         "dcs-edit-add-parameter-after-settings" => {
             vec![json!({"op":"parameter.add","args":{"items":[{
-                "name":"ПериодРедактирования","title":"Edit period","type":"StandardPeriod","value":"LastMonth","useRestriction":true,"use":"Always"
+                "name":"ПериодРедактирования","title":"ru = 'Edit period'","type":"StandardPeriod","value":"LastMonth","useRestriction":true,"use":"Always"
             }]}})]
         }
         "dcs-edit-set-structure-after-settings" => vec![
             json!({"at":format!("{base}.Setting.Main"),"op":"structure.set","args":{"values":{"name":"Edited","groupBy":["Value"],"details":true}}}),
         ],
         "dcs-edit-modify-field-role-restriction" => vec![
-            json!({"at":format!("{base}.DataSet.CatalogObject.Field.Description"),"op":"field.set","args":{"values":{"title":"Updated","type":"String","useRestriction":{"field":true,"order":true}}}}),
+            json!({"at":format!("{base}.DataSet.CatalogObject.Field.Description"),"op":"field.set","args":{"values":{"title":"ru = 'Updated'","type":"String","useRestriction":{"field":true,"order":true}}}}),
             json!({"at":format!("{base}.DataSet.CatalogObject.Field.Description"),"op":"fieldRole.set","args":{"values":{"role":{"required":true,"dimension":true}}}}),
         ],
         _ => unreachable!("unknown DCS mutation case {case_id}"),
@@ -1742,12 +1749,12 @@ fn dcs_mutation_ops(case_id: &str) -> Vec<Value> {
 
 fn platform_fixture(relative: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/fixtures/platform_8_3_27")
+        .join("../../tests/fixtures/formats/platform_xml/2.20")
         .join(relative)
 }
 
 /// Корень набора `main` — выгрузка пустой конфигурации 8.3.27 / 2.20
-/// (`platform_8_3_27/empty_configuration`, имя `CorpusConfiguration`).
+/// (`formats/platform_xml/2.20/empty_configuration`, имя `CorpusConfiguration`).
 fn seed_configuration(workspace: &Path) -> Result<(), String> {
     copy_fixture_tree(
         &platform_fixture("empty_configuration/src"),
@@ -1758,7 +1765,7 @@ fn seed_configuration(workspace: &Path) -> Result<(), String> {
 
 /// Корень набора `extension` — пустое расширение `CorpusExtension` над той же
 /// конфигурацией, записанное по скиллу `cfe-init`
-/// (`platform_8_3_27/empty_extension`). Канонической операции создания
+/// (`formats/platform_xml/2.20/empty_extension`). Канонической операции создания
 /// расширения нет.
 fn seed_extension(workspace: &Path) -> Result<(), String> {
     copy_fixture_tree(
@@ -1808,6 +1815,7 @@ fn meta_object_name(kind: &str) -> Option<&'static str> {
         "HTTPService" => "CorpusHTTPService",
         "WebService" => "CorpusWebService",
         "DefinedType" => "CorpusDefinedType",
+        "CommandGroup" => "CorpusCommandGroup",
         _ => return None,
     })
 }
@@ -2255,7 +2263,7 @@ fn form_compose_ops() -> Vec<Value> {
     let form = "main:Report.CorpusReport.Form.CorpusForm";
     vec![
         json!({"op": "props.set", "args": {"values": {
-            "Title": "Corpus form",
+            "Title": "ru = 'Corpus form'",
             "AutoTitle": false,
             "Width": 4_294_967_295_u64,
             "Height": 4_294_967_294_u64,
@@ -2272,7 +2280,7 @@ fn form_compose_ops() -> Vec<Value> {
             ]}
         ]}}),
         json!({"op": "command.add", "args": {"items": [
-            {"name": "CorpusAction", "title": "Corpus action"}
+            {"name": "CorpusAction", "title": "ru = 'Corpus action'"}
         ]}}),
         json!({"op": "item.add", "args": {"items": [
             {"name": "Header", "type": "Group", "orientation": "AlwaysHorizontal",
@@ -5173,9 +5181,9 @@ fn meta_info_manifest_platform_cases_are_exact_executable_object_create_branches
     }
 
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/fixtures/platform_8_3_27/meta_info/manifest.json");
+        .join("../../tests/fixtures/formats/platform_xml/2.20/meta_info/manifest.json");
     let manifest: MetaInfoManifest = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    assert_eq!(manifest.kinds.len(), 23);
+    assert_eq!(manifest.kinds.len(), 24);
 
     for entry in manifest.kinds {
         let executable = EXECUTABLE_CASES

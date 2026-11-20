@@ -228,7 +228,7 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
     def test_canonical_subject_schemas_have_only_logical_inputs(self) -> None:
         tools = {tool["name"]: tool for tool in self.tools}
         expected_properties = {
-            "unica.view": {"at", "limit", "cursor"},
+            "unica.view": {"at", "limit", "cursor", "offset", "from"},
             "unica.apply": {"at", "ops", "executionToken"},
             # Единственный инструмент, которому путь на входе разрешён:
             # аварийный мост затем и заведён, чтобы путь не просачивался
@@ -371,6 +371,20 @@ class SurfaceCopiesAgreeTests(unittest.TestCase):
             sorted(ledger),
             f"{BOOTSTRAP_VERIFICATION} расходится с {LEDGER}",
         )
+
+    def test_bootstrap_direct_check_drops_exactly_the_task_compatibility_tools(self) -> None:
+        # Клиент 2026-07-28 видит восемь основных инструментов, без трёх
+        # инструментов совместимости (CTR.WIRE.CANONICAL-TOOL-PROFILES).
+        # Бутстрап вычитает их из своей копии; список вычитаемого обязан
+        # совпадать с тем, что ведомость называет совместимостью.
+        source = BOOTSTRAP_VERIFICATION.read_text(encoding="utf-8")
+        block = re.search(
+            r"COMPATIBILITY_TASK_TOOLS: \[&str; (\d+)\] =\s*\[(.*?)\];", source, re.S
+        )
+        self.assertIsNotNone(block, f"нет COMPATIBILITY_TASK_TOOLS в {BOOTSTRAP_VERIFICATION}")
+        names = re.findall(r'"(unica\.[a-z0-9.]+)"', block.group(2))
+        self.assertEqual(int(block.group(1)), len(names))
+        self.assertEqual(sorted(names), sorted(TASK_COMPATIBILITY), str(BOOTSTRAP_VERIFICATION))
 
 
 # Имя инструмента в тексте: `unica.view`, `unica.task.get`. Перед ним не стоит

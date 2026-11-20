@@ -21,7 +21,7 @@ const MODULE: &str = "DataProcessors/ТестHTML/Forms/Форма/Ext/Form/Modu
 fn fixture_root() -> PathBuf {
     std::fs::canonicalize(
         Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/fixtures/platform_8_3_27/support-edit-bin-only/src"),
+            .join("../../tests/fixtures/formats/platform_xml/2.20/support-edit-bin-only/src"),
     )
     .unwrap()
 }
@@ -93,7 +93,16 @@ impl Fixture {
         operations: serde_json::Value,
         supplier: &dyn RestoreSupplierRead,
     ) -> Result<PreparedApplyBatch, ApplyPlanError> {
-        let args = serde_json::json!({"at":AT,"ops":operations,"dryRun":true});
+        self.prepare_at(AT, operations, supplier)
+    }
+
+    fn prepare_at(
+        &self,
+        at: &str,
+        operations: serde_json::Value,
+        supplier: &dyn RestoreSupplierRead,
+    ) -> Result<PreparedApplyBatch, ApplyPlanError> {
+        let args = serde_json::json!({"at":at,"ops":operations,"dryRun":true});
         let request = ApplyRequest::parse(args.as_object().unwrap(), &["main"]).unwrap();
         let cancel = CancellationToken::new();
         let mut admission = self
@@ -254,6 +263,46 @@ fn saved_restore_preview_preserves_sources_and_cache_then_token_publishes_only_m
         1,
         "execution and replay must not reconvert"
     );
+}
+
+#[test]
+fn confirmed_supplier_replacement_publishes_files_and_locked_together() {
+    let fixture = Fixture::new();
+    let canonical = snapshot(&fixture.source);
+    let relative = Path::new("CommonModules/РеактивныйСервер/Ext/Module.bsl");
+    let module = fixture.source.join(relative);
+    let mut modified = canonical[relative].clone();
+    modified.extend_from_slice(b"\n// local edit\n");
+    std::fs::write(&module, modified).unwrap();
+    let supplier = FixtureSupplier {
+        calls: Cell::new(0),
+    };
+    let local = snapshot(&fixture.source);
+    let prepared = fixture
+        .prepare_at(
+            "main:CommonModule.РеактивныйСервер",
+            serde_json::json!([{
+                "op":"supportRule.restore","args":{"replaceFromSupplier":true}
+            }]),
+            &supplier,
+        )
+        .unwrap();
+    assert_eq!(snapshot(&fixture.source), local);
+    let token = fixture
+        .actor
+        .save_prepared_apply(
+            prepared,
+            DomainResult::success("confirmed supplier replacement"),
+        )
+        .unwrap();
+    assert!(fixture.execute(&token).ok);
+    let mut after = snapshot(&fixture.source);
+    let marker = after.remove(Path::new(MARKER)).unwrap();
+    let mut expected = canonical;
+    expected.remove(Path::new(MARKER));
+    assert_eq!(after, expected);
+    assert_ne!(marker, local[Path::new(MARKER)]);
+    assert_eq!(supplier.calls.get(), 1);
 }
 
 #[test]
@@ -476,7 +525,7 @@ fn extraction_uses_only_private_project_and_cleans_up_on_success_failure_and_can
                 warnings: Vec::new(),
                 missing: None,
             },
-            version: super::super::runner_015::VERSION.to_string(),
+            version: super::super::runner::VERSION.to_string(),
         }));
         reader.process = &process;
         let workspace = snapshot(fixture.source.parent().unwrap());

@@ -99,6 +99,386 @@ pub trait FormatFamily: Send + Sync {
     fn platform_line(&self, key: &FormatKey) -> Option<PlatformLine>;
 }
 
+/// How a format family reads a tuple (INV.SOURCE.WRITABLE-PROFILE).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReadResolution {
+    /// The tuple has a dialect of its own.
+    Dialect,
+    /// The tuple is read by the dialect of `read_as`, and every answer says so.
+    Unverified { read_as: FormatKey },
+    /// The tuple is not read.
+    Unsupported,
+}
+
+/// Which dialect reads `key` of `family`, given the tuples that have one.
+///
+/// A known tuple (one with a reference corpus) is read by the nearest dialect
+/// not newer than it, or, when every dialect is newer, by the oldest of them.
+/// An unknown tuple newer than every known one is read by the nearest dialect
+/// not newer than it. Any other unknown tuple — older than the oldest known,
+/// between known ones, or not comparable with one — is not read: without a
+/// corpus nothing says how the dialect would misread it.
+pub fn resolve_read(
+    family: &dyn FormatFamily,
+    key: &FormatKey,
+    dialects: &[FormatKey],
+) -> ReadResolution {
+    use std::cmp::Ordering;
+    let order = |left: &FormatKey, right: &FormatKey| family.compare(left, right);
+    if dialects
+        .iter()
+        .any(|dialect| order(dialect, key) == Some(Ordering::Equal))
+    {
+        return ReadResolution::Dialect;
+    }
+    let known = family.known_keys();
+    let is_known = known
+        .iter()
+        .any(|candidate| order(candidate, key) == Some(Ordering::Equal));
+    let newer_than_every_known = !known.is_empty()
+        && known
+            .iter()
+            .all(|candidate| order(key, candidate) == Some(Ordering::Greater));
+    if !is_known && !newer_than_every_known {
+        return ReadResolution::Unsupported;
+    }
+    // The newest dialect not newer than the tuple: no other such dialect is newer.
+    let not_newer = dialects
+        .iter()
+        .filter(|dialect| order(dialect, key) == Some(Ordering::Less))
+        .collect::<Vec<_>>();
+    let nearest_older = not_newer.iter().find(|dialect| {
+        not_newer
+            .iter()
+            .all(|other| order(other, dialect) != Some(Ordering::Greater))
+    });
+    let read_as = match nearest_older {
+        Some(dialect) => Some(*dialect),
+        None if is_known => {
+            let newer = dialects
+                .iter()
+                .filter(|dialect| order(dialect, key) == Some(Ordering::Greater))
+                .collect::<Vec<_>>();
+            newer
+                .iter()
+                .find(|dialect| {
+                    newer
+                        .iter()
+                        .all(|other| order(other, dialect) != Some(Ordering::Less))
+                })
+                .copied()
+        }
+        None => None,
+    };
+    match read_as {
+        Some(read_as) => ReadResolution::Unverified {
+            read_as: read_as.clone(),
+        },
+        None => ReadResolution::Unsupported,
+    }
+}
+
+/// A Designer export format beyond 2.20 that has dialects and a reference
+/// corpus: a row of the source profile (#2730).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum PlatformXmlRelease {
+    /// Format 2.21, written by platform line 8.5.1.
+    Format2_21,
+    /// Format 2.22, written by platform line 8.5.4.
+    Format2_22,
+}
+
+impl PlatformXmlRelease {
+    /// The release a root recording `raw` exactly belongs to.
+    pub fn for_export_format(raw: &str) -> Option<Self> {
+        [Self::Format2_21, Self::Format2_22]
+            .into_iter()
+            .find(|release| release.export_format() == raw)
+    }
+
+    pub const fn export_format(self) -> &'static str {
+        match self {
+            Self::Format2_21 => "2.21",
+            Self::Format2_22 => "2.22",
+        }
+    }
+
+    pub const fn platform_line(self) -> PlatformLine {
+        match self {
+            Self::Format2_21 => PlatformLine::new(8, 5, 1),
+            Self::Format2_22 => PlatformLine::new(8, 5, 4),
+        }
+    }
+
+    pub const fn platform_line_text(self) -> &'static str {
+        match self {
+            Self::Format2_21 => "8.5.1",
+            Self::Format2_22 => "8.5.4",
+        }
+    }
+
+    pub const fn canonical_id(self) -> &'static str {
+        match self {
+            Self::Format2_21 => "platform-xml-8.5.1-format-2.21",
+            Self::Format2_22 => "platform-xml-8.5.4-format-2.22",
+        }
+    }
+
+    pub const fn stable_discriminants(self) -> [u8; 3] {
+        match self {
+            Self::Format2_21 => [1, 3, 3],
+            Self::Format2_22 => [1, 4, 4],
+        }
+    }
+}
+
+/// The source profile of a Designer export recording `raw` in its root.
+pub(crate) fn platform_xml_profile_for_export_format(raw: &str) -> Option<crate::SourceProfile> {
+    if raw == crate::ACTIVE_SERIALIZATION_FORMAT {
+        return Some(crate::SourceProfile::platform_xml_8_3_27_format_2_20());
+    }
+    PlatformXmlRelease::for_export_format(raw).map(crate::SourceProfile::PlatformXmlRelease)
+}
+
+/// Whether codecs write sources of `profile` (INV.SOURCE.WRITABLE-PROFILE).
+pub(crate) const fn is_writable_platform_xml_profile(profile: crate::SourceProfile) -> bool {
+    matches!(
+        profile,
+        crate::SourceProfile::PlatformXml8_3_27Format2_20
+            | crate::SourceProfile::PlatformXmlRelease(_)
+    )
+}
+
+/// The source profile of the Designer export format a platform line writes.
+pub(crate) fn platform_xml_profile_of_line(line: PlatformLine) -> Option<crate::SourceProfile> {
+    if line == PlatformLine::new(8, 3, 27) {
+        return Some(crate::SourceProfile::platform_xml_8_3_27_format_2_20());
+    }
+    [
+        PlatformXmlRelease::Format2_21,
+        PlatformXmlRelease::Format2_22,
+    ]
+    .into_iter()
+    .find(|release| release.platform_line() == line)
+    .map(crate::SourceProfile::PlatformXmlRelease)
+}
+
+/// What a platform line adds to the root of a configuration: the property,
+/// or one value of it, and the line it exists from. The values are those of
+/// the platform XDTO export of each line
+/// (`tests/fixtures/formats/platform_xml/<format>/xdto/`); a property or value
+/// absent here exists in every described line (INV.SOURCE.PROFILE-CAPABILITIES).
+const CONFIGURATION_ROOT_LINE_ADDITIONS: &[(&str, Option<&str>, PlatformLine)] = &[
+    ("Caption", None, PlatformLine::new(8, 5, 1)),
+    ("ShortCaption", None, PlatformLine::new(8, 5, 1)),
+    (
+        "MainClientApplicationWindowInterfaceVariant",
+        None,
+        PlatformLine::new(8, 5, 1),
+    ),
+    ("ClientApplicationTheme", None, PlatformLine::new(8, 5, 1)),
+    (
+        "ClientApplicationWindowsOpenVariant",
+        None,
+        PlatformLine::new(8, 5, 1),
+    ),
+    (
+        "Version85InterfaceMigrationMode",
+        None,
+        PlatformLine::new(8, 5, 1),
+    ),
+    (
+        "InterfaceCompatibilityMode",
+        Some("Version8_5"),
+        PlatformLine::new(8, 5, 1),
+    ),
+    // The extension root of 8.5.4 (`2.22/empty_extension`): what the extension
+    // does when the configuration lacks one of its objects, how it checks the
+    // extended properties and reduces types.
+    (
+        "ActionOnConfigurationObjectMissing",
+        None,
+        PlatformLine::new(8, 5, 4),
+    ),
+    (
+        "DefaultExtensionPropertyCheckAction",
+        None,
+        PlatformLine::new(8, 5, 4),
+    ),
+    (
+        "TypeReductionByConfigurationExtensionMode",
+        None,
+        PlatformLine::new(8, 5, 4),
+    ),
+    (
+        "ActionOnExtendedConfigurationObjectsMissing",
+        None,
+        PlatformLine::new(8, 5, 4),
+    ),
+    // The modes of the line itself: 8.5.1 refuses to load `Version8_5_4`
+    // ("необходима версия платформы не меньше, чем 8.5.4"). The Designer of
+    // 8.5.1 lists the modes up to 8.3.27, but the platform loads and exports
+    // `Version8_5_1` from a file.
+    (
+        "CompatibilityMode",
+        Some("Version8_5_1"),
+        PlatformLine::new(8, 5, 1),
+    ),
+    (
+        "CompatibilityMode",
+        Some("Version8_5_4"),
+        PlatformLine::new(8, 5, 4),
+    ),
+    (
+        "ConfigurationExtensionCompatibilityMode",
+        Some("Version8_5_1"),
+        PlatformLine::new(8, 5, 1),
+    ),
+    (
+        "ConfigurationExtensionCompatibilityMode",
+        Some("Version8_5_4"),
+        PlatformLine::new(8, 5, 4),
+    ),
+];
+
+/// A configuration root property, or a value of one, that a later line than
+/// some set's adds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LineAddition {
+    pub property: &'static str,
+    pub value: Option<&'static str>,
+    pub since: PlatformLine,
+}
+
+/// What lines later than `line` add to a configuration root; a set without a
+/// known line has none of the additions.
+pub fn configuration_root_additions_after(line: Option<PlatformLine>) -> Vec<LineAddition> {
+    CONFIGURATION_ROOT_LINE_ADDITIONS
+        .iter()
+        .filter(|(_, _, since)| line.is_none_or(|line| line < *since))
+        .map(|(property, value, since)| LineAddition {
+            property,
+            value: *value,
+            since: *since,
+        })
+        .collect()
+}
+
+/// What a platform line adds to metadata objects and their members: the
+/// object or member kind, its property and the line it exists from, by the
+/// all_kinds export, the empty external report and the platform XDTO of each
+/// line (INV.SOURCE.PROFILE-CAPABILITIES).
+const MEMBER_LINE_ADDITIONS: &[(&str, &str, PlatformLine)] = &[
+    ("EnumValue", "Color", PlatformLine::new(8, 5, 1)),
+    ("Report", "AuxiliaryVariantForm", PlatformLine::new(8, 5, 1)),
+    (
+        "ExternalReport",
+        "AuxiliaryVariantForm",
+        PlatformLine::new(8, 5, 1),
+    ),
+    (
+        "Form",
+        "UseInInterfaceCompatibilityMode",
+        PlatformLine::new(8, 5, 1),
+    ),
+    (
+        "CommonForm",
+        "UseInInterfaceCompatibilityMode",
+        PlatformLine::new(8, 5, 1),
+    ),
+    // The auxiliary forms of a configuration root (the all_kinds export of
+    // 2.21).
+    (
+        "Configuration",
+        "AuxiliaryReportForm",
+        PlatformLine::new(8, 5, 1),
+    ),
+    (
+        "Configuration",
+        "AuxiliaryReportVariantForm",
+        PlatformLine::new(8, 5, 1),
+    ),
+    (
+        "Configuration",
+        "AuxiliaryReportSettingsForm",
+        PlatformLine::new(8, 5, 1),
+    ),
+    (
+        "Configuration",
+        "AuxiliaryDynamicListSettingsForm",
+        PlatformLine::new(8, 5, 1),
+    ),
+    (
+        "Configuration",
+        "AuxiliaryDataHistoryChangeHistoryForm",
+        PlatformLine::new(8, 5, 1),
+    ),
+    (
+        "Configuration",
+        "AuxiliaryDataHistoryVersionDataForm",
+        PlatformLine::new(8, 5, 1),
+    ),
+    (
+        "Configuration",
+        "AuxiliaryDataHistoryVersionDifferencesForm",
+        PlatformLine::new(8, 5, 1),
+    ),
+    (
+        "Configuration",
+        "AuxiliaryCollaborationSystemUsersChoiceForm",
+        PlatformLine::new(8, 5, 1),
+    ),
+];
+
+/// The line a `member` kind's `property` exists from, when a later line than
+/// the first described one adds it.
+pub fn member_property_since(member: &str, property: &str) -> Option<PlatformLine> {
+    MEMBER_LINE_ADDITIONS
+        .iter()
+        .find(|(kind, name, _)| *kind == member && *name == property)
+        .map(|(_, _, since)| *since)
+}
+
+/// Whether a set of platform `line` has the `property` of a `member` kind; a
+/// set without a known line has only what every described line has.
+pub fn member_property_exists(line: Option<PlatformLine>, member: &str, property: &str) -> bool {
+    member_property_since(member, property)
+        .is_none_or(|since| line.is_some_and(|line| line >= since))
+}
+
+/// The line a root metadata `kind` exists from, when a later line than the
+/// first described one adds it: its declaration in `unica_address::kinds`
+/// says, by the all_kinds export of each line
+/// (INV.SOURCE.PROFILE-CAPABILITIES). A kind without it exists in every
+/// described line.
+pub fn metadata_kind_since(kind: &str) -> Option<PlatformLine> {
+    unica_address::kinds::declared(kind)
+        .and_then(|(_, declaration)| declaration.since)
+        .map(|[major, minor, release]| PlatformLine::new(major, minor, release))
+}
+
+/// Whether a set of platform `line` has the root metadata `kind`; a set
+/// without a known line has only what every described line has.
+pub fn metadata_kind_exists(line: Option<PlatformLine>, kind: &str) -> bool {
+    metadata_kind_since(kind).is_none_or(|since| line.is_some_and(|line| line >= since))
+}
+
+/// The platform line of the Designer export format a root records: 8.3.27
+/// for 2.20, the release's line for a later format, `None` for any other.
+pub fn export_format_line(raw: &str) -> Option<PlatformLine> {
+    if raw == crate::ACTIVE_SERIALIZATION_FORMAT {
+        return Some(PlatformLine::new(8, 3, 27));
+    }
+    PlatformXmlRelease::for_export_format(raw).map(PlatformXmlRelease::platform_line)
+}
+
+/// The platform lines whose capabilities are described, with their text.
+pub const DESCRIBED_PLATFORM_LINES: &[(PlatformLine, &str)] = &[
+    (PlatformLine::new(8, 3, 27), "8.3.27"),
+    (PlatformLine::new(8, 5, 1), "8.5.1"),
+    (PlatformLine::new(8, 5, 4), "8.5.4"),
+];
+
 /// A line of the 1C platform, `8.3.27` or `8.5.4`: three numbers, without a
 /// build. One notion for every format family, so lines compare across them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -209,6 +589,42 @@ mod tests {
         assert_eq!(first.key_in(FAMILY_A), Some(first.key()));
         assert_eq!(first.key_in(FAMILY_B), None);
         assert_eq!(first.to_string(), "family_a(2025.1, 8.3.27)");
+    }
+
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
+    #[test]
+    fn an_unknown_tuple_is_read_only_when_newer_than_every_known_one() {
+        use super::test_support::ToolLineFamily;
+        use super::{resolve_read, ReadResolution};
+        let key = |tool: &str, line: &str| FormatKey::new([tool, line]);
+        let dialects = [key("1", "8.3.27")];
+        let resolve = |tool, line| resolve_read(&ToolLineFamily, &key(tool, line), &dialects);
+
+        assert_eq!(resolve("1", "8.3.27"), ReadResolution::Dialect);
+        // Newer tool on the known line, newer line with the known tool, both:
+        // newer than every known tuple, read as the known one.
+        for (tool, line) in [("2", "8.3.27"), ("1", "8.5.1"), ("2", "8.5.1")] {
+            assert_eq!(
+                resolve(tool, line),
+                ReadResolution::Unverified {
+                    read_as: key("1", "8.3.27")
+                },
+                "{tool} {line}"
+            );
+        }
+        // Older, or newer in one part and older in the other: not read.
+        for (tool, line) in [
+            ("0", "8.3.27"),
+            ("1", "8.3.26"),
+            ("2", "8.3.26"),
+            ("x", "8.3.27"),
+        ] {
+            assert_eq!(
+                resolve(tool, line),
+                ReadResolution::Unsupported,
+                "{tool} {line}"
+            );
+        }
     }
 
     #[test]

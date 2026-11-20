@@ -1,0 +1,43 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:pal="http://v8.1c.ru/8.1/data/ui/colors/palette" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.22">
+	<AccountingRegister uuid="edc36a73-06f5-8110-898d-8db391a9dbe4">
+		<InternalInfo>
+			<xr:GeneratedType name="AccountingRegisterRecord.Бухгалтерский" category="Record">
+				<xr:TypeId>42e615a1-1672-8f8a-9449-6fd94dc055d4</xr:TypeId>
+				<xr:ValueId>f158f7be-dc35-8779-91fa-c96bda4fc2b0</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="AccountingRegisterExtDimensions.Бухгалтерский" category="ExtDimensions">
+				<xr:TypeId>dbb7d4c4-ca5a-8051-8285-a1bbaa1c573c</xr:TypeId>
+				<xr:ValueId>b52992f9-7e2c-880f-aa36-35d2d5e97ab5</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="AccountingRegisterRecordSet.Бухгалтерский" category="RecordSet">
+				<xr:TypeId>353af7cf-55a9-840d-8f48-618fbaa34b8d</xr:TypeId>
+				<xr:ValueId>0dc4dc79-15c3-814d-858b-c892a2a3e707</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="AccountingRegisterRecordKey.Бухгалтерский" category="RecordKey">
+				<xr:TypeId>20aa702f-b4a2-82b7-a960-c9ed90e5c448</xr:TypeId>
+				<xr:ValueId>6198d68a-2259-8ac2-9dcd-d246e5532f94</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="AccountingRegisterSelection.Бухгалтерский" category="Selection">
+				<xr:TypeId>d420e42e-24f1-8cd2-9e08-76fefd0a1b74</xr:TypeId>
+				<xr:ValueId>69c04fe9-7cd3-88ce-807e-b7702fa38830</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="AccountingRegisterList.Бухгалтерский" category="List">
+				<xr:TypeId>5bca4d9d-5b8d-8a88-be1e-f7c571ce2e52</xr:TypeId>
+				<xr:ValueId>40b5b99b-842e-8dae-a511-0d30bccd97ef</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="AccountingRegisterManager.Бухгалтерский" category="Manager">
+				<xr:TypeId>d8d79d6a-b246-816f-9bb9-8d47797d3f72</xr:TypeId>
+				<xr:ValueId>13050aec-abd0-8798-9362-b2dbad9ea7b7</xr:ValueId>
+			</xr:GeneratedType>
+		</InternalInfo>
+		<Properties>
+			<ObjectBelonging>Adopted</ObjectBelonging>
+			<Name>Бухгалтерский</Name>
+			<Comment/>
+			<ExtendedConfigurationObject>3ce64222-da19-549d-8361-5f7463260aa1</ExtendedConfigurationObject>
+			<ActionOnConfigurationObjectMissing>Auto</ActionOnConfigurationObjectMissing>
+		</Properties>
+		<ChildObjects/>
+	</AccountingRegister>
+</MetaDataObject>

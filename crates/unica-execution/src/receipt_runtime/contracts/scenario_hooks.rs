@@ -607,10 +607,12 @@ pub struct V5ReceiptRuntimeListenerLease {
 impl Drop for V5ReceiptRuntimeListenerLease {
     fn drop(&mut self) {
         let mut state = self.telemetry.lock_state();
-        state.active_listeners = state
-            .active_listeners
-            .checked_sub(1)
-            .expect("protocol-v5 runtime listener telemetry lease released only once");
+        let remaining = state.active_listeners.checked_sub(1);
+        // A second panic while a test already panics aborts the binary (#3065).
+        if remaining.is_none() && !std::thread::panicking() {
+            panic!("protocol-v5 runtime listener telemetry lease released only once");
+        }
+        state.active_listeners = remaining.unwrap_or(0);
         if state.active_listeners == 0 {
             state.listener = V5ReceiptRuntimeListenerState::Closed;
             state.daemon_running = false;
@@ -627,10 +629,12 @@ impl Drop for V5ReceiptRuntimeActorLease {
     fn drop(&mut self) {
         let mut state = self.telemetry.lock_state();
         let epoch_ms = state.events.last().map_or(1, |event| event.epoch_ms.max(1));
-        state.actor_leases = state
-            .actor_leases
-            .checked_sub(1)
-            .expect("protocol-v5 runtime actor telemetry lease released only once");
+        let remaining = state.actor_leases.checked_sub(1);
+        // A second panic while a test already panics aborts the binary (#3065).
+        if remaining.is_none() && !std::thread::panicking() {
+            panic!("protocol-v5 runtime actor telemetry lease released only once");
+        }
+        state.actor_leases = remaining.unwrap_or(0);
         self.telemetry.changed.notify_all();
         drop(state);
         self.telemetry

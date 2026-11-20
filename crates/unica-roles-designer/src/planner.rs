@@ -152,7 +152,8 @@ pub fn parse_role_operation(
                 // платформа пишет в Rights.xml: команда, реквизит, стандартный
                 // реквизит, табличная часть и её реквизиты, измерение, ресурс,
                 // операция веб-сервиса, метод шаблона URL, канал сервиса
-                // интеграции, реквизит адресации задачи, вложенная подсистема.
+                // интеграции, реквизит адресации задачи, вложенная подсистема,
+                // объекты внешнего источника и их поля, измерения и ресурсы.
                 // Опечатка вида (`Comand`) или вложенный объект у корня
                 // конфигурации иначе ушли бы в Rights.xml записью, которой
                 // у платформы нет.
@@ -162,7 +163,7 @@ pub fn parse_role_operation(
                         op_index,
                         &format!("{location}.object"),
                         format!(
-                            "`{object}` is not a nested object a role lists: use Kind.Name.Command|Attribute|StandardAttribute|TabularSection|Dimension|Resource|Operation|AddressingAttribute|IntegrationServiceChannel.X, Kind.Name.TabularSection.T.Attribute|StandardAttribute.X, HTTPService.S.URLTemplate.T.Method.M or Subsystem.S.Subsystem.X"
+                            "`{object}` is not a nested object a role lists: use Kind.Name.Command|Attribute|StandardAttribute|TabularSection|Dimension|Resource|Operation|AddressingAttribute|IntegrationServiceChannel.X, Kind.Name.TabularSection.T.Attribute|StandardAttribute.X, HTTPService.S.URLTemplate.T.Method.M, Subsystem.S.Subsystem.X, ExternalDataSource.S.Table|Cube|Function.X, ExternalDataSource.S.Table.T.Field.X, ExternalDataSource.S.Cube.C.Dimension|Resource|DimensionTable.X or ExternalDataSource.S.Cube.C.DimensionTable.D.Field.X"
                         ),
                     ));
                 }
@@ -301,16 +302,18 @@ pub fn parse_role_operation(
         }
     }
 }
-fn minimal_rights_xml() -> String {
-    concat!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
-        "<Rights xmlns=\"http://v8.1c.ru/8.2/roles\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:type=\"Rights\" version=\"2.20\">\n",
-        "\t<setForNewObjects>false</setForNewObjects>\n",
-        "\t<setForAttributesByDefault>true</setForAttributesByDefault>\n",
-        "\t<independentRightsOfChildObjects>false</independentRightsOfChildObjects>\n",
-        "</Rights>\n",
+fn minimal_rights_xml(version: &str) -> String {
+    format!(
+        concat!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+            "<Rights xmlns=\"http://v8.1c.ru/8.2/roles\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:type=\"Rights\" version=\"{}\">\n",
+            "\t<setForNewObjects>false</setForNewObjects>\n",
+            "\t<setForAttributesByDefault>true</setForAttributesByDefault>\n",
+            "\t<independentRightsOfChildObjects>false</independentRightsOfChildObjects>\n",
+            "</Rights>\n",
+        ),
+        version
     )
-    .to_string()
 }
 /// Ensures `<object><name>X</name></object>` exists in the rights document.
 /// Читает права роли, применяет правку и стадирует результат с проверкой
@@ -607,7 +610,7 @@ pub fn stage_role_plan(
             unica_source_designer::registration::stage_new_file(
                 staged,
                 &rights_relative,
-                minimal_rights_xml().as_bytes(),
+                minimal_rights_xml(authority.expected_format()).as_bytes(),
                 &name_path,
             )?;
             touched.push(rights_relative);

@@ -1179,8 +1179,8 @@ class BuildUnicaToolsTests(unittest.TestCase):
             bootstrap_binary.write_bytes(b"native bootstrap")
             calls = []
 
-            def fake_run(args, *, cwd=None):
-                calls.append((args, cwd))
+            def fake_run(args, *, cwd=None, env=None):
+                calls.append((args, cwd, env))
 
             with (
                 patch.object(module, "run", side_effect=fake_run),
@@ -1217,6 +1217,7 @@ class BuildUnicaToolsTests(unittest.TestCase):
             self.assertEqual(duration, 2.5)
             self.assertEqual(len(calls), 1)
             self.assertEqual(calls[0][1], repo_root)
+            self.assertIsNone(calls[0][2])
             self.assertEqual(
                 calls[0][0],
                 [
@@ -1236,6 +1237,43 @@ class BuildUnicaToolsTests(unittest.TestCase):
                     str(target_dir),
                 ],
             )
+
+    def test_linux_x64_c_code_is_built_for_baseline_x86_64(self) -> None:
+        """GCC of ubuntu-26.04 defaulted to AVX2 for ring's C code (#3190)."""
+        module = load_build_module()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target_dir = root / "cargo-target"
+            (target_dir / "release").mkdir(parents=True)
+            (target_dir / "release" / "unica-bootstrap").write_bytes(b"bootstrap")
+            calls = []
+
+            def fake_run(args, *, cwd=None, env=None):
+                calls.append(env)
+
+            with (
+                patch.dict(module.os.environ, {
+                    "CFLAGS": "-march=native",
+                    "CFLAGS_x86_64-unknown-linux-gnu": "-march=native",
+                }),
+                patch.object(module, "run", side_effect=fake_run),
+            ):
+                module.build_cargo_workspace_binaries(
+                    [],
+                    repo_root=root,
+                    target_dir=target_dir,
+                    target_bin_dir=root / "bundle" / "bin" / "linux-x64",
+                    bundle_root=root / "bundle",
+                    target="linux-x64",
+                    exe="",
+                    workspace_binary_owners={"unica-bootstrap": {"unica-bootstrap"}},
+                )
+
+        [env] = calls
+        # cc-rs appends the hyphenated target variable last, so its -march wins.
+        self.assertEqual(env["CFLAGS_x86_64-unknown-linux-gnu"], "-march=x86-64")
+        self.assertEqual(env["CXXFLAGS_x86_64-unknown-linux-gnu"], "-march=x86-64")
 
     def test_workspace_binary_pairs_are_rejected_before_build_when_lock_is_malformed(self) -> None:
         module = load_build_module()

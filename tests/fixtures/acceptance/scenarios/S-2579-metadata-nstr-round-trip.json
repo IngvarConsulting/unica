@@ -1,0 +1,179 @@
+{
+  "id": "S-2579-metadata-nstr-round-trip",
+  "issue": 2579,
+  "area": "Свойства метаданных",
+  "task": "Прочитать полное значение синонима, передать его в apply, затем заменить переводы и проверить отказ для старого формата.",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Enum.LanguageAware"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": "ru = 'Очень длинное наименование перечисления для интерфейса команд'; en = 'A very long enum title intended for the command interface'"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Enum.LanguageAware.Props.Synonym"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": "ru = 'Очень длинное наименование перечисления для интерфейса команд'; en = 'A very long enum title intended for the command interface'"
+        }
+      ],
+      "captures": {
+        "synonym": {
+          "pointer": "/data/props/Synonym"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Enum.LanguageAware",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Synonym": "$capture.synonym",
+                "Comment": "Round-trip NStr"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "replay": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.replay"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Enum.LanguageAware"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": "ru = 'Очень длинное наименование перечисления для интерфейса команд'; en = 'A very long enum title intended for the command interface'"
+        },
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "Round-trip NStr"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Enum.LanguageAware",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Synonym": "en = 'It''s ready'; ru = ''"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "replace": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.replace"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Enum.LanguageAware.Props.Synonym"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": "en = 'It''s ready'; ru = ''"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Enum.LanguageAware",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Synonym": [
+                  {
+                    "language": "en",
+                    "content": "Legacy array"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: a multilingual value is a string in NStr form: ru = 'Валюты'; en = 'Currencies'",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "NStr"
+        }
+      ]
+    }
+  ]
+}

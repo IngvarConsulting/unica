@@ -40,9 +40,10 @@ pub(crate) fn plan_event_implement_batch(
     source_set_kind: SourceSetKind,
     profile: PlatformProfile,
     operations: &[EventImplementArgs],
+    first_index: usize,
 ) -> Result<PlannedApplyEffects, ApplyPlanError> {
     let mut effects = PlannedApplyEffects::default();
-    for operation in operations {
+    for (offset, operation) in operations.iter().enumerate() {
         plan_one_event(
             staged,
             &mut effects,
@@ -50,7 +51,14 @@ pub(crate) fn plan_event_implement_batch(
             source_set_kind,
             profile,
             operation,
-        )?;
+        )
+        .map_err(|error| {
+            if error.path().is_some() {
+                error
+            } else {
+                error.at_path(format!("ops[{}].args", first_index + offset))
+            }
+        })?;
     }
     Ok(effects)
 }
@@ -92,6 +100,7 @@ fn plan_one_event(
         let shape = project_platform_event_implementation(
             &source.event_at,
             &source.module_at,
+            profile,
             capability,
             module_text.as_deref(),
         )
@@ -105,7 +114,7 @@ fn plan_one_event(
                 &method.signature,
                 method.method_kind,
                 method.directive,
-                method.region,
+                &method.region,
                 unica_source_designer::language::staged_script_variant(
                     staged,
                     source_set_kind,
@@ -117,6 +126,7 @@ fn plan_one_event(
         let post = project_platform_event_implementation(
             &source.event_at,
             &source.module_at,
+            profile,
             capability,
             Some(post_text),
         )
@@ -152,7 +162,8 @@ fn plan_one_event(
     let shape = project_property_event_implementation(&source, form_text, module_text.as_deref())
         .map_err(projection_error)?;
     require_plannable_state(&shape)?;
-    let evidence = parse_form_event_evidence_xml(form_text).map_err(invalid_source)?;
+    let evidence =
+        parse_form_event_evidence_xml(form_text, Some(profile.line())).map_err(invalid_source)?;
     let effective_call_type = property_call_type(
         &shape,
         &evidence.context.definition,
@@ -182,7 +193,7 @@ fn plan_one_event(
             &method.signature,
             method.method_kind,
             method.directive,
-            method.region,
+            &method.region,
             unica_source_designer::language::staged_script_variant(staged, source_set_kind, "at")?,
         )
     }?;
@@ -284,6 +295,7 @@ pub(crate) fn plan_event_implement_batch_owned_for_test(
         source_set_kind,
         profile,
         operations,
+        0,
     )?;
     Ok((staged, effects))
 }

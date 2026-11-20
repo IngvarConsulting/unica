@@ -116,7 +116,7 @@ fn medium_every_metadata_write_keeps_the_owner_prefix() {
         (
             "attribute.set",
             json!({"at":"main:Catalog.A.Attribute.Text","ops":[
-                {"op":"attribute.set","args":{"values":{"synonym":"Подпись","comment":"Note","newName":"Label"}}}
+                {"op":"attribute.set","args":{"values":{"synonym":"ru = 'Подпись'","comment":"Note","newName":"Label"}}}
             ]}),
         ),
         (
@@ -126,7 +126,7 @@ fn medium_every_metadata_write_keeps_the_owner_prefix() {
         (
             "tabularSection.set",
             json!({"at":"main:Catalog.A.TabularSection.Goods","ops":[
-                {"op":"tabularSection.set","args":{"values":{"synonym":"Товары","comment":"Rows"}}}
+                {"op":"tabularSection.set","args":{"values":{"synonym":"ru = 'Товары'","comment":"Rows"}}}
             ]}),
         ),
         (
@@ -218,7 +218,7 @@ fn medium_every_metadata_write_keeps_the_owner_prefix() {
         (
             "enumValue.add",
             json!({"at":"main:Enum.E","ops":[{"op":"enumValue.add","args":{"items":[
-                {"name":"Red","synonym":"Красный","comment":"Value"}
+                {"name":"Red","synonym":"ru = 'Красный'","comment":"Value"}
             ]}}]}),
         ),
         (
@@ -296,6 +296,12 @@ fn medium_every_metadata_write_keeps_the_owner_prefix() {
         (
             "form.add",
             json!({"at":"main:Catalog.B","ops":[{"op":"form.add","args":{"items":[{"name":"Choose","type":"ChoiceForm"}]}}]}),
+        ),
+        (
+            "props.set",
+            json!({"at":"main:Document.D","ops":[
+                {"op":"props.set","args":{"values":{"SequenceFilling":"AutoFillOff"}}}
+            ]}),
         ),
     ];
 
@@ -439,4 +445,38 @@ fn medium_every_metadata_write_keeps_the_owner_prefix() {
         problems.push(format!("{path:?}: only written by the prefixed run"));
     }
     assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+#[test]
+fn root_comment_edits_preserve_a_foreign_default_namespace_in_either_declaration_order() {
+    for foreign_first in [false, true] {
+        let fixture = Fixture::blank();
+        let runtime = runtime();
+        publish(
+            &runtime,
+            &fixture,
+            json!({"at":"main:Configuration","ops":[
+                {"op":"object.create","args":{"values":{"kind":"Catalog","name":"A"}}}
+            ]}),
+        );
+        let path = fixture.source.join("Catalogs/A.xml");
+        let original = std::fs::read_to_string(&path).unwrap();
+        let declaration = format!("xmlns:md=\"{MD}\"");
+        let with_default = if foreign_first {
+            format!("xmlns=\"urn:unrelated\" {declaration}")
+        } else {
+            format!("{declaration} xmlns=\"urn:unrelated\"")
+        };
+        let before = prefixed(&original).replacen(&declaration, &with_default, 1);
+        assert!(before.contains("<md:Comment/>"));
+        std::fs::write(&path, &before).unwrap();
+        let request = json!({"at":"main:Catalog.A","ops":[
+            {"op":"props.set","args":{"values":{"Comment":"Note"}}}
+        ]});
+        publish(&runtime, &fixture, request.clone());
+        let expected = before.replace("<md:Comment/>", "<md:Comment>Note</md:Comment>");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), expected);
+        publish(&runtime, &fixture, request);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), expected);
+    }
 }

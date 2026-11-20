@@ -353,7 +353,9 @@ pub fn source_set_traits_for_read(
     kind: SourceSetKind,
     platform: PlatformProfile,
 ) -> SourceSetTraits {
-    let profile = SourceProfile::platform_xml_8_3_27_format_2_20();
+    // The profile of the line the reader admitted: 8.3.27, 8.5.1 or 8.5.4.
+    let profile = SourceProfile::platform_xml_of_line(platform.line())
+        .unwrap_or_else(SourceProfile::platform_xml_8_3_27_format_2_20);
     debug_assert_eq!(
         crate::source_capabilities::bsl_profile_for_source(profile),
         Some(platform)
@@ -362,8 +364,7 @@ pub fn source_set_traits_for_read(
 }
 
 pub fn source_classification_profile(source: SourceSetTraits) -> PlatformProfile {
-    crate::source_capabilities::bsl_profile_for_source(source.classification_profile())
-        .unwrap_or_else(PlatformProfile::v8_3_27)
+    PlatformProfile::for_line_or_base(source.classification_profile().semantic_line())
 }
 
 /// The sole semantic classifier binds pure source facts to a logical address.
@@ -572,6 +573,7 @@ operation_descriptors!(
     (FormOperation::ItemRemove),
     (FormOperation::ItemMove),
     (FormOperation::AttributeAdd),
+    (FormOperation::AttributeRemove),
     (FormOperation::ColumnAdd),
     (FormOperation::CommandAdd),
     (FormOperation::EventBind),
@@ -756,28 +758,24 @@ mod tests {
     }
 
     #[test]
-    fn form_metadata_does_not_advertise_or_accept_owner_and_content_writers() {
+    fn form_metadata_advertises_only_its_descriptor_properties() {
         let registry = crate::apply::operation_registry();
         let traits =
             source_set_traits_for_read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
+        // Both a common form and a form of an object describe themselves in
+        // a descriptor; only `props.set` writes it, never the owner or the
+        // form content writers.
         for raw in [
             "main:CommonForm.Main.Metadata",
             "main:Document.Order.Form.Main.Metadata",
         ] {
             let at = address(raw);
             let site = operation_site(&at, traits).unwrap();
-            let comment_descriptor = raw == "main:CommonForm.Main.Metadata";
-            assert_eq!(
-                registry.copyable_skeletons(&site).len(),
-                usize::from(comment_descriptor),
-                "{raw}"
-            );
+            assert_eq!(registry.copyable_skeletons(&site).len(), 1, "{raw}");
             for operation in registry.descriptors() {
                 assert_eq!(
                     operation.applies_at(&site),
-                    comment_descriptor
-                        && operation.operation::<PropertiesOperation>()
-                            == Some(PropertiesOperation::Set),
+                    operation.operation::<PropertiesOperation>() == Some(PropertiesOperation::Set),
                     "{} applicability at {raw}",
                     operation.name()
                 );
@@ -792,13 +790,17 @@ mod tests {
 
     #[test]
     fn support_rule_addresses_a_form_without_addressing_its_contents() {
-        for at in ["main:Catalog.Items", "main:Catalog.Items.Form.Card"] {
+        for at in [
+            "main:Catalog.Items",
+            "main:Catalog.Items.Form.Card",
+            "main:Catalog.Items.Attribute.Code",
+            "main:Catalog.Items.TabularSection.Lines.Attribute.Quantity",
+        ] {
             assert!(applies("supportRule.set", at), "{at}");
         }
         for at in [
             "main:Catalog.Items.Form.Card.Item.Field",
             "main:Catalog.Items.Form.Card.Module.Form",
-            "main:Catalog.Items.Attribute.Code",
         ] {
             assert!(!applies("supportRule.set", at), "{at}");
         }
@@ -1371,6 +1373,7 @@ mod tests {
             FormOperation::descriptor(FormOperation::ItemRemove),
             FormOperation::descriptor(FormOperation::ItemMove),
             FormOperation::descriptor(FormOperation::AttributeAdd),
+            FormOperation::descriptor(FormOperation::AttributeRemove),
             FormOperation::descriptor(FormOperation::ColumnAdd),
             FormOperation::descriptor(FormOperation::CommandAdd),
             FormOperation::descriptor(FormOperation::EventBind),
@@ -1458,6 +1461,7 @@ mod tests {
             "item.remove",
             "item.move",
             "attribute.add",
+            "attribute.remove",
             "column.add",
             "command.add",
             "event.bind",
@@ -1554,6 +1558,7 @@ mod tests {
         // имя одно, семейство выбирает адрес. Других повторов в реестре нет.
         const SHARED_NAMES: &[(&str, OperationFamily)] = &[
             ("attribute.add", OperationFamily::Metadata),
+            ("attribute.remove", OperationFamily::Metadata),
             ("column.add", OperationFamily::Metadata),
             ("command.add", OperationFamily::Metadata),
             ("props.set", OperationFamily::Properties),
@@ -2692,5 +2697,60 @@ mod tests {
             assert_ne!(value["args"].get("at"), Some(&json!("")));
             assert!(value.to_string().len() <= 256, "{value}");
         }
+    }
+
+    #[test]
+    fn form_attribute_remove_has_a_disjoint_site_and_a_closed_address_only_contract() {
+        for (at, family) in [
+            (
+                "main:Document.Order.Form.Main.Attribute.Unused",
+                OperationFamily::Form,
+            ),
+            (
+                "main:Document.Order.Attribute.Unused",
+                OperationFamily::Metadata,
+            ),
+        ] {
+            let at = address(at);
+            let site = operation_site(
+                &at,
+                source_set_traits_for_read(
+                    SourceSetKind::Configuration,
+                    PlatformProfile::v8_3_27(),
+                ),
+            )
+            .unwrap();
+            let descriptor = operation_registry()
+                .lookup_at("attribute.remove", &site)
+                .unwrap();
+            assert_eq!(descriptor.family(), family);
+            let contract = descriptor.argument_contract_at(&site).unwrap();
+            assert!(contract.normalize(&json!({}), "args").is_ok());
+            for args in [
+                json!({"name":"Other"}),
+                json!({"items":[]}),
+                json!({"values":{}}),
+            ] {
+                assert!(contract.normalize(&args, "args").is_err());
+            }
+        }
+        for at in [
+            "main:Document.Order.Form.Main",
+            "main:Document.Order.Form.Main.Attribute",
+            "main:Document.Order.Form.Main.Attribute.Rows.Column.Code",
+            "main:CommonForm.Main.Attribute.Unused",
+        ] {
+            assert!(!applies("attribute.remove", at), "{at}");
+        }
+        assert!(applies_in(
+            SourceSetKind::Extension,
+            "attribute.remove",
+            "main:Document.Order.Form.Main.Attribute.Unused"
+        ));
+        assert!(!applies_in(
+            SourceSetKind::ExternalReport,
+            "attribute.remove",
+            "main:Report.Order.Form.Main.Attribute.Unused"
+        ));
     }
 }

@@ -1,0 +1,42 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">
+	<CalculationRegister uuid="9f16fd35-c645-8e46-b4d6-f3e23e2d1ed2">
+		<InternalInfo>
+			<xr:GeneratedType name="CalculationRegisterRecord.Начисления" category="Record">
+				<xr:TypeId>ba93173a-0311-8b6b-9c98-53de6149c5a1</xr:TypeId>
+				<xr:ValueId>f691c33d-8bed-845d-9d67-6e2106026a6e</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="CalculationRegisterManager.Начисления" category="Manager">
+				<xr:TypeId>5caf5436-277c-82ed-85e1-a01419069521</xr:TypeId>
+				<xr:ValueId>2b78a89d-b129-86da-9f45-51d8740792da</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="CalculationRegisterSelection.Начисления" category="Selection">
+				<xr:TypeId>0654517c-17c5-8b3b-915f-84ec7ebad1ac</xr:TypeId>
+				<xr:ValueId>60047223-3c9e-89ac-9ab4-0867727c8217</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="CalculationRegisterList.Начисления" category="List">
+				<xr:TypeId>b61599ab-fbd4-8eac-b177-67c5b54743c1</xr:TypeId>
+				<xr:ValueId>3de9c3c2-086b-885a-8803-79980148647b</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="CalculationRegisterRecordSet.Начисления" category="RecordSet">
+				<xr:TypeId>53d4b3a4-abeb-8954-bbc0-3ef9319848c0</xr:TypeId>
+				<xr:ValueId>49385c01-86ce-83b7-9885-a344a07126b5</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="CalculationRegisterRecordKey.Начисления" category="RecordKey">
+				<xr:TypeId>7c1db735-328b-8ddf-85ef-6a9e6835deae</xr:TypeId>
+				<xr:ValueId>188649a1-11ca-8664-906e-5ca54164da49</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="RecalculationsManager.Начисления" category="Recalcs">
+				<xr:TypeId>9f629759-ddfd-87bb-a615-00e709621563</xr:TypeId>
+				<xr:ValueId>030b49bd-1d23-8380-9dda-761196273c4b</xr:ValueId>
+			</xr:GeneratedType>
+		</InternalInfo>
+		<Properties>
+			<ObjectBelonging>Adopted</ObjectBelonging>
+			<Name>Начисления</Name>
+			<Comment/>
+			<ExtendedConfigurationObject>3ee32422-3780-56eb-b814-7b575df7536a</ExtendedConfigurationObject>
+		</Properties>
+		<ChildObjects/>
+	</CalculationRegister>
+</MetaDataObject>

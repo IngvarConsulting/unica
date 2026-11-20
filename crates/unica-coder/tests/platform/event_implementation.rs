@@ -51,13 +51,15 @@ fn shape(
         region: match owner {
             EventImplementationOwner::Form => "ОбработчикиСобытийФормы",
             _ => "ОбработчикиСобытий",
-        },
+        }
+        .to_string(),
     }
 }
 
 fn form_source() -> PropertyEventSource {
     let form_at = QualifiedAddress::parse("main:CommonForm.Main").unwrap();
     PropertyEventSource {
+        platform: unica_bsl::profile::PlatformProfile::v8_3_27(),
         event_at: QualifiedAddress::parse("main:CommonForm.Main.Event.OnOpen").unwrap(),
         form_at: form_at.clone(),
         form_target: MetadataAddress::parse_logical("CommonForm.Main").unwrap(),
@@ -745,4 +747,137 @@ fn external_epf_and_erf_platform_owners_plan_only_proved_module_postimages() {
     assert_eq!(effects.events().len(), 1);
     assert!(!erf.join("Sales/Ext/ObjectModule.bsl").exists());
     std::fs::remove_dir_all(erf).unwrap();
+}
+
+/// Очередь из эталона 8.5.4: дескриптор берётся из закреплённой фикстуры
+/// корпуса, а не придумывается здесь, иначе проверка опиралась бы на
+/// вымышленный формат.
+fn write_queue_fixture(root: &std::path::Path) {
+    const MD: &str = "http://v8.1c.ru/8.3/MDClasses";
+    let corpus = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src/Queues/Probe.xml");
+    std::fs::create_dir_all(root.join("Queues/Probe/Ext")).unwrap();
+    std::fs::write(
+            root.join("Configuration.xml"),
+            format!(
+                "<MetaDataObject xmlns=\"{MD}\" version=\"2.22\"><Configuration><Properties><Name>Fixture</Name></Properties><ChildObjects><Queue>Probe</Queue></ChildObjects></Configuration></MetaDataObject>"
+            ),
+        )
+        .unwrap();
+    std::fs::copy(corpus, root.join("Queues/Probe.xml")).unwrap();
+}
+
+/// Обработчик события менеджера очереди создаётся общим путём правки модуля,
+/// и только на линии, которая это событие завела. Линию выбирает профиль
+/// набора: на 8.5.1 того же события у менеджера нет, и операция отказывает,
+/// а не пишет обработчик, которого платформа не позовёт.
+/// rule: INV.PLATFORM.MODULE-EVENT-CATALOG
+#[test]
+fn a_queue_manager_event_handler_is_planned_only_in_the_line_that_has_the_event() {
+    use unica_source_contract::format_identity::PlatformLine;
+
+    let root = temp_root("queue-manager-event");
+    write_queue_fixture(&root);
+    let operation = [EventImplementArgs {
+        at: QualifiedAddress::parse("main:Queue.Probe.Module.Manager.Event.MessageProcessing")
+            .unwrap(),
+        call_type: None,
+    }];
+
+    let (planned, effects) = plan_event_implement_batch_owned_for_test(
+        staged(&root),
+        "main",
+        SourceSetKind::Configuration,
+        PlatformProfile::for_line(PlatformLine::new(8, 5, 4)).unwrap(),
+        &operation,
+    )
+    .unwrap();
+    let changes = planned.planned_changes();
+    assert_eq!(changes.len(), 1);
+    assert!(
+        changes[0]
+            .relative_path
+            .ends_with("Queues/Probe/Ext/ManagerModule.bsl"),
+        "{:?}",
+        changes[0].relative_path
+    );
+    let bytes = match &changes[0].current {
+        unica_source_contract::proposal::StagedFileState::Bytes(bytes) => bytes,
+        _ => panic!("the manager module must be created"),
+    };
+    let text = String::from_utf8_lossy(bytes);
+    assert!(
+        text.contains("Процедура ОбработкаСообщений(Сообщения, Отказ, ДополнительнаяИнформация)"),
+        "{text}"
+    );
+    assert_eq!(effects.events().len(), 1);
+    assert_eq!(effects.events()[0].kind, DomainEventKind::ModuleChanged);
+    assert!(
+        !root.join("Queues/Probe/Ext/ManagerModule.bsl").exists(),
+        "planning never publishes source bytes"
+    );
+
+    let error = plan_event_implement_batch_owned_for_test(
+        staged(&root),
+        "main",
+        SourceSetKind::Configuration,
+        PlatformProfile::for_line(PlatformLine::new(8, 5, 1)).unwrap(),
+        &operation,
+    )
+    .unwrap_err();
+    assert_eq!(error.kind(), ApplyPlanErrorKind::ProviderUnavailable);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// The WebSocket client of the platform export implements its event in the
+/// module of its layout, as a bot does (#3246).
+#[test]
+fn web_socket_client_event_is_implemented_in_the_module_of_its_layout() {
+    fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for entry in std::fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let target = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_tree(&entry.path(), &target);
+            } else {
+                std::fs::copy(entry.path(), target).unwrap();
+            }
+        }
+    }
+    let root = temp_root("web-socket-client");
+    copy_tree(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src"),
+        &root,
+    );
+    let (planned, effects) = plan_event_implement_batch_owned_for_test(
+        staged(&root),
+        "main",
+        SourceSetKind::Configuration,
+        PlatformProfile::v8_3_27(),
+        &[EventImplementArgs {
+            at: QualifiedAddress::parse(
+                "main:WebSocketClient.AllKindsWebSocketClient.Module.WebSocketClient.Event.OnMessage",
+            )
+            .unwrap(),
+            call_type: None,
+        }],
+    )
+    .unwrap();
+    let changes = planned.planned_changes();
+    assert_eq!(changes.len(), 1, "{changes:?}");
+    assert_eq!(
+        changes[0].relative_path,
+        PathBuf::from("WebSocketClients/AllKindsWebSocketClient/Ext/Module.bsl")
+    );
+    let module = match &changes[0].current {
+        unica_source_contract::proposal::StagedFileState::Bytes(bytes) => {
+            String::from_utf8(bytes.clone()).unwrap()
+        }
+        other => panic!("{other:?}"),
+    };
+    assert!(module.contains("Процедура "), "{module}");
+    assert_eq!(effects.events().len(), 1);
+    std::fs::remove_dir_all(root).unwrap();
 }

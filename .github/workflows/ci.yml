@@ -51,7 +51,7 @@ jobs:
     steps:
       - name: Веха от владельца
         id: admission
-        if: ${{ github.event_name == 'pull_request' && !github.event.pull_request.draft }}
+        if: ${{ github.event_name == 'pull_request' }}
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -68,24 +68,63 @@ jobs:
           json="$(gh api graphql -F owner="${GITHUB_REPOSITORY%/*}" -F name="${GITHUB_REPOSITORY#*/}" -F number="$number" -f query='
             query($owner: String!, $name: String!, $number: Int!) {
               repository(owner: $owner, name: $name) {
+                id
                 pullRequest(number: $number) {
-                  milestone { number }
+                  isDraft
+                  milestone { id title }
                   assignees { totalCount }
                   timelineItems(itemTypes: [MILESTONED_EVENT], last: 1) { nodes { ... on MilestonedEvent { actor { login } } } }
-                  closingIssuesReferences(first: 100) { nodes { number milestone { number } } }
+                  closingIssuesReferences(first: 100) {
+                    pageInfo { hasNextPage }
+                    nodes {
+                      number
+                      repository { id }
+                      milestone { id title }
+                      timelineItems(itemTypes: [MILESTONED_EVENT], last: 1) { nodes { ... on MilestonedEvent { actor { login } } } }
+                    }
+                  }
                 }
               }
             }')"
-          problems="$(jq -r --arg owner "$MILESTONE_OWNER" '
-            .data.repository.pullRequest as $pr | $pr.closingIssuesReferences.nodes as $issues
-            | ($pr.timelineItems.nodes[-1].actor.login // "неизвестно") as $actor
-            | (if $pr.milestone == null then
-                 (if ($issues | length) > 0 then "Поставьте веху: скопируйте её с issue" else "Поставьте веху: на PR без issue её ставит \($owner)" end)
-               elif ($issues | length) == 0 and $actor != $owner then "Веху на PR поставил \($actor), нужна от \($owner)"
+          problems="$(jq -r --arg owner "$MILESTONE_OWNER" --arg working "${WORKING_MILESTONE:-}" --arg strict "$STRICT" '
+            def milestone_actor: .timelineItems.nodes[-1].actor.login // "неизвестно";
+            def version:
+              if test("^v[0-9]+[.][0-9]+$") then ltrimstr("v") | split(".") | map(tonumber)
+              else null end;
+            def check_limit($label; $title; $limit):
+              ($title | version) as $number
+              | if $number == null then "У вехи \($label) \($title) нужен формат vN.N"
+                elif $number > $limit then "Веха \($label) \($title) выше рабочей \($working)"
+                else empty end;
+            .data.repository as $repo | $repo.pullRequest as $pr
+            | $pr.closingIssuesReferences.nodes as $issues
+            | [$issues[] | select(.repository.id == $repo.id)] as $local
+            | ($pr | milestone_actor) as $actor
+            | (if $pr.closingIssuesReferences.pageInfo.hasNextPage then
+                 "Не удалось проверить все закрываемые issue"
                else empty end),
-              ($issues[] | select(.milestone == null) | "Issue #\(.number) без вехи, PR не рассматривается")' <<<"$json")"
+              (if $pr.milestone == null then
+                 (if ($local | length) > 0 then "Поставьте веху: скопируйте её с issue" else "Поставьте веху: на PR без issue её ставит \($owner)" end)
+               elif ($local | length) == 0 and $actor != $owner then "Веху на PR поставил \($actor), нужна от \($owner)"
+               elif ($local | length) > 0 and (any($local[]; .milestone.id == $pr.milestone.id) | not) then
+                 "Веха PR должна совпадать с вехой одной из закрываемых задач этого репозитория"
+               else empty end),
+              ($issues[] | select(.milestone == null) | "Issue #\(.number) без вехи, PR не рассматривается"),
+              ($local[] | select(.milestone != null and milestone_actor != $owner) | "Веху issue #\(.number) должен подтвердить \($owner)"),
+              (if $strict == "true" then
+                 ($working | version) as $limit
+                 | if $limit == null then "Рабочая веха должна быть задана в формате vN.N"
+                   else ($pr.milestone | select(. != null) | check_limit("PR"; .title; $limit)),
+                        ($local[] | select(.milestone != null) | check_limit("issue #\(.number)"; .milestone.title; $limit))
+                   end
+               else empty end)' <<<"$json")"
           assignees="$(jq -r '.data.repository.pullRequest.assignees.totalCount' <<<"$json")"
-          if [ -n "$problems" ]; then echo "admitted=false"; else echo "admitted=true"; fi >> "$GITHUB_OUTPUT"
+          # Черновик не занимает раннер. Признак берётся у GitHub, а не из события
+          # прогона: при push и снятии с черновика вплотную выжить может прогон
+          # события черновика, и его перезапуск проиграл бы то же событие.
+          draft="$(jq -r '.data.repository.pullRequest.isDraft' <<<"$json")"
+          if [ -n "$problems" ] || [ "$draft" = true ]; then echo "admitted=false"; else echo "admitted=true"; fi >> "$GITHUB_OUTPUT"
+          if [ "$draft" = true ]; then echo "::notice::PR #$number — черновик, тесты не запускаются"; fi
           level="$( [ "$STRICT" = true ] && echo error || echo notice )"
           if [ -n "$problems" ]; then
             while read -r problem; do echo "::$level::$problem"; done <<<"$problems"
@@ -125,6 +164,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+      issues: read
       actions: read
     defaults:
       run:
@@ -168,25 +208,34 @@ jobs:
           python-version: "3.12"
       - run: python -m pip install -r tests/ci/requirements.txt
         if: env.KEPT != 'true'
-      # На pull request проверки Python идут в фоне, пока раннер восстанавливает
+      - name: Удалённые тесты (запуск)
+        if: ${{ github.event_name == 'pull_request' && env.KEPT != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_REF: ${{ github.base_ref }}
+        # База — ветка назначения на выкаченном дереве, как при локальном
+        # запуске: скрипт сам берёт её merge-base с HEAD. `base.sha` события
+        # застывает при создании PR, а дерево — merge-ref со свежей веткой,
+        # и тесты, снятые в ней позже, сверка приписала бы этому PR.
+        # Сверка ещё и от инвентаря ночи: между ним и базой PR тест мог
+        # переехать или уйти из второй цели, и ночь знает его прежний ID.
+        run: python scripts/ci/background_step.py start removed-tests -- python scripts/ci/removed_tests.py --base "origin/$BASE_REF" --nightly-profile large
+      # Пометка незакрытого называет открытую задачу, которую этот PR не
+      # закрывает: иначе при влитии номер в ней поведёт в закрытое.
+      - name: Пометки незакрытого
+        if: ${{ github.event_name == 'pull_request' && env.KEPT != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/ci/open_marks.py pr
+      - uses: ./.github/actions/rust-toolchain
+        if: env.KEPT != 'true'
+      # Статические тесты вызывают rustfmt. Запускаем их после установки
+      # toolchain, пока раннер восстанавливает
       # кэш Rust и гоняет fmt и Clippy: подряд они занимали бо́льшую часть
       # стадии. Шаги ожидания ниже отдают их лог и исход как свои.
       - name: Статические проверки Python (запуск)
         if: ${{ github.event_name == 'pull_request' && env.KEPT != 'true' }}
         run: python scripts/ci/background_step.py start static-python -- python scripts/ci/run-static-tests.py
-      - name: Удалённые тесты (запуск)
-        if: ${{ github.event_name == 'pull_request' && env.KEPT != 'true' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        # Сверка ещё и от инвентаря ночи: между ним и базой PR тест мог
-        # переехать или уйти из второй цели, и ночь знает его прежний ID.
-        run: python scripts/ci/background_step.py start removed-tests -- python scripts/ci/removed_tests.py --base "$BASE_SHA" --nightly-profile large
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
-        if: env.KEPT != 'true'
-        with:
-          toolchain: stable
-          components: rustfmt, clippy
       # Версия — из `.config/nextest.toml`; готовый nextest не ставится заново.
       - if: ${{ github.event_name == 'merge_group' && env.KEPT != 'true' }}
         uses: ./.github/actions/install-nextest
@@ -201,9 +250,7 @@ jobs:
           save-if: false
       - name: Формат
         if: env.KEPT != 'true'
-        run: |
-          cargo fmt --all -- --check
-          python scripts/ci/check-discovered-modules-format.py
+        run: python scripts/ci/check-discovered-modules-format.py
       - name: Контракт версий
         if: env.KEPT != 'true'
         run: python scripts/ci/check-version-contract.py
@@ -261,6 +308,54 @@ jobs:
         if: ${{ !cancelled() && github.event_name == 'pull_request' && env.KEPT != 'true' }}
         run: python scripts/ci/background_step.py wait removed-tests --timeout 600
 
+  # Приёмка `source` замораживает ответы продукта. Когда запись очереди меняет
+  # крейт, из которого собирается `unica`, или саму приёмку, она идёт здесь,
+  # параллельно тестам Rust в `unica-ci` (#2831). Решение — выход `acceptance`
+  # `queue-tests.py`; при полном наборе приёмку исполняют Python medium
+  # `unica-ci`, и это задание пропускается.
+  queue-acceptance:
+    name: Приёмка
+    needs: admission
+    if: ${{ github.event_name == 'merge_group' && needs.admission.outputs.admitted == 'true' && needs.admission.outputs.kept != 'true' }}
+    runs-on: ${{ fromJSON(vars.UNICA_SELF_HOSTED == 'true' && '["self-hosted","Linux","X64","unica-pve"]' || '["ubuntu-latest"]') }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r tests/ci/requirements.txt
+      - uses: ./.github/actions/rust-toolchain
+      - id: choice
+        name: Нужна ли приёмка
+        env:
+          QUEUE_FULL_TESTS: ${{ vars.QUEUE_FULL_TESTS }}
+          BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+        run: python scripts/ci/queue-tests.py --base "$BASE_SHA" --head "$HEAD_SHA" --dry-run
+      - name: Кэш зависимостей Rust # zizmor: ignore[cache-poisoning] restore-only; очередь читает область main и ничего не пишет
+        if: ${{ steps.choice.outputs.acceptance == 'true' && runner.environment == 'github-hosted' }}
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: ci-rust-ordinary
+          save-if: false
+      - name: Продукт для приёмки
+        if: ${{ steps.choice.outputs.acceptance == 'true' }}
+        run: |
+          python scripts/ci/prepared_binary.py build --destination .build/ci-product --target-dir target
+          echo "UNICA_PREPARED_BINARY_MANIFEST=$PWD/.build/ci-product/manifest.json" >> "$GITHUB_ENV"
+      - name: Приёмка source
+        if: ${{ steps.choice.outputs.acceptance == 'true' }}
+        run: python -m unittest -v tests.ci.test_acceptance_scenarios.AcceptanceCorpusRunTests.test_every_wire_answers_its_frozen_classes
+
   windows-clippy:
     # Пропуск на pull request не мешает сделать проверку обязательной:
     # пропущенная по условию джоба считается пройденной, а очередь её исполняет.
@@ -275,10 +370,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
-        with:
-          toolchain: stable
-          components: clippy
+      - uses: ./.github/actions/rust-toolchain
       - name: Кэш зависимостей Rust # zizmor: ignore[cache-poisoning] restore-only; очередь читает область main и ничего не пишет
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:

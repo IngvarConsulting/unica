@@ -58,7 +58,6 @@ pub const MAX_V5_ENDPOINT_RECORD_BYTES: usize = 16 * 1024;
 // problem: Число соединений не ограничено, поэтому неаутентифицированный пир может заставить демон держать не больше этого объёма.
 // on-reach: кадр отвергается ответом invalid_request, соединение закрывается
 // decision: закреплено правилом
-// decision-date: 2026-10-18
 // decision-source: arch/rules/runtime/daemon-request-framing.md
 pub const MAX_V5_HANDSHAKE_LINE_BYTES: usize = 16 * 1024;
 /// Bound of one authenticated request frame, `\n` included.
@@ -83,7 +82,6 @@ pub const MAX_V5_HANDSHAKE_LINE_BYTES: usize = 16 * 1024;
 // problem: Демон держит кадр, разобранные аргументы и их канонический хеш одновременно; предел делает этот расход конечным, а прежние 16 КиБ резали обычный apply.
 // on-reach: frontend отказывает до отправки: provider_limit_exceeded, исход fixCall, предел и фактический размер; демон отвергает больший кадр
 // decision: закреплено правилом
-// decision-date: 2026-10-18
 // decision-source: arch/rules/runtime/daemon-request-framing.md
 pub const MAX_V5_REQUEST_LINE_BYTES: usize = 64 * 1024 * 1024;
 // resource-limit: daemon.v5-response-line-bytes
@@ -98,7 +96,6 @@ pub const MAX_V5_REQUEST_LINE_BYTES: usize = 64 * 1024 * 1024;
 // on-reach: кадр отвергается ошибкой «v5 daemon response frame exceeds the byte limit»
 // issue: #1119
 // decision: закреплено правилом INV.WIRE.DAEMON-RESPONSE-SIZE
-// decision-date: 2026-09-22
 // decision-source: arch/rules/runtime/daemon-response-size.md
 // review: #1119 PR9
 pub const MAX_V5_RESPONSE_LINE_BYTES: usize =
@@ -114,7 +111,6 @@ pub const MAX_V5_RESPONSE_LINE_BYTES: usize =
 // problem: неизвестно
 // on-reach: запрос отвергается: «v5 invocation response budget exceeds 7000 ms» или «v5 task wait exceeds 7000 ms»
 // decision: закреплено правилом
-// decision-date: 2026-09-22
 // decision-source: arch/rules/runtime/daemon-protocol.md
 const MAX_V5_WAIT_MS: u64 = 7_000;
 
@@ -459,6 +455,13 @@ pub enum V5ClientRequest {
     LspOpen {
         #[serde(rename = "workspaceFolders")]
         workspace_folders: Vec<V5LspWorkspaceFolder>,
+        /// The editor declared `workspace.diagnostics.refreshSupport`.
+        #[serde(
+            rename = "diagnosticsRefresh",
+            default,
+            skip_serializing_if = "std::ops::Not::not"
+        )]
+        diagnostics_refresh: bool,
     },
     LspNotify {
         session: V5LspSessionId,
@@ -545,7 +548,9 @@ impl V5ClientRequest {
             Self::WaitTask { wait_ms, .. } if *wait_ms > MAX_V5_WAIT_MS => {
                 Err("v5 task wait exceeds 7000 ms".to_string())
             }
-            Self::LspOpen { workspace_folders } => lsp::validate_open(workspace_folders),
+            Self::LspOpen {
+                workspace_folders, ..
+            } => lsp::validate_open(workspace_folders),
             Self::LspNotify {
                 session,
                 notification,
@@ -620,9 +625,13 @@ impl fmt::Debug for V5ClientRequest {
             }
             Self::CancelInvocation { .. } => formatter.write_str("V5CancelInvocation"),
             Self::FenceInvocationReceipt { .. } => formatter.write_str("V5FenceInvocationReceipt"),
-            Self::LspOpen { workspace_folders } => formatter
+            Self::LspOpen {
+                workspace_folders,
+                diagnostics_refresh,
+            } => formatter
                 .debug_struct("V5LspOpen")
                 .field("workspace_folders", &workspace_folders.len())
+                .field("diagnostics_refresh", diagnostics_refresh)
                 .finish(),
             Self::LspNotify { notification, .. } => formatter
                 .debug_struct("V5LspNotify")
@@ -1649,6 +1658,10 @@ mod medium_tests {
             (
                 V5ClientRequestKind::LspOpen,
                 "{\"kind\":\"lsp_open\",\"workspaceFolders\":[{\"uri\":\"file:///work\",\"name\":\"work\"}]}".into(),
+            ),
+            (
+                V5ClientRequestKind::LspOpen,
+                "{\"kind\":\"lsp_open\",\"workspaceFolders\":[],\"diagnosticsRefresh\":true}".into(),
             ),
             (
                 V5ClientRequestKind::LspNotify,

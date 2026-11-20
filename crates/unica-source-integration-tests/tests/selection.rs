@@ -69,3 +69,15 @@ fn actor_admission_comparison_honors_deadline() {
 fn retained_selection_pass_rejects_inconsistent_regular_repeat() {
     unica_workspace::selection_evidence::contract_tests::retained_selection_pass_rejects_inconsistent_regular_repeat(Arc::new(ActorSourceMapDiscovery::new(unica_workspace::paths::host_path_text)));
 }
+
+/// rule: INV.APP.RETAINED-SOURCE-SELECTION-FINALITY
+#[test]
+fn actor_admission_distinguishes_presence_identity_from_exact_content() {
+    unica_workspace::selection_evidence::contract_tests::actor_admission_distinguishes_presence_identity_from_exact_content(Arc::new(ActorSourceMapDiscovery::new(unica_workspace::paths::host_path_text)));
+}
+
+/// rule: INV.APP.RETAINED-SOURCE-SELECTION-FINALITY
+#[test]
+fn actor_admission_rejects_a_probe_interrupted_after_real_descriptor_read() {
+    unica_workspace::selection_evidence::contract_tests::actor_admission_rejects_a_probe_interrupted_after_real_descriptor_read(Arc::new(ActorSourceMapDiscovery::new(unica_workspace::paths::host_path_text)));
+}

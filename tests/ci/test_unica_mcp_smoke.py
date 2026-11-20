@@ -14,6 +14,8 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from scripts.ci.prepared_binary import ensure_binary
+from scripts.ci.provider_fixture import provider_fixture_environment
+from scripts.ci.temp_tree import remove_tree
 
 # Размер тестов модуля (scripts/ci/python_sizes.py).
 # Дым MCP: продукт через `ensure_binary`.
@@ -85,6 +87,9 @@ class UnicaMcpSmokeTests(unittest.TestCase):
         env = os.environ.copy()
         if cache_dir is not None:
             env["UNICA_CACHE_DIR"] = str(cache_dir)
+        temporary = tempfile.mkdtemp(prefix="unica-mcp-smoke-")
+        self.addCleanup(remove_tree, temporary)
+        env = provider_fixture_environment(env, Path(temporary) / "provider-state")
         process = subprocess.Popen(
             [str(ensure_binary(self.repo_root()))],
             stdin=subprocess.PIPE,
@@ -165,6 +170,7 @@ class UnicaMcpSmokeTests(unittest.TestCase):
     def mcp_session(
         self,
         *,
+        state_dir: Path,
         cache_dir: Path | None = None,
         workdir: Path | None = None,
         command: list[str] | None = None,
@@ -176,6 +182,7 @@ class UnicaMcpSmokeTests(unittest.TestCase):
             env["UNICA_CACHE_DIR"] = str(cache_dir)
         if extra_env is not None:
             env.update(extra_env)
+        env = provider_fixture_environment(env, state_dir)
         process = subprocess.Popen(
             command
             or [str(ensure_binary(self.repo_root()))],
@@ -360,11 +367,10 @@ class UnicaMcpSmokeTests(unittest.TestCase):
                 "UNICA_BOOTSTRAP_UNAME_S": "Linux",
                 "UNICA_BOOTSTRAP_UNAME_M": "x86_64",
                 "UNICA_TEST_CORE": str(core),
-                "UNICA_PROVIDER_STATE_DIR": str(temp / "provider-state"),
-                "UNICA_DAEMON_IDLE_GRACE_MS": "5000",
             }
 
             with self.mcp_session(
+                state_dir=temp / "provider-state",
                 cache_dir=temp / "cache",
                 workdir=launch_dir / server["cwd"],
                 command=command,

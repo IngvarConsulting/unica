@@ -161,7 +161,10 @@
               "kind": "Setting",
               "title": "Основной",
               "props": {
-                "presentation": "Основной",
+                "presentation": {
+                  "valueType": "xs:string",
+                  "value": "Основной"
+                },
                 "filters": 0
               },
               "branches": [
@@ -176,6 +179,70 @@
               ]
             }
           ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.NewSkeleton.Setting.Основной",
+        "ops": [
+          {
+            "op": "variant.set",
+            "args": {
+              "values": {
+                "presentation": {
+                  "valueType": "xs:string",
+                  "value": "en = 'Plain scalar'"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "scalarEdit": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.scalarEdit"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "xml",
+          "path": "src/cf/Reports/F05Report/Templates/NewSkeleton/Ext/Template.xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}presentation[@{http://www.w3.org/2001/XMLSchema-instance}type='xs:string']",
+          "eq": [
+            "en = 'Plain scalar'"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.NewSkeleton.Setting.Основной"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/presentation",
+          "eq": {
+            "valueType": "xs:string",
+            "value": "en = 'Plain scalar'"
+          }
         }
       ]
     },

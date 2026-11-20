@@ -119,9 +119,13 @@ fn run_apply_dry_run_after_confirmation_hook() {
 // problem: неизвестно
 // on-reach: актор без живого вызова и обещанного состояния освобождается, следующий вызов открывает корень заново
 // decision: закреплено правилом
-// decision-date: 2026-10-21
 // decision-source: arch/rules/workspace/actor-retention.md
 pub const WARM_WORKSPACE_ACTOR_TTL: Duration = Duration::from_secs(600);
+/// How long saved `apply` plans keep an otherwise unused actor, and with it
+/// the daemon. It is the warm actor's term, so an idle workspace has one
+/// number. A plan is counted from the later of its save and the actor's last
+/// admission; after that its token answers "request a fresh apply plan".
+pub const SAVED_APPLY_PLAN_TERM: Duration = WARM_WORKSPACE_ACTOR_TTL;
 static APPLY_WRITER_AUTHORITY_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -416,6 +420,15 @@ impl ProviderRootBinding {
 
     pub const fn source_profile(&self) -> SourceProfile {
         self.source_set.source_profile
+    }
+
+    /// The profile of a source set of the same workspace, by its name.
+    pub fn workspace_source_profile(&self, name: &str) -> Option<SourceProfile> {
+        self.actor_identity
+            .source_sets()
+            .iter()
+            .find(|set| set.name == name)
+            .map(|set| set.source_profile)
     }
 
     pub fn source_root(&self) -> &Path {
@@ -887,6 +900,19 @@ impl ApplyAdmission {
         Ok(format!("unica-apply-plan-v2:{:x}", hash.finalize()))
     }
 
+    /// The other source sets this apply was admitted to read, with their kind.
+    pub fn read_dependency_sets(&self) -> Vec<(&str, SourceSetKind)> {
+        self.read_dependencies
+            .iter()
+            .map(|dependency| {
+                (
+                    dependency.binding.source_set_name(),
+                    dependency.binding.source_kind(),
+                )
+            })
+            .collect()
+    }
+
     pub fn read_apply_dependency(
         &self,
         source_name: &str,
@@ -1015,15 +1041,16 @@ impl ApplyAdmission {
                 "admitted source does not provide writable Platform XML code",
             ));
         }
-        let profile = (binding.source_profile()
-            == SourceProfile::platform_xml_8_3_27_format_2_20())
-        .then_some(binding.source_profile())
-        .ok_or_else(|| {
-            ApplyPlanError::new(
-                ApplyPlanErrorKind::ProviderUnavailable,
-                "admitted source has no supported Platform XML profile",
-            )
-        })?;
+        let profile = binding
+            .source_profile()
+            .is_writable_platform_xml()
+            .then_some(binding.source_profile())
+            .ok_or_else(|| {
+                ApplyPlanError::new(
+                    ApplyPlanErrorKind::ProviderUnavailable,
+                    "admitted source has no supported Platform XML profile",
+                )
+            })?;
         let expected_format = binding
             .source_profile()
             .serialization_format()
@@ -1063,7 +1090,7 @@ impl ApplyAdmission {
                 binding.source_kind(),
                 SourceSetKind::Configuration | SourceSetKind::Extension
             )
-            || binding.source_profile() != SourceProfile::platform_xml_8_3_27_format_2_20()
+            || !binding.source_profile().is_writable_platform_xml()
         {
             return Err(ApplyPlanError::new(
                 ApplyPlanErrorKind::ProviderUnavailable,
@@ -1115,15 +1142,16 @@ impl ApplyAdmission {
                 format!("admitted source does not provide writable Platform XML {family}"),
             ));
         }
-        let profile = (binding.source_profile()
-            == SourceProfile::platform_xml_8_3_27_format_2_20())
-        .then_some(binding.source_profile())
-        .ok_or_else(|| {
-            ApplyPlanError::new(
-                ApplyPlanErrorKind::ProviderUnavailable,
-                "admitted source has no supported Platform XML profile",
-            )
-        })?;
+        let profile = binding
+            .source_profile()
+            .is_writable_platform_xml()
+            .then_some(binding.source_profile())
+            .ok_or_else(|| {
+                ApplyPlanError::new(
+                    ApplyPlanErrorKind::ProviderUnavailable,
+                    "admitted source has no supported Platform XML profile",
+                )
+            })?;
         let expected_format = binding
             .source_profile()
             .serialization_format()
@@ -1577,6 +1605,9 @@ pub enum SavedApplyExecutionError {
 #[derive(Default)]
 struct SavedApplyPlans {
     entries: HashMap<String, Arc<SavedApplyPlan>>,
+    /// When the newest plan was saved: the term of every held plan runs
+    /// from it or from a later admission of the actor.
+    last_saved: Option<Instant>,
 }
 struct SavedApplyPlan {
     diff_layout: std::sync::OnceLock<Box<dyn crate::preview::SavedSourceDiffRenderer>>,
@@ -1616,7 +1647,7 @@ pub struct WorkspaceActor<R = (), C = ()> {
     context: WorkspaceContext,
     source_roots: HashMap<WorkspaceSourceSetIdentity, Arc<RetainedDirectoryCapability>>,
     state_scope: WorkspaceStateScope,
-    mutation_lane: DeadlineLock<FailClosed>,
+    mutation_lane: Arc<DeadlineLock<FailClosed>>,
     saved_apply_plans: Mutex<SavedApplyPlans>,
     /// Open editor buffers read in place of their files by the sessions
     /// that opened them.
@@ -1742,7 +1773,7 @@ impl<R, C> WorkspaceActor<R, C> {
             context,
             source_roots,
             state_scope,
-            mutation_lane: DeadlineLock::fail_closed("workspace actor mutation lane is poisoned"),
+            mutation_lane: Arc::new(new_source_write_lane()),
             saved_apply_plans: Mutex::new(SavedApplyPlans::default()),
             documents: crate::documents::DocumentOverlay::default(),
             source_artifacts: Mutex::new(HashMap::new()),
@@ -1757,17 +1788,34 @@ impl<R, C> WorkspaceActor<R, C> {
         self
     }
 
+    /// Shares the lane of source writes with every holder of the same
+    /// workspace root, so runtime writers exclude this actor's publications.
+    fn with_source_write_lane(mut self, lane: SourceWriteLane) -> Self {
+        self.mutation_lane = lane.lane;
+        self
+    }
+
     pub fn identity(&self) -> &WorkspaceIdentity {
         &self.identity
     }
 
-    fn retains_promised_state(&self) -> bool {
-        let saved = self
-            .saved_apply_plans
-            .lock()
-            .map(|plans| !plans.entries.is_empty())
-            .unwrap_or(true);
-        saved || !self.documents.is_empty() || self.index_work.has_live_entries()
+    /// State that keeps the actor however long it stays unused: open editor
+    /// buffers and live index work. An unreadable plan registry counts here
+    /// too, since unknown plans cannot be shown to have run out.
+    fn retains_unexpiring_state(&self) -> bool {
+        self.saved_apply_plans.lock().is_err()
+            || !self.documents.is_empty()
+            || self.index_work.has_live_entries()
+    }
+
+    /// When the newest held plan was saved; `None` when no plan is held.
+    /// An unreadable registry is covered by `retains_unexpiring_state`.
+    fn saved_plans_since(&self) -> Option<Instant> {
+        let plans = self.saved_apply_plans.lock().ok()?;
+        if plans.entries.is_empty() {
+            return None;
+        }
+        Some(plans.last_saved.unwrap_or_else(actor_retention_now))
     }
 
     /// The open editor buffers of this workspace.
@@ -1922,12 +1970,18 @@ impl<R, C> WorkspaceActor<R, C> {
                     "borrow parent must be a separate non-overlapping source root".to_string(),
                 ));
             }
-            if parent.source_kind() != SourceSetKind::Configuration
-                || parent.source_format() != SourceFormat::PlatformXml
-                || parent.source_profile() != SourceProfile::platform_xml_8_3_27_format_2_20()
+            // Any writable format: the platform loads a parent and an
+            // extension of different formats of its line together. Besides a
+            // borrow parent, an apply reads the sets whose compatibility mode
+            // its own is compared with: a configuration or its extensions.
+            if !matches!(
+                parent.source_kind(),
+                SourceSetKind::Configuration | SourceSetKind::Extension
+            ) || parent.source_format() != SourceFormat::PlatformXml
+                || !parent.source_profile().is_writable_platform_xml()
             {
                 return Err(ApplyAdmissionError::Other(
-                    "borrow parent must provide the supported Platform XML configuration profile"
+                    "an apply reads only a configuration or extension source set of a writable Platform XML profile"
                         .to_string(),
                 ));
             }
@@ -2140,6 +2194,7 @@ impl<R, C> WorkspaceActor<R, C> {
             .lock()
             .map_err(|_| SavedApplyPlanError::RegistryUnavailable)?;
         let token = uuid::Uuid::new_v4().to_string();
+        plans.last_saved = Some(actor_retention_now());
         plans.entries.insert(
             token.clone(),
             Arc::new(SavedApplyPlan {
@@ -2608,10 +2663,13 @@ fn supported_actor_source_projection(
             let relative = closed_source_selection_relative_path(&source.path)?;
             Ok(WorkspaceSourceSetIdentity {
                 name: source.name.clone(),
-                root: workspace_root.join(relative),
                 kind: source.kind,
                 source_format: source.source_format,
-                source_profile: SourceProfile::platform_xml_8_3_27_format_2_20(),
+                source_profile: crate::source_profile::platform_xml_source_profile(
+                    source.kind,
+                    &workspace_root.join(&relative),
+                ),
+                root: workspace_root.join(relative),
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -2944,6 +3002,75 @@ fn digest_index_component(digest: &mut Sha256, bytes: &[u8]) -> Result<(), Strin
     Ok(())
 }
 
+fn new_source_write_lane() -> DeadlineLock<FailClosed> {
+    DeadlineLock::fail_closed("workspace actor mutation lane is poisoned")
+}
+
+/// The shared lane of source writes of one workspace root.
+#[derive(Clone)]
+pub struct SourceWriteLane {
+    lane: Arc<DeadlineLock<FailClosed>>,
+}
+
+/// Why a runtime writer did not get the lane of source writes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceWriteLaneError {
+    cancelled: bool,
+    message: String,
+}
+
+impl SourceWriteLaneError {
+    /// The wait ended by cancellation rather than by a deadline or poison.
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled
+    }
+}
+
+impl std::fmt::Display for SourceWriteLaneError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.message.fmt(formatter)
+    }
+}
+
+impl std::error::Error for SourceWriteLaneError {}
+
+impl SourceWriteLane {
+    /// Runs `operation` while no actor of this workspace publishes sources.
+    /// Waits for a running publication until `deadline` or cancellation.
+    pub fn hold<T>(
+        &self,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+        operation: impl FnOnce() -> T,
+    ) -> Result<T, SourceWriteLaneError> {
+        let held = self
+            .lane
+            .acquire_before(deadline, cancellation, "workspace source write lane wait")
+            .map_err(|error| SourceWriteLaneError {
+                cancelled: error.kind() == DeadlineLockErrorKind::Cancelled,
+                message: error.to_string(),
+            })?;
+        // A panic of the runtime writer must not poison the lane: the actors
+        // of the workspace would refuse every later publication.
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation));
+        drop(held);
+        match outcome {
+            Ok(value) => Ok(value),
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
+    }
+
+    /// Whether `other` excludes the same writers as this lane.
+    pub fn same_lane(&self, other: &SourceWriteLane) -> bool {
+        Arc::ptr_eq(&self.lane, &other.lane)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn hold_for_test(&self) -> MutexGuard<'_, ()> {
+        self.lane.hold_for_test()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkspaceActorRegistryError {
     InvalidIdentity(String),
@@ -2967,11 +3094,16 @@ impl std::error::Error for WorkspaceActorRegistryError {}
 
 pub struct WorkspaceActorRegistry<C = ()> {
     actors: Mutex<HashMap<WorkspaceIdentity, Weak<WorkspaceActor<(), C>>>>,
-    /// Strong ownership between invocations. Promised plans, terminal replay
-    /// and shared index work keep their actor alive for the daemon lifetime.
-    /// Only unowned actors without such state may be released after idle.
+    /// One lane of source writes per normalized workspace root: actors of
+    /// that root publish under it and runtime writers hold it for a call.
+    source_write_lanes: Mutex<HashMap<PathBuf, Weak<DeadlineLock<FailClosed>>>>,
+    /// Strong ownership between invocations. Open buffers and shared index
+    /// work keep their actor alive for the daemon lifetime; promised plans
+    /// and their terminal replay keep it for `saved_plan_term`. Only unowned
+    /// actors without such state may be released after idle.
     warm: Mutex<VecDeque<WarmWorkspaceActor<C>>>,
     warm_ttl: Duration,
+    saved_plan_term: Duration,
     policies: Option<crate::policies::WorkspacePolicies>,
     #[cfg(any(test, feature = "test-support"))]
     named_root_validation_error: Mutex<Option<ErrorKind>>,
@@ -2983,10 +3115,14 @@ struct WarmWorkspaceActor<C> {
 }
 
 impl<C> WarmWorkspaceActor<C> {
-    fn retains_owner(&self) -> bool {
+    fn retains_owner(&self, now: Instant, saved_plan_term: Duration) -> bool {
         // Registry locks prevent new Weak upgrades. Check live owners before
         // state: an admitted invocation may still publish a plan or index work.
-        Arc::strong_count(&self.actor) > 1 || self.actor.retains_promised_state()
+        Arc::strong_count(&self.actor) > 1
+            || self.actor.retains_unexpiring_state()
+            || self.actor.saved_plans_since().is_some_and(|saved| {
+                now.saturating_duration_since(saved.max(self.last_used)) < saved_plan_term
+            })
     }
 }
 
@@ -2994,8 +3130,10 @@ impl<C> Default for WorkspaceActorRegistry<C> {
     fn default() -> Self {
         Self {
             actors: Mutex::new(HashMap::new()),
+            source_write_lanes: Mutex::new(HashMap::new()),
             warm: Mutex::new(VecDeque::new()),
             warm_ttl: WARM_WORKSPACE_ACTOR_TTL,
+            saved_plan_term: SAVED_APPLY_PLAN_TERM,
             policies: None,
             #[cfg(any(test, feature = "test-support"))]
             named_root_validation_error: Mutex::new(None),
@@ -3050,9 +3188,11 @@ impl<C> WorkspaceActorRegistry<C> {
             }
             actors.remove(&identity);
         }
+        let lane = self.lane_for_root(identity.workspace_root.clone())?;
         let actor = Arc::new(
             WorkspaceActor::<(), C>::new(identity.clone(), context.clone())
                 .map(|actor| {
+                    let actor = actor.with_source_write_lane(lane);
                     if let Some(policies) = &self.policies {
                         actor.with_policies(policies.clone())
                     } else {
@@ -3066,6 +3206,34 @@ impl<C> WorkspaceActorRegistry<C> {
         Ok(actor)
     }
 
+    /// The lane of source writes for the workspace at `workspace_root`.
+    ///
+    /// Runtime operations that write or read a whole source set hold it for
+    /// the call; publications of every actor of the same root wait for it.
+    /// The lane exists without an actor: an actor created later joins it.
+    pub fn source_write_lane(
+        &self,
+        workspace_root: &Path,
+    ) -> Result<SourceWriteLane, WorkspaceActorRegistryError> {
+        let root = normalize_path_identity(workspace_root)
+            .map_err(WorkspaceActorRegistryError::InvalidIdentity)?;
+        self.lane_for_root(root)
+    }
+
+    fn lane_for_root(&self, root: PathBuf) -> Result<SourceWriteLane, WorkspaceActorRegistryError> {
+        let mut lanes = self
+            .source_write_lanes
+            .lock()
+            .map_err(|_| WorkspaceActorRegistryError::Poisoned)?;
+        lanes.retain(|_, lane| lane.strong_count() > 0);
+        if let Some(lane) = lanes.get(&root).and_then(Weak::upgrade) {
+            return Ok(SourceWriteLane { lane });
+        }
+        let lane = Arc::new(new_source_write_lane());
+        lanes.insert(root, Arc::downgrade(&lane));
+        Ok(SourceWriteLane { lane })
+    }
+
     /// An idle listener may stop only when no invocation or promise needs an
     /// actor. Unknown ownership retains the listener instead of losing work.
     pub fn has_retained_work(&self) -> bool {
@@ -3075,7 +3243,9 @@ impl<C> WorkspaceActorRegistry<C> {
         let Ok(warm) = self.warm.lock() else {
             return true;
         };
-        warm.iter().any(WarmWorkspaceActor::retains_owner)
+        let now = actor_retention_now();
+        warm.iter()
+            .any(|entry| entry.retains_owner(now, self.saved_plan_term))
     }
 
     /// Releases actors only after live invocations and promised state are gone.
@@ -3138,7 +3308,8 @@ impl<C> WorkspaceActorRegistry<C> {
     fn evict_expired_warm(&self, now: Instant) -> Result<(), WorkspaceActorRegistryError> {
         let mut warm = self.warm_lock()?;
         warm.retain(|entry| {
-            now.saturating_duration_since(entry.last_used) < self.warm_ttl || entry.retains_owner()
+            now.saturating_duration_since(entry.last_used) < self.warm_ttl
+                || entry.retains_owner(now, self.saved_plan_term)
         });
         Ok(())
     }
@@ -3150,7 +3321,9 @@ impl<C> WorkspaceActorRegistry<C> {
     }
 
     fn clear_warm(&self) -> Result<(), WorkspaceActorRegistryError> {
-        self.warm_lock()?.retain(WarmWorkspaceActor::retains_owner);
+        let now = actor_retention_now();
+        self.warm_lock()?
+            .retain(|entry| entry.retains_owner(now, self.saved_plan_term));
         Ok(())
     }
 

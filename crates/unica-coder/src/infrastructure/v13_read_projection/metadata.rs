@@ -16,8 +16,8 @@ mod relations;
 use collections::{metadata_branch_kinds, metadata_collection, metadata_details};
 use items::{metadata_item_with_context, metadata_items, tabular_standard_attribute_limits};
 use limits::{
-    metadata_limits, task_addressing_applies, task_addressing_issue, unreadable_collection,
-    unreadable_entries, wsdl_limits,
+    external_data_source_collection_limits, metadata_limits, task_addressing_applies,
+    task_addressing_issue, unreadable_collection, unreadable_entries, wsdl_limits,
 };
 pub use props::borrowing_props;
 use props::{metadata_detail_props, metadata_property_props};
@@ -168,6 +168,15 @@ fn project_metadata(
                 owner.kind().as_str(),
             )
             .unwrap_or_default(),
+            // Вложенный объект со своим описанием — узел своего читателя.
+            [.., owner]
+                if unica_address::kinds::is_described_nested_kind(owner.kind().as_str()) =>
+            {
+                unica_source_designer::registration::platform_child_object_order(
+                    owner.kind().as_str(),
+                )
+                .unwrap_or_default()
+            }
             _ => &[],
         };
         let addressing_issue = task_addressing_applies(address, payload)
@@ -217,13 +226,20 @@ fn project_metadata(
         let title = payload
             .get("synonym")
             .and_then(Value::as_str)
-            .or_else(|| payload.get("name").and_then(Value::as_str))
+            .and_then(super::localized_display_text)
+            .or_else(|| {
+                payload
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
             .unwrap_or_else(|| {
                 address
                     .segments()
                     .last()
                     .and_then(AddressSegment::name)
                     .unwrap_or("Metadata")
+                    .to_string()
             });
         return Ok(NodeViewData::Node(
             NodeView::new(
@@ -362,7 +378,8 @@ fn project_metadata(
     let empty = Value::Array(Vec::new());
     let declared = matches!(address.segments(), [owner] if
         unica_source_designer::registration::platform_child_object_order(owner.kind().as_str())
-            .is_some_and(|kinds| kinds.contains(&first.kind().as_str())));
+            .is_some_and(|kinds| kinds.contains(&first.kind().as_str())))
+        || nested_owner_declares(address, suffix, first.kind());
     let collection = match metadata_collection(payload, first.kind()) {
         Some(collection) => collection,
         None if declared => &empty,
@@ -400,7 +417,11 @@ fn project_metadata(
                 first.kind().as_str(),
                 first.kind().as_str(),
                 Map::new(),
-            ),
+            )
+            .with_limits(external_data_source_collection_limits(
+                payload,
+                first.kind(),
+            )),
             metadata_items(address, first.kind(), collection, payload, member_profile),
         )));
     }
@@ -473,6 +494,27 @@ fn project_metadata(
     )))
 }
 
+/// Владелец ветви — вложенный объект со своим описанием (таблица или куб
+/// внешнего источника), и порядок платформы называет вид ветви: пустая
+/// ветвь читается пустой коллекцией.
+fn nested_owner_declares(
+    address: &QualifiedAddress,
+    suffix: &[AddressSegment],
+    kind: NodeKind,
+) -> bool {
+    let segments = address.segments();
+    let Some(owner) = segments
+        .len()
+        .checked_sub(suffix.len() + 1)
+        .and_then(|index| segments.get(index))
+    else {
+        return false;
+    };
+    unica_address::kinds::is_described_nested_kind(owner.kind().as_str())
+        && unica_source_designer::registration::platform_child_object_order(owner.kind().as_str())
+            .is_some_and(|kinds| kinds.contains(&kind.as_str()))
+}
+
 #[cfg(test)]
 mod tabular_standard_attribute_property_tests {
     use super::items::metadata_item_node;
@@ -505,7 +547,7 @@ mod tabular_standard_attribute_property_tests {
                 let at = QualifiedAddress::parse(raw).unwrap();
                 let node = serde_json::to_value(metadata_item_node(&at, NodeKind::StandardAttribute, &item, None)).unwrap();
                 assert!(node["props"].get("UnknownProviderKey").is_none());
-                assert_eq!(node["props"]["Synonym"], synonym, "{raw}: {node}");
+                assert_eq!(node["props"]["Synonym"], "ru = 'Номер строки'", "{raw}: {node}");
                 // An empty translation set is no value: no key and no limit.
                 assert!(node["props"].get("ToolTip").is_none(), "{raw}: {node}");
                 assert!(!node["limits"].to_string().contains("ToolTip"));

@@ -2,6 +2,8 @@
 pub mod descriptor;
 pub mod writer;
 
+mod dialect;
+
 pub mod planner;
 
 pub mod info;

@@ -30,6 +30,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
             |segment: &AddressSegment, kind| segment.kind() == kind && segment.name().is_none();
         let module_body = matches!(suffix, [body] if is_branch(body, NodeKind::Body));
         let method = matches!(suffix, [method] if is_named(method, NodeKind::Method));
+        let variable = matches!(suffix, [variable] if is_named(variable, NodeKind::Variable));
         let method_body = matches!(
             suffix,
             [method, body] if is_named(method, NodeKind::Method) && is_branch(body, NodeKind::Body)
@@ -38,7 +39,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
             && suffix
                 .iter()
                 .all(|segment| is_named(segment, NodeKind::Region));
-        if !(module_body || method || method_body || region) {
+        if !(module_body || method || method_body || region || variable) {
             let projected = self.read_exact(at, admitted)?;
             return Ok((projected.kind().to_string(), ResolvedLines::NotLineBased));
         }
@@ -52,12 +53,6 @@ impl<'a> LogicalViewReadAuthority<'a> {
             ));
         }
         self.verify_module_owner(&module_at, capability, admitted)?;
-        if capability.role() == ModuleRole::WebSocketClient {
-            return Err(ViewError::detailed(
-                RefusalDetail::ProviderAbsent,
-                "WebSocketClient source layout is not specified for platform profile 8.3.27",
-            ));
-        }
         if module_body {
             let target = module_source_address(&module_at, capability)?;
             let count = self
@@ -75,7 +70,13 @@ impl<'a> LogicalViewReadAuthority<'a> {
             ));
         }
         let projections = self.module_projection(&module_at, capability, admitted)?;
-        let (kind, lines) = if region {
+        let (kind, lines) = if variable {
+            let variable = find_variable(&projections, suffix[0].name().unwrap_or_default())?;
+            (
+                NodeKind::Variable,
+                line_range(variable.from_line, variable.to_line),
+            )
+        } else if region {
             let region = projections
                 .region(&at.to_string())
                 .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
@@ -326,12 +327,6 @@ impl<'a> LogicalViewReadAuthority<'a> {
         };
         let (module_at, prefix_len) = module_prefix(route.at(), self.profile, capability)?;
         self.verify_module_owner(&module_at, capability, admitted)?;
-        if capability.role() == ModuleRole::WebSocketClient {
-            return Err(ViewError::detailed(
-                RefusalDetail::ProviderAbsent,
-                "WebSocketClient source layout is not specified for platform profile 8.3.27",
-            ));
-        }
         if self.read.source_set_kind() == SourceSetKind::Configuration
             && route.at().segments().last().is_some_and(|segment| {
                 segment.kind() == NodeKind::Event && segment.name().is_some()
@@ -356,7 +351,37 @@ impl<'a> LogicalViewReadAuthority<'a> {
             return Ok(NodeViewData::Node(event_node(&event)));
         }
         let projections = self.module_projection(&module_at, capability, admitted)?;
-        let mut view = module_projection_view(route.at(), prefix_len, projections.as_ref())?;
+        let suffix = &route.at().segments()[prefix_len..];
+        let mut binding_items = match suffix {
+            [method, rest @ ..]
+                if capability.role() == ModuleRole::Form
+                    && method.kind() == NodeKind::Method
+                    && (rest.is_empty()
+                        || matches!(rest, [binding] if binding.kind() == NodeKind::Binding))
+                    && projections.methods().iter().any(|projection| {
+                        method.name().is_none_or(|name| projection.name == name)
+                            && !projection.handles.is_empty()
+                    }) =>
+            {
+                self.form_method_bindings(&module_at, &projections, admitted)?
+            }
+            _ => BTreeMap::new(),
+        };
+        if let [method, binding] = suffix {
+            if method.kind() == NodeKind::Method && binding.kind() == NodeKind::Binding {
+                let method = find_method(&projections, method.name().unwrap_or_default())?;
+                let declarative = binding_items.remove(&method.at).unwrap_or_default();
+                return self.method_binding_view(
+                    route.at(),
+                    &module_at,
+                    &projections,
+                    method,
+                    declarative,
+                    admitted,
+                );
+            }
+        }
+        let mut view = module_projection_view(route.at(), prefix_len, &projections, binding_items)?;
         if capability.role() == ModuleRole::Common && route.at() == &module_at {
             let (synonym, limits) = self.common_module_synonym(&module_at)?;
             if let Some(synonym) = synonym {
@@ -415,39 +440,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
         at: &QualifiedAddress,
     ) -> Result<(Option<Value>, Vec<String>), ViewError> {
         self.read_checkpoint()?;
-        let owner = MetadataAddress::parse_logical(&at.logical_path()).map_err(|error| {
-            ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
-        })?;
-        let descriptor = self.read.metadata_descriptor(&owner)?;
-        let text = std::str::from_utf8(&descriptor).map_err(|error| {
-            ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
-        })?;
-        let properties = crate::infrastructure::family_codecs::metadata_read_codec()
-            .common_module_properties(text)
-            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
-        let observation = properties.info("Synonym");
-        let mut props = Map::new();
-        let mut limits = Vec::new();
-        match observation {
-            Ok(Some(unica_metadata::MetaInfoPropertyValue::String(text))) if !text.is_empty() => {
-                crate::infrastructure::v13_read_projection::place_prop(
-                    &mut props,
-                    &mut limits,
-                    at,
-                    "synonym",
-                    &json!(text),
-                    false,
-                    "common module Synonym",
-                );
-            }
-            Ok(None | Some(unica_metadata::MetaInfoPropertyValue::String(_))) => {}
-            Ok(Some(_)) => unreachable!("the closed Synonym profile yields a string"),
-            Err(error) => limits.push(format!(
-                "properties.Synonym is unreadable: {}",
-                error.message
-            )),
-        }
-        Ok((props.remove("synonym"), limits))
+        self.read.common_module_synonym(at)
     }
 
     pub(super) fn module_projection(
@@ -499,6 +492,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
         let projection = Arc::new(
             project_module(ModuleProjectionRequest {
                 at: module_at,
+                platform: self.platform_profile(),
                 capability,
                 title: module_title(module_at, capability),
                 rev: &admitted.revision,
@@ -535,22 +529,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 "external source sets have no configuration runtime module branch",
             ));
         }
-        if let Some(owner) = branch
-            .segments()
-            .first()
-            .filter(|owner| owner.kind() == NodeKind::WebSocketClient)
-        {
-            self.ensure_owner_registered_parts(
-                NodeKind::WebSocketClient.as_str(),
-                owner.name().ok_or_else(|| {
-                    ViewError::new(
-                        RefusalCode::NotFound,
-                        "WebSocketClient owner name is absent",
-                    )
-                })?,
-                admitted,
-            )?;
-        } else if let Some(owner) = module_branch_owner(branch)? {
+        if let Some(owner) = module_branch_owner(branch)? {
             self.verify_registered_module_owner(&owner, admitted)?;
         }
         project_module_branch(branch, self.profile)
@@ -576,21 +555,6 @@ impl<'a> LogicalViewReadAuthority<'a> {
                     ))
                 }
             };
-        }
-        if capability.role() == ModuleRole::WebSocketClient {
-            let owner = module_at.segments().first().ok_or_else(|| {
-                ViewError::new(RefusalCode::NotFound, "WebSocketClient owner is absent")
-            })?;
-            return self.ensure_owner_registered_parts(
-                NodeKind::WebSocketClient.as_str(),
-                owner.name().ok_or_else(|| {
-                    ViewError::new(
-                        RefusalCode::NotFound,
-                        "WebSocketClient owner name is absent",
-                    )
-                })?,
-                admitted,
-            );
         }
         let owner = module_owner_address(module_at, capability)?;
         self.verify_registered_module_owner(&owner, admitted)

@@ -40,6 +40,23 @@ ArchiveIdentity = tuple[str, str, str, str, str]
 # вместе с ним, потому что доставка распаковывает архив как есть.
 ARCHIVE_ENVELOPE = "manifest.json"
 
+# C-код зависимостей (ring) собирает системный компилятор, и набор инструкций
+# он берёт из своих умолчаний: GCC 15 образа ubuntu-26.04 выдал AVX2, и выпуск
+# падал SIGILL на процессорах без AVX2 (#3190). Rust для этой цели собирается
+# под базовый x86-64; C-код держим на той же планке. cc-rs склеивает CFLAGS,
+# HOST_CFLAGS и обе формы CFLAGS_<триплет>, и форма с дефисами идёт последней,
+# поэтому её -march побеждает унаследованные флаги. Смена переменной заставляет
+# cc-rs пересобрать C-код, и кэш с прежними флагами в выпуск не попадает.
+C_BASELINE_FLAGS = {"linux-x64": ("x86_64-unknown-linux-gnu", "-march=x86-64")}
+
+
+def cargo_build_environment(target: str) -> dict[str, str] | None:
+    """Окружение Cargo, которое закрепляет набор инструкций C-кода цели."""
+    if target not in C_BASELINE_FLAGS:
+        return None
+    triple, flags = C_BASELINE_FLAGS[target]
+    return {**os.environ, f"CFLAGS_{triple}": flags, f"CXXFLAGS_{triple}": flags}
+
 
 def delivered_archive_path(archive_path: str) -> str:
     """Где файл архива окажется после распаковки поставки."""
@@ -71,9 +88,9 @@ def load_lock(path: Path) -> dict:
     return lock
 
 
-def run(args: list[str], *, cwd: Path | None = None) -> None:
+def run(args: list[str], *, cwd: Path | None = None, env: dict[str, str] | None = None) -> None:
     print("+", " ".join(args), flush=True)
-    subprocess.run(args, cwd=cwd, check=True)
+    subprocess.run(args, cwd=cwd, env=env, check=True)
 
 
 def load_cargo_workspace_binary_owners(repo_root: Path) -> dict[str, set[str]]:
@@ -563,7 +580,7 @@ def build_cargo_workspace_binaries(
     command.extend(["--target-dir", str(target_dir)])
 
     started_at = time.monotonic()
-    run(command, cwd=repo_root)
+    run(command, cwd=repo_root, env=cargo_build_environment(target))
     cargo_build_seconds = time.monotonic() - started_at
 
     target_bin_dir.mkdir(parents=True, exist_ok=True)

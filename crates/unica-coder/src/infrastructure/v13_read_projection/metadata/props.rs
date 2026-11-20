@@ -47,6 +47,19 @@ pub(super) fn metadata_detail_props(
             }
         }
     }
+    // Картинка группы команд — объект с платформенными `Ref` и
+    // `LoadTransparent`, как у общей команды.
+    if let Some(value) = details.get("picture").filter(|value| !value.is_null()) {
+        place_prop(
+            &mut props,
+            limits,
+            address,
+            "Picture",
+            value,
+            false,
+            "metadata picture",
+        );
+    }
     // Тип корня — свойство платформы `Type`, под тем же именем его
     // принимает запись.
     if let Some(value) = details.get("type") {
@@ -82,6 +95,28 @@ pub(super) fn metadata_property_props(
             continue;
         };
         let subject = format!("metadata property {key}");
+        if key == "Handler"
+            && address.segments().first().is_some_and(|owner| {
+                owner.kind() == unica_address::address::NodeKind::EventSubscription
+            })
+        {
+            if let Some(at) = value.as_str().and_then(|handler| {
+                unica_metadata::subscription_handler_address(address.source_set(), handler)
+            }) {
+                place_prop(
+                    &mut props,
+                    limits,
+                    address,
+                    key,
+                    &json!(at.to_string()),
+                    true,
+                    &subject,
+                );
+            } else if value.as_str().is_some_and(|handler| !handler.is_empty()) {
+                limits.push("Handler does not identify a common module method".to_owned());
+            }
+            continue;
+        }
         place_prop(&mut props, limits, address, key, value, true, &subject);
     }
     props

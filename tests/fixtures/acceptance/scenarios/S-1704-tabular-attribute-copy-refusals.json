@@ -1,0 +1,132 @@
+{
+  "id": "S-1704-tabular-attribute-copy-refusals",
+  "issue": 1704,
+  "area": "Реквизиты и состав",
+  "task": "Отклонить копирование неоднозначного источника, вложенной идентичности и ссылки на себя в другом регистре без изменения исходников",
+  "workspace": "tests/fixtures/acceptance/workspace-tabular-attribute-copy-refusals",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before": {
+          "file": "src/Catalogs/Валюты.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.TabularSection.Представления.Attribute.Дубликат",
+        "ops": [
+          {
+            "op": "attribute.copy",
+            "args": {
+              "values": {
+                "name": "Копия"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: the source member name is ambiguous",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.TabularSection.Представления.Attribute.ВложеннаяИдентичность",
+        "ops": [
+          {
+            "op": "attribute.copy",
+            "args": {
+              "values": {
+                "name": "Копия"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: the source member declares nested identities; this copy supports only a member without them",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.TabularSection.Представления.Attribute.СсылкаНаСебя",
+        "ops": [
+          {
+            "op": "attribute.copy",
+            "args": {
+              "values": {
+                "name": "Копия"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: the source member refers to its own name or uuid; such references cannot be copied unambiguously",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.TabularSection.Повтор.Attribute.Поле",
+        "ops": [
+          {
+            "op": "attribute.copy",
+            "args": {
+              "values": {
+                "name": "Копия"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: the source tabular section name is ambiguous",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    }
+  ]
+}

@@ -33,6 +33,9 @@ TOOL_HELP_CHECKS = [
     # На Windows справка называет программу `v8-runner.exe`: строка использования
     # сверяется по частям, а не целиком.
     ("v8-runner push", "v8-runner", ["push", "--help"], ["Usage: v8-runner", " push"]),
+    # Полная выгрузка продукта — `dump --force` (FULL_DUMP_FLAG адаптера):
+    # раннер 0.15 убрал `--mode full`.
+    ("v8-runner full dump", "v8-runner", ["pull", "--help"], ["Usage: v8-runner", " pull", "--force"]),
 ]
 
 V8_RUNNER_BOUNDED_OUTPUT_MARKER = "bounded-platform-out"
@@ -118,15 +121,17 @@ def validate_v8_runner_failed_partial_receipt(
         value: object,
         expected_keys: set[str],
         label: str,
+        optional_keys: frozenset[str] = frozenset(),
     ) -> dict[str, object] | None:
         if not isinstance(value, dict):
             errors.append(f"{label} must be an object")
             return None
         actual_keys = set(value)
-        if actual_keys != expected_keys:
+        if not expected_keys <= actual_keys <= expected_keys | optional_keys:
             errors.append(
-                f"{label} is not a closed object: expected {sorted(expected_keys)}, "
-                f"got {sorted(actual_keys)}"
+                f"{label} is not a closed object: expected {sorted(expected_keys)}"
+                + (f" and optional {sorted(optional_keys)}" if optional_keys else "")
+                + f", got {sorted(actual_keys)}"
             )
             return None
         return value
@@ -147,10 +152,14 @@ def validate_v8_runner_failed_partial_receipt(
     # `provider_dispatched`. Квитанция с `platform_failure` — след вызванного
     # провайдера, поэтому здесь признак обязан быть `true`: `false` означал бы,
     # что раннер отказал до платформы, а ошибку подписал платформенной.
+    # Ключи сверены со схемой `docs/schemas/command-data/push.schema.json`
+    # раннера 0.18 (push-data v7): `detection` и `sessions` необязательны,
+    # `provider` схема тоже не требует, но квитанция `platform_failure` его несёт.
     data = closed_mapping(
         root["data"],
         {"ok", "provider_dispatched", "provider", "steps", "duration_ms"},
         "build data",
+        frozenset({"detection", "sessions"}),
     )
     # С 0.12 отказ может назвать шаг выхода `next`; его форма — дело раннера, а
     # квитанция частичной загрузки читается по коду, роду и сообщению.
@@ -383,7 +392,7 @@ fn main() {
             "push",
         ]
         # Runner 0.14 refuses a push into an infobase it has no memory of
-        # (`no_memory`); the baseline load is the explicit overwrite.
+        # (`untracked_base`); the baseline load is the explicit overwrite.
         initial = subprocess.run(
             [*command, "--force"],
             cwd=root,
@@ -713,17 +722,22 @@ def validate_v8_runner_external_build_calls(
     calls: list[str],
     configuration_root: Path,
     work_path: Path,
+    cached: bool = False,
 ) -> list[str]:
-    """Сверить шаги платформы, которыми раннер 0.14 собрал внешнюю обработку.
+    """Сверить шаги платформы, которыми раннер собрал внешнюю обработку.
 
-    Сборка идёт во временной базе: создание базы, загрузка основной конфигурации
+    Сборка идёт в базе раннера: создание базы, загрузка основной конфигурации
     проекта без `-Extension`, затем загрузка и обратная выгрузка обработки.
-    Временная база после прогона убрана.
+    С 0.17 база сборки — кэш раннера под workPath: она остаётся после прогона,
+    и повторная сборка при неизменной конфигурации (`cached`) только загружает
+    и выгружает обработку.
     """
 
     errors: list[str] = []
     steps = [call.split("\t", 1)[0] for call in calls]
-    expected_steps = ["create", "load-config", "load-external", "dump-external"]
+    expected_steps = ["load-external", "dump-external"]
+    if not cached:
+        expected_steps = ["create", "load-config", *expected_steps]
     if steps != expected_steps:
         errors.append(
             f"platform steps must be {expected_steps}, got {steps}"
@@ -748,26 +762,23 @@ def validate_v8_runner_external_build_calls(
                 )
         if extension != "extension=false":
             errors.append("configuration load must not pass -Extension")
-    # Корень временных баз остаётся после прогона: его отсутствие значит, что база
-    # создавалась не под workPath, и проверка остатка прошла бы вхолостую.
-    try:
-        roots = [
-            root
-            for root in work_path.rglob("throwaway-infobases")
-            if root.is_dir()
-        ]
-        retained = sorted(
-            str(base.relative_to(work_path))
-            for root in roots
-            for base in root.iterdir()
-        )
-    except OSError as error:
-        errors.append(f"throwaway infobase root could not be inspected: {error}")
-    else:
-        if not roots:
-            errors.append(f"throwaway infobase root was not found under {work_path}")
-        if retained:
-            errors.append(f"throwaway infobase was retained: {retained}")
+    for call in calls:
+        if not call.startswith("create"):
+            continue
+        fields = call.split("\t")
+        if len(fields) != 2 or not fields[1]:
+            errors.append(f"infobase creation call is malformed: {call!r}")
+            continue
+        try:
+            database = Path(fields[1]).resolve()
+            inside = database.is_relative_to(work_path.resolve())
+        except OSError as error:
+            errors.append(f"build infobase path could not be resolved: {error}")
+            continue
+        if not inside:
+            errors.append(
+                f"build infobase must be created under workPath {work_path}, got {fields[1]}"
+            )
     return errors
 
 
@@ -1034,7 +1045,20 @@ fn main() -> Result<(), Box<dyn Error>> {
     for (index, argument) in arguments.iter().enumerate() {
         let argument = argument.to_string_lossy();
         let step = if argument.eq_ignore_ascii_case("CREATEINFOBASE") {
-            Some("create".to_owned())
+            // С раннера 0.17 `make` проверяет, что файл базы появился.
+            let connection = arguments[index + 1].to_string_lossy();
+            let database = connection
+                .split(';')
+                .find_map(|part| {
+                    let (key, value) = part.split_once('=')?;
+                    key.trim()
+                        .eq_ignore_ascii_case("File")
+                        .then(|| value.trim().trim_matches(['"', '\u{27}']).to_owned())
+                })
+                .ok_or("CREATEINFOBASE without File=")?;
+            fs::create_dir_all(&database)?;
+            fs::write(std::path::Path::new(&database).join("1Cv8.1CD"), b"issue-3082-infobase")?;
+            Some(format!("create\t{database}"))
         } else if argument.eq_ignore_ascii_case("/LoadConfigFromFiles") {
             let source = arguments[index + 1].to_string_lossy();
             let extension = arguments
@@ -1130,7 +1154,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             "Deploy",
         ]
 
-        def run_make() -> tuple[object | None, list[str]]:
+        def run_make(cached: bool) -> tuple[object | None, list[str]]:
             try:
                 platform_marker.unlink(missing_ok=True)
                 call_log.unlink(missing_ok=True)
@@ -1179,6 +1203,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 calls,
                 configuration_root,
                 work_path,
+                cached,
             )
             if call_errors:
                 return None, [f"{label}: {error}" for error in call_errors]
@@ -1187,7 +1212,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             except json.JSONDecodeError as error:
                 return None, [f"{label}: runner returned invalid JSON: {error}"]
 
-        first_envelope, first_errors = run_make()
+        first_envelope, first_errors = run_make(cached=False)
         if first_errors:
             return first_errors
         first_result_errors = validate_v8_runner_windows_external_publication_result(
@@ -1206,7 +1231,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         except OSError as error:
             return [f"{label}: failed to prepare replacement target: {error}"]
 
-        second_envelope, second_errors = run_make()
+        second_envelope, second_errors = run_make(cached=True)
         if second_errors:
             return second_errors
         result_errors = validate_v8_runner_windows_external_publication_result(
@@ -1231,372 +1256,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                 f"{label}: replacement publish retained unexpected EPF files: "
                 f"{output_packages}"
             ]
-        return []
-
-
-def _ordinary_v8_runner_publication_path(value: str) -> str:
-    normalized = value.replace("/", "\\")
-    if normalized.casefold().startswith("\\\\?\\unc\\"):
-        return "\\\\" + normalized[8:]
-    if normalized.startswith("\\\\?\\"):
-        return normalized[4:]
-    return value
-
-
-def validate_v8_runner_publication_frame(
-    frame: object, phase: str, nonce: str | None,
-    source: Path, stage: Path, platform: Path,
-) -> list[str]:
-    import uuid
-
-    keys = {
-        "selected": {"phase", "version", "nonce", "provider", "executor"},
-        "ready": {"phase", "version", "nonce", "command", "requested_mode", "mode",
-                  "mode_reason", "extension", "provider_dispatched", "source_set",
-                  "target_path", "stage_path", "snapshot", "snapshot_warning"},
-        "terminal": {"phase", "version", "nonce", "publication", "memory", "result"},
-    }
-    if not isinstance(frame, dict) or set(frame) != keys[phase]:
-        return [f"{phase} frame must have its closed fields"]
-    errors = []
-    if frame["phase"] != phase or type(frame["version"]) is not int or frame["version"] != 1:
-        errors.append(f"{phase} identity must use the expected phase and version1")
-    value = frame["nonce"]
-    try:
-        if not isinstance(value, str) or str(uuid.UUID(value)) != value:
-            raise ValueError("noncanonical nonce")
-    except (ValueError, AttributeError):
-        errors.append(f"{phase} nonce must be a UUID")
-    if nonce is not None and value != nonce:
-        errors.append(f"{phase} nonce differs from selected")
-
-    def same_path(value: object, expected: Path) -> bool:
-        if isinstance(value, str) and os.name == "nt":
-            value = _ordinary_v8_runner_publication_path(value)
-        return isinstance(value, str) and Path(value).is_absolute() and Path(value).resolve() == expected.resolve()
-
-    if phase == "selected":
-        provider = frame["provider"]
-        executor = frame["executor"]
-        required_provider = {"selected", "origin"}
-        allowed_provider = required_provider | {"skipped", "endpoint"}
-        if (not isinstance(provider, dict) or not required_provider <= set(provider)
-                or not set(provider) <= allowed_provider):
-            errors.append("selected provider must have its closed receipt fields")
-        else:
-            if provider["selected"] != "designer":
-                errors.append("selected provider must be designer")
-            origin = provider["origin"]
-            # The fixture chooses designer in the primary project file; the
-            # runner reports this layer's filename, not its absolute path.
-            if (not isinstance(origin, dict) or set(origin) != {"kind", "file"}
-                    or origin.get("kind") != "override" or origin.get("file") != "v8project.yaml"):
-                errors.append("selected provider origin must name the configured project override")
-            if provider.get("skipped", []) != [] or provider.get("endpoint") is not None:
-                errors.append("selected local override must not skip providers or open a session")
-        if not isinstance(executor, dict) or set(executor) != {"kind", "executable", "endpoint"}:
-            errors.append("selected executor must have its closed fields")
-        elif (executor["kind"] != "local" or executor["endpoint"] is not None
-              or not same_path(executor["executable"], platform)):
-            errors.append("selected executor must be the controlled local platform")
-    if phase == "ready":
-        for key, expected in {"command": "pull", "requested_mode": "FULL", "mode": "FULL",
-                              "mode_reason": None, "extension": None, "source_set": "main",
-                              "snapshot": "prepared", "snapshot_warning": None}.items():
-            if frame[key] != expected:
-                errors.append(f"ready {key} differs from the prepared operation")
-        if frame["provider_dispatched"] is not True:
-            errors.append("ready must prove platform dispatch")
-        for key, expected in [("target_path", source), ("stage_path", stage)]:
-            if not same_path(frame[key], expected):
-                errors.append(f"ready {key} differs from the guarded path")
-    if phase == "terminal":
-        result = frame["result"]
-        required_result = {"ok", "command", "duration_ms", "data", "warnings", "steps"}
-        if (not isinstance(result, dict) or not required_result <= set(result)
-                or not set(result) <= required_result | {"error"}):
-            errors.append("terminal result must have its closed common envelope fields")
-        else:
-            if type(result["ok"]) is not bool or result["command"] != "pull":
-                errors.append("terminal result must name a boolean pull outcome")
-            duration = result["duration_ms"]
-            if type(duration) is not int or duration < 0:
-                errors.append("terminal result duration_ms must be a non-negative integer")
-            warnings = result["warnings"]
-            if not isinstance(warnings, list) or any(not isinstance(item, str) for item in warnings):
-                errors.append("terminal result warnings must be a list of strings")
-            # This CLI path constructs the common envelope without top-level
-            # steps. Pull data keeps its separate Ready/result comparisons.
-            if result["steps"] != []:
-                errors.append("terminal result common steps must be empty")
-            error = result.get("error")
-            if result["ok"] is True:
-                if error is not None:
-                    errors.append("successful terminal result must not contain an error")
-            elif result["ok"] is False:
-                # Rejected and EOF are the two failures exercised here. Their
-                # control errors have no next step or generation metadata.
-                if (not isinstance(error, dict) or set(error) != {"code", "kind", "message"}
-                        or any(not isinstance(error.get(key), str) or not error[key]
-                               for key in ("code", "kind", "message"))):
-                    errors.append("failed terminal result must contain its closed control error")
-                elif (error["code"], error["kind"]) not in {
-                    ("invalid_argument", "validation"), ("runtime_failure", "runtime")
-                }:
-                    errors.append("failed terminal result must name a rejected or lost control decision")
-    return errors
-
-
-def validate_v8_runner_post_pull_preview(
-    envelope: object, returncode: int, *, changed: bool,
-) -> list[str]:
-    if not isinstance(envelope, dict) or returncode != 0 or envelope.get("ok") is not True:
-        return ["post-pull push preview must succeed, including remembered final source identity"]
-    data = envelope.get("data")
-    if envelope.get("command") != "push" or not isinstance(data, dict) or data.get("ok") is not True:
-        return ["post-pull preview must contain successful push data"]
-    if data.get("provider_dispatched") is not False:
-        return ["post-pull preview must not dispatch the platform"]
-    steps = data.get("steps")
-    if not isinstance(steps, list) or not steps:
-        return ["post-pull preview must contain nonempty steps"]
-    modes = []
-    for step in steps:
-        if (not isinstance(step, dict) or step.get("source_set") != "main"
-                or step.get("ok") is not True or step.get("applied") is not False):
-            return ["post-pull preview step must name the unexecuted main operation"]
-        mode = step.get("mode")
-        if mode not in ("skipped", "full"):
-            partial = mode.get("partial") if isinstance(mode, dict) and set(mode) == {"partial"} else None
-            count = partial.get("file_count") if isinstance(partial, dict) and set(partial) == {"file_count"} else None
-            if type(count) is not int or count <= 0:
-                return ["post-pull preview step has an unsupported mode"]
-        modes.append(mode)
-    if all(mode == "skipped" for mode in modes) == changed:
-        return ["late or unacknowledged published bytes became baseline" if changed
-                else "unchanged final source did not retain its baseline"]
-    return []
-
-
-def validate_v8_runner_publication_tree(
-    actual: dict[str, bytes], expected: dict[str, bytes],
-) -> list[str]:
-    errors = []
-    if set(actual) != set(expected):
-        errors.append("source tree file inventory differs from the caller's tree")
-    for name, payload in expected.items():
-        if actual.get(name) != payload:
-            errors.append(f"source tree {name} bytes differ from the caller's tree")
-    return errors
-
-
-def check_v8_runner_full_pull_publication_contract(runner: Path, target: str) -> list[str]:
-    import queue
-
-    label = "v8-runner full-pull publication contract"
-    if not runner.is_file():
-        return [f"{label}: binary not found: {runner}"]
-    shared = load_shared_mcp_smoke_module()
-    with tempfile.TemporaryDirectory(prefix="unica-v8-runner-full-pull-") as directory:
-        root = Path(directory).resolve()
-        platform = root / "8.3.27.2074" / "bin" / ("1cv8.exe" if target == "win-x64" else "1cv8")
-        platform.parent.mkdir(parents=True)
-        stub = root / "platform.rs"
-        stub.write_text(r'''
-use std::{env, fs, io::Write, path::Path};
-fn main() {
-    let args = env::args_os().skip(1).collect::<Vec<_>>();
-    let out = args.windows(2).find(|p| p[0] == "/Out").map(|p| &p[1]);
-    let dump = args.windows(2).find(|p| p[0] == "/DumpConfigToFiles").map(|p| &p[1]);
-    let generation = args.iter().any(|a| a == "/GetConfigGenerationID");
-    let probe = args.iter().any(|a| matches!(a.to_string_lossy().to_ascii_lowercase().as_str(),
-        "--version" | "-version" | "/version" | "/getversion"));
-    let mut calls = fs::OpenOptions::new().create(true).append(true)
-        .open(env::var_os("UNICA_FULL_PULL_CALLS").expect("fixture call log")).unwrap();
-    writeln!(calls, "{}", if dump.is_some() {"dump"} else if generation {"generation"} else if probe {"probe"} else {"unexpected"}).unwrap();
-    if generation {
-        fs::write(out.expect("generation output"), b"1111111111111111111111111111111111111111\n").unwrap();
-        return;
-    }
-    if let Some(dump) = dump {
-        let path = Path::new(dump);
-        fs::create_dir_all(path).unwrap();
-        fs::write(path.join("Configuration.xml"), br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties/></Configuration></MetaDataObject>
-"#).unwrap();
-        fs::write(path.join("Module.bsl"), env::var("UNICA_FULL_PULL_MODULE").unwrap()).unwrap();
-        fs::write(path.join("ConfigDumpInfo.xml"), b"<ConfigDumpInfo xmlns=\"http://v8.1c.ru/8.3/xcf/dumpinfo\" version=\"2.20\"/>\n").unwrap();
-        if let Some(out) = out { fs::write(out, b"controlled dump\n").unwrap(); }
-        return;
-    }
-    if probe {
-        println!("8.3.27.2074");
-        return;
-    }
-    eprintln!("unsupported controlled platform request");
-    std::process::exit(2);
-}
-'''.lstrip(), encoding="utf-8")
-        errors = compile_rust_platform_stub(stub, platform, root, label)
-        if errors:
-            return errors
-        for case in ["published", "late-edit", "rejected", "eof-after-publish"]:
-            home = root / case
-            home.mkdir()
-            source, stage, work, ib = [home / name for name in ("sources", "stage", "work", "ib")]
-            for path in (source, stage, work, ib):
-                path.mkdir()
-            (ib / "1Cv8.1CD").write_bytes(b"controlled file infobase")
-            calls = home / "platform-calls.log"
-            config = home / "v8project.yaml"
-            quote = lambda path: "'" + str(path).replace("'", "''") + "'"
-            config.write_text(
-                f"format: DESIGNER\nworkPath: {quote(work)}\n"
-                "providers: {pull: designer, push: designer}\n"
-                "source-set:\n  - name: main\n    type: CONFIGURATION\n    path: sources\n"
-                f"tools:\n  platform:\n    path: {quote(platform)}\n"
-                "    version: 8.3.27.2074\n    strict: true\n", encoding="utf-8")
-            (home / V8_RUNNER_LOCAL_CONFIG).write_text(
-                f"infobases:\n  origin:\n    connection: 'File={str(ib).replace(chr(39), chr(39) * 2)}'\n", encoding="utf-8")
-            config_bytes = config.read_bytes()
-            before, prepared, edited = [f"Procedure {name}()\nEndProcedure\n" for name in ("Before", "Prepared", "LateEdit")]
-            environment = {**os.environ, "UNICA_FULL_PULL_CALLS": str(calls), "UNICA_FULL_PULL_MODULE": before}
-            deadline = time.monotonic() + 60
-
-            def require(condition: bool, message: str) -> None:
-                if not condition:
-                    raise ValueError(message)
-
-            def remaining() -> float:
-                value = deadline - time.monotonic()
-                if value <= 0:
-                    raise TimeoutError("case exceeded its 60s aggregate deadline")
-                return value
-
-            def start(arguments: list[str]):
-                return shared.McpSession([str(runner), "--config", str(config), *arguments],
-                                         environment, remaining(), cwd=home, deadline=deadline)
-
-            def finish(session) -> tuple[int, list[str]]:
-                if not session.process.stdin.closed:
-                    session.process.stdin.close()
-                status = session.process.wait(timeout=remaining())
-                for reader in (session.reader, session.error_reader):
-                    reader.join(timeout=remaining())
-                    require(not reader.is_alive(), "process retained its output handles")
-                lines = []
-                while not session.lines.empty():
-                    line = session.lines.get_nowait()
-                    if line:
-                        lines.append(line)
-                return status, lines
-
-            def native(arguments: list[str]) -> tuple[int, object]:
-                session = start(["--json-message", *arguments])
-                try:
-                    status, lines = finish(session)
-                    return status, json.loads("".join(lines))
-                finally:
-                    terminate_shared_mcp_session(session, home)
-
-            def preview(changed: bool) -> None:
-                old_calls = calls.read_bytes()
-                status, envelope = native(["push", "main", "--dry-run"])
-                failures = validate_v8_runner_post_pull_preview(envelope, status, changed=changed)
-                require(not failures, "; ".join(failures))
-                require(calls.read_bytes() == old_calls, "push preview dispatched the platform")
-
-            def tree(path: Path) -> dict[str, bytes]:
-                return {str(item.relative_to(path)): item.read_bytes() for item in path.rglob("*") if item.is_file()}
-
-            session = None
-            try:
-                status, seed = native(["pull", "main", "--force"])
-                require(status == 0 and isinstance(seed, dict) and seed.get("ok") is True,
-                        "ordinary seed pull did not establish a baseline")
-                preview(False)
-                original = tree(source)
-                calls.write_bytes(b"")
-                environment["UNICA_FULL_PULL_MODULE"] = prepared
-                session = start(["pull", "main", "--force", "--publication-stdio", str(stage)])
-
-                def frame(phase: str, nonce: str | None) -> dict:
-                    try:
-                        line = session.lines.get(timeout=remaining())
-                    except queue.Empty as error:
-                        raise TimeoutError(f"missing {phase} frame") from error
-                    require(bool(line), f"process exited before {phase}")
-                    value = json.loads(line)
-                    failures = validate_v8_runner_publication_frame(value, phase, nonce, source, stage, platform)
-                    require(not failures, "; ".join(failures))
-                    return value
-
-                selected = frame("selected", None)
-                require(all(call == "probe" for call in calls.read_text().splitlines()),
-                        "platform work was dispatched before Continue")
-                require(tree(source) == original and not tree(stage), "Selected changed the source or stage")
-                session.notify({"version": 1, "nonce": selected["nonce"], "phase": "selected", "decision": "continue"})
-                ready = frame("ready", selected["nonce"])
-                require("dump" in calls.read_text().splitlines(), "Ready did not invoke the controlled dump")
-                require(tree(source) == original, "Ready replaced the final source before caller publication")
-                prepared_tree = tree(stage)
-                require(set(prepared_tree) == {"Configuration.xml", "Module.bsl", "ConfigDumpInfo.xml"}
-                        and prepared_tree["Module.bsl"] == prepared.encode("utf-8"),
-                        "Ready did not contain the prepared tree")
-                ready_calls = calls.read_bytes()
-                if case != "rejected":
-                    source.rename(home / "previous-sources")
-                    stage.rename(source)
-                if case == "late-edit":
-                    (source / "Module.bsl").write_bytes(edited.encode("utf-8"))
-                if case == "eof-after-publish":
-                    session.process.stdin.close()
-                else:
-                    session.notify({"version": 1, "nonce": ready["nonce"], "phase": "ready",
-                                    "decision": "rejected" if case == "rejected" else "published"})
-                terminal = frame("terminal", selected["nonce"])
-                status, tail = finish(session)
-                require(not tail, "process emitted an extra frame after terminal")
-                successful = case in {"published", "late-edit"}
-                require((status == 0) == successful, "terminal and OS process outcome disagree")
-                require(terminal["publication"] == ("not_published" if case == "rejected" else
-                        "unknown" if case == "eof-after-publish" else "published"), "terminal publication is not factual")
-                require(terminal["memory"] == ("saved" if successful else "unchanged"), "terminal memory is not factual")
-                result = terminal["result"]
-                require(isinstance(result, dict) and result.get("ok") is successful and result.get("command") == "pull",
-                        "terminal command result disagrees with publication")
-                data = result.get("data")
-                require(isinstance(data, dict), "terminal result lacks pull data")
-                for field in ("requested_mode", "mode", "mode_reason", "extension", "provider_dispatched", "source_set", "target_path"):
-                    require(data.get(field) == ready[field], f"terminal changed Ready {field}")
-                require(calls.read_bytes() == ready_calls, "platform work ran after Ready")
-                require(config.read_bytes() == config_bytes, "protocol rewrote the final project config")
-                expected_tree = dict(original if case == "rejected" else prepared_tree)
-                if case == "late-edit":
-                    expected_tree["Module.bsl"] = edited.encode("utf-8")
-                failures = validate_v8_runner_publication_tree(tree(source), expected_tree)
-                require(not failures, "; ".join(failures))
-                preview(case in {"late-edit", "eof-after-publish"})
-                if case == "late-edit":
-                    (source / "Module.bsl").write_bytes(prepared.encode("utf-8"))
-                    preview(False)
-                if case == "eof-after-publish":
-                    # A changed B can also be a full fallback after lost hashes.
-                    # Restoring our A must recover the unchanged-baseline answer.
-                    for name, payload in original.items():
-                        (source / name).write_bytes(payload)
-                    preview(False)
-                    for name, payload in prepared_tree.items():
-                        (source / name).write_bytes(payload)
-                    failures = validate_v8_runner_publication_tree(tree(source), prepared_tree)
-                    require(not failures, "; ".join(failures))
-                    preview(True)
-            except (ValueError, OSError, TimeoutError, subprocess.TimeoutExpired, SystemExit) as error:
-                reason = bounded_command_diagnostics(str(error), home)
-                detail = bounded_command_diagnostics("".join(session.diagnostics), home) if session is not None else ""
-                return [f"{label}: {case}: {reason}" + (f"; stderr: {detail}" if detail else "")]
-            finally:
-                if session is not None:
-                    terminate_shared_mcp_session(session, home)
         return []
 
 
@@ -1714,12 +1373,6 @@ def check_tool_contracts(tools_dir: Path, target: str | None = None) -> list[str
         )
         errors.extend(
             check_v8_runner_windows_external_publication_contract(
-                tool_executable(tools_dir, "v8-runner", target),
-                target,
-            )
-        )
-        errors.extend(
-            check_v8_runner_full_pull_publication_contract(
                 tool_executable(tools_dir, "v8-runner", target),
                 target,
             )

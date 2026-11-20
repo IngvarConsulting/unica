@@ -956,7 +956,7 @@
       },
       "metadataPath": {
         "minLength": 1,
-        "pattern": "^(Catalog|Справочник|Document|Документ|Enum|Перечисление|Constant|Константа|InformationRegister|РегистрСведений|AccumulationRegister|РегистрНакопления|AccountingRegister|РегистрБухгалтерии|CalculationRegister|РегистрРасчета|РегистрРасчёта|ChartOfAccounts|ПланСчетов|ChartOfCharacteristicTypes|ПланВидовХарактеристик|ChartOfCalculationTypes|ПланВидовРасчета|ПланВидовРасчёта|BusinessProcess|БизнесПроцесс|Task|Задача|ExchangePlan|ПланОбмена|DocumentJournal|ЖурналДокументов|Report|Отчет|Отчёт|DataProcessor|Обработка|CommonModule|ОбщийМодуль|ScheduledJob|РегламентноеЗадание|EventSubscription|ПодпискаНаСобытие|HTTPService|HTTPСервис|WebService|ВебСервис|DefinedType|ОпределяемыйТип)\\.[^.]+$",
+        "pattern": "^(Catalog|Справочник|Document|Документ|Enum|Перечисление|Constant|Константа|InformationRegister|РегистрСведений|AccumulationRegister|РегистрНакопления|AccountingRegister|РегистрБухгалтерии|CalculationRegister|РегистрРасчета|РегистрРасчёта|ChartOfAccounts|ПланСчетов|ChartOfCharacteristicTypes|ПланВидовХарактеристик|ChartOfCalculationTypes|ПланВидовРасчета|ПланВидовРасчёта|BusinessProcess|БизнесПроцесс|Task|Задача|ExchangePlan|ПланОбмена|DocumentJournal|ЖурналДокументов|Report|Отчет|Отчёт|DataProcessor|Обработка|CommonModule|ОбщийМодуль|ScheduledJob|РегламентноеЗадание|EventSubscription|ПодпискаНаСобытие|HTTPService|HTTPСервис|WebService|ВебСервис|DefinedType|ОпределяемыйТип|CommandGroup|ГруппаКоманд)\\.[^.]+$",
         "type": "string"
       },
       "operations": {
@@ -989,6 +989,15 @@
                     },
                     "BasePeriod": {
                       "type": "boolean"
+                    },
+                    "Category": {
+                      "enum": [
+                        "NavigationPanel",
+                        "ActionsPanel",
+                        "FormNavigationPanel",
+                        "FormCommandBar"
+                      ],
+                      "type": "string"
                     },
                     "CheckUnique": {
                       "type": "boolean"
@@ -1165,6 +1174,11 @@
                     "IncludeHelpInContents": {
                       "type": "boolean"
                     },
+                    "Key": {
+                      "maxLength": 128,
+                      "pattern": "^[^\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\uFFFE\\uFFFF]*$",
+                      "type": "string"
+                    },
                     "LevelCount": {
                       "maximum": 4294967295,
                       "minimum": 0,
@@ -1292,6 +1306,15 @@
                       ],
                       "type": "string"
                     },
+                    "Representation": {
+                      "enum": [
+                        "Auto",
+                        "Text",
+                        "Picture",
+                        "PictureAndText"
+                      ],
+                      "type": "string"
+                    },
                     "RestartCountOnFailure": {
                       "maximum": 4294967295,
                       "minimum": 0,
@@ -1327,6 +1350,13 @@
                       ],
                       "type": "string"
                     },
+                    "SequenceFilling": {
+                      "enum": [
+                        "AutoFill",
+                        "AutoFillOff"
+                      ],
+                      "type": "string"
+                    },
                     "Server": {
                       "type": "boolean"
                     },
@@ -1347,6 +1377,11 @@
                       "type": "string"
                     },
                     "Synonym": {
+                      "pattern": "^\\s*(?:[A-Za-z0-9_-]+\\s*=\\s*'(?:[^']|'')*'\\s*(?:;\\s*[A-Za-z0-9_-]+\\s*=\\s*'(?:[^']|'')*'\\s*)*;?\\s*)?$",
+                      "type": "string"
+                    },
+                    "ToolTip": {
+                      "pattern": "^\\s*(?:[A-Za-z0-9_-]+\\s*=\\s*'(?:[^']|'')*'\\s*(?:;\\s*[A-Za-z0-9_-]+\\s*=\\s*'(?:[^']|'')*'\\s*)*;?\\s*)?$",
                       "type": "string"
                     },
                     "Type": {
@@ -2235,6 +2270,7 @@
                         "type": "boolean"
                       },
                       "synonym": {
+                        "pattern": "^\\s*(?:[A-Za-z0-9_-]+\\s*=\\s*'(?:[^']|'')*'\\s*(?:;\\s*[A-Za-z0-9_-]+\\s*=\\s*'(?:[^']|'')*'\\s*)*;?\\s*)?$",
                         "type": "string"
                       },
                       "templateType": {
@@ -2336,6 +2372,7 @@
                         "type": "boolean"
                       },
                       "synonym": {
+                        "pattern": "^\\s*(?:[A-Za-z0-9_-]+\\s*=\\s*'(?:[^']|'')*'\\s*(?:;\\s*[A-Za-z0-9_-]+\\s*=\\s*'(?:[^']|'')*'\\s*)*;?\\s*)?$",
                         "type": "string"
                       },
                       "templateType": {

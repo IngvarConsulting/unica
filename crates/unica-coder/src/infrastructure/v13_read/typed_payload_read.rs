@@ -260,6 +260,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
                         "form route has no typed target",
                     )
                 })?,
+                Some(self.platform_profile().line()),
                 &mut || self.read_checkpoint(),
             );
         }
@@ -457,18 +458,6 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 .read
                 .form_metadata_payload(target, &mut || self.read_checkpoint());
         }
-        if matches!(
-            route.at().segments(),
-            [owner] if owner.kind() == NodeKind::WebSocketClient && owner.name().is_some()
-        ) {
-            let owner = &route.at().segments()[0];
-            let name = owner.name().expect("matched named WebSocketClient owner");
-            self.ensure_owner_registered_parts(NodeKind::WebSocketClient.as_str(), name, admitted)?;
-            return Ok(identity_only_metadata_payload(
-                NodeKind::WebSocketClient.as_str(),
-                name,
-            ));
-        }
         let target = route.reader_metadata_path().ok_or_else(|| {
             ViewError::new(
                 RefusalCode::NotFound,
@@ -488,10 +477,6 @@ impl<'a> LogicalViewReadAuthority<'a> {
             return self
                 .read
                 .wsreference_payload(target, &mut || self.read_checkpoint());
-        }
-        if kind == NodeKind::WebSocketClient.as_str() {
-            let name = target.as_str().split('.').nth(1).unwrap_or_default();
-            return Ok(identity_only_metadata_payload(kind, name));
         }
         if kind == NodeKind::CommonTemplate.as_str() {
             let facts = self.read.common_template_facts(target)?;
@@ -515,7 +500,38 @@ impl<'a> LogicalViewReadAuthority<'a> {
             return Ok(payload);
         }
         if MetadataKind::parse(kind).is_err() {
-            return self.read.identity_metadata_payload(target);
+            let payload = self.read.identity_metadata_payload(target)?;
+            // Таблица, куб или таблица измерения, которых владелец называет,
+            // доказываются своим описанием до того, как попадут в ответ.
+            for (child_kind, key) in [
+                (NodeKind::Table, "tables"),
+                (NodeKind::Cube, "cubes"),
+                (NodeKind::DimensionTable, "dimensionTables"),
+            ] {
+                for child in payload
+                    .pointer(&format!("/collections/{key}"))
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
+                    let name = child.get("name").and_then(Value::as_str).ok_or_else(|| {
+                        ViewError::detailed(
+                            RefusalDetail::SourceUnreadable,
+                            format!("registered {key} entry has no name"),
+                        )
+                    })?;
+                    let child = MetadataAddress::parse_logical(&format!(
+                        "{}.{}.{name}",
+                        target.as_str(),
+                        child_kind.as_str()
+                    ))
+                    .map_err(|error| {
+                        ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+                    })?;
+                    self.verify_registered_owner(&child, admitted)?;
+                }
+            }
+            return Ok(payload);
         }
         let read = self
             .read
@@ -596,9 +612,17 @@ impl<'a> LogicalViewReadAuthority<'a> {
                             .strip_prefix(prefix)
                             .is_some_and(|rest| rest.is_empty() || rest.starts_with(['.', '[']))
                     })
-                    || field
-                        .strip_prefix("collections.addressingAttributes")
-                        .is_some_and(|rest| rest.is_empty() || rest.starts_with(['.', '[']))
+                    || [
+                        "collections.addressingAttributes",
+                        "collections.accountingFlags",
+                        "collections.extDimensionAccountingFlags",
+                    ]
+                    .iter()
+                    .any(|prefix| {
+                        field
+                            .strip_prefix(prefix)
+                            .is_some_and(|rest| rest.is_empty() || rest.starts_with(['.', '[']))
+                    })
                     || (field.starts_with("collections.tabularSections[")
                         && field.contains("].standardAttributes"))
                     || local
@@ -772,15 +796,45 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 });
         }
         let payload = self.configuration_payload(admitted)?;
-        let registered = payload
-            .get("registeredObjects")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .any(|item| {
-                item.get("kind").and_then(Value::as_str) == Some(owner_kind)
-                    && item.get("name").and_then(Value::as_str) == Some(owner_name)
-            });
+        // All members of a kind ask this same membership question. Index
+        // the admitted payload once instead of scanning it for each member;
+        // a new operation still obtains its own current configuration facts.
+        let key = RevisionCacheKey {
+            source_set_identity: admitted.source_set_identity.clone(),
+            revision: admitted.revision.clone(),
+        };
+        let mut indexes = self.registered_owner_names.lock().map_err(|_| {
+            ViewError::detailed(
+                RefusalDetail::CachePoisoned,
+                "registration membership index is poisoned",
+            )
+        })?;
+        let names = match indexes.get(&key) {
+            Some(names) => Arc::clone(names),
+            None => {
+                let mut names = RegisteredOwnerNames::new();
+                for item in payload
+                    .get("registeredObjects")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
+                    self.read_checkpoint()?;
+                    if let (Some(kind), Some(name)) = (
+                        item.get("kind").and_then(Value::as_str),
+                        item.get("name").and_then(Value::as_str),
+                    ) {
+                        names.insert((kind.to_owned(), name.to_owned()));
+                    }
+                }
+                let names = Arc::new(names);
+                indexes.insert(key, Arc::clone(&names));
+                names
+            }
+        };
+        drop(indexes);
+        self.read_checkpoint()?;
+        let registered = names.contains(&(owner_kind.to_owned(), owner_name.to_owned()));
         registered.then_some(()).ok_or_else(|| {
             ViewError::new(
                 RefusalCode::NotFound,
@@ -831,17 +885,20 @@ impl<'a> LogicalViewReadAuthority<'a> {
         let mut parent: Option<(MetadataAddress, Arc<PlatformXmlSourceSetOwnerEvidence>)> = None;
         for pair_count in 1..=parts.len() / 2 {
             let end = pair_count * 2;
-            let current_text = parts[..end].join(".");
-            let current = MetadataAddress::parse_logical(&current_text).map_err(|error| {
-                ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
-            })?;
+            let current = if end == parts.len() {
+                target.clone()
+            } else {
+                MetadataAddress::parse_logical(&parts[..end].join(".")).map_err(|error| {
+                    ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+                })?
+            };
             if let Some((parent_address, parent_evidence)) = &parent {
                 let child_kind = parts[end - 2];
                 let child_name = parts[end - 1];
                 let edge_key = OwnerEdgeCacheKey {
                     revision: revision.clone(),
                     parent: parent_address.as_str().to_string(),
-                    child: current_text.clone(),
+                    child: current.as_str().to_string(),
                 };
                 let mut edges = self.verified_owner_edges.lock().map_err(|_| {
                     ViewError::detailed(
@@ -864,15 +921,6 @@ impl<'a> LogicalViewReadAuthority<'a> {
                     }
                     edges.insert(edge_key);
                 }
-            }
-            if pair_count == 1 && parts[0] == NodeKind::WebSocketClient.as_str() {
-                if parts.len() != 2 {
-                    return Err(ViewError::new(
-                        RefusalCode::NotFound,
-                        "WebSocketClient has no specified nested export owners",
-                    ));
-                }
-                continue;
             }
             if pair_count > 1 && parts[end - 2] == NodeKind::Command.as_str() {
                 // A command has no descriptor file: its full definition is the
@@ -933,9 +981,6 @@ impl<'a> LogicalViewReadAuthority<'a> {
     ) -> Result<crate::infrastructure::v13_read_projection::MemberSupport, ViewError> {
         use unica_metadata::support_state::ObjectSupportState;
         let mut support = crate::infrastructure::v13_read_projection::MemberSupport::default();
-        if kind == NodeKind::WebSocketClient {
-            return Ok(support);
-        }
         let marker = match self.read.support_marker(&mut || self.read_checkpoint()) {
             Ok(Some(marker)) => marker,
             Ok(None) => return Ok(support),
@@ -945,6 +990,9 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 support
                     .limits
                     .push(format!("support of the members is unknown: {error}"));
+                for name in names {
+                    support.states.insert(name.to_string(), json!("unknown"));
+                }
                 return Ok(support);
             }
             Err(error) => return Err(error),
@@ -963,11 +1011,14 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 Ok(state) => {
                     support.states.insert(name.to_string(), json!(state));
                 }
-                Err(error) => support.limits.push(format!(
-                    "support of `{}:{}` is unknown: {error}",
-                    source_set,
-                    owner.as_str()
-                )),
+                Err(error) => {
+                    support.states.insert(name.to_string(), json!("unknown"));
+                    support.limits.push(format!(
+                        "support of `{}:{}` is unknown: {error}",
+                        source_set,
+                        owner.as_str()
+                    ))
+                }
             }
         }
         Ok(support)
@@ -994,10 +1045,9 @@ impl<'a> LogicalViewReadAuthority<'a> {
         if let Some(evidence) = cache.get(&key) {
             return Ok(Arc::clone(evidence));
         }
-        let evidence = Arc::new(
-            self.read
-                .metadata_owner_evidence(target, &mut || self.read_checkpoint())?,
-        );
+        let evidence = self
+            .read
+            .metadata_owner_evidence(target, &mut || self.read_checkpoint())?;
         cache.insert(key, Arc::clone(&evidence));
         Ok(evidence)
     }

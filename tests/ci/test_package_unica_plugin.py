@@ -295,7 +295,14 @@ class PackageUnicaPluginTests(unittest.TestCase):
         repo_root = Path(__file__).resolve().parents[2]
         rust_sources = sorted(
             path
-            for package in ("unica-coder", "unica-daemon", "unica-application", "unica-domain")
+            for package in (
+                "unica-coder",
+                "unica-daemon",
+                "unica-mcp",
+                "unica-product",
+                "unica-application",
+                "unica-domain",
+            )
             for path in (repo_root / "crates" / package / "src").rglob("*.rs")
         )
         matches = [
@@ -628,7 +635,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "host manifests disagree.*zcode=0.13.0-rc.2"):
                 module.read_release_version(plugin_root)
 
-    def test_source_package_declares_the_015_meta_delivery_version(self) -> None:
+    def test_source_package_declares_the_017_meta_delivery_version(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         plugin_root = repo_root / "plugins/unica"
         host_versions = {
@@ -645,7 +652,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
         delivered = set(host_versions.values())
         self.assertEqual(len(delivered), 1, host_versions)
         version = next(iter(delivered))
-        self.assertRegex(version, r"^0\.15\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$")
+        self.assertRegex(version, r"^0\.17\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$")
         self.assertEqual(unica_versions, [version])
 
     def test_claude_contracts_avoid_keys_older_clients_reject(self) -> None:

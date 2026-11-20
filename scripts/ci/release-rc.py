@@ -8,12 +8,18 @@ Alpha — срез `main`, который ночь проверила полны
 - alpha опубликована, её срез лежит в `main` и совпадает с `main@…` описания;
 - ночь, поставившая эту alpha, зелёная, и проверила она коммит среза;
 - дерево среза равно дереву, которое проверила ночь;
-- выпуска `vX.Y.Z` ещё нет: кандидат не может быть младше стабильной версии.
+- выпуска `vX.Y.Z` ещё нет: кандидат не может быть младше стабильной версии;
+- в срезе нет пометок незакрытого (`open_marks.py`): незакрытое
+  решается до кандидата, а не переносится.
 
 Номер `N` — следующий после существующих тегов `vX.Y.Z-rc.*`. Тег ставит ключ
-развёртывания из окружения `marketplace` (`tag_push`), и его push запускает
+развёртывания из окружения `alpha` (`tag_push`), и его push запускает
 обычный выпуск по тегу: тесты, сборку, проверки установки и канал `next`.
 
+Кнопку нажимает администратор репозитория: `admit` сверяет роль запустившего
+до задания с ключом, а не его имя.
+
+    python scripts/ci/release-rc.py admit --actor "$ACTOR" --ref "$GITHUB_REF"
     python scripts/ci/release-rc.py publish --alpha v0.15.0-alpha.4
 """
 
@@ -28,6 +34,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import open_marks  # noqa: E402
 import tag_push  # noqa: E402
 
 _SPEC = importlib.util.spec_from_file_location("release_alpha", Path(__file__).with_name("release-alpha.py"))
@@ -38,6 +45,7 @@ _SPEC.loader.exec_module(alpha)
 RC = re.compile(r"\Av(?P<core>\d+\.\d+\.\d+)-rc\.(?P<number>0|[1-9]\d*)\Z")
 NIGHTLY = "nightly.yml"
 ALPHA_JOB = "Alpha — служебный коммит и тег"
+MAIN_REF = "refs/heads/main"
 
 
 class RcError(RuntimeError):
@@ -91,11 +99,34 @@ def prove(repo: str, alpha_tag: str, gh, git) -> Proof:
     raise RcError(f"нет зелёной ночи, выпустившей {alpha_tag} на срезе {slice_sha[:7]}")
 
 
-def publish(root: Path, repo: str, alpha_tag: str, *, dry_run: bool, gh=alpha.gh_api, runner=alpha.run) -> str:
+def admit(repo: str, actor: str, ref: str, gh=alpha.gh_api) -> None:
+    """Кнопку выпуска проходит только администратор репозитория и только с `main`; роль, а не имя."""
+    if ref != MAIN_REF:
+        raise RcError(f"кнопку выпуска запускают с main, а не с {ref or 'неизвестной ссылки'}")
+    if not actor:
+        raise RcError("не назван запустивший: кнопку выпуска проходит только администратор репозитория")
+    try:
+        answer = gh(f"repos/{repo}/collaborators/{actor}/permission")
+    except alpha.AlphaError as error:
+        raise RcError(f"{actor}: роль в репозитории не прочитана, кнопку выпуска проходит только администратор: {error}") from error
+    permission = answer.get("permission") if isinstance(answer, dict) else None
+    if permission != "admin":
+        raise RcError(
+            f"{actor}: роль в репозитории {permission or 'неизвестна'}, а кнопку выпуска проходит "
+            "только администратор. Попросите администратора нажать кнопку"
+        )
+    print(f"{actor}: администратор, кнопка выпуска пропускает")
+
+
+def publish(root: Path, repo: str, alpha_tag: str, *, dry_run: bool, gh=alpha.gh_api, runner=alpha.run,
+            marks=open_marks.marks) -> str:
     def git(arguments: list[str]) -> str:
         return runner(["git", *arguments], cwd=root)
 
     proof = prove(repo, alpha_tag, gh, git)
+    refusal = open_marks.release_refusal(marks(root, proof.slice), proof.slice, open_marks.CANDIDATE)
+    if refusal:
+        raise RcError(refusal)
     core = alpha.ALPHA.match(alpha_tag)["core"]
     tag = next_rc(core, alpha.version_tags(repo, gh))
     print(f"{tag}: из {alpha_tag}, срез {proof.slice[:7]}, ночь {proof.run_url}")
@@ -128,13 +159,19 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", "IngvarConsulting/unica"))
     commands = parser.add_subparsers(dest="command", required=True)
+    admit_command = commands.add_parser("admit", help="пустить к кнопке только администратора репозитория")
+    admit_command.add_argument("--actor", required=True, help="запустивший прогон")
+    admit_command.add_argument("--ref", default=os.environ.get("GITHUB_REF", ""), help="ссылка, с которой запущен прогон")
     publish_command = commands.add_parser("publish", help="поставить кандидата из проверенной alpha")
     publish_command.add_argument("--alpha", required=True, help="тег alpha, например v0.15.0-alpha.4")
     publish_command.add_argument("--root", type=Path, default=Path("."))
     publish_command.add_argument("--dry-run", action="store_true", help="проверить и назвать номер, ничего не меняя")
     args = parser.parse_args(argv)
     try:
-        publish(args.root, args.repo, args.alpha, dry_run=args.dry_run)
+        if args.command == "admit":
+            admit(args.repo, args.actor, args.ref)
+        else:
+            publish(args.root, args.repo, args.alpha, dry_run=args.dry_run)
     except (RcError, alpha.AlphaError) as error:
         print(f"::error::{error}", file=sys.stderr)
         return 1

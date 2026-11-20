@@ -13,7 +13,7 @@ pub fn metadata_object_create_input_schema() -> &'static Value {
             &[
                 ("at", text(true)),
                 ("values", object(&[
-                    ("kind", json!({"type":"string","enum":crate::MetadataKind::ALL.iter().map(|kind| kind.as_str()).collect::<Vec<_>>()})),
+                    ("kind", json!({"type":"string","enum":crate::CreatableKind::all().map(crate::CreatableKind::as_str).collect::<Vec<_>>()})),
                     // The identifier is checked during staging. Raw decoding
                     // must not move it ahead of a later operation's error.
                     ("name", json!({"type":"string","minLength":1})),
@@ -128,7 +128,7 @@ fn metadata_element_base_fields() -> &'static Map<String, Value> {
     FIELDS.get_or_init(|| Map::from_iter([
         ("name".into(), json!({"type":"string","minLength":1})),
         ("newName".into(), json!({"type":"string","minLength":1})),
-        ("synonym".into(), json!({"type":"string"})),
+        ("synonym".into(), crate::localized_value_schema()),
         ("comment".into(), json!({"type":"string"})),
         ("type".into(), metadata_type_schema()),
         ("required".into(), json!({"type":"boolean"})),
@@ -188,10 +188,21 @@ pub fn metadata_element_input_schema(update: bool, attributes: bool) -> &'static
             }
         } else {
             fields.remove("templateType");
+            fields.insert("toolTip".into(), crate::localized_value_schema());
             fields.insert("typeReductionMode".into(), json!({"type":"string", "enum":["Deny", "TransformValues"]}));
+            fields.insert("color".into(), enum_value_color_schema());
         }
         json!({"type":"object","additionalProperties":false,"required":["name"],"properties":fields})
     })
+}
+
+/// The color of an enumeration value, from 8.5.1: `auto`, `#RRGGBB`, or a
+/// web or style color by the name the platform knows, as for a style item.
+pub fn enum_value_color_schema() -> Value {
+    json!({"anyOf":[
+        {"type":"string","enum":["auto"]},
+        crate::style_color::StyleItemColor::argument_schema(),
+    ]})
 }
 
 /// Preserve the host-visible internal envelope while deriving its field
@@ -260,6 +271,13 @@ fn metadata_element_schema(
             "typeReductionMode".into(),
             json!({"type":"string", "enum":["Deny", "TransformValues"]}),
         );
+    }
+    if update
+        && site.is_some_and(|site| {
+            crate::operations::metadata_tool_tip_is_allowed(site.owner, collection, site.in_section)
+        })
+    {
+        fields.insert("toolTip".into(), crate::localized_value_schema());
     }
     let selector = if update { "newName" } else { "name" };
     fields[selector]
@@ -419,7 +437,7 @@ pub fn metadata_member_set(
         },
         effect: "Change the listed fields of the member; newName renames it. Unlisted fields stay.",
         notes: "The member is named by its address, not by values.name. Read the member first. Cross-field rules — fillValue must match the member type — are checked by the planner, not by this schema.",
-        example_args: json!({"values":{"synonym":"Sample"}}),
+        example_args: json!({"values":{"synonym":"ru = 'Sample'"}}),
         help: METADATA_HELP,
         format_validators: &[],
     }
@@ -481,7 +499,7 @@ pub fn metadata_object_remove() -> OperationContract {
         schema: metadata_object_remove_input_schema().clone(),
         target: "The existing metadata object: <source-set>:<Kind>.<Name>.",
         effect: "Remove the object descriptor, its resource directory and its registration; update subsystem membership.",
-        notes: "References from other metadata refuse the removal and are listed by the referring address and property; remove them first. References only in module code or in query-language text (form and data composition queries, data composition expressions of templates and dynamic lists, role access restriction conditions; English or Russian kind names) are listed by address and line in the code_references warning of the plan; that text is left as it is, and executing its token confirms the removal. Compositions that list the object — subsystem content, role rights, command interfaces, the home page, exchange plan and functional option content — lose its entries in the same apply, named in the composition_cleaned warning of the plan. An editable vendor object is removed while staying on support; a locked vendor object, or one with a locked child, refuses under the deny support policy until a separate supportRule.set apply takes it off support, warns support_locked under warn and is removed silently under off. The support marker is not changed.",
+        notes: "References from other metadata refuse the removal and are listed by the referring address and property; remove them first. References only in module code or in query-language text (form and data composition queries, data composition expressions of templates and dynamic lists, role access restriction conditions; English or Russian kind names) are listed by address and line in the code_references warning of the plan; that text is left as it is, and executing its token confirms the removal. Compositions that list the object — subsystem content, role rights, command interfaces, the home page, exchange plan and functional option content — lose its entries in the same apply, named in the composition_cleaned warning of the plan. A removed command group also leaves the command interfaces of subsystems, the main section and forms: a form item keeps its other settings and goes whole only when nothing but the command and its type is left; the commands placed in the group return to their default groups. An editable vendor object is removed while staying on support; a locked vendor object, or one with a locked child, refuses under the deny support policy until a separate supportRule.set apply takes it off support, warns support_locked under warn and is removed silently under off. The support marker is not changed.",
         example_args: json!({}),
         help: METADATA_HELP,
         format_validators: &[],
@@ -643,7 +661,7 @@ pub fn metadata_template_set() -> OperationContract {
                 (
                     "values",
                     json!({"type":"object","additionalProperties":false,"minProperties":1,
-            "properties":{"synonym":{"type":"string"},"comment":{"type":"string"},
+            "properties":{"synonym":crate::localized_value_schema(),"comment":{"type":"string"},
                 "templateType":{"type":"string","enum":crate::MetaTemplateKind::ALL.iter().map(|kind| kind.as_str()).collect::<Vec<_>>()}}}),
                 ),
             ],
@@ -653,7 +671,7 @@ pub fn metadata_template_set() -> OperationContract {
         effect:
             "Change the listed properties of the template descriptor. Unlisted properties stay.",
         notes: "The template is named by its address; there is no name argument.",
-        example_args: json!({"values":{"synonym":"Sample"}}),
+        example_args: json!({"values":{"synonym":"ru = 'Sample'"}}),
         help: METADATA_HELP,
         format_validators: &[],
     }

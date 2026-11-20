@@ -7,8 +7,8 @@ use unica_metadata::{
     DateFractions, MetaCalculationSchedule, MetaCharacteristic, MetaCharacteristicTypes,
     MetaCharacteristicValues, MetaDiagnostic, MetaDiagnosticCode, MetaExpandedName, MetaHttpMethod,
     MetaHttpUrlTemplate, MetaInfoDeclarations, MetaInfoDetails, MetaInfoPropertyValueKind,
-    MetaLocalizedText, MetaObservedProperty, MetaObservedPropertyValue, MetaScheduledMethod,
-    MetaStandardAttribute, MetaStandardTabularSection, MetaTransferDirection,
+    MetaLocalizedText, MetaObservedProperty, MetaObservedPropertyValue, MetaPicture,
+    MetaScheduledMethod, MetaStandardAttribute, MetaStandardTabularSection, MetaTransferDirection,
     MetaWebServiceOperation, MetaWebServiceParameter, MetaXdtoPackage, MetadataKind, NumberSign,
     ObservedMetadataType, ObservedMetadataTypeVariant, StringLengthMode,
     META_INFO_PROPERTY_PROFILE,
@@ -456,7 +456,15 @@ pub fn observed_type_is_strict_but_unmodelled(properties: roxmltree::Node<'_, '_
     let [container] = containers.as_slice() else {
         return false;
     };
-    if container.attributes().len() != 0 || !node_has_only_whitespace_text(*container) {
+    observed_type_container_is_strict_but_unmodelled(*container)
+}
+
+/// Тот же признак для контейнера типа с другим именем свойства,
+/// например `CommandParameterType` общей команды.
+pub fn observed_type_container_is_strict_but_unmodelled(
+    container: roxmltree::Node<'_, '_>,
+) -> bool {
+    if container.attributes().len() != 0 || !node_has_only_whitespace_text(container) {
         return false;
     }
     let allowed_children = [
@@ -955,6 +963,30 @@ pub fn project_meta_info_details(
                 operations,
             }
         }
+        MetadataKind::CommandGroup => {
+            let picture = properties
+                .map(|node| direct_meta_info_property(node, kind.as_str(), "Picture"))
+                .transpose()
+                .map(Option::flatten)
+                .map_err(|error| error.message)
+                .and_then(|node| {
+                    node.map(parse_picture_node)
+                        .transpose()
+                        .map(Option::flatten)
+                });
+            let picture = match picture {
+                Ok(picture) => picture,
+                Err(message) => {
+                    diagnostics.push(
+                        MetaDiagnostic::error(MetaDiagnosticCode::ValidationFailed, message)
+                            .with_metadata_path(target.clone())
+                            .with_field("details.picture"),
+                    );
+                    None
+                }
+            };
+            MetaInfoDetails::CommandGroup { picture }
+        }
         _ => MetaInfoDetails::empty(kind),
     }
 }
@@ -1111,9 +1143,7 @@ pub fn meta_info_profile_errors(
     child_objects: Option<roxmltree::Node<'_, '_>>,
 ) -> Vec<ProjectionError> {
     let mut errors = Vec::new();
-    if child_objects.is_some()
-        && !super::format_contract::meta_8_3_27_kind_declares_child_objects(kind)
-    {
+    if child_objects.is_some() && !super::format_contract::kind_declares_child_objects(kind) {
         errors.push(ProjectionError::unsupported(
             "collections",
             format!(
@@ -1161,7 +1191,12 @@ pub fn meta_info_profile_errors(
                         ))
                     }
                     Some(MetaInfoPropertyRoute::Identity)
-                        if matches!(name, "ObjectBelonging" | "ExtendedConfigurationObject") =>
+                        if matches!(
+                            name,
+                            "ObjectBelonging"
+                                | "ExtendedConfigurationObject"
+                                | "ActionOnConfigurationObjectMissing"
+                        ) =>
                     {
                         if let Err(error) = observe_meta_borrowing_property(properties, kind, name)
                         {
@@ -1470,6 +1505,10 @@ pub fn observe_meta_borrowing_property(
         && match name {
             "ObjectBelonging" => matches!(value.as_str(), "Own" | "Adopted"),
             "ExtendedConfigurationObject" => uuid::Uuid::parse_str(&value).is_ok(),
+            // From 8.5.4 (format 2.22).
+            "ActionOnConfigurationObjectMissing" => {
+                matches!(value.as_str(), "Error" | "Warning" | "Ignore" | "Auto")
+            }
             _ => false,
         };
     if !valid {
@@ -1525,7 +1564,9 @@ pub fn observe_meta_info_property(
             MetaInfoPropertyValue::String(direct_text_content(node))
         }
         MetaInfoPropertyValueKind::LegacyLocalizedString => {
-            MetaInfoPropertyValue::String(super::xml_model::meta_info_ml_text(node))
+            let value = localized_node_as_nstr(node)
+                .map_err(|error| ProjectionError::malformed(&field, error))?;
+            return Ok(value.map(MetaInfoPropertyValue::String));
         }
         MetaInfoPropertyValueKind::LocalizedString => {
             MetaInfoPropertyValue::Structured(parsed_localized_meta_info_property_value(node))
@@ -1565,6 +1606,40 @@ pub fn parsed_typed_meta_info_property_value(
     node: roxmltree::Node<'_, '_>,
 ) -> Option<MetaObservedPropertyValue> {
     parse_typed_or_nil_value(node, "properties").ok()
+}
+
+/// Observe a localized XML property as the complete, round-trippable value.
+pub fn localized_property_as_nstr(
+    properties: roxmltree::Node<'_, '_>,
+    owner: &str,
+    name: &str,
+) -> Result<Option<String>, String> {
+    let Some(node) =
+        direct_meta_info_property(properties, owner, name).map_err(|error| error.message)?
+    else {
+        return Ok(None);
+    };
+    localized_node_as_nstr(node).map_err(|error| format!("{owner} properties.{name}: {error}"))
+}
+
+pub(crate) fn localized_node_as_nstr(
+    node: roxmltree::Node<'_, '_>,
+) -> Result<Option<String>, String> {
+    let Some(MetaObservedPropertyValue::LocalizedString { values }) =
+        strict_localized_meta_info_property_value(node)
+    else {
+        return Err("malformed multilingual value".to_string());
+    };
+    if values.is_empty() {
+        return Ok(None);
+    }
+    let items = values
+        .into_iter()
+        .map(|value| unica_metadata::LocalizedItem::new(value.language, value.content))
+        .collect::<Vec<_>>();
+    unica_metadata::format_nstr(&items)
+        .map(Some)
+        .ok_or_else(|| "translations cannot be represented as NStr".to_string())
 }
 
 pub fn parsed_localized_meta_info_property_value(
@@ -1783,6 +1858,11 @@ static META_INFO_PROPERTY_ROUTES: &[MetaInfoPropertyRouteSpec] = &[
         kinds: BORROWED_DESCRIPTOR_KINDS,
     },
     MetaInfoPropertyRouteSpec {
+        name: "ActionOnConfigurationObjectMissing",
+        route: MetaInfoPropertyRoute::Identity,
+        kinds: BORROWED_DESCRIPTOR_KINDS,
+    },
+    MetaInfoPropertyRouteSpec {
         name: "Name",
         route: MetaInfoPropertyRoute::Identity,
         kinds: MetadataKind::ALL,
@@ -1825,6 +1905,11 @@ static META_INFO_PROPERTY_ROUTES: &[MetaInfoPropertyRouteSpec] = &[
             MetadataKind::DefinedType,
             MetadataKind::ChartOfCharacteristicTypes,
         ],
+    },
+    MetaInfoPropertyRouteSpec {
+        name: "Picture",
+        route: MetaInfoPropertyRoute::Details,
+        kinds: &[MetadataKind::CommandGroup],
     },
     MetaInfoPropertyRouteSpec {
         name: "XDTOPackages",
@@ -2081,6 +2166,54 @@ pub fn observed_meta_info_semantic_routes(
         }
     }
     routes
+}
+
+/// Свойство-картинка (`Picture` группы команд и общей команды). Пустой
+/// элемент значения не даёт. Ссылка обязательна; признак прозрачности
+/// возвращается, только если записан, и не подставляется.
+pub fn parse_picture_node(node: roxmltree::Node<'_, '_>) -> Result<Option<MetaPicture>, String> {
+    if node_is_empty_placeholder(node) {
+        return Ok(None);
+    }
+    let malformed = || "malformed Picture".to_string();
+    if node.attributes().len() != 0
+        || node
+            .children()
+            .any(|child| child.is_text() && !child.text().unwrap_or_default().trim().is_empty())
+    {
+        return Err(malformed());
+    }
+    let mut reference = None;
+    let mut load_transparent = None;
+    for child in node.children().filter(roxmltree::Node::is_element) {
+        if child.tag_name().namespace() != Some(READABLE_NAMESPACE)
+            || child.attributes().len() != 0
+            || child.children().any(|nested| nested.is_element())
+        {
+            return Err(malformed());
+        }
+        let text = direct_text_content(child);
+        match child.tag_name().name() {
+            "Ref"
+                if reference.is_none()
+                    && !text.is_empty()
+                    && !text.contains(char::is_whitespace) =>
+            {
+                reference = Some(text);
+            }
+            "LoadTransparent"
+                if load_transparent.is_none() && (text == "true" || text == "false") =>
+            {
+                load_transparent = Some(text == "true");
+            }
+            _ => return Err(malformed()),
+        }
+    }
+    let reference = reference.ok_or_else(malformed)?;
+    Ok(Some(MetaPicture {
+        reference,
+        load_transparent,
+    }))
 }
 
 pub fn node_is_empty_placeholder(node: roxmltree::Node<'_, '_>) -> bool {

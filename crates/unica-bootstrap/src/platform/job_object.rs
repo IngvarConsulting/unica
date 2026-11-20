@@ -24,7 +24,7 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::{
 };
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-    SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_BREAKAWAY_OK,
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 use windows_sys::Win32::System::Threading::{
@@ -32,7 +32,9 @@ use windows_sys::Win32::System::Threading::{
 };
 
 /// Группа, которая гибнет вместе с последним своим дескриптором — то есть
-/// вместе с загрузчиком, как бы он ни умер.
+/// вместе с загрузчиком, как бы он ни умер. Процесс, который сам просит выйти
+/// из группы (живой агент раннера), выходит: отделение возможно, только если
+/// его разрешает каждая группа над ним. Остальные гибнут вместе с группой.
 pub(super) struct RuntimeJob(OwnedHandle);
 
 impl RuntimeJob {
@@ -48,7 +50,8 @@ impl RuntimeJob {
 
         // SAFETY: нулевая инициализация допустима для этой POD-структуры Windows.
         let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };
-        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        limits.BasicLimitInformation.LimitFlags =
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK;
         // SAFETY: указатель и размер соответствуют классу информации.
         let configured = unsafe {
             SetInformationJobObject(

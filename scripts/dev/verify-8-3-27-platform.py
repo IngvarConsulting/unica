@@ -163,6 +163,7 @@ MANDATORY_CASE_IDS = frozenset(
         "meta-compile-chart-of-accounts",
         "meta-compile-chart-of-calculation-types",
         "meta-compile-chart-of-characteristic-types",
+        "meta-compile-command-group",
         "meta-compile-common-module",
         "meta-compile-constant",
         "meta-compile-data-processor",

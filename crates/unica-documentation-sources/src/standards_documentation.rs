@@ -270,6 +270,8 @@ impl DocumentationProvider for V8StdDocumentationProvider {
             signature: None,
             applicable_version: UNVERSIONED.to_string(),
             text,
+            // Поставщик статью полями не разбирает.
+            article: None,
         }))
     }
 
@@ -583,6 +585,9 @@ impl DocumentationProvider for V8StdDocumentationProvider {
                 // У стандарта нет версии платформы: маркер, а не пустота и не
                 // выдуманная версия: поле должно честно называть применимость.
                 applicable_version: UNVERSIONED.to_string(),
+                // Статья стандарта разработки вида и владельца не имеет.
+                kind: None,
+                owner: None,
             });
         }
         let status = if hits.is_empty() {

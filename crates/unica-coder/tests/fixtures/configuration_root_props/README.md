@@ -8,7 +8,7 @@
 `crates/unica-coder/src/infrastructure/native_operations/apply_families/metadata.rs`
 применяют правку и сравнивают результат с файлом отсюда побайтно.
 
-- `main/Configuration.xml` — корень из `tests/fixtures/platform_8_3_27/empty_configuration/src` после
+- `main/Configuration.xml` — корень из `tests/fixtures/formats/platform_xml/2.20/empty_configuration/src` после
   правки всех свойств профиля конфигурации: синонима, комментария,
   поставщика, версии, адресов, сведений, флагов справки и форм и восьми перечислений — всего 21 свойство.
 - `extension/source-Configuration.xml` — корень расширения `Корректировки`,

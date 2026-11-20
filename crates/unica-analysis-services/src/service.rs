@@ -86,7 +86,6 @@ pub const SERVICE_SCHEMA_VERSION: u32 = 5;
 // problem: неизвестно
 // on-reach: сервис без запросов завершается и удаляет свою запись; значение меняется через UNICA_WORKSPACE_SERVICE_IDLE_SECS или --idle-secs
 // decision: закреплено правилом INV.RUNTIME.SERVICE-LIFETIME
-// decision-date: 2026-10-06
 // decision-source: arch/rules/runtime/service-lifetime.md
 pub const DEFAULT_IDLE_SECS: u64 = 7200;
 // resource-limit: service.connect-timeout
@@ -122,7 +121,6 @@ pub const SERVICE_CONTROL_CONNECT_TIMEOUT: Duration = Duration::from_millis(500)
 // problem: неизвестно
 // on-reach: запрос прерывается ошибкой срока; больший срок вызывающего не сокращается
 // decision: закреплено правилом
-// decision-date: 2026-10-21
 // decision-source: arch/rules/runtime/service-caller-budget.md
 pub const SERVICE_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 // resource-limit: service.shutdown-grace
@@ -160,7 +158,6 @@ pub const SERVICE_RESPONSE_LINE_LIMIT: usize = 8 * 1024 * 1024;
 // problem: незавершённый запрос не удерживает сервис бесконечно
 // on-reach: ответ-ошибка «request line exceeds 8388608 bytes», следующая строка разбирается отдельно
 // decision: закреплено правилом
-// decision-date: 2026-10-21
 // decision-source: arch/rules/runtime/service-request-framing.md
 pub const SERVICE_REQUEST_LINE_LIMIT: usize = 8 * 1024 * 1024;
 // resource-limit: service.request-header-timeout
@@ -174,7 +171,6 @@ pub const SERVICE_REQUEST_LINE_LIMIT: usize = 8 * 1024 * 1024;
 // problem: незавершённый запрос не удерживает сервис бесконечно
 // on-reach: соединение закрывается по сроку, другие соединения не затрагиваются
 // decision: закреплено правилом
-// decision-date: 2026-10-21
 // decision-source: arch/rules/runtime/service-request-framing.md
 pub const SERVICE_REQUEST_HEADER_TIMEOUT: Duration = Duration::from_secs(5);
 // resource-limit: service.session-teardown-grace
@@ -2119,7 +2115,7 @@ pub struct WorkspaceServicesState<B: BslBackend> {
     /// let a late `cancel` for the finished read kill the scheduled update.
     session_teardowns: SessionTeardownLifecycle,
     analyzer_invalidated: AtomicBool,
-    operations: Mutex<HashMap<String, Arc<OperationControl>>>,
+    operations: Mutex<HashMap<String, OperationRegistration>>,
     shutting_down: AtomicBool,
     #[cfg(any(test, feature = "test-support"))]
     handler_started_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
@@ -2303,7 +2299,7 @@ impl<B: BslBackend> WorkspaceServices<B> {
         &self.actor.runtime_projection().0.analyzer_invalidated
     }
 
-    fn operations(&self) -> &Mutex<HashMap<String, Arc<OperationControl>>> {
+    fn operations(&self) -> &Mutex<HashMap<String, OperationRegistration>> {
         &self.actor.runtime_projection().0.operations
     }
 
@@ -2471,13 +2467,25 @@ impl<B: BslBackend> WorkspaceServices<B> {
         if self.shutting_down().load(Ordering::Acquire) {
             return Err("workspace service is shutting down".to_string());
         }
-        if operations.contains_key(&operation_id) {
+        if matches!(
+            operations.get(&operation_id),
+            Some(OperationRegistration::Active(_))
+        ) {
             return Err(format!(
                 "workspace service operation id is already active: {operation_id}"
             ));
         }
         let cancellation = Arc::new(OperationControl::new());
-        operations.insert(operation_id.clone(), cancellation.clone());
+        if matches!(
+            operations.get(&operation_id),
+            Some(OperationRegistration::PendingCancel)
+        ) {
+            cancellation.cancel();
+        }
+        operations.insert(
+            operation_id.clone(),
+            OperationRegistration::Active(cancellation.clone()),
+        );
         Ok((
             cancellation,
             OperationGuard {
@@ -2488,13 +2496,19 @@ impl<B: BslBackend> WorkspaceServices<B> {
     }
 
     fn cancel_operation(&self, operation_id: &str) -> ServiceResponse {
-        let cancellation = self
-            .operations()
-            .lock()
-            .ok()
-            .and_then(|operations| operations.get(operation_id).cloned());
-        if let Some(cancellation) = cancellation {
-            cancellation.cancel();
+        let Ok(mut operations) = self.operations().lock() else {
+            return ServiceResponse::error("workspace service operation registry is unavailable");
+        };
+        // The authenticated control and data connections may arrive in either
+        // order. Acknowledge only after the exact intent is owned by the same
+        // registry that will admit the data. Pending intent has no time limit;
+        // it lives until admission or until this service instance is dropped.
+        match operations
+            .entry(operation_id.to_owned())
+            .or_insert(OperationRegistration::PendingCancel)
+        {
+            OperationRegistration::Active(control) => control.cancel(),
+            OperationRegistration::PendingCancel => {}
         }
         ServiceResponse {
             ok: true,
@@ -2504,11 +2518,12 @@ impl<B: BslBackend> WorkspaceServices<B> {
     }
 
     fn expire_operation(&self, operation_id: &str) -> ServiceResponse {
-        let control = self
-            .operations()
-            .lock()
-            .ok()
-            .and_then(|operations| operations.get(operation_id).cloned());
+        let control = self.operations().lock().ok().and_then(|operations| {
+            operations
+                .get(operation_id)
+                .and_then(OperationRegistration::active)
+                .cloned()
+        });
         let Some(control) = control else {
             return ServiceResponse::error(
                 "workspace service expiry target is not observed; termination is unconfirmed",
@@ -2528,7 +2543,13 @@ impl<B: BslBackend> WorkspaceServices<B> {
         let cancellations = self
             .operations()
             .lock()
-            .map(|operations| operations.values().cloned().collect::<Vec<_>>())
+            .map(|operations| {
+                operations
+                    .values()
+                    .filter_map(OperationRegistration::active)
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
             .unwrap_or_default();
         for cancellation in cancellations {
             cancellation.cancel();
@@ -2907,6 +2928,22 @@ pub fn update_service_record_last_access_with_hook<B: BslBackend>(
     });
 }
 
+/// UUIDs identify unique attempts; a pending explicit cancel is not active work.
+/// Admission consumes it into the operation's existing guard-owned lifecycle.
+enum OperationRegistration {
+    PendingCancel,
+    Active(Arc<OperationControl>),
+}
+
+impl OperationRegistration {
+    fn active(&self) -> Option<&Arc<OperationControl>> {
+        match self {
+            Self::Active(control) => Some(control),
+            Self::PendingCancel => None,
+        }
+    }
+}
+
 /// A registered operation has one cancellation authority and one stop cause.
 /// The entry is retained by its existing guard, not by a timeout/tombstone.
 struct OperationControl {
@@ -2962,8 +2999,11 @@ impl<B: BslBackend> Drop for OperationGuard<B> {
             .ok()
             .and_then(|mut operations| operations.remove(&self.operation_id))
             .is_some();
+        // Drop never panics: a panic here during unwinding aborts the test
+        // binary. While unwinding the test has already failed, so its hook is
+        // not called; a hook's own assertion otherwise fails it as usual.
         #[cfg(any(test, feature = "test-support"))]
-        if removed {
+        if removed && !std::thread::panicking() {
             let hook = self
                 .runtime
                 .actor
@@ -2971,7 +3011,7 @@ impl<B: BslBackend> Drop for OperationGuard<B> {
                 .0
                 .operation_retired_hook
                 .lock()
-                .unwrap()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone();
             if let Some(hook) = hook {
                 hook(&self.operation_id);
@@ -3769,14 +3809,17 @@ fn run_registered_workspace_operation<B: BslBackend>(
                     hook();
                 }
             }
-            let mut response = match &control {
-                Some(prepared) => executor.execute_prepared(
-                    &worker_runtime,
-                    kind,
-                    &worker_cancellation,
-                    prepared.deadline.as_ref(),
-                ),
-                None => executor.execute(&worker_runtime, kind, &worker_cancellation),
+            let mut response = match cancellation_error(&worker_cancellation) {
+                Err(error) => ServiceResponse::error(error),
+                Ok(()) => match &control {
+                    Some(prepared) => executor.execute_prepared(
+                        &worker_runtime,
+                        kind,
+                        &worker_cancellation,
+                        prepared.deadline.as_ref(),
+                    ),
+                    None => executor.execute(&worker_runtime, kind, &worker_cancellation),
+                },
             };
             if response
                 .error
@@ -4366,13 +4409,19 @@ impl<B: BslBackend> WorkspaceServices<B> {
         self.analyzer_invalidated()
     }
     pub fn test_operation_ids(&self) -> Vec<String> {
-        self.operations().lock().unwrap().keys().cloned().collect()
+        self.operations()
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|(id, entry)| entry.active().map(|_| id.clone()))
+            .collect()
     }
     pub fn test_operation_cancellation(&self, id: &str) -> Option<CancellationToken> {
         self.operations()
             .lock()
             .unwrap()
             .get(id)
+            .and_then(OperationRegistration::active)
             .map(|control| control.cancellation.clone())
     }
     pub fn test_shutting_down(&self) -> &AtomicBool {

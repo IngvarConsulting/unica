@@ -7,7 +7,26 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::json;
 use unica_artifact_delivery::Failure;
-use unica_bootstrap::verify_mcp_runtime;
+use unica_bootstrap::{verify_mcp_runtime, RuntimeHandoff};
+
+fn verify_runtime(
+    runtime: &Path,
+    root: &Path,
+    provider_state_root: &Path,
+    timeout: Duration,
+) -> unica_artifact_delivery::Result<()> {
+    verify_mcp_runtime(
+        runtime,
+        root,
+        &RuntimeHandoff {
+            provider_state_root,
+            artifact_cache: &root.join("artifact-cache"),
+            runtime_manifest: &root.join("runtime-manifest.json"),
+            startup_notice: None,
+        },
+        timeout,
+    )
+}
 
 /// rule: INV.WIRE.GUARANTEED-VERSIONS
 #[test]
@@ -24,19 +43,33 @@ fn verify_requires_both_lifecycles_and_the_exact_v13_compatibility_surface() {
     );
     let provider_state = root.join("private-provider-state");
 
-    verify_mcp_runtime(
-        &runtime,
-        &root,
-        None,
-        &provider_state,
-        Duration::from_secs(2),
-    )
-    .unwrap();
+    verify_runtime(&runtime, &root, &provider_state, Duration::from_secs(2)).unwrap();
 
     assert_eq!(
         fs::read_to_string(record).unwrap(),
         provider_state.display().to_string()
     );
+    let cache = root.join("artifact-cache");
+    assert_eq!(
+        fs::read_to_string(root.join("artifact-caches.txt")).unwrap(),
+        format!("{0}\n{0}\n", cache.display()),
+        "both verification lifecycles must pass the selected delivery cache"
+    );
+    for (file, expected) in [
+        ("provider-states.txt", provider_state.display().to_string()),
+        (
+            "runtime-manifests.txt",
+            root.join("runtime-manifest.json").display().to_string(),
+        ),
+        ("startup-notices.txt", "unset".to_string()),
+    ] {
+        assert_eq!(
+            fs::read_to_string(root.join(file)).unwrap(),
+            format!("{expected}\n{expected}\n"),
+            "{file}"
+        );
+    }
+    assert!(!cache.exists(), "verification must not provision an engine");
     assert_eq!(
         fs::read_to_string(root.join("requests.txt")).unwrap(),
         concat!(
@@ -52,21 +85,13 @@ fn verify_requires_both_lifecycles_and_the_exact_v13_compatibility_surface() {
 /// rule: INV.WIRE.GUARANTEED-VERSIONS
 #[test]
 fn verify_requires_each_lifecycle_to_expose_each_public_tool() {
-    const REQUIRED: [&str; 11] = [
-        "unica.view",
-        "unica.apply",
-        "unica.resolve",
-        "unica.search",
-        "unica.check",
-        "unica.diff",
-        "unica.run",
-        "unica.docs",
-        "unica.task.get",
-        "unica.task.result",
-        "unica.task.cancel",
-    ];
     for lifecycle in ["legacy", "direct"] {
-        for missing in REQUIRED {
+        let required: &[&str] = if lifecycle == "legacy" {
+            &LEGACY_TOOLS
+        } else {
+            &CANONICAL_TOOLS
+        };
+        for missing in required.iter().copied() {
             let root = temp_root(&format!(
                 "missing-{lifecycle}-{}",
                 missing.replace('.', "-")
@@ -86,10 +111,9 @@ fn verify_requires_each_lifecycle_to_expose_each_public_tool() {
                 &["2025-06-18", "2025-11-25", "2026-07-28"],
             );
 
-            let error = verify_mcp_runtime(
+            let error = verify_runtime(
                 &runtime,
                 &root,
-                None,
                 &root.join("private-provider-state"),
                 Duration::from_secs(2),
             )
@@ -121,10 +145,9 @@ fn verify_rejects_legacy_names_mixed_into_the_v13_surface() {
         &["2025-06-18", "2025-11-25", "2026-07-28"],
     );
 
-    let error = verify_mcp_runtime(
+    let error = verify_runtime(
         &runtime,
         &root,
-        None,
         &root.join("private-provider-state"),
         Duration::from_secs(2),
     )
@@ -151,10 +174,9 @@ fn verify_rejects_duplicate_names_in_the_v13_surface() {
         &["2025-06-18", "2025-11-25", "2026-07-28"],
     );
 
-    let error = verify_mcp_runtime(
+    let error = verify_runtime(
         &runtime,
         &root,
-        None,
         &root.join("private-provider-state"),
         Duration::from_secs(2),
     )
@@ -162,6 +184,37 @@ fn verify_rejects_duplicate_names_in_the_v13_surface() {
 
     assert!(error.to_string().contains("duplicate"), "{error}");
     assert!(error.to_string().contains("unica.view"), "{error}");
+}
+
+/// rule: CTR.WIRE.CANONICAL-TOOL-PROFILES
+#[test]
+fn verify_rejects_task_compatibility_tools_on_the_direct_lifecycle() {
+    let root = temp_root("direct-task-tools");
+    let record = root.join("provider-state.txt");
+    // Каталог совместимости на 2026-07-28 — ровно то, что ночь приняла бы
+    // до разделения проверок по жизненным циклам.
+    let legacy_catalog = tools_list_response(&LEGACY_TOOLS, None, &[]);
+    let runtime = write_fake_runtime_serving(
+        &root,
+        &record,
+        &legacy_catalog,
+        &legacy_catalog,
+        &["2025-06-18", "2025-11-25", "2026-07-28"],
+    );
+
+    let error = verify_runtime(
+        &runtime,
+        &root,
+        &root.join("private-provider-state"),
+        Duration::from_secs(2),
+    )
+    .unwrap_err()
+    .to_string();
+
+    assert!(error.contains("2026-07-28"), "{error}");
+    for task_tool in ["unica.task.get", "unica.task.result", "unica.task.cancel"] {
+        assert!(error.contains(task_tool), "{error}");
+    }
 }
 
 /// rule: INV.WIRE.GUARANTEED-VERSIONS
@@ -178,14 +231,8 @@ fn verify_rejects_discover_without_the_guaranteed_versions() {
         let runtime = write_fake_runtime(&root, &record, None, None, &[], &supported);
         let provider_state = root.join("private-provider-state");
 
-        let error = verify_mcp_runtime(
-            &runtime,
-            &root,
-            None,
-            &provider_state,
-            Duration::from_secs(2),
-        )
-        .unwrap_err();
+        let error =
+            verify_runtime(&runtime, &root, &provider_state, Duration::from_secs(2)).unwrap_err();
 
         assert!(
             error.to_string().contains(missing),
@@ -202,9 +249,25 @@ fn write_fake_runtime(
     extra_tools: &[&str],
     supported_versions: &[&str],
 ) -> PathBuf {
+    let legacy_tools = tools_list_response(&LEGACY_TOOLS, legacy_missing_tool, extra_tools);
+    let direct_tools = tools_list_response(&CANONICAL_TOOLS, direct_missing_tool, extra_tools);
+    write_fake_runtime_serving(
+        root,
+        provider_state_record,
+        &legacy_tools,
+        &direct_tools,
+        supported_versions,
+    )
+}
+
+fn write_fake_runtime_serving(
+    root: &Path,
+    provider_state_record: &Path,
+    legacy_tools: &str,
+    direct_tools: &str,
+    supported_versions: &[&str],
+) -> PathBuf {
     let path = root.join("fake-unica");
-    let legacy_tools = tools_list_response(legacy_missing_tool, extra_tools);
-    let direct_tools = tools_list_response(direct_missing_tool, extra_tools);
     let supported = serde_json::to_string(supported_versions).unwrap();
     let requests = root.join("requests.txt");
     let tools_list_seen = root.join("tools-list-seen");
@@ -213,6 +276,10 @@ fn write_fake_runtime(
         format!(
             r#"#!/bin/sh
 printf '%s' "$UNICA_PROVIDER_STATE_DIR" > '{record}'
+printf '%s\n' "$UNICA_ARTIFACT_CACHE" >> '{artifact_caches}'
+printf '%s\n' "$UNICA_PROVIDER_STATE_DIR" >> '{provider_states}'
+printf '%s\n' "$UNICA_RUNTIME_MANIFEST" >> '{runtime_manifests}'
+printf '%s\n' "${{UNICA_STARTUP_NOTICE-unset}}" >> '{startup_notices}'
 while IFS= read -r line; do
   case "$line" in
     *'"method":"initialize"'*) printf '%s\n' initialize >> '{requests}'; printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"protocolVersion":"2025-06-18","capabilities":{{}},"serverInfo":{{"name":"unica","version":"0.7.0"}}}}}}' ;;
@@ -231,6 +298,10 @@ while IFS= read -r line; do
 done
 "#,
 	            record = provider_state_record.display(),
+	            artifact_caches = root.join("artifact-caches.txt").display(),
+	            provider_states = root.join("provider-states.txt").display(),
+	            runtime_manifests = root.join("runtime-manifests.txt").display(),
+	            startup_notices = root.join("startup-notices.txt").display(),
 	            requests = requests.display(),
 	            tools_list_seen = tools_list_seen.display(),
 	        ),
@@ -240,25 +311,41 @@ done
     path
 }
 
-fn tools_list_response(missing: Option<&str>, extra_tools: &[&str]) -> String {
-    let tools = [
-        "unica.view",
-        "unica.apply",
-        "unica.resolve",
-        "unica.search",
-        "unica.check",
-        "unica.diff",
-        "unica.run",
-        "unica.docs",
-        "unica.task.get",
-        "unica.task.result",
-        "unica.task.cancel",
-    ]
-    .into_iter()
-    .chain(extra_tools.iter().copied())
-    .filter(|name| Some(*name) != missing)
-    .map(|name| json!({"name": name}))
-    .collect::<Vec<_>>();
+/// The 2026-07-28 catalog: the canonical eight, never the task compatibility tools.
+const CANONICAL_TOOLS: [&str; 8] = [
+    "unica.view",
+    "unica.apply",
+    "unica.resolve",
+    "unica.search",
+    "unica.check",
+    "unica.diff",
+    "unica.run",
+    "unica.docs",
+];
+
+/// A legacy `initialize` session: the canonical eight plus task compatibility.
+const LEGACY_TOOLS: [&str; 11] = [
+    "unica.view",
+    "unica.apply",
+    "unica.resolve",
+    "unica.search",
+    "unica.check",
+    "unica.diff",
+    "unica.run",
+    "unica.docs",
+    "unica.task.get",
+    "unica.task.result",
+    "unica.task.cancel",
+];
+
+fn tools_list_response(base: &[&str], missing: Option<&str>, extra_tools: &[&str]) -> String {
+    let tools = base
+        .iter()
+        .copied()
+        .chain(extra_tools.iter().copied())
+        .filter(|name| Some(*name) != missing)
+        .map(|name| json!({"name": name}))
+        .collect::<Vec<_>>();
     serde_json::to_string(&json!({
         "jsonrpc": "2.0",
         "id": 2,
@@ -289,10 +376,9 @@ fn a_runtime_that_never_answers_is_a_timeout_not_a_defect() {
     fs::write(&runtime, "#!/bin/sh\nexec sleep 5\n").unwrap();
     fs::set_permissions(&runtime, fs::Permissions::from_mode(0o755)).unwrap();
 
-    let error = verify_mcp_runtime(
+    let error = verify_runtime(
         &runtime,
         &root,
-        None,
         &root.join("private-provider-state"),
         Duration::from_millis(300),
     )

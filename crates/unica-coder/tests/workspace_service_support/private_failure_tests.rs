@@ -1,4 +1,4 @@
-use super::tests::{cleanup, test_context, test_record};
+use super::tests::{cleanup, test_context, test_record, ServiceTestContext};
 use super::*;
 use std::process::{Child, ExitStatus};
 use unica_process::mcp_session::failure_contracts::wait_for_controlled_stderr;
@@ -10,7 +10,7 @@ const CASE: &str = concat!(
     "::bsl_active_private_error_retains_safe_cause_before_cleanup"
 );
 
-struct OwnedContext(WorkspaceContext);
+struct OwnedContext(ServiceTestContext);
 
 impl Drop for OwnedContext {
     fn drop(&mut self) {

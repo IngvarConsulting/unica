@@ -1,0 +1,7 @@
+Группы команд (#2060, #2022): полная выгрузка 8.3.27.2342 без ConfigDumpInfo.xml: собрана в Конфигураторе и дополнена загрузкой
+LoadConfigFromFiles с обновлением базы.
+
+- ГруппаА (NavigationPanel) — значение свойства `Группа` общей команды КомандаА.
+- ГруппаБ (ActionsPanel) — упоминается только командными интерфейсами: Подсистема1 — GroupsOrder, CommandsPlacement (КомандаБ) и CommandsOrder (StandardCommand.Create справочника и КомандаБ); основной раздел — GroupsOrder, CommandsPlacement и CommandsOrder (КомандаБ).
+- ГруппаВ (FormCommandBar) — значение `Группа` команды Команда1 справочника Справочник1.
+- ГруппаГ (FormCommandBar) — упоминается только командной панелью формы Справочник1.ФормаСписка: Команда1 только с группой и StandardCommand.Create с группой и `DefaultVisible=false`. Третий элемент, КомандаА, без группы и настроек.

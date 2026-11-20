@@ -307,10 +307,6 @@ fn pure_event_source_resolver_fails_closed_for_unproved_event_layouts() {
         ),
         (
             SourceSetKind::Configuration,
-            "main:WebSocketClient.Телефония.Module.WebSocketClient.Event.OnMessage",
-        ),
-        (
-            SourceSetKind::Configuration,
             "main:CommonModule.ЗаказыСервер.Event.BeforeStart",
         ),
         (
@@ -370,9 +366,14 @@ fn pure_event_projectors_match_physical_view_service_event_nodes() {
             panic!("platform event must resolve to a module source")
         };
         let capability = profile.module_prefix_capability(&platform_at).unwrap();
-        let pure =
-            project_platform_event(&resolved.event_at, &resolved.module_at, capability, source)
-                .unwrap();
+        let pure = project_platform_event(
+            &resolved.event_at,
+            &resolved.module_at,
+            profile,
+            capability,
+            source,
+        )
+        .unwrap();
         let physical = fixture
             .view_service()
             .view(ViewRequest::new(&platform_at.to_string()).unwrap());
@@ -877,6 +878,7 @@ fn form_projection_uses_a_positive_nested_scalar_allowlist() {
 }
 
 /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
+/// rule: INV.SOURCE.LOCALIZED-STRING-NSTR
 #[test]
 fn form_metadata_has_its_own_descriptor_properties_and_resource_identity() {
     let fixture = RealReaderFixture::new();
@@ -922,7 +924,7 @@ fn form_metadata_has_its_own_descriptor_properties_and_resource_identity() {
         );
         assert_eq!(
             data["props"]["Synonym"],
-            json!({"kind":"localizedString","values":[{"language":"ru","content":"Описание формы"},{"language":"en","content":"Form declaration"}]})
+            "ru = 'Описание формы'; en = 'Form declaration'"
         );
         for (key, ru, en) in [
             (
@@ -932,10 +934,7 @@ fn form_metadata_has_its_own_descriptor_properties_and_resource_identity() {
             ),
             ("Explanation", "Пояснение", "Explanation"),
         ] {
-            assert_eq!(
-                data["props"][key],
-                json!({"kind":"localizedString","values":[{"language":"ru","content":ru},{"language":"en","content":en}]})
-            );
+            assert_eq!(data["props"][key], format!("ru = '{ru}'; en = '{en}'"));
         }
         assert!(data["limits"].as_array().unwrap().iter().any(|limit| limit
             .as_str()
@@ -959,14 +958,14 @@ fn form_metadata_has_its_own_descriptor_properties_and_resource_identity() {
             declaration["UsePurposes"],
             json!(["PlatformApplication", "MobilePlatformApplication"])
         );
-        // Localized text loses its observation wrapper, as node props do.
+        // Localized text is one NStr string, as node props are.
         assert_eq!(
             declaration["Synonym"],
-            json!([{"language":"ru","content":"Описание формы"},{"language":"en","content":"Form declaration"}])
+            "ru = 'Описание формы'; en = 'Form declaration'"
         );
         assert_eq!(
             declaration["Explanation"],
-            json!([{"language":"ru","content":"Пояснение"},{"language":"en","content":"Explanation"}])
+            "ru = 'Пояснение'; en = 'Explanation'"
         );
         assert!(declaration.get("uuid").is_none() && declaration.get("Name").is_none());
         assert!(root_data["limits"]

@@ -113,9 +113,9 @@ from tests.ci.form_runtime_diagnostics import WORKSPACE as FORM_RUNTIME_WORKSPAC
 from tests.ci.acceptance_profiles import (
     DIAGNOSTICS_WORKSPACE, SOURCE_WORKSPACES, SOURCE_WORKSPACE_PROFILES, SYMBOL_WORKSPACE, completed_delivery_call, isolated_environment,
     prepare_source_workspace, select_profile, HOST_CONTEXT_MISSING_WORKSPACE, missing_host_context_environment,
+    expand_format_axis, materialize_format, reference_tree,
 )
 
-from tests.ci.acceptance_pull_validation import WORKSPACE as PULL_VALIDATION_WORKSPACE
 
 REFUSAL_DICTIONARY = REPO_ROOT / "crates/unica-refusal/src/lib.rs"
 
@@ -285,9 +285,9 @@ def derive_source_sets(source: Path, workspace: Path) -> None:
     """Derive the format-probe source sets of `workspace-format/` from `src`.
 
     `v8project.yaml` of that fixture declares three sets and no `main`:
-    `newer` is the same tree with every 2.20 root rewritten to 2.21 (and the
+    `newer` is the same tree with every 2.20 root rewritten to 2.23 (and the
     Reports and XDTO packages dropped, because the strict read port cannot
-    open a 2.21 template wrapper), `older` is the same tree at 2.19 — the
+    open a 2.23 template wrapper), `older` is the same tree at 2.17 — the
     dump a platform before 8.3.27 wrote, which reads but cannot be edited —
     `nosupport` is `src` without
     `Ext/ParentConfigurations.bin`, and `unversioned` is `src` whose
@@ -314,13 +314,13 @@ def derive_source_sets(source: Path, workspace: Path) -> None:
                 path.write_bytes((b"\xef\xbb\xbf" if bom else b"") + rewritten.encode("utf-8"))
 
     def newer(path: Path, text: str) -> str:
-        text = text.replace('version="2.20"', 'version="2.21"')
+        text = text.replace('version="2.20"', 'version="2.23"')
         if path.name == "Configuration.xml":
             text = re.sub(r"<(Report|XDTOPackage)>[^<]+</\1>", "", text)
         return text
 
     def older(path: Path, text: str) -> str:
-        text = text.replace('version="2.20"', 'version="2.19"')
+        text = text.replace('version="2.20"', 'version="2.17"')
         if path.name == "Configuration.xml":
             text = re.sub(r"<(Report|XDTOPackage)>[^<]+</\1>", "", text)
         return text
@@ -843,6 +843,7 @@ class AcceptanceCorpusRunTests(unittest.TestCase):
         rule: INV.ANALYSIS.METADATA-DIAGNOSTIC-VERDICT
         rule: INV.APP.SUPPORT-STATE
         rule: INV.SOURCE.BORROWED-OBJECT-INHERITED-CONTENT
+        rule: INV.SOURCE.COMMAND-GROUP-REMOVAL
         rule: INV.SOURCE.EVENT-IMPLEMENTATION-PAIR
         rule: INV.SOURCE.FORM-EVENT-HANDLER-PARAMETERS
         rule: INV.SOURCE.MODULE-EVENT-STATE
@@ -905,15 +906,17 @@ def corpus_segments(corpus) -> list[list[tuple[int, dict]]]:
     """Split the corpus into the lives of its servers.
 
     A server serves neighbouring scenarios of one workspace in corpus order;
-    a scenario of another workspace or a publishing one ends it, and the
+    a scenario of another workspace or format, or a publishing one ends it, and the
     next scenario starts on a fresh server over the pristine fixture.  A
     segment is that life exactly, so it is independent of every other one
     and keeps the state its scenarios always saw."""
     segments: list[list[tuple[int, dict]]] = []
     closed = True
+    def fixture(scenario):
+        return scenario.get("workspace", corpus["workspace"]), scenario.get("format")
+
     for ordinal, scenario in enumerate(corpus["scenarios"]):
-        workspace = scenario.get("workspace", corpus["workspace"])
-        if closed or workspace != segments[-1][0][1].get("workspace", corpus["workspace"]):
+        if closed or fixture(scenario) != fixture(segments[-1][0][1]):
             segments.append([])
         segments[-1].append((ordinal, scenario))
         closed = scenario_publishes(scenario)
@@ -970,6 +973,28 @@ def packed_json_strings(value, path=""):
     return []
 
 
+def legacy_localized_values(value, path="/data"):
+    """Recognize old translation structures in the public view payload."""
+    if isinstance(value, dict):
+        if value.get("kind") == "localizedString":
+            yield f"{path}: localizedString must be a string in NStr form"
+            return
+        for key, item in value.items():
+            yield from legacy_localized_values(item, f"{path}/{key}")
+    elif isinstance(value, list):
+        if value and all(
+            isinstance(item, dict)
+            and set(item) == {"language", "content"}
+            and isinstance(item["language"], str)
+            and isinstance(item["content"], str)
+            for item in value
+        ):
+            yield f"{path}: a translation array must be a string in NStr form"
+            return
+        for index, item in enumerate(value):
+            yield from legacy_localized_values(item, f"{path}/{index}")
+
+
 def call_step(server, step, arguments, label, *, delivery=False):
     if step.get("awaitTask"):
         return completed_delivery_call(server, step["tool"], arguments, label, retry_pending_index=False)
@@ -985,14 +1010,18 @@ def run_corpus(test_case, corpus, plugin=None, scenario_driver=None, fixture_cle
     default_workspace = corpus["workspace"]
     if not corpus["scenarios"]:
         raise ValueError("selected acceptance profile is empty")
+    corpus = {**corpus, "scenarios": expand_format_axis(
+        corpus["scenarios"], default_workspace, SOURCE_WORKSPACE_PROFILES)}
     batches = corpus_batches(corpus, corpus_workers(plugin, scenario_driver))
     stop = threading.Event()
     segment_starts = {segment[0][0] for batch in batches for segment in batch}
 
-    def fresh_server(root: Path, generation: int, workspace_relative: str) -> AcceptanceServer:
+    def fresh_server(root: Path, generation: int, workspace_relative: str,
+                     export_format: str | None = None) -> AcceptanceServer:
         home = root / f"run-{generation}"
         workspace = home / "workspace"
         shutil.copytree(REPO_ROOT / workspace_relative, workspace)
+        materialize_format(workspace, export_format, REPO_ROOT / "tests/fixtures/acceptance")
         if workspace_relative == "tests/fixtures/acceptance/workspace-search-wide":
             # Reverse directory traversal reaches ZNoise before the BSL.
             # Generate the capacity probe in the disposable workspace.
@@ -1039,10 +1068,15 @@ def run_corpus(test_case, corpus, plugin=None, scenario_driver=None, fixture_cle
                     # scenario ends it, and the next one starts from the
                     # pristine fixture so results never depend on order.
                     generation += 1
-                    server = fresh_server(root, generation, wanted)
+                    server = fresh_server(root, generation, wanted, scenario.get("format"))
                 attempted.append(case_ordinal)
                 found: list[str] = []
                 context = {"workspace": server.workspace}
+                if scenario.get("format"):
+                    # File assertions compare the result with the export the
+                    # platform itself wrote in this format.
+                    context["reference"] = str(reference_tree(
+                        REPO_ROOT / "tests/fixtures/acceptance", scenario["format"]))
                 broken = False
                 finish = scenario_driver(server, scenario) if scenario_driver else None
                 verification = []
@@ -1089,6 +1123,7 @@ def run_corpus(test_case, corpus, plugin=None, scenario_driver=None, fixture_cle
                     failures = content_mismatches(step, structured, actual, note, server.workspace, context)
                     if step["tool"] == "unica.view":
                         failures.extend(packed_json_strings(structured))
+                        failures.extend(legacy_localized_values(structured.get("data")))
                     if not failures:
                         try:
                             candidate["captures"] = capture_values(step, structured, server.workspace, context)

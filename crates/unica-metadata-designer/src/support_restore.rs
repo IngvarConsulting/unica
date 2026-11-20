@@ -427,6 +427,7 @@ pub trait RestoreSupplierRead {
 
 #[derive(Debug)]
 pub struct RestoreSupportProof {
+    pub files: Vec<RestoreFileChange>,
     pub original_marker: Vec<u8>,
     pub locked_marker: Vec<u8>,
     pub suppliers_checked: usize,
@@ -434,13 +435,32 @@ pub struct RestoreSupportProof {
     pub suppliers: Vec<unica_metadata::support::RestorationSupplier>,
 }
 
-/// Prepares only the marker's new bytes. Publication remains with the proposal
-/// owner and its standard saved-plan fences; no conversion runs at execution.
-pub fn prove_support_restoration(
+#[derive(Debug)]
+pub struct RestoreFileChange {
+    pub path: PathBuf,
+    pub before: Option<Vec<u8>>,
+    pub after: Option<Vec<u8>>,
+}
+
+/// Lock-only entry point retained for callers that require equality.
+#[cfg(test)]
+fn prove_support_restoration(
     staged: &mut ApplyProposal<'_>,
     supplier: &dyn RestoreSupplierRead,
     target: &MetadataAddress,
     expected_format: &str,
+) -> Result<RestoreSupportProof, ApplyPlanError> {
+    plan_support_restoration(staged, supplier, target, expected_format, false)
+}
+
+/// Prepares the supplier files and marker bytes. Publication remains with the proposal
+/// owner and its standard saved-plan fences; no conversion runs at execution.
+pub fn plan_support_restoration(
+    staged: &mut ApplyProposal<'_>,
+    supplier: &dyn RestoreSupplierRead,
+    target: &MetadataAddress,
+    expected_format: &str,
+    replace_from_supplier: bool,
 ) -> Result<RestoreSupportProof, ApplyPlanError> {
     let invalid_state = |message| ApplyPlanError::new(ApplyPlanErrorKind::InvalidState, message);
     let marker_path = Path::new("Ext/ParentConfigurations.bin");
@@ -450,7 +470,7 @@ pub fn prove_support_restoration(
         .ok_or_else(|| invalid_state("the object has no vendor support to restore".to_string()))?;
     let records = restore_support_records(&original_marker)
         .map_err(|message| ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message))?;
-    let current = read_restore_object_image(staged, target, expected_format)?;
+    let mut current = read_restore_object_image(staged, target, expected_format)?;
     let vendors = records
         .vendors
         .iter()
@@ -473,6 +493,7 @@ pub fn prove_support_restoration(
         .map_err(|error| ApplyPlanError::staging(error, "at"))?
         .0;
     let mut spans = Vec::new();
+    let mut replacement: Option<RestoreObjectImage> = None;
     for (vendor, record) in &vendors {
         staged
             .checkpoint("supplier support comparison")
@@ -497,9 +518,15 @@ pub fn prove_support_restoration(
             })
             .collect::<Vec<_>>();
         if candidates.len() != 1 {
-            return Err(invalid_state(format!(
-                "support restoration needs exactly one supplier payload {filename}"
-            )));
+            let kind = if candidates.is_empty() {
+                ApplyPlanErrorKind::ProviderUnavailable
+            } else {
+                ApplyPlanErrorKind::InvalidState
+            };
+            return Err(ApplyPlanError::new(
+                kind,
+                format!("support restoration needs exactly one supplier payload {filename}"),
+            ));
         }
         // Retain the payload's byte/identity guard, not its complete CF body
         // in the prepared plan; conversion only needs these temporary bytes.
@@ -518,10 +545,27 @@ pub fn prove_support_restoration(
                     .to_string(),
             ));
         }
-        let different = current.different_files(&image);
-        if let Some(first) = different.first() {
-            use unica_source_contract::portable_path::PortablePathExt;
-            return Err(invalid_state(format!("support restoration requires byte-for-byte equality with every supplier; {} file(s) differ, starting with {}", different.len(), first.portable())));
+        if replace_from_supplier {
+            if !image.uuid().eq_ignore_ascii_case(current.uuid()) {
+                return Err(invalid_state(
+                    "replacement must preserve the current object's UUID".to_string(),
+                ));
+            }
+            if let Some(first) = &replacement {
+                if !first.different_files(&image).is_empty() {
+                    return Err(invalid_state(
+                        "supporting suppliers disagree on the object's file image".to_string(),
+                    ));
+                }
+            } else {
+                replacement = Some(image);
+            }
+        } else {
+            let different = current.different_files(&image);
+            if let Some(first) = different.first() {
+                use unica_source_contract::portable_path::PortablePathExt;
+                return Err(invalid_state(format!("support restoration requires byte-for-byte equality with every supplier; {} file(s) differ, starting with {}", different.len(), first.portable())));
+            }
         }
         spans.push(record.rule_span.clone());
     }
@@ -533,11 +577,45 @@ pub fn prove_support_restoration(
             text.replace_range(span, "0");
         }
     }
+    let mut files = Vec::new();
+    let files_per_supplier = replacement
+        .as_ref()
+        .map_or(current.files.len(), |image| image.files.len());
+    if let Some(mut replacement) = replacement {
+        let differences = current.different_files(&replacement);
+        let independently_supported = records
+            .vendors
+            .iter()
+            .flat_map(|vendor| &vendor.objects)
+            .map(|record| record.object_uuid.to_ascii_lowercase())
+            .filter(|uuid| !uuid.eq_ignore_ascii_case(current.uuid()))
+            .collect::<BTreeSet<_>>();
+        if let Some(path) = changed_supported_descendant(
+            &current,
+            &replacement,
+            &differences,
+            &independently_supported,
+        ) {
+            use unica_source_contract::portable_path::PortablePathExt;
+            return Err(invalid_state(format!(
+                "restore would change a descendant with its own supplier record at {}; restore that node separately",
+                path.portable()
+            )));
+        }
+        for path in differences {
+            files.push(RestoreFileChange {
+                before: current.files.remove(&path),
+                after: replacement.files.remove(&path),
+                path,
+            });
+        }
+    }
     Ok(RestoreSupportProof {
+        files,
         original_marker,
         locked_marker: text.into_bytes(),
         suppliers_checked: vendors.len(),
-        files_per_supplier: current.files.len(),
+        files_per_supplier,
         suppliers: vendors
             .iter()
             .map(|(vendor, _)| unica_metadata::support::RestorationSupplier {
@@ -549,6 +627,84 @@ pub fn prove_support_restoration(
     })
 }
 
+fn changed_supported_descendant(
+    current: &RestoreObjectImage,
+    replacement: &RestoreObjectImage,
+    differences: &[PathBuf],
+    supported: &BTreeSet<String>,
+) -> Option<PathBuf> {
+    if differences.is_empty() || supported.is_empty() {
+        return None;
+    }
+    fn records<'a>(
+        bytes: Option<&'a [u8]>,
+        supported: &BTreeSet<String>,
+    ) -> Vec<(Vec<String>, &'a str)> {
+        let Some(text) = bytes.and_then(|bytes| std::str::from_utf8(bytes).ok()) else {
+            return Vec::new();
+        };
+        let text = text.trim_start_matches('\u{feff}');
+        let Ok(doc) = roxmltree::Document::parse(text) else {
+            return Vec::new();
+        };
+        if !doc
+            .root_element()
+            .has_tag_name(("http://v8.1c.ru/8.3/MDClasses", "MetaDataObject"))
+        {
+            return Vec::new();
+        }
+        doc.descendants()
+            .filter_map(|node| {
+                let uuid = node.attribute("uuid")?.to_ascii_lowercase();
+                if !supported.contains(&uuid) {
+                    return None;
+                }
+                let owners = node
+                    .ancestors()
+                    .filter(|owner| owner.is_element())
+                    .map(|owner| {
+                        format!(
+                            "{}:{}",
+                            owner.tag_name().name(),
+                            owner.attribute("uuid").unwrap_or_default()
+                        )
+                    })
+                    .collect();
+                Some((owners, &text[node.range()]))
+            })
+            .collect()
+    }
+    for path in current
+        .files
+        .keys()
+        .chain(replacement.files.keys())
+        .collect::<BTreeSet<_>>()
+    {
+        if path.extension().and_then(|value| value.to_str()) != Some("xml") {
+            continue;
+        }
+        let before = records(current.files.get(path).map(Vec::as_slice), supported);
+        let after = records(replacement.files.get(path).map(Vec::as_slice), supported);
+        if before != after {
+            return Some(path.clone());
+        }
+        let subtree = path.with_extension("");
+        let has_independent_owner = current
+            .files
+            .get(path)
+            .and_then(|bytes| crate::support::support_root_uuid_from_bytes(bytes))
+            .is_some_and(|uuid| supported.contains(&uuid.to_ascii_lowercase()));
+        if has_independent_owner
+            && differences
+                .iter()
+                .any(|changed| changed.starts_with(&subtree))
+        {
+            return Some(path.clone());
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -558,6 +714,35 @@ mod tests {
     const EDITABLE: &[u8] = include_bytes!("../tests/fixtures/support-markers/editable.bin");
     const LOCKED: &[u8] = include_bytes!("../tests/fixtures/support-markers/locked.bin");
     const OFF: &[u8] = include_bytes!("../tests/fixtures/support-markers/off.bin");
+
+    #[test]
+    fn replacing_the_parent_refuses_changes_to_an_independently_supported_companion() {
+        let descriptor = PathBuf::from("Catalogs/Owner/Forms/Child.xml");
+        let module = PathBuf::from("Catalogs/Owner/Forms/Child/Ext/Form/Module.bsl");
+        let child = "2f0e0000-0000-4000-8000-000000000301";
+        let bytes = format!(r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><Form uuid="{child}"><Properties><Name>Child</Name></Properties></Form></MetaDataObject>"#).into_bytes();
+        let image = |body: &[u8]| RestoreObjectImage {
+            uuid: "2f0e0000-0000-4000-8000-000000000302".into(),
+            configuration: Default::default(),
+            files: BTreeMap::from([
+                (descriptor.clone(), bytes.clone()),
+                (module.clone(), body.to_vec()),
+            ]),
+        };
+        let current = image(b"before");
+        let supplied = image(b"after");
+        let supported = BTreeSet::from([child.to_owned()]);
+        assert_eq!(
+            changed_supported_descendant(
+                &current,
+                &supplied,
+                &current.different_files(&supplied),
+                &supported
+            ),
+            Some(descriptor)
+        );
+        assert!(changed_supported_descendant(&current, &current, &[], &supported).is_none());
+    }
 
     #[test]
     fn native_markers_retain_supplier_records_and_original_rule_spans() {
@@ -876,7 +1061,7 @@ mod tests {
                 read.files.insert(
                     PathBuf::from($path),
                     include_bytes!(concat!(
-                        "../../../tests/fixtures/platform_8_3_27/support-edit-bin-only/src/",
+                        "../../../tests/fixtures/formats/platform_xml/2.20/support-edit-bin-only/src/",
                         $path
                     ))
                     .to_vec(),

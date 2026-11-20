@@ -1,4 +1,6 @@
 include!(concat!(env!("OUT_DIR"), "/v13_read_port_modules.rs"));
+pub(crate) use editability::{attach_editability, own_rule, shows_editability};
+pub use editability::{NodeEditability, SupportReason};
 use metadata::identity_metadata_payload_from_evidence;
 pub(crate) use support::object_support_by_uuid;
 use support::{metadata_support_status, object_support_from_state, object_support_rule};
@@ -17,7 +19,7 @@ use unica_address::source_target::MetadataAddress;
 use unica_metadata::support_state::ObjectSupportState;
 use unica_metadata::validation_subject::MetadataChildProfile;
 use unica_refusal::{RefusalCode, RefusalDetail};
-use unica_source_contract::read::SourceDirectory;
+use unica_source_contract::read::{FileStamp, SourceDirectory};
 use unica_source_contract::SourceSetKind;
 use unica_source_designer::layout::{
     attached_resource_relative as shared_attached_resource_relative,
@@ -63,6 +65,9 @@ pub struct FormValidationInput {
     pub(crate) module: Option<String>,
     pub(crate) config_context: bool,
     pub(crate) metadata_owner: Option<NodeKind>,
+    /// Линия набора: она выбирает каталог возможных событий, с которым
+    /// проверка сверяет обработчики.
+    pub(crate) platform_line: Option<unica_source_contract::format_identity::PlatformLine>,
     pub(crate) format_guard: crate::application::ports::FormatGuardCheck,
 }
 
@@ -103,6 +108,9 @@ pub(crate) fn descriptor_uuid(descriptor: &[u8]) -> Option<uuid::Uuid> {
     uuid::Uuid::parse_str(text.get(start..start + 36)?).ok()
 }
 
+/// The stamps of the regular files of one directory, by name.
+type DirectoryStamps = Arc<std::collections::HashMap<std::ffi::OsString, FileStamp>>;
+
 /// One actor-issued read authority for one admitted source set. Reads are
 /// descriptor-relative to this retained directory; the snapshot identity is
 /// issued at admission and never derived from a scan of the source tree.
@@ -112,6 +120,9 @@ pub struct ProviderReadAuthority {
     source_set_kind: SourceSetKind,
     root: Arc<SourceDirectory>,
     snapshot_identity: String,
+    /// The same admitted Configuration.xml selects one reader strategy for
+    /// this operation, including every owner proof within its collection.
+    configuration_streaming: std::sync::OnceLock<bool>,
     /// A physical-path lookup may prove one external owner without enumerating
     /// unrelated artifacts. It never supplies a partial inventory payload.
     point_external_artifact:
@@ -129,6 +140,14 @@ pub struct ProviderReadAuthority {
     /// Open editor buffers of the session this read serves; a module with a
     /// buffer is read from it, never from its file.
     documents: Option<SessionDocuments>,
+    /// Stamps of the `xml` descriptors of one kind directory, taken in one pass per
+    /// operation (`None`: the directory could not be listed that way).
+    descriptor_stamps:
+        std::sync::Mutex<std::collections::HashMap<PathBuf, Option<DirectoryStamps>>>,
+    /// Whether descriptor stamps come from a pass over their directory: only
+    /// an operation that lists a whole kind does so; a read of one object
+    /// opens only its own files.
+    directory_stamps: std::sync::atomic::AtomicBool,
     #[cfg(any(test, feature = "test-support"))]
     module_source_reads: std::sync::Mutex<std::collections::BTreeMap<String, usize>>,
     #[cfg(any(test, feature = "test-support"))]
@@ -169,11 +188,14 @@ impl ProviderReadAuthority {
             source_set_kind,
             root,
             snapshot_identity,
+            configuration_streaming: std::sync::OnceLock::new(),
             point_external_artifact: None,
             artifacts: Arc::new(RegistrationCache::default()),
             support_state: std::sync::Mutex::new(None),
             external_artifacts: std::sync::Mutex::new(None),
             documents: None,
+            descriptor_stamps: std::sync::Mutex::new(std::collections::HashMap::new()),
+            directory_stamps: std::sync::atomic::AtomicBool::new(false),
             #[cfg(any(test, feature = "test-support"))]
             module_source_reads: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             #[cfg(any(test, feature = "test-support"))]
@@ -202,6 +224,129 @@ impl ProviderReadAuthority {
     pub fn with_artifacts(mut self, artifacts: Arc<RegistrationCache>) -> Self {
         self.artifacts = artifacts;
         self
+    }
+
+    /// Proves the descriptors of every registered top-level object once, in
+    /// the background, so the first page of a metadata branch finds them
+    /// retained. Runs once per retained artifact set; waits while an MCP call
+    /// executes and stops when the actor lets the artifacts go.
+    pub fn start_owner_warmup(&self) {
+        if !matches!(
+            self.source_set_kind,
+            SourceSetKind::Configuration | SourceSetKind::Extension
+        ) || !self.artifacts.claim_owner_warmup()
+        {
+            return;
+        }
+        let owner = Arc::downgrade(&self.artifacts);
+        let source_set = self.source_set.clone();
+        let identity = self.source_set_identity.clone();
+        let kind = self.source_set_kind;
+        let root = Arc::clone(&self.root);
+        std::thread::spawn(move || {
+            let wait = || loop {
+                if owner.strong_count() == 0 {
+                    return false;
+                }
+                if crate::infrastructure::name_index::foreground_calls() == 0 {
+                    return true;
+                }
+                std::thread::sleep(crate::infrastructure::name_index::NAME_INDEX_YIELD_POLL);
+            };
+            // A read holds the artifacts only while it proves one descriptor,
+            // so the actor can let them go between members.
+            let read = || {
+                let artifacts = owner.upgrade()?;
+                let mut read = Self::new_local_snapshot(
+                    source_set.clone(),
+                    identity.clone(),
+                    kind,
+                    Arc::clone(&root),
+                    String::new(),
+                );
+                read.artifacts = artifacts;
+                Some(read)
+            };
+            if !wait() {
+                return;
+            }
+            let Some(index) = read().and_then(|read| {
+                read.streamed_configuration_registration_index(&|| Ok(()))
+                    .ok()
+            }) else {
+                return;
+            };
+            for layout in unica_source_designer::layout::METADATA_KINDS {
+                let Ok(names) = index.names_for_kind(layout.tag, &|| Ok(())) else {
+                    continue;
+                };
+                for name in names {
+                    if !wait() {
+                        return;
+                    }
+                    let Ok(target) =
+                        MetadataAddress::parse_logical(&format!("{}.{name}", layout.tag))
+                    else {
+                        continue;
+                    };
+                    let Some(read) = read() else {
+                        return;
+                    };
+                    let _ = read.metadata_owner_evidence(&target, &mut || Ok(()));
+                    if layout.tag == NodeKind::CommonModule.as_str() {
+                        if let Ok(at) = unica_address::address::QualifiedAddress::parse(&format!(
+                            "{}:{}.{name}",
+                            read.source_set, layout.tag
+                        )) {
+                            let _ = read.common_module_synonym(&at);
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    /// The stamp of a descriptor before it is read, for the retained owner
+    /// facts: from one pass over its directory per operation, or from the
+    /// file itself when the directory cannot be listed that way. `None` when
+    /// the file is absent or unreadable; the caller then reads it uncached.
+    pub(crate) fn descriptor_stamp(&self, relative: &Path) -> Option<FileStamp> {
+        if self
+            .directory_stamps
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            if let (Some(parent), Some(name)) = (relative.parent(), relative.file_name()) {
+                let batch = {
+                    let mut batches = self.descriptor_stamps.lock().ok()?;
+                    batches
+                        .entry(parent.to_path_buf())
+                        .or_insert_with(|| {
+                            self.root
+                                .relative_directory_file_stamps_with_extension(
+                                    parent,
+                                    std::ffi::OsStr::new("xml"),
+                                )
+                                .ok()
+                                .flatten()
+                                .map(|stamps| Arc::new(stamps.into_iter().collect()))
+                        })
+                        .clone()
+                };
+                if let Some(batch) = batch {
+                    if let Some(stamp) = batch.get(name) {
+                        return Some(*stamp);
+                    }
+                }
+            }
+        }
+        self.root.relative_file_stamp(relative).ok().flatten()
+    }
+
+    /// This operation lists a whole kind: the stamps of its descriptors are
+    /// taken in one pass over the kind directory.
+    pub(crate) fn stamp_descriptors_by_directory(&self) {
+        self.directory_stamps
+            .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Reads modules of `documents` from their open buffers.
@@ -351,10 +496,12 @@ impl ProviderReadAuthority {
     /// for files that already fit the ordinary read. The streaming route is
     /// selected only when that read would refuse the file by total size.
     pub(crate) fn configuration_xml_requires_streaming(&self) -> bool {
-        self.root
-            .open_relative_regular_nofollow(Path::new("Configuration.xml"))
-            .and_then(|file| file.metadata())
-            .is_ok_and(|metadata| metadata.len() > CONFIGURATION_STREAMING_THRESHOLD_BYTES)
+        *self.configuration_streaming.get_or_init(|| {
+            self.root
+                .open_relative_regular_nofollow(Path::new("Configuration.xml"))
+                .and_then(|file| file.metadata())
+                .is_ok_and(|metadata| metadata.len() > CONFIGURATION_STREAMING_THRESHOLD_BYTES)
+        })
     }
 
     /// Заимствование объекта, чей сопутствующий файл расширение не несёт;
@@ -711,7 +858,7 @@ fn encode_export_path_components<'a>(
 }
 
 /// Read access of the LSP host to one admitted source set.
-impl unica_lsp::ModuleSourceRead for ProviderReadAuthority {
+impl unica_editor_analysis::ModuleSourceRead for ProviderReadAuthority {
     fn source_set(&self) -> &str {
         ProviderReadAuthority::source_set(self)
     }

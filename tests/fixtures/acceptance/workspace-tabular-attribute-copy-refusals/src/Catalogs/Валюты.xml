@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xs="http://www.w3.org/2001/XMLSchema" version="2.20">
+	<Catalog uuid="ade16579-f323-435e-b222-000000000010">
+		<Properties><Name>Валюты</Name></Properties>
+		<ChildObjects>
+			<TabularSection uuid="add16579-f323-435e-b222-000000000001">
+				<Properties><Name>Представления</Name></Properties>
+				<ChildObjects>
+					<Attribute uuid="ade16579-f323-435e-b222-000000000001">
+						<Properties>
+							<Name>Дубликат</Name>
+							<Comment></Comment>
+							<Type><v8:Type>xs:string</v8:Type></Type>
+						</Properties>
+					</Attribute>
+					<Attribute uuid="ade16579-f323-435e-b222-000000000002">
+						<Properties>
+							<Name>дубликат</Name>
+							<Comment></Comment>
+							<Type><v8:Type>xs:string</v8:Type></Type>
+						</Properties>
+					</Attribute>
+					<Attribute uuid="ade16579-f323-435e-b222-000000000003">
+						<Properties id="9">
+							<Name>ВложеннаяИдентичность</Name>
+							<Comment></Comment>
+							<Type><v8:Type>xs:string</v8:Type></Type>
+						</Properties>
+					</Attribute>
+					<Attribute uuid="ade16579-f323-435e-b222-000000000004">
+						<Properties>
+							<Name>СсылкаНаСебя</Name>
+							<Comment>catalog.валюты.tabularsection.представления.attribute.ссылканасебя</Comment>
+							<Type><v8:Type>xs:string</v8:Type></Type>
+						</Properties>
+					</Attribute>
+				</ChildObjects>
+			</TabularSection>
+			<TabularSection uuid="add16579-f323-435e-b222-000000000002">
+				<Properties><Name>Повтор</Name></Properties>
+				<ChildObjects>
+					<Attribute uuid="ade16579-f323-435e-b222-000000000005">
+						<Properties>
+							<Name>Поле</Name>
+							<Comment></Comment>
+							<Type><v8:Type>xs:string</v8:Type></Type>
+						</Properties>
+					</Attribute>
+				</ChildObjects>
+			</TabularSection>
+			<TabularSection uuid="add16579-f323-435e-b222-000000000003">
+				<Properties><Name>повтор</Name></Properties>
+				<ChildObjects>
+					<Attribute uuid="ade16579-f323-435e-b222-000000000006">
+						<Properties>
+							<Name>Поле</Name>
+							<Comment></Comment>
+							<Type><v8:Type>xs:string</v8:Type></Type>
+						</Properties>
+					</Attribute>
+				</ChildObjects>
+			</TabularSection>
+		</ChildObjects>
+	</Catalog>
+</MetaDataObject>

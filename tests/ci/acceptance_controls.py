@@ -171,6 +171,40 @@ def file_value(workspace, descriptor):
     return ["".join(node.itertext()) for node in nodes]
 
 
+def is_reference(operand):
+    return isinstance(operand, dict) and set(operand) == {"$reference"}
+
+
+def validate_reference(assertion, operand):
+    """`{"$reference": {"path", "select"}}` reads the same kind of value from
+    the reference export of the run's format."""
+    descriptor = operand["$reference"]
+    if assertion.get("kind") not in {"xml", "xmlTags"} or operator(assertion) not in {"eq", "notEq", "sameItems"}:
+        raise ValueError("a reference operand needs an xml or xmlTags eq, notEq or sameItems")
+    if not isinstance(descriptor, dict) or set(descriptor) != {"path", "select"}:
+        raise ValueError("a reference names exactly its path and select")
+    relative_file(descriptor["path"])
+    if not isinstance(descriptor["select"], str) or not descriptor["select"]:
+        raise ValueError("reference select must be nonempty")
+    ET.Element("root").findall(descriptor["select"])
+
+
+def resolve_reference(assertion, context):
+    """The assertion with a reference operand replaced by its value."""
+    op = operator(assertion)
+    operand = assertion[op]
+    if not is_reference(operand):
+        return assertion
+    validate_reference(assertion, operand)
+    if not context.get("reference"):
+        raise ValueError("a reference operand needs a run in a declared format")
+    descriptor = {**operand["$reference"], "kind": assertion["kind"]}
+    value = file_value(context["reference"], descriptor)
+    if not value:
+        raise ValueError(f"reference {descriptor['path']!r} selects nothing")
+    return {**assertion, op: value}
+
+
 def operator(assertion):
     names = OPERATORS & assertion.keys()
     if len(names) != 1:
@@ -292,7 +326,9 @@ def validate_controls(step, declared=None):
                 else:
                     raise ValueError("unknown file observation kind")
                 expected = assertion[op]
-                if not (isinstance(expected, str) and expected.startswith("$capture.")):
+                if is_reference(expected):
+                    validate_reference(assertion, expected)
+                elif not (isinstance(expected, str) and expected.startswith("$capture.")):
                     validate_file_operand(assertion, expected)
     captures = step.get("captures", {})
     if not isinstance(captures, dict):
@@ -366,6 +402,7 @@ def content_mismatches(step, structured, actual, note, workspace=None, context=N
             failures.append(f"JSON {assertion.get('pointer')!r}: {error}")
     for assertion in step.get("fileAssertions", []):
         try:
+            assertion = resolve_reference(assertion, context)
             validate_file_operand(assertion, substitute_capture(assertion[operator(assertion)], context))
             assert_value(file_value(workspace, assertion), assertion, context)
         except (ValueError, OSError, KeyError, TypeError, SyntaxError, ET.ParseError) as error:

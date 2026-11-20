@@ -11,7 +11,7 @@
             "op": "props.set",
             "args": {
               "values": {
-                "Synonym": "Важность проблемы"
+                "Synonym": "ru = 'Важность проблемы'"
               }
             }
           }

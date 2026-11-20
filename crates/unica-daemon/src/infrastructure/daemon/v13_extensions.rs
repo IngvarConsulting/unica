@@ -3,12 +3,13 @@
 //! Even inventory starts a platform session, so every operation is previewApply.
 
 use super::protocol::InvocationRequest;
-use super::runner_015::Runner015ProcessRunner;
 use super::v13_infobase_exports::{
     digest_optional_workspace_file, digest_required_workspace_file, missing_runner_rejection,
-    resolve_bundled_runner, runner_rejection, runner_start_rejection, valid_1c_identifier,
-    validate_provider_receipt, CONFIG_NAME, LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
+    resolve_bundled_runner, runner_envelope_refusal, runner_rejection, runner_start_rejection,
+    valid_1c_identifier, validate_provider_receipt, CONFIG_NAME, LOCAL_CONFIG_NAME,
+    RUNNER_OUTPUT_LIMIT,
 };
+use super::v13_source_import::INFOBASE_NAME;
 use crate::infrastructure::workspace::discover_workspace;
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
@@ -16,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use unica_artifact_delivery::engine::BundledTool;
 use unica_execution::invocation_store::ToolIdentity;
-use unica_execution_contract::invocation::{DomainResult, SafeIdentityHash};
+use unica_execution_contract::invocation::{DomainResult, HumanChoice, SafeIdentityHash};
 use unica_process::runner::{ProcessCommand, ProcessRunner};
 use unica_redaction::redactor;
 use unica_refusal::RefusalCode;
@@ -77,6 +78,8 @@ pub(super) struct PreparedExtensions {
     args: Map<String, Value>,
     dry_run: bool,
     context: WorkspaceContext,
+    /// The call as made: a question about the busy infobase repeats it.
+    call: Map<String, Value>,
 }
 pub(super) enum Preparation {
     NotApplicable,
@@ -133,11 +136,25 @@ impl PreparedExtensions {
                     format!("workspace discovery failed: {error}"),
                 )
             })?;
+        // Удаление расширения стирает его данные в базе и исполняется только с
+        // согласия человека. Вопрос задаётся до допуска: вызов, ушедший в
+        // фоновую задачу, спросить уже не может. Превью не спрашивает.
+        if operation == Operation::Delete && !dry_run {
+            let extension = args["delete"].as_str().unwrap_or_default();
+            if !HumanChoice::is_confirmed(
+                &extension_delete_question(extension),
+                "unica.run",
+                request.arguments(),
+            ) {
+                return Err(extension_delete_unconfirmed(extension, request.arguments()));
+            }
+        }
         Ok(Self {
             operation,
             args: args.clone(),
             dry_run,
             context,
+            call: request.arguments().clone(),
         })
     }
     pub(super) fn workspace_identity_hash(&self) -> SafeIdentityHash {
@@ -147,15 +164,21 @@ impl PreparedExtensions {
         SafeIdentityHash::from_sha256(hasher.finalize().into())
     }
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
-        match resolve_bundled_runner(&self.context.cwd) {
-            Ok(resolved) => self.execute_with(
-                &Runner015ProcessRunner,
-                &resolved.tool,
-                &resolved.version,
-                cancellation,
-            ),
-            Err(message) => missing_runner_rejection(Some(self.operation.name().into()), message),
-        }
+        let result = super::runner::with_bundled_runner(
+            &self.context.workspace_root,
+            &self.context.cwd,
+            self.operation.name(),
+            cancellation,
+            |runner, cancellation| match resolve_bundled_runner(&self.context.cwd) {
+                Ok(resolved) => {
+                    self.execute_with(runner, &resolved.tool, &resolved.version, cancellation)
+                }
+                Err(message) => {
+                    missing_runner_rejection(Some(self.operation.name().into()), message)
+                }
+            },
+        );
+        super::v13_infobase_sessions::bind_to_call(result, &self.call)
     }
 
     fn fail(&self, code: RefusalCode, message: impl Into<String>) -> DomainResult {
@@ -341,13 +364,17 @@ impl PreparedExtensions {
             let code = envelope["error"]["code"]
                 .as_str()
                 .unwrap_or("provider_failed");
-            return Err(runner_rejection(
-                Some(self.operation.name().into()),
-                code,
-                envelope["error"]["message"]
-                    .as_str()
-                    .map(|message| published_runner_error(self.operation, code, message))
-                    .unwrap_or_else(|| "v8-runner failed without a typed message".into()),
+            return Err(runner_envelope_refusal(
+                runner_rejection(
+                    Some(self.operation.name().into()),
+                    code,
+                    envelope["error"]["layer"].as_str(),
+                    envelope["error"]["message"]
+                        .as_str()
+                        .map(|message| published_runner_error(self.operation, code, message))
+                        .unwrap_or_else(|| "v8-runner failed without a typed message".into()),
+                ),
+                &envelope,
             ));
         }
         Ok(envelope)
@@ -395,7 +422,7 @@ impl PreparedExtensions {
                 for item in items {
                     let name = item["name"]
                         .as_str()
-                        .filter(|v| valid_1c_identifier(v))
+                        .filter(|v| valid_inventory_name(v))
                         .ok_or_else(|| invalid("extension record has no valid name"))?;
                     if !names.insert(name) || !valid_inventory_record(item) {
                         return Err(invalid(
@@ -455,6 +482,18 @@ impl PreparedExtensions {
             ));
         }
 
+        if !self.dry_run
+            && !self.operation.reads()
+            && !super::v13_infobase_another_copy::consented(&self.call)
+        {
+            if let Some(refusal) = super::v13_infobase_another_copy::refusal_for(
+                self.operation.name(),
+                &preview,
+                &self.call,
+            ) {
+                return Err(refusal);
+            }
+        }
         let plan = json!({"op":self.operation.name(),"args":self.args,"target":target,"provider":receipt["selected"],"providerOrigin":receipt["origin"]["kind"],"requiresPlatform":true,"deletesExtensionData":self.operation == Operation::Delete});
         if self.dry_run {
             let mut result =
@@ -462,7 +501,7 @@ impl PreparedExtensions {
             result.data = Some(json!({"op":self.operation.name(),"dryRun":true,"plan":plan}));
 
             result.next.push(json!({"tool":"unica.run","args":{"op":self.operation.name(),"args":self.args,"dryRun":false},"reason":"execute with the current arguments; preview does not inspect infobase state"}));
-            super::v13_infobase_exports::note_another_copy(&mut result, &preview);
+            super::v13_infobase_exports::note_runner_warnings(&mut result, &preview);
             return Ok(result);
         }
         let applied = self.invoke(runner, tool, &cancellation, false)?;
@@ -494,7 +533,7 @@ impl PreparedExtensions {
             );
         }
         result.data = Some(data);
-        super::v13_infobase_exports::note_another_copy(&mut result, &applied);
+        super::v13_infobase_exports::note_runner_warnings(&mut result, &applied);
 
         Ok(result)
     }
@@ -525,7 +564,33 @@ fn validate_arguments(op: Operation, args: &Map<String, Value>) -> Result<(), &'
     }
     Ok(())
 }
+/// Имя установленного расширения передаётся таким, каким его вернула
+/// платформа: оно не обязано быть идентификатором 1С и может содержать точку
+/// (#3238). Ответ раннера отклоняется только при пустом имени, имени длиннее
+/// текстового поля записи или с управляющими символами.
+fn valid_inventory_name(name: &str) -> bool {
+    !name.trim().is_empty()
+        && name.len() <= EXTENSION_FIELD_BYTES
+        && !name.chars().any(char::is_control)
+}
+
+// resource-limit: extensions.field-bytes
+// class: format
+// unit: bytes
+// scope: record
+// value: 4096
+// resource: Байты одного текстового поля записи расширения (имя, синоним, префикс и др.) в ответе раннера.
+// status: unproven
+// origin: неизвестно
+// problem: неизвестно
+// on-reach: запись с длинным полем считается некорректным ответом раннера
+const EXTENSION_FIELD_BYTES: usize = 4096;
 fn valid_inventory_record(item: &Value) -> bool {
+    // Пакетный Конфигуратор называет только имя расширения (раннер 0.17,
+    // `ExtensionInventoryEntry::NameOnly`).
+    if name_only_record(item) {
+        return true;
+    }
     [
         "active",
         "safe_mode",
@@ -534,32 +599,37 @@ fn valid_inventory_record(item: &Value) -> bool {
     ]
     .iter()
     .all(|k| item[k].is_boolean())
-        && ["purpose", "scope", "hash_sum"]
-            .iter()
-            // resource-limit: extensions.field-bytes
-            // class: format
-            // unit: bytes
-            // scope: record
-            // value: 4096
-            // literal: len() <= 4096
-            // count: 3
-            // expr: 4096
-            // resource: Байты одного текстового поля записи расширения (имя, синоним, префикс и др.) в ответе раннера.
-            // status: unproven
-            // origin: неизвестно
-            // problem: неизвестно
-            // on-reach: запись с длинным полем считается некорректным ответом раннера
-            .all(|k| item[k].as_str().is_some_and(|v| v.len() <= 4096))
-        && ["version", "security_profile_name"]
-            .iter()
-            .all(|k| item[k].is_null() || item[k].as_str().is_some_and(|v| v.len() <= 4096))
+        && ["purpose", "scope", "hash_sum"].iter().all(|k| {
+            item[k]
+                .as_str()
+                .is_some_and(|v| v.len() <= EXTENSION_FIELD_BYTES)
+        })
+        && ["version", "security_profile_name"].iter().all(|k| {
+            item[k].is_null()
+                || item[k]
+                    .as_str()
+                    .is_some_and(|v| v.len() <= EXTENSION_FIELD_BYTES)
+        })
         && item.get("name_prefix").is_some_and(|prefix| {
-            prefix.is_null() || prefix.as_str().is_some_and(|value| value.len() <= 4096)
+            prefix.is_null()
+                || prefix
+                    .as_str()
+                    .is_some_and(|value| value.len() <= EXTENSION_FIELD_BYTES)
         })
 }
+/// A record of batch Designer: the name and nothing else.
+fn name_only_record(item: &Value) -> bool {
+    item.as_object()
+        .is_some_and(|record| record.len() == 1 && record.contains_key("name"))
+}
+
 /// The runner's text fields pass through the secret redactor: a record is
-/// provider prose like any other (#2124).
+/// provider prose like any other (#2124). A record of batch Designer passes as
+/// the name alone: the other facts are not known.
 fn public_record(item: &Value) -> Value {
+    if name_only_record(item) {
+        return json!({"name": item["name"]});
+    }
     let text = |key: &str| match item[key].as_str() {
         Some(value) => Value::String(redactor(value)),
         None => item[key].clone(),
@@ -568,6 +638,40 @@ fn public_record(item: &Value) -> Value {
 }
 fn rejection(operation: Operation, code: RefusalCode, message: impl Into<String>) -> DomainResult {
     DomainResult::canonical_rejection(Some(operation.name().into()), code, message)
+}
+
+/// Код вопроса об удалении расширения: по нему клиент рисует свой экран.
+const EXTENSION_DELETE_CODE: &str = "extension.delete";
+
+/// Согласованный текст вопроса об удалении расширения.
+fn extension_delete_question(extension: &str) -> String {
+    format!("Удалить расширение «{extension}» из базы «{INFOBASE_NAME}»?")
+}
+
+/// Подтверждение удаления расширения этим же вызовом: надпись варианта и то,
+/// что пропадёт, согласованы и закреплены тестом.
+fn extension_delete_confirmation(extension: &str, call: &Map<String, Value>) -> HumanChoice {
+    HumanChoice::confirmation(
+        EXTENSION_DELETE_CODE,
+        extension_delete_question(extension),
+        "Удалить расширение",
+        "данные расширения в базе пропадут",
+        "unica.run",
+        call,
+    )
+    .with_data(json!({"infobase": INFOBASE_NAME, "extension": extension}))
+}
+
+/// Отказ `cancelled` без согласия человека: база не тронута. Клиенту, который
+/// умеет спрашивать, дверь задаёт вопрос; остальным исполняет вызов как прежде.
+fn extension_delete_unconfirmed(extension: &str, call: &Map<String, Value>) -> DomainResult {
+    let mut result = rejection(
+        Operation::Delete,
+        RefusalCode::Cancelled,
+        "deleting an installed extension erases its data in the infobase and runs only with the person's confirmation; it was not given, and the infobase is unchanged",
+    );
+    result.human_choice = Some(Box::new(extension_delete_confirmation(extension, call)));
+    result
 }
 
 #[cfg(test)]
@@ -664,7 +768,7 @@ mod tests {
         let result = prepared.execute_with(
             &SequenceRunner::new(vec![envelope(&prepared, true)]),
             &tool(root.path()),
-            super::super::runner_015::VERSION,
+            super::super::runner::VERSION,
             CancellationToken::new(),
         );
         assert!(result.ok);
@@ -685,7 +789,7 @@ mod tests {
             let result = prepared.execute_with(
                 &runner,
                 &tool,
-                super::super::runner_015::VERSION,
+                super::super::runner::VERSION,
                 CancellationToken::new(),
             );
             assert!(result.ok, "{result:?}");
@@ -701,7 +805,7 @@ mod tests {
             let result = prepared.execute_with(
                 &runner,
                 &tool,
-                super::super::runner_015::VERSION,
+                super::super::runner::VERSION,
                 CancellationToken::new(),
             );
             assert!(result.ok, "{op:?}: {result:?}");
@@ -731,7 +835,7 @@ mod tests {
             let preview = p.execute_with(
                 &SequenceRunner::new(vec![envelope(&p, true)]),
                 &tool,
-                super::super::runner_015::VERSION,
+                super::super::runner::VERSION,
                 CancellationToken::new(),
             );
             assert!(preview.ok);
@@ -757,7 +861,7 @@ mod tests {
             let version = if change == "version" {
                 "0.11.1"
             } else {
-                super::super::runner_015::VERSION
+                super::super::runner::VERSION
             };
             let result = p.execute_with(&runner, &tool, version, CancellationToken::new());
             assert!(result.ok, "{change}: {result:?}");
@@ -810,6 +914,64 @@ mod tests {
     }
     /// rule: INV.RUNTIME.EXTENSION-RESULT
     #[test]
+    fn inventory_keeps_platform_names_with_dots_and_rejects_missing_names() {
+        let root = tempfile::tempdir().unwrap();
+        let mut prepared = fixture(root.path(), Operation::List);
+        let preview = envelope(&prepared, true);
+        let mut applied = envelope(&prepared, false);
+        let mut plain = record();
+        plain["name"] = json!("ДемоДокумент");
+        let mut dotted = record();
+        dotted["name"] = json!("Демо.Документ");
+        applied["data"]["extensions"] = json!([plain, dotted]);
+        let tool = tool(root.path());
+        prepared.dry_run = false;
+        let result = prepared.execute_with(
+            &SequenceRunner::new(vec![preview, applied]),
+            &tool,
+            super::super::runner::VERSION,
+            CancellationToken::new(),
+        );
+        assert!(result.ok, "{result:?}");
+        let data = result.data.unwrap();
+        let names: Vec<_> = data["extensions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["name"].clone())
+            .collect();
+        assert_eq!(names, [json!("ДемоДокумент"), json!("Демо.Документ")]);
+
+        let p = fixture(root.path(), Operation::List);
+        for name in [
+            None,
+            Some(json!("")),
+            Some(json!("  ")),
+            Some(json!(42)),
+            Some(json!(
+                "A
+B"
+            )),
+        ] {
+            let mut wrong = envelope(&p, false);
+            let item = wrong["data"]["extensions"][0].as_object_mut().unwrap();
+            match name {
+                Some(name) => {
+                    item.insert("name".into(), name);
+                }
+                None => {
+                    item.remove("name");
+                }
+            }
+            let refusal = p.validate(&wrong, false).unwrap_err();
+            assert_eq!(
+                refusal.diagnostics[0]["code"], "invalid_result",
+                "{refusal:?}"
+            );
+        }
+    }
+    /// rule: INV.RUNTIME.EXTENSION-RESULT
+    #[test]
     fn installed_prefix_keeps_known_value_empty_value_and_unknown_distinct() {
         for (prefix, available) in [
             (json!("A8_"), true),
@@ -827,7 +989,7 @@ mod tests {
             let result = prepared.execute_with(
                 &SequenceRunner::new(vec![preview, applied]),
                 &tool,
-                super::super::runner_015::VERSION,
+                super::super::runner::VERSION,
                 CancellationToken::new(),
             );
             assert!(result.ok, "{result:?}");
@@ -858,7 +1020,7 @@ mod tests {
             let result = prepared.execute_with(
                 &SequenceRunner::new(vec![preview, applied]),
                 &tool,
-                super::super::runner_015::VERSION,
+                super::super::runner::VERSION,
                 CancellationToken::new(),
             );
             assert!(result.ok, "{result:?}");
@@ -866,6 +1028,28 @@ mod tests {
             assert_eq!(data["namePrefixAvailable"], false);
             assert_eq!(data["extensions"].as_array().unwrap().len(), prefixes.len());
         }
+        // Пакетный Конфигуратор (раннер 0.17) называет только имя: запись
+        // принимается и передаётся одним именем.
+        let root = tempfile::tempdir().unwrap();
+        let mut prepared = fixture(root.path(), Operation::List);
+        let preview = envelope(&prepared, true);
+        let mut applied = envelope(&prepared, false);
+        applied["data"]["extensions"] = json!([{"name": "Sales"}, {"name": "Audit"}]);
+        let tool = tool(root.path());
+        prepared.dry_run = false;
+        let result = prepared.execute_with(
+            &SequenceRunner::new(vec![preview, applied]),
+            &tool,
+            super::super::runner::VERSION,
+            CancellationToken::new(),
+        );
+        assert!(result.ok, "{result:?}");
+        let data = result.data.unwrap();
+        assert_eq!(
+            data["extensions"],
+            json!([{"name": "Sales"}, {"name": "Audit"}])
+        );
+        assert_eq!(data["namePrefixAvailable"], false);
     }
     /// rule: INV.RUNTIME.EXTENSION-OPERATIONS
     #[test]
@@ -913,7 +1097,7 @@ mod tests {
         let receipt = p1.execute_with(
             &SequenceRunner::new(vec![envelope(&p1, true)]),
             &tool(first.path()),
-            super::super::runner_015::VERSION,
+            super::super::runner::VERSION,
             CancellationToken::new(),
         );
         p2.dry_run = false;
@@ -922,7 +1106,7 @@ mod tests {
         let result = p2.execute_with(
             &runner,
             &tool(second.path()),
-            super::super::runner_015::VERSION,
+            super::super::runner::VERSION,
             CancellationToken::new(),
         );
         assert!(
@@ -945,7 +1129,7 @@ mod tests {
         let result = p.execute_with(
             &SequenceRunner::new(vec![envelope(&p, true)]),
             &tool(root.path()),
-            super::super::runner_015::VERSION,
+            super::super::runner::VERSION,
             CancellationToken::new(),
         );
         assert!(result.ok);
@@ -1033,16 +1217,27 @@ mod tests {
         let result = p.execute_with(
             &SequenceRunner::new(vec![preview.clone()]),
             &tool(root.path()),
-            super::super::runner_015::VERSION,
+            super::super::runner::VERSION,
             CancellationToken::new(),
         );
         assert!(result.ok, "{result:?}");
         super::super::v13_source_import::tests::assert_another_copy_is_named(&result);
+        // Исполнение без согласия человека отменяется с вопросом: база не тронута.
         p.dry_run = false;
+        let refused = p.execute_with(
+            &SequenceRunner::new(vec![preview.clone()]),
+            &tool(root.path()),
+            super::super::runner::VERSION,
+            CancellationToken::new(),
+        );
+        assert_eq!(refused.diagnostics[0]["code"], "cancelled", "{refused:?}");
+        let choice = refused.human_choice.as_deref().expect("a question");
+        assert_eq!(choice.code, "infobase.another_copy");
+        p.call = choice.options[0].arguments.clone();
         let result = p.execute_with(
             &SequenceRunner::new(vec![preview, applied]),
             &tool(root.path()),
-            super::super::runner_015::VERSION,
+            super::super::runner::VERSION,
             CancellationToken::new(),
         );
         assert!(result.ok, "{result:?}");
@@ -1060,7 +1255,7 @@ mod tests {
             !p.execute_with(
                 &runner,
                 &tool(root.path()),
-                super::super::runner_015::VERSION,
+                super::super::runner::VERSION,
                 cancellation
             )
             .ok
@@ -1077,7 +1272,7 @@ mod tests {
         let result = p.execute_with(
             &runner,
             &tool(root.path()),
-            super::super::runner_015::VERSION,
+            super::super::runner::VERSION,
             CancellationToken::new(),
         );
         assert!(!result.ok);
@@ -1097,7 +1292,7 @@ mod tests {
                 "error": {"code": "invalid_argument", "message": known}
             })]),
             &tool(root.path()),
-            super::super::runner_015::VERSION,
+            super::super::runner::VERSION,
             CancellationToken::new(),
         );
         assert!(!exact.ok);
@@ -1116,7 +1311,7 @@ mod tests {
                     "error": {"code": code, "message": known}
                 })]),
                 &tool(root.path()),
-                super::super::runner_015::VERSION,
+                super::super::runner::VERSION,
                 CancellationToken::new(),
             );
             assert!(
@@ -1136,7 +1331,7 @@ mod tests {
                     "error": {"code": "invalid_argument", "message": message}
                 })]),
                 &tool(root.path()),
-                super::super::runner_015::VERSION,
+                super::super::runner::VERSION,
                 CancellationToken::new(),
             );
             let published = serde_json::to_string(&result).unwrap();
@@ -1163,5 +1358,86 @@ mod tests {
             assert_eq!(child.is_cancelled(), operation.reads());
             assert_eq!(cancellation.protected_process_started(), !operation.reads());
         }
+    }
+
+    /// Исполняемое удаление расширения идёт только с согласия человека. Без
+    /// него — отказ `cancelled` с вопросом-подтверждением по согласованному
+    /// тексту. Подтверждение годится только для того же расширения. Превью не
+    /// спрашивает.
+    /// rule: INV.RUNTIME.DESTRUCTIVE-CONFIRMATION
+    /// rule: INV.RUNTIME.EXTENSION-OPERATIONS
+    /// rule: INV.MCP.HUMAN-CHOICE
+    #[test]
+    fn an_executing_extension_delete_runs_only_with_the_persons_confirmation() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            root.path().join(CONFIG_NAME),
+            "format: DESIGNER\ninfobase:\n  connection: 'File=base'\n",
+        )
+        .unwrap();
+        let request = |arguments: Value| {
+            InvocationRequest::new(
+                ToolIdentity::Run,
+                arguments,
+                root.path().display().to_string(),
+                7_000,
+            )
+            .unwrap()
+        };
+        let call = json!({"op": "push", "args": {"delete": "Тест"}, "dryRun": false});
+
+        let Err(refused) = PreparedExtensions::parse(&request(call.clone()), Operation::Delete)
+        else {
+            panic!("a delete without a confirmation is not executed");
+        };
+        assert_eq!(refused.diagnostics[0]["code"], "cancelled");
+        let choice = refused.human_choice.as_deref().expect("a confirmation");
+        // Надписи согласованы: менять их — только вместе с этим тестом.
+        assert_eq!(choice.code, "extension.delete");
+        assert_eq!(
+            choice.question,
+            "Удалить расширение «Тест» из базы «origin»?"
+        );
+        assert!(choice.proceeds_unasked);
+        assert_eq!(choice.options.len(), 1);
+        assert_eq!(choice.options[0].title, "Удалить расширение");
+        assert_eq!(
+            choice.options[0].description,
+            "данные расширения в базе пропадут"
+        );
+        assert_eq!(
+            choice.data,
+            Some(json!({"infobase": "origin", "extension": "Тест"}))
+        );
+        assert_eq!(
+            Value::Object(unica_execution_contract::invocation::without_confirmation(
+                &choice.options[0].arguments
+            )),
+            call
+        );
+
+        let confirmed = choice.options[0].arguments.clone();
+        let Ok(executed) = PreparedExtensions::parse(
+            &request(Value::Object(confirmed.clone())),
+            Operation::Delete,
+        ) else {
+            panic!("a confirmed delete is executed");
+        };
+        assert!(!executed.dry_run);
+
+        // Согласие на одно расширение не удаляет другое.
+        let mut other = confirmed;
+        other["args"]["delete"] = json!("Другое");
+        assert!(
+            PreparedExtensions::parse(&request(Value::Object(other)), Operation::Delete).is_err()
+        );
+
+        let Ok(preview) = PreparedExtensions::parse(
+            &request(json!({"op": "push", "args": {"delete": "Тест"}, "dryRun": true})),
+            Operation::Delete,
+        ) else {
+            panic!("a preview is not asked");
+        };
+        assert!(preview.dry_run);
     }
 }

@@ -16,6 +16,8 @@ const ITEM_SCALAR_KEYS: &[&str] = &[
     "denyIncompleteValues",
     "fillValue",
     "addressingDimension",
+    // Цвет значения перечисления — с 8.5.1 (формат 2.21).
+    "color",
     "incomplete",
     "template",
     "httpMethod",
@@ -121,8 +123,13 @@ pub(super) fn metadata_item_node(
             .rev()
             .nth(1)
             .is_some_and(|segment| segment.kind() == NodeKind::TabularSection);
-        let allowed = if tabular {
+        let allowed: &[&str] = if tabular {
             unica_metadata::META_STANDARD_ATTRIBUTE_PROPERTY_NAMES
+        } else if matches!(address.segments(), [owner, member]
+            if owner.kind() == NodeKind::Catalog && owner.name().is_some()
+            && member.kind() == NodeKind::StandardAttribute && member.name() == Some("Owner"))
+        {
+            &["Synonym", "ToolTip", "FillChecking", "FillFromFillingValue"]
         } else {
             &["Synonym", "ToolTip", "FillChecking"]
         };
@@ -151,6 +158,22 @@ pub(super) fn metadata_item_node(
                 true,
                 &format!("metadata standard attribute property {key}"),
             );
+        }
+    }
+    if kind == NodeKind::StandardTabularSection {
+        for (field, key) in [("synonym", "Synonym"), ("toolTip", "ToolTip")] {
+            if let Some(values) = item.get(field) {
+                let observed = serde_json::json!({"kind": "localizedString", "values": values});
+                place_prop(
+                    &mut props,
+                    &mut limits,
+                    address,
+                    key,
+                    &observed,
+                    true,
+                    &format!("metadata standard tabular section property {key}"),
+                );
+            }
         }
     }
     for key in [
@@ -228,8 +251,9 @@ pub(super) fn metadata_item_node(
         kind.as_str(),
         item.get("synonym")
             .and_then(Value::as_str)
-            .or_else(|| item.get("name").and_then(Value::as_str))
-            .unwrap_or(kind.as_str()),
+            .and_then(super::super::localized_display_text)
+            .or_else(|| item.get("name").and_then(Value::as_str).map(str::to_string))
+            .unwrap_or_else(|| kind.as_str().to_string()),
         props,
     )
     .with_branches(branches)
