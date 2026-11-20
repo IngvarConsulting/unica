@@ -1,13 +1,19 @@
 use serde_json::Value;
 use unica_address::address::NodeKind;
 
-/// Ветви объекта в порядке дерева Конфигуратора: измерения, ресурсы,
+/// Ветви объекта в порядке дерева Конфигуратора: таблицы, кубы и функции
+/// внешнего источника, таблицы измерения куба, поля, измерения, ресурсы,
 /// реквизиты, табличные части, признаки учёта, значения, графы, перерасчёты, операции,
 /// шаблоны URL, затем формы, команды и макеты. Стандартные реквизиты и
 /// табличные части идут за своими видами; характеристики и предопределённые
 /// элементы, которых дерево не показывает, — в конце.
 pub(super) fn metadata_branch_kinds() -> &'static [NodeKind] {
     &[
+        NodeKind::Table,
+        NodeKind::Cube,
+        NodeKind::Function,
+        NodeKind::DimensionTable,
+        NodeKind::Field,
         NodeKind::Dimension,
         NodeKind::Resource,
         NodeKind::Attribute,
@@ -47,6 +53,11 @@ pub(super) fn metadata_collection(payload: &Value, kind: NodeKind) -> Option<&Va
         // рядом: при урезанной странице длина массива соврала бы.
         NodeKind::PredefinedItem => payload.get("predefinedItems")?.get("items"),
         NodeKind::TabularSection => collections.get("tabularSections"),
+        NodeKind::Table => collections.get("tables"),
+        NodeKind::Cube => collections.get("cubes"),
+        NodeKind::Function => collections.get("functions"),
+        NodeKind::DimensionTable => collections.get("dimensionTables"),
+        NodeKind::Field => collections.get("fields"),
         NodeKind::Dimension => collections.get("dimensions"),
         NodeKind::Resource => collections.get("resources"),
         NodeKind::Recalculation => collections.get("recalculations"),

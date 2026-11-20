@@ -88,6 +88,10 @@ const PROFILE: &[(&str, &[(&str, Fact)])] = &[
     ),
     ("IntegrationService", &[("Synonym", Fact::Localized)]),
     ("WSReference", &[("Synonym", Fact::Localized)]),
+    ("ExternalDataSource", &[("Synonym", Fact::Localized)]),
+    ("Table", &[("Synonym", Fact::Localized)]),
+    ("Cube", &[("Synonym", Fact::Localized)]),
+    ("DimensionTable", &[("Synonym", Fact::Localized)]),
 ];
 
 /// Виды, у которых профиль читает базовые факты корня.

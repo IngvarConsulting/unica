@@ -72,6 +72,17 @@ pub trait MetadataReadCodec: Send + Sync {
     /// Дополняет ответ чтения очереди её синонимом, свойствами
     /// обработки и дочерними.
     fn queue(&self, descriptor: &[u8], payload: &mut Value) -> Result<(), String>;
+    /// Подчинённые внешнего источника данных, его таблицы, куба и таблицы
+    /// измерения куба в `payload.collections`. Вид вне профиля `payload`
+    /// не меняет.
+    fn external_data_source_members(
+        &self,
+        descriptor: &[u8],
+        kind: &str,
+        target: &MetadataAddress,
+        payload: &mut Value,
+    ) -> Result<(), String>;
+
     /// Синоним и выбранные свойства корня видов без собственного профиля
     /// чтения (#1568). Вид вне профиля `payload` не меняет.
     fn identity_root_facts(
