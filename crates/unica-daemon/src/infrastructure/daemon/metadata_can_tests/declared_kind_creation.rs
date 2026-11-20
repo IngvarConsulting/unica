@@ -175,6 +175,34 @@ fn a_common_command_takes_the_module_of_the_script_variant() {
     }
 }
 
+/// A script variant the platform does not know leaves the handler language
+/// undecided: the command is refused before anything is written.
+/// rule: INV.SOURCE.PROFILE-CAPABILITIES
+#[test]
+fn a_common_command_is_refused_under_an_unknown_script_variant() {
+    let fixture = Fixture::blank();
+    let path = fixture.source.join("Configuration.xml");
+    let text = std::fs::read_to_string(&path).unwrap().replace(
+        "</DefaultLanguage>",
+        "</DefaultLanguage><ScriptVariant>Latin</ScriptVariant>",
+    );
+    std::fs::write(path, text).unwrap();
+    let runtime = runtime();
+    let before = unica_workspace::test_support::tree_snapshot(&fixture.workspace);
+    let refused = call(
+        &runtime,
+        &fixture,
+        ToolIdentity::Apply,
+        json!({"at":"main:Configuration","ops":[{"op":"object.create","args":{"values":{"kind":"CommonCommand","name":"Probe"}}}]}),
+    );
+    assert!(!refused.ok, "{refused:?}");
+    assert!(refused.summary.contains("ScriptVariant"), "{refused:?}");
+    assert_eq!(
+        unica_workspace::test_support::tree_snapshot(&fixture.workspace),
+        before
+    );
+}
+
 /// A palette color of the 8.5.4 line is created as the platform exports one
 /// imported without its color.
 /// rule: INV.SOURCE.PROFILE-CAPABILITIES

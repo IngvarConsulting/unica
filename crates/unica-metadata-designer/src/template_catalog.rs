@@ -353,18 +353,6 @@ pub fn required_registered_name<G>(
         })
 }
 
-/// `ScriptVariant` of the owner configuration or extension, as written;
-/// `None` when the owner does not set it.
-fn script_variant(owner: &[u8]) -> Option<String> {
-    let xml = std::str::from_utf8(owner).ok()?;
-    let document = Document::parse(xml.trim_start_matches('\u{feff}')).ok()?;
-    document
-        .descendants()
-        .find(|node| node.is_element() && node.tag_name().name() == "ScriptVariant")
-        .and_then(|node| node.text())
-        .map(|text| text.trim().to_string())
-}
-
 pub fn registered_names(owner: &[u8], tag: &str) -> Vec<String> {
     let Ok(xml) = std::str::from_utf8(owner) else {
         return Vec::new();
@@ -3246,9 +3234,11 @@ pub fn minimal_object<G>(
         });
     }
     if let Some(module) = kind.template().and_then(|template| template.module) {
-        let text = match script_variant(source.owner_preimage).as_deref() {
-            Some("English") => module.english,
-            _ => module.russian,
+        let text = match unica_source_designer::language::script_variant(source.owner_preimage)
+            .map_err(|message| template_failure(&metadata_path, message))?
+        {
+            unica_source_contract::ScriptVariant::English => module.english,
+            unica_source_contract::ScriptVariant::Russian => module.russian,
         };
         files.push(MetadataTemplateFile {
             role: MetadataTemplateFileRole::Module,
