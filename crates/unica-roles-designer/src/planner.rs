@@ -152,7 +152,8 @@ pub fn parse_role_operation(
                 // платформа пишет в Rights.xml: команда, реквизит, стандартный
                 // реквизит, табличная часть и её реквизиты, измерение, ресурс,
                 // операция веб-сервиса, метод шаблона URL, канал сервиса
-                // интеграции, реквизит адресации задачи, вложенная подсистема.
+                // интеграции, реквизит адресации задачи, вложенная подсистема,
+                // объекты внешнего источника и их поля, измерения и ресурсы.
                 // Опечатка вида (`Comand`) или вложенный объект у корня
                 // конфигурации иначе ушли бы в Rights.xml записью, которой
                 // у платформы нет.
@@ -162,7 +163,7 @@ pub fn parse_role_operation(
                         op_index,
                         &format!("{location}.object"),
                         format!(
-                            "`{object}` is not a nested object a role lists: use Kind.Name.Command|Attribute|StandardAttribute|TabularSection|Dimension|Resource|Operation|AddressingAttribute|IntegrationServiceChannel.X, Kind.Name.TabularSection.T.Attribute|StandardAttribute.X, HTTPService.S.URLTemplate.T.Method.M or Subsystem.S.Subsystem.X"
+                            "`{object}` is not a nested object a role lists: use Kind.Name.Command|Attribute|StandardAttribute|TabularSection|Dimension|Resource|Operation|AddressingAttribute|IntegrationServiceChannel.X, Kind.Name.TabularSection.T.Attribute|StandardAttribute.X, HTTPService.S.URLTemplate.T.Method.M, Subsystem.S.Subsystem.X, ExternalDataSource.S.Table|Cube|Function.X, ExternalDataSource.S.Table.T.Field.X, ExternalDataSource.S.Cube.C.Dimension|Resource|DimensionTable.X or ExternalDataSource.S.Cube.C.DimensionTable.D.Field.X"
                         ),
                     ));
                 }
