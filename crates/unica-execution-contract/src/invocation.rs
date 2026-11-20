@@ -287,9 +287,17 @@ pub const HUMAN_CONFIRMATION_KEY: &str = "humanConfirmation";
 /// reaches the daemon.
 pub const HUMAN_REEXPORT_KEY: &str = "humanReexport";
 
+/// Only a person's answer may remember force-push permission for this target.
+/// The target digest binds the answer to the infobase shown in the question.
+pub const HUMAN_PUSH_PERMISSION_KEY: &str = "humanPushPermission";
+
 /// The arguments only a person's answer sets: a model call carrying any of
 /// them is refused at the door.
-pub const HUMAN_ANSWER_KEYS: [&str; 2] = [HUMAN_CONFIRMATION_KEY, HUMAN_REEXPORT_KEY];
+pub const HUMAN_ANSWER_KEYS: [&str; 3] = [
+    HUMAN_CONFIRMATION_KEY,
+    HUMAN_REEXPORT_KEY,
+    HUMAN_PUSH_PERMISSION_KEY,
+];
 
 impl HumanChoice {
     /// The question confirming `arguments` of `tool` before it runs: its one
