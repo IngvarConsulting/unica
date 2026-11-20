@@ -36,12 +36,12 @@ const MAX_SOURCE_SETS: usize = 64;
 // class: format
 // unit: depth
 // scope: request
-// value: 7
+// value: 8
 // resource: Число компонентов пути, по которому find сопоставляет точный путь ресурса.
 // status: unproven
 // origin: 4288eaccd (#1510)
 // problem: неизвестно
-// on-reach: тихо: путь глубже 7 компонентов не сопоставляется как точный ресурс.
+// on-reach: тихо: путь глубже 8 компонентов не сопоставляется как точный ресурс.
 const MAX_POINT_PATH_DEPTH: usize = 8;
 // resource-limit: find.directory-documents
 // class: corpus
@@ -907,7 +907,7 @@ impl WorkspaceFindDirectoryBuilder {
                 }
             }
         }
-        if depth >= 4 && depth % 2 == 0 && parts.len() >= depth {
+        if depth >= 4 && depth.is_multiple_of(2) && parts.len() >= depth {
             self.locate_declared_nested_path(
                 source,
                 &parts[parts.len() - depth..],
@@ -1323,7 +1323,7 @@ impl WorkspaceFindDirectoryBuilder {
         cancellation: &CancellationToken,
         located: &mut Option<FindDocument>,
     ) -> Result<(), FindBuildError> {
-        if tail.len() < 4 || tail.len() % 2 != 0 {
+        if tail.len() < 4 || !tail.len().is_multiple_of(2) {
             return Ok(());
         }
         let physical = physical.unwrap_or(&[]);
@@ -1367,6 +1367,7 @@ impl WorkspaceFindDirectoryBuilder {
 
     /// Одно звено цепочки: `rest[0]` — имя объекта вида `link.kind` в каталоге
     /// `link.parent`; дальше — каталог вложенного вида и остаток цепочки.
+    #[allow(clippy::too_many_arguments)]
     fn locate_declared_nested_link(
         &self,
         source: &LayoutFindSource<'_>,
