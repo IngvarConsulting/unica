@@ -115,12 +115,12 @@
 			<Item>
 				<Command>Catalog.Справочник1.Command.Команда1</Command>
 				<Type>Auto</Type>
-				<CommandGroup>CommandGroup.ГруппаВ</CommandGroup>
+				<CommandGroup>CommandGroup.ГруппаГ</CommandGroup>
 			</Item>
 			<Item>
 				<Command>Catalog.Справочник1.StandardCommand.Create</Command>
 				<Type>Auto</Type>
-				<CommandGroup>CommandGroup.ГруппаВ</CommandGroup>
+				<CommandGroup>CommandGroup.ГруппаГ</CommandGroup>
 				<DefaultVisible>false</DefaultVisible>
 			</Item>
 			<Item>
