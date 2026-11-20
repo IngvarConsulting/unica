@@ -1,0 +1,7 @@
+# Версия Rust для CI и локальных сборок. Смена версии — отдельный PR, перед
+# которым новую версию ставят на раннеры PVE: порядок описан в
+# `.agents/skills/unica-testing/references/ci-pipeline.md`.
+[toolchain]
+channel = "1.100.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

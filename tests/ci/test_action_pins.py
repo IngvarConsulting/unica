@@ -8,7 +8,12 @@
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
+import subprocess
+import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 
@@ -21,6 +26,14 @@ LOCAL_ACTIONS = sorted((REPO_ROOT / ".github" / "actions").glob("*/action.yml"))
 OWN_ORG = "IngvarConsulting/"
 USES_LINE = re.compile(r"^\s*(?:- )?uses:\s*(?P<spec>.*?)\s*$")
 PINNED = re.compile(r"^(?P<action>\S+)@(?P<ref>\S+)(?:\s+#\s*(?P<version>\S+).*)?$")
+
+
+def posix_bash() -> str | None:
+    """bash, исполняющий шаги действий: на Windows — Git Bash, а не WSL из System32."""
+    if os.name == "nt":
+        git = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Git" / "bin" / "bash.exe"
+        return str(git) if git.is_file() else None
+    return shutil.which("bash")
 
 
 def steps(workflow: dict) -> list[dict]:
@@ -54,26 +67,104 @@ class ActionPinTests(unittest.TestCase):
                     self.assertRegex(found["ref"], r"^[0-9a-f]{40}$", line)
                     self.assertIsNotNone(found["version"], line)
 
-    def test_rust_toolchain_is_pinned_to_a_release_tag_with_the_toolchain_named(self) -> None:
-        # Ветки `stable`, `nightly`, `1.89` у dtolnay/rust-toolchain собираются
-        # заново на каждый коммит master и перезаписываются: хеш с такой ветки
-        # выпадает из истории, и zizmor видит подменённый коммит. Пин идёт
-        # по тегу `vN` из master, а без ветки-тулчейна `toolchain` обязателен.
+    def test_rust_comes_from_the_pinned_file_through_the_own_action(self) -> None:
+        # Плавающий `stable` и чужое действие каждый прогон спрашивали
+        # static.rust-lang.org: на раннерах PVE обрыв загрузки манифеста
+        # выбивал PR из очереди (#3269). Версию называет только
+        # rust-toolchain.toml, ставит её своё действие.
+        toolchain = (REPO_ROOT / "rust-toolchain.toml").read_text(encoding="utf-8")
+        self.assertRegex(toolchain, r'(?m)^channel = "\d+\.\d+\.\d+"$')
+        self.assertRegex(toolchain, r'(?m)^components = \[.*"rustfmt".*"clippy".*\]$')
+        uses = 0
         for path in WORKFLOWS:
             text = path.read_text(encoding="utf-8")
-            for line in text.splitlines():
-                uses = USES_LINE.match(line)
-                found = PINNED.match(uses["spec"]) if uses else None
-                if not found or found["action"] != "dtolnay/rust-toolchain":
-                    continue
-                with self.subTest(workflow=path.name, line=line.strip()):
-                    self.assertRegex(found["version"] or "", r"^v\d+$")
-            for job_name, job in yaml.safe_load(text)["jobs"].items():
-                for index, step in enumerate(job.get("steps", [])):
-                    if not step.get("uses", "").startswith("dtolnay/rust-toolchain@"):
-                        continue
-                    with self.subTest(workflow=path.name, job=job_name, step=index):
-                        self.assertTrue((step.get("with") or {}).get("toolchain"))
+            self.assertNotIn("dtolnay/rust-toolchain", text, path.name)
+            self.assertNotRegex(text, r"toolchain:\s*stable", path.name)
+            for step in steps(yaml.safe_load(text)):
+                if step.get("uses") == "./.github/actions/rust-toolchain":
+                    uses += 1
+                    self.assertNotIn("with", step, path.name)
+        self.assertEqual(uses, 11)
+
+    def test_the_rust_action_stays_offline_on_pve_and_retries_on_github(self) -> None:
+        action = yaml.safe_load(
+            (REPO_ROOT / ".github" / "actions" / "rust-toolchain" / "action.yml").read_text(encoding="utf-8")
+        )
+        by_if: dict[str, list[dict]] = {}
+        for step in action["runs"]["steps"]:
+            by_if.setdefault(step.get("if", ""), []).append(step)
+        (pve,) = by_if["runner.environment == 'self-hosted'"]
+        (hosted,) = by_if["runner.environment != 'self-hosted'"]
+        # На PVE версия стоит заранее: шаг только проверяет и не скачивает
+        # (поведение проверяет `test_the_pve_check_never_installs`).
+        self.assertNotIn("curl", pve["run"])
+        self.assertEqual(pve["env"]["RUSTUP_AUTO_INSTALL"], "0")
+        # В рабочей копии rustup доставил бы компоненты из rust-toolchain.toml.
+        self.assertEqual(pve["working-directory"], "${{ runner.temp }}")
+        self.assertIn("exit 1", pve["run"])
+        # На GitHub-hosted любой сбой установки повторяется.
+        self.assertIn("rustup toolchain install", hosted["run"])
+        self.assertIn("for attempt in 1 2 3 4 5", hosted["run"])
+        self.assertIn("sleep", hosted["run"])
+        # Общие шаги после установки тоже не зовут сеть.
+        for step in by_if[""]:
+            self.assertNotIn("toolchain install", step["run"])
+        # `CARGO*` входят в ключ rust-cache: те же переменные, что ставил dtolnay.
+        exported = "\n".join(step["run"] for step in by_if[""])
+        for variable in ("CARGO_HOME", "CARGO_INCREMENTAL=0", "CARGO_TERM_COLOR=always"):
+            self.assertIn(variable, exported)
+
+    @unittest.skipUnless(posix_bash(), "нужен bash")
+    def test_the_pve_check_never_installs(self) -> None:
+        """Проверка на PVE отвечает по установленному и ничего не ставит."""
+        action = yaml.safe_load(
+            (REPO_ROOT / ".github" / "actions" / "rust-toolchain" / "action.yml").read_text(encoding="utf-8")
+        )
+        (pve,) = [step for step in action["runs"]["steps"] if step.get("if") == "runner.environment == 'self-hosted'"]
+        stub = textwrap.dedent(
+            """\
+            #!/usr/bin/env bash
+            echo "$*" >> "$RUSTUP_CALLS"
+            case "$*" in
+              "toolchain list") printf '%s\\n' $STUB_TOOLCHAINS ;;
+              "component list --installed --toolchain 1.100.0") printf '%s\\n' $STUB_COMPONENTS ;;
+              *) exit 3 ;;
+            esac
+            """
+        )
+        cases = [
+            ("1.100.0-x86_64-unknown-linux-gnu", "rustfmt-x86_64-unknown-linux-gnu clippy-x86_64-unknown-linux-gnu", 0),
+            ("1.100.0-x86_64-unknown-linux-gnu", "rustfmt-x86_64-unknown-linux-gnu", 1),
+            ("stable-x86_64-unknown-linux-gnu", "", 1),
+        ]
+        bash = posix_bash()
+        assert bash is not None
+        for toolchains, components, expected in cases:
+            with self.subTest(toolchains=toolchains, components=components), tempfile.TemporaryDirectory() as temp:
+                bin_dir = Path(temp) / "bin"
+                bin_dir.mkdir()
+                (bin_dir / "rustup").write_text(stub, encoding="utf-8", newline="\n")
+                (bin_dir / "rustup").chmod(0o755)
+                script = Path(temp) / "pve.sh"
+                script.write_text(pve["run"], encoding="utf-8", newline="\n")
+                calls = Path(temp) / "calls"
+                calls.touch()
+                env = dict(os.environ, toolchain="1.100.0", components="rustfmt,clippy", RUSTUP_AUTO_INSTALL="0",
+                           RUNNER_NAME="stub", RUSTUP_CALLS=str(calls), STUB_TOOLCHAINS=toolchains,
+                           STUB_COMPONENTS=components, STUB_BIN=str(bin_dir))
+                # Git Bash на Windows понимает PATH только в своей записи пути.
+                result = subprocess.run(
+                    [bash, "-c", 'PATH="$(cygpath -u "$STUB_BIN" 2>/dev/null || echo "$STUB_BIN"):$PATH" '
+                                 'exec bash "$0"', str(script)],
+                    env=env, capture_output=True, text=True, cwd=temp,
+                )
+                self.assertEqual(result.returncode, expected, result.stderr)
+                recorded = calls.read_text(encoding="utf-8").splitlines()
+                self.assertTrue(recorded, result.stderr)
+                for call in recorded:
+                    self.assertNotRegex(call, r"\b(install|add|update)\b", recorded)
+                if expected:
+                    self.assertIn("rustup toolchain install 1.100.0", result.stderr)
 
     def test_every_checkout_leaves_no_token_in_the_tree(self) -> None:
         for path in WORKFLOWS:

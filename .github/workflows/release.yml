@@ -160,10 +160,7 @@ jobs:
       - if: ${{ !cancelled() }}
         run: python -m pip install -r tests/ci/requirements.txt
       - if: ${{ !cancelled() }}
-        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
-        with:
-          toolchain: stable
-          components: rustfmt, clippy
+        uses: ./.github/actions/rust-toolchain
       - id: guards-fmt
         if: ${{ !cancelled() }}
         run: python scripts/ci/check-discovered-modules-format.py
@@ -452,10 +449,7 @@ jobs:
                      "classification": values}, open(sys.argv[1], "w", encoding="utf-8"), indent=2)
           PY
       - if: steps.classify.outputs.rust_required == 'true'
-        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
-        with:
-          toolchain: stable
-          components: clippy
+        uses: ./.github/actions/rust-toolchain
       # Версия — из `.config/nextest.toml`; готовый nextest не ставится заново.
       - if: steps.classify.outputs.rust_required == 'true'
         uses: ./.github/actions/install-nextest
@@ -547,10 +541,7 @@ jobs:
           echo "::error::классификатор Windows не требует Rust"
           exit 1
       - if: steps.classify.outputs.rust_required == 'true'
-        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
-        with:
-          toolchain: stable
-          components: clippy
+        uses: ./.github/actions/rust-toolchain
       # Только чтение: ключ Windows (ОС входит в ключ rust-cache) пишет ночной
       # `large` джобой `Rust (windows-latest)`.
       - name: Кэш зависимостей Rust # zizmor: ignore[cache-poisoning] restore-only; кнопка читает область main, джоба ничего не публикует
@@ -653,9 +644,7 @@ jobs:
           npm install --global @openai/codex@0.145.0-alpha.18
           test "$(codex --version)" = "codex-cli 0.145.0-alpha.18"
       - id: rust-toolchain
-        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
-        with:
-          toolchain: stable
+        uses: ./.github/actions/rust-toolchain
       # Номер alpha есть в Cargo.lock: без этой строки каждая ночь промахивалась бы
       # мимо кэша и писала новую запись на несколько гигабайт.
       - id: lock
