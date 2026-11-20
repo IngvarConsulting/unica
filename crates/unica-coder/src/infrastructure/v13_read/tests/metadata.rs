@@ -24,12 +24,14 @@ fn metadata_kind_branch_lists_registered_objects_with_canonical_addresses() {
             {
                 "at": "main:Catalog.Items",
                 "kind": "Catalog",
-                "title": "Items"
+                "title": "Items",
+                "props": {"inExchangePlan": false}
             },
             {
                 "at": "main:Catalog.Владельцы",
                 "kind": "Catalog",
-                "title": "Владельцы"
+                "title": "Владельцы",
+                "props": {"inExchangePlan": false}
             }
         ]),
     );

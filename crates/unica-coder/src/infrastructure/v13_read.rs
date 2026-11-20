@@ -113,6 +113,8 @@ pub struct LogicalViewReadAuthority<'a> {
     deadline: ProviderDeadline,
     module_projections: Mutex<BTreeMap<ModuleProjectionCacheKey, Arc<ModuleProjectionSet>>>,
     configuration_payloads: Mutex<BTreeMap<RevisionCacheKey, Arc<Value>>>,
+    exchange_memberships:
+        Mutex<BTreeMap<RevisionCacheKey, Arc<exchange_membership::ExchangeMembership>>>,
     registered_owner_names: Mutex<BTreeMap<RevisionCacheKey, Arc<RegisteredOwnerNames>>>,
     verified_owners: Mutex<BTreeSet<OwnerProofCacheKey>>,
     owner_evidence: Mutex<BTreeMap<OwnerProofCacheKey, Arc<PlatformXmlSourceSetOwnerEvidence>>>,
@@ -162,6 +164,7 @@ struct OwnerEdgeCacheKey {
 
 mod diagnostic_scope;
 mod editability_view;
+mod exchange_membership;
 mod form_payload;
 mod http_service_handler;
 mod method_doc;
@@ -246,6 +249,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
             deadline,
             module_projections: Mutex::new(BTreeMap::new()),
             configuration_payloads: Mutex::new(BTreeMap::new()),
+            exchange_memberships: Mutex::new(BTreeMap::new()),
             registered_owner_names: Mutex::new(BTreeMap::new()),
             verified_owners: Mutex::new(BTreeSet::new()),
             owner_evidence: Mutex::new(BTreeMap::new()),
@@ -629,7 +633,7 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                 .ok_or_else(|| {
                     ViewError::new(RefusalCode::NotFound, "metadata branch kind is absent")
                 })?;
-            if matches!(
+            let branch = if matches!(
                 self.read.source_set_kind(),
                 SourceSetKind::Configuration | SourceSetKind::Extension
             ) && self.read.configuration_xml_requires_streaming()
@@ -706,7 +710,8 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                     payload.as_ref(),
                     support,
                 )?
-            }
+            };
+            self.with_exchange_membership(branch, branch_kind, admitted)?
         } else if route.reader() == LogicalReader::Form {
             self.form_view(&route, admitted)?
         } else {
