@@ -437,3 +437,36 @@ fn an_unnamed_table_registration_is_a_limit_of_the_branch() {
         "{tables}"
     );
 }
+
+/// Права роли на объекты внешнего источника и их члены из выгрузки
+/// платформы читаются узлами `Right` с видом владельца права.
+/// rule: INV.SOURCE.ROLE-RIGHT-ADDRESSES
+#[test]
+fn platform_rights_on_external_data_source_objects_are_readable() {
+    let f = fixture();
+    let evidence = fixture_path("formats/platform_xml/2.20/external_data_source_rights");
+    let rights_path = f.source.join("Roles/SalesReader/Ext/Rights.xml");
+    for (part, entry, allowed, denied) in [
+        (
+            "objects",
+            r"ExternalDataSource_AllKindsExternalSource\.Table\.Items",
+            9,
+            0,
+        ),
+        (
+            "members",
+            r"ExternalDataSource_AllKindsExternalSource\.Cube\.Sales\.DimensionTable\.Products\.Field\.Code",
+            0,
+            2,
+        ),
+    ] {
+        write(
+            &rights_path,
+            &fs::read_to_string(evidence.join(part).join("Rights.xml")).unwrap(),
+        );
+        let right = read(&f, &format!("main:Role.SalesReader.Right.{entry}"));
+        assert_eq!(right["props"]["objectKind"], "ExternalDataSource", "{part}");
+        assert_eq!(right["props"]["allowedCount"], allowed, "{part}: {right}");
+        assert_eq!(right["props"]["deniedCount"], denied, "{part}: {right}");
+    }
+}

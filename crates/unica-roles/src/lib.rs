@@ -359,6 +359,9 @@ pub fn nested_right_shape_is_modelled(object_name: &str) -> bool {
     {
         return true;
     }
+    if external_data_source_rights(&parts).is_some() {
+        return true;
+    }
     match parts.as_slice() {
         [parent, _, "Command", _] => supports_commands(parent),
         ["WebService", _, "Operation", _]
@@ -417,6 +420,8 @@ pub fn validate_nested_right(object_name: &str, right: &str) -> Result<(), Strin
             .all(|pair| pair[0] == "Subsystem");
     let valid = if nested_subsystem {
         right == "View"
+    } else if let Some(rights) = external_data_source_rights(&parts) {
+        rights.contains(&right)
     } else {
         match parts.as_slice() {
             [parent, _, "Command", _] if supports_commands(parent) => right == "View",
@@ -460,6 +465,36 @@ pub fn validate_nested_right(object_name: &str, right: &str) -> Result<(), Strin
         Err(format!(
             "right `{right}` is not valid for nested object `{object_name}`"
         ))
+    }
+}
+
+/// Права объектов внешнего источника данных и их членов, которые платформа
+/// 8.3.27 оставляет в `Rights.xml`; эталон выгрузки —
+/// `tests/fixtures/formats/platform_xml/2.20/external_data_source_rights`.
+/// `None` — раскладка не из внешнего источника.
+fn external_data_source_rights(parts: &[&str]) -> Option<&'static [&'static str]> {
+    const TABLE: &[&str] = &[
+        "Read",
+        "Insert",
+        "Update",
+        "Delete",
+        "View",
+        "InteractiveInsert",
+        "Edit",
+        "InteractiveDelete",
+        "InputByString",
+    ];
+    match parts {
+        ["ExternalDataSource", _, "Table", _] => Some(TABLE),
+        ["ExternalDataSource", _, "Cube", _]
+        | ["ExternalDataSource", _, "Cube", _, "DimensionTable", _] => Some(&["Read", "View"]),
+        ["ExternalDataSource", _, "Function", _] => Some(&["Use", "View"]),
+        ["ExternalDataSource", _, "Table", _, "Field", _]
+        | ["ExternalDataSource", _, "Cube", _, "DimensionTable", _, "Field", _] => {
+            Some(&["View", "Edit"])
+        }
+        ["ExternalDataSource", _, "Cube", _, "Dimension" | "Resource", _] => Some(&["View"]),
+        _ => None,
     }
 }
 
@@ -579,6 +614,7 @@ const KNOWN_ROLE_OBJECT_TYPES: &[&str] = &[
     "SessionParameter",
     "CommonAttribute",
     "Queue",
+    "ExternalDataSource",
 ];
 
 pub fn known_role_rights(object_type: &str) -> &'static [&'static str] {
@@ -833,6 +869,13 @@ pub fn known_role_rights(object_type: &str) -> &'static [&'static str] {
         "WebService" | "HTTPService" | "IntegrationService" => &["Use"],
         "SessionParameter" => &["Get", "Set"],
         "CommonAttribute" => &["View", "Edit"],
+        "ExternalDataSource" => &[
+            "Use",
+            "Administration",
+            "StandardAuthenticationChange",
+            "SessionStandardAuthenticationChange",
+            "SessionOSAuthenticationChange",
+        ],
         _ => &[],
     }
 }
@@ -1021,6 +1064,55 @@ mod tests {
     /// У очереди три права: чтение, добавление и удаление. Изменения у неё
     /// нет — сообщение очереди запись и не меняется, — и интерактивных прав
     /// тоже. Снято 8.5.4: роли дали шесть прав, выгрузка оставила три.
+    #[test]
+    fn external_data_source_rights_follow_the_platform_export() {
+        assert_eq!(
+            known_role_rights("ExternalDataSource"),
+            [
+                "Use",
+                "Administration",
+                "StandardAuthenticationChange",
+                "SessionStandardAuthenticationChange",
+                "SessionOSAuthenticationChange",
+            ]
+        );
+        let source = "ExternalDataSource.Shop";
+        for (object, valid, invalid) in [
+            (format!("{source}.Table.Items"), "InteractiveDelete", "Use"),
+            (format!("{source}.Cube.Sales"), "Read", "Edit"),
+            (
+                format!("{source}.Cube.Sales.DimensionTable.Products"),
+                "View",
+                "Insert",
+            ),
+            (format!("{source}.Function.Total"), "Use", "Read"),
+            (format!("{source}.Table.Items.Field.Code"), "Edit", "Read"),
+            (
+                format!("{source}.Cube.Sales.DimensionTable.Products.Field.Code"),
+                "View",
+                "Use",
+            ),
+            (
+                format!("{source}.Cube.Sales.Dimension.Product"),
+                "View",
+                "Edit",
+            ),
+            (
+                format!("{source}.Cube.Sales.Resource.Amount"),
+                "View",
+                "Edit",
+            ),
+        ] {
+            assert!(nested_right_shape_is_modelled(&object), "{object}");
+            assert!(validate_nested_right(&object, valid).is_ok(), "{object}");
+            assert!(validate_nested_right(&object, invalid).is_err(), "{object}");
+        }
+        // Поле куба не бывает: у куба измерения и ресурсы.
+        assert!(!nested_right_shape_is_modelled(
+            "ExternalDataSource.Shop.Cube.Sales.Field.Code"
+        ));
+    }
+
     #[test]
     fn the_queue_has_read_insert_and_delete_and_no_update() {
         assert_eq!(known_role_rights("Queue"), ["Read", "Insert", "Delete"]);
