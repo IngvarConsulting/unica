@@ -910,18 +910,20 @@ fn root_branches(
 }
 
 /// Подчинённые объекты и корни внешних обработок в корне конфигурации не
-/// живут: их ветвь пустой не выдаётся.
+/// живут: их ветвь пустой не выдаётся. Вложенные виды со своим местом во
+/// владельце (таблица и куб внешнего источника) — тоже.
 fn is_root_branch_kind(branch: &QualifiedAddress) -> bool {
+    let Some(kind) = branch.segments().first().map(AddressSegment::kind) else {
+        return true;
+    };
     !matches!(
-        branch.segments().first().map(AddressSegment::kind),
-        Some(
-            NodeKind::Form
-                | NodeKind::Template
-                | NodeKind::Command
-                | NodeKind::ExternalDataProcessor
-                | NodeKind::ExternalReport
-        )
-    )
+        kind,
+        NodeKind::Form
+            | NodeKind::Template
+            | NodeKind::Command
+            | NodeKind::ExternalDataProcessor
+            | NodeKind::ExternalReport
+    ) && kind.declaration().nested.is_none()
 }
 
 pub(super) fn project_registered_metadata_branch(
