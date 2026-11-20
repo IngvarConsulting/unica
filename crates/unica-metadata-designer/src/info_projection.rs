@@ -456,7 +456,15 @@ pub fn observed_type_is_strict_but_unmodelled(properties: roxmltree::Node<'_, '_
     let [container] = containers.as_slice() else {
         return false;
     };
-    if container.attributes().len() != 0 || !node_has_only_whitespace_text(*container) {
+    observed_type_container_is_strict_but_unmodelled(*container)
+}
+
+/// Тот же признак для контейнера типа с другим именем свойства,
+/// например `CommandParameterType` общей команды.
+pub fn observed_type_container_is_strict_but_unmodelled(
+    container: roxmltree::Node<'_, '_>,
+) -> bool {
+    if container.attributes().len() != 0 || !node_has_only_whitespace_text(container) {
         return false;
     }
     let allowed_children = [
