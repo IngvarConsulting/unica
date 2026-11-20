@@ -750,13 +750,19 @@ pub fn minimal_metadata_xml<G>(
     lines.push("\t\t<Properties>".to_string());
     let kind = match kind {
         CreatableKind::Typed(kind) => kind,
-        CreatableKind::Queue => {
-            emit_meta_queue_properties(&mut lines, "\t\t\t", &defn, obj_name, &synonym);
+        CreatableKind::Declared(_) => {
+            let template = kind.template().ok_or_else(|| {
+                format!("metadata kind `{object_type}` declares no creation template")
+            })?;
+            emit_meta_base_properties(&mut lines, "\t\t\t", &defn, obj_name, &synonym);
+            for property in template.properties {
+                lines.push(format!("\t\t\t{property}"));
+            }
             return Ok(close_minimal_object(
                 lines,
                 object_type,
                 format_version,
-                creatable_layout(CreatableKind::Queue).requires_child_objects,
+                creatable_layout(kind).requires_child_objects,
                 obj_uuid,
             ));
         }
@@ -2358,23 +2364,6 @@ pub fn emit_meta_common_module_properties(
     ));
 }
 
-/// A new queue has the values 8.5.4 gives a queue whose descriptor omits
-/// them: transactional, portions of 1000, processed automatically.
-pub fn emit_meta_queue_properties(
-    lines: &mut Vec<String>,
-    indent: &str,
-    defn: &MetaTemplateDefinition,
-    obj_name: &str,
-    synonym: &str,
-) {
-    emit_meta_base_properties(lines, indent, defn, obj_name, synonym);
-    lines.push(format!("{indent}<Transactioned>true</Transactioned>"));
-    lines.push(format!(
-        "{indent}<ProcessingPortionSize>1000</ProcessingPortionSize>"
-    ));
-    lines.push(format!("{indent}<AutoProcessing>true</AutoProcessing>"));
-}
-
 /// Группа команд, как её создаёт Конфигуратор 8.3.27: представление `Auto`,
 /// пустые подсказка и картинка, категория панели навигации.
 pub fn emit_meta_command_group_properties(
@@ -3145,7 +3134,7 @@ pub fn minimal_object<G>(
         CreatableKind::Typed(typed) => MinimalTemplateContext::from_source(
             source, typed, name, overrides, source_set, language,
         )?,
-        CreatableKind::Queue => MinimalTemplateContext::without_dependencies(language),
+        CreatableKind::Declared(_) => MinimalTemplateContext::without_dependencies(language),
     };
     let (xml, _) = minimal_metadata_xml(
         kind,

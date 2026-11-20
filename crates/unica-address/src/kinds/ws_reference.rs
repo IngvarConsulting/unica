@@ -19,5 +19,10 @@ pub(super) const KIND: KindDeclaration = KindDeclaration {
     // WSReferences/Probe.xml`, 2.20 to 2.22) and refuses to load a
     // borrowed WS reference without it.
     generated_types: Some(&[("WSReferenceManager", "Manager")]),
+    // Значения, которые выгрузка 8.3.27, 8.5.1 и 8.5.4 одинаково пишет
+    // объекту с опущенными в описании свойствами.
+    creation: Some(CreationDeclaration {
+        properties: &["<LocationURL/>"],
+    }),
     ..KindDeclaration::new("WSReference")
 };

@@ -1,0 +1,187 @@
+{
+  "id": "S-2994-declared-kinds-create",
+  "issue": 2994,
+  "area": "Создание и удаление объектов",
+  "task": "Создать параметр сеанса, общий реквизит, элемент стиля, хранилище настроек, WS-ссылку и нумератор документов: каждый пишется со значениями свойств, которые даёт платформа, регистрируется в конфигурации и читается.",
+  "workspace": "tests/fixtures/acceptance/workspace-all-kinds",
+  "formats": [
+    "2.20",
+    "2.21",
+    "2.22"
+  ],
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "object.create",
+            "args": {
+              "values": {
+                "kind": "SessionParameter",
+                "name": "Probe2994"
+              }
+            }
+          },
+          {
+            "op": "object.create",
+            "args": {
+              "values": {
+                "kind": "CommonAttribute",
+                "name": "Probe2994"
+              }
+            }
+          },
+          {
+            "op": "object.create",
+            "args": {
+              "values": {
+                "kind": "StyleItem",
+                "name": "Probe2994"
+              }
+            }
+          },
+          {
+            "op": "object.create",
+            "args": {
+              "values": {
+                "kind": "SettingsStorage",
+                "name": "Probe2994"
+              }
+            }
+          },
+          {
+            "op": "object.create",
+            "args": {
+              "values": {
+                "kind": "WSReference",
+                "name": "Probe2994"
+              }
+            }
+          },
+          {
+            "op": "object.create",
+            "args": {
+              "values": {
+                "kind": "DocumentNumerator",
+                "name": "Probe2994"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "token": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:SessionParameter.Probe2994"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "SessionParameter"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonAttribute.Probe2994"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "CommonAttribute"
+        },
+        {
+          "pointer": "/data/props/Indexing",
+          "eq": "DontIndex"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:StyleItem.Probe2994"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "StyleItem"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:SettingsStorage.Probe2994"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "SettingsStorage"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:WSReference.Probe2994"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "WSReference"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:DocumentNumerator.Probe2994"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "DocumentNumerator"
+        }
+      ]
+    }
+  ]
+}
