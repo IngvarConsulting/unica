@@ -2,7 +2,7 @@
   "format": "2.20",
   "build": "8.3.27.2342",
   "seed": "build-all-kinds.py",
-  "runner": "v8-runner 0.16.0",
+  "runner": "v8-runner 0.18.1",
   "steps": [
     {
       "step": "package",
@@ -26,7 +26,5 @@
     }
   ],
   "compatibilityLowered": null,
-  "excludedFiles": [
-    "all_kinds/src/ConfigDumpInfo.xml"
-  ]
+  "excludedFiles": []
 }

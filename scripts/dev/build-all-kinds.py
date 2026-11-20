@@ -12,7 +12,8 @@ loads it into a platform and keeps the platform export.
 Three kinds have no object in any fixture and no writer in Unica: a chat bot,
 a WebSocket client and an external data source. ``HAND_WRITTEN`` writes a
 minimal descriptor of each — the root, the generated types the platform
-requires, the name, a module or a table with a field. These descriptors are
+requires, the name and a module; the external source gets a table, a cube
+with a dimension table and a function, with their modules. These descriptors are
 written by hand, not exported; each one loads into 8.3.27, and only the
 platform's export of them becomes the reference.
 
@@ -343,6 +344,21 @@ EXTERNAL_TABLE_TYPES = (
     ("ExternalDataSourceTableRecordKey", "RecordKey"),
     ("ExternalDataSourceTableRecordManager", "RecordManager"),
 )
+EXTERNAL_CUBE_TYPES = (
+    ("ExternalDataSourceCubeManager", "Manager"),
+    ("ExternalDataSourceCubeList", "List"),
+    ("ExternalDataSourceCubeRecord", "Record"),
+    ("ExternalDataSourceCubeRecordSet", "RecordSet"),
+    ("ExternalDataSourceCubeRecordKey", "RecordKey"),
+    ("ExternalDataSourceCubeRecordManager", "RecordManager"),
+    ("ExternalDataSourceCubeDimensionsTablesManager", "DimensionTables"),
+)
+EXTERNAL_DIMENSION_TABLE_TYPES = (
+    ("ExternalDataSourceCubeDimensionTableRef", "Ref"),
+    ("ExternalDataSourceCubeDimensionTableObject", "Object"),
+    ("ExternalDataSourceCubeDimensionTableManager", "Manager"),
+    ("ExternalDataSourceCubeDimensionTableList", "List"),
+)
 HAND_WRITTEN_HEAD = (
     '<?xml version="1.0" encoding="UTF-8"?>\r\n'
     '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" '
@@ -377,29 +393,103 @@ def named_properties(depth: int, name: str, extra: Sequence[str] = ()) -> str:
     return text + xml_line(depth, "</Properties>")
 
 
+def inline_child(depth: int, tag: str, owner: str, name: str, properties: Sequence[str]) -> str:
+    """A field, dimension or resource: inline in its owner's file."""
+    return (xml_line(depth, f'<{tag} uuid="{hand_written_uuid(owner, name)}">')
+            + named_properties(depth + 1, name, properties)
+            + xml_line(depth, f"</{tag}>"))
+
+
+# A cube dimension has no column name of its own and refers to a dimension
+# table: with a primitive type or none the import refuses it, "Не указан тип
+# измерения".
+DIMENSION_TYPE = (
+    '<Type><v8:Type xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config">'
+    "cfg:ExternalDataSourceCubeDimensionTableRef.AllKindsExternalSource.Sales.Products"
+    "</v8:Type></Type>"
+)
+
+
+def child_objects(entries: Sequence[str], depth: int) -> str:
+    return xml_line(depth, "<ChildObjects>") + "".join(entries) + xml_line(depth, "</ChildObjects>")
+
+
+def write_external_object(directory: Path, folder: str, tag: str, owner: str, name: str,
+                          types: Sequence[tuple], properties: Sequence[str], children: str,
+                          modules: Sequence[str]) -> Path:
+    """One table, cube or dimension table of an external source.
+
+    Each of them is a file of its own under the folder of its kind next to the
+    owner's descriptor; inline, the import crashes with "bad allocation". Its
+    modules lie in ``<folder>/<name>/Ext/``.
+    """
+    identity = f"{owner}.{name}"
+    body = (HAND_WRITTEN_HEAD + xml_line(1, f'<{tag} uuid="{hand_written_uuid(identity)}">')
+            + (generated_types(identity, types, 2) if types else "")
+            + named_properties(2, name, properties) + children
+            + xml_line(1, f"</{tag}>") + "</MetaDataObject>\r\n")
+    target = directory / folder
+    target.mkdir(parents=True, exist_ok=True)
+    (target / f"{name}.xml").write_text(body, encoding="utf-8-sig", newline="")
+    if modules:
+        ext = target / name / "Ext"
+        ext.mkdir(parents=True)
+        for module in modules:
+            (ext / f"{module}.bsl").write_text("\r\n", encoding="utf-8-sig", newline="")
+    return target / name
+
+
+def write_external_source_children(directory: Path, name: str) -> str:
+    """Table, cube with a dimension table, and function of the external source.
+
+    Returns the source's ``ChildObjects``: it lists them by name.
+    """
+    table = f"{name}.Items"
+    write_external_object(
+        directory, "Tables", "Table", name, "Items", EXTERNAL_TABLE_TYPES,
+        ["<TableDataType>NonobjectData</TableDataType>", "<NameInDataSource>items</NameInDataSource>"],
+        child_objects([inline_child(3, "Field", table, "Code", ["<NameInDataSource>code</NameInDataSource>"])], 2),
+        ["ObjectModule", "ManagerModule", "RecordSetModule"],
+    )
+    cube = f"{name}.Sales"
+    cube_dir = write_external_object(
+        directory, "Cubes", "Cube", name, "Sales", EXTERNAL_CUBE_TYPES,
+        ["<NameInDataSource>sales</NameInDataSource>"],
+        child_objects([
+            inline_child(3, "Dimension", cube, "Product", [DIMENSION_TYPE]),
+            inline_child(3, "Resource", cube, "Amount", ["<NameInDataSource>amount</NameInDataSource>"]),
+            xml_line(3, "<DimensionTable>Products</DimensionTable>"),
+        ], 2),
+        ["ManagerModule", "RecordSetModule"],
+    )
+    write_external_object(
+        cube_dir, "DimensionTables", "DimensionTable", cube, "Products", EXTERNAL_DIMENSION_TABLE_TYPES,
+        ["<NameInDataSource>products</NameInDataSource>"],
+        child_objects([inline_child(3, "Field", f"{cube}.Products", "Code", ["<NameInDataSource>code</NameInDataSource>"])], 2),
+        ["ObjectModule", "ManagerModule"],
+    )
+    # A function, unlike a table or a cube, lies inline in the source's file:
+    # named only, it stops the import with an XDTO error on Function. It has
+    # no ChildObjects there: with them the import expects the end of Function.
+    function = f"{name}.Total"
+    function_xml = (xml_line(3, f'<Function uuid="{hand_written_uuid(function)}">')
+                    + named_properties(4, "Total")
+                    + xml_line(3, "</Function>"))
+    return child_objects([
+        xml_line(3, "<Table>Items</Table>"),
+        xml_line(3, "<Cube>Sales</Cube>"),
+        function_xml,
+    ], 2)
+
+
 def write_hand_written(out: Path, kind: str, folder: str, name: str) -> None:
     """One hand-written object; see ``HAND_WRITTEN_KINDS``."""
     directory = out / folder
     directory.mkdir(exist_ok=True)
     internal, children = "", ""
     if kind == "ExternalDataSource":
-        # The source lists its table by name; the table is a file of its own
-        # under Tables/, inline it crashes the import with "bad allocation".
         internal = generated_types(name, EXTERNAL_SOURCE_TYPES, 2)
-        children = xml_line(2, "<ChildObjects>") + xml_line(3, "<Table>Items</Table>") + xml_line(2, "</ChildObjects>")
-        table = f"{name}.Items"
-        field = (xml_line(3, f'<Field uuid="{hand_written_uuid(table, "Code")}">')
-                 + named_properties(4, "Code", ["<NameInDataSource>code</NameInDataSource>"])
-                 + xml_line(3, "</Field>"))
-        body = (HAND_WRITTEN_HEAD + xml_line(1, f'<Table uuid="{hand_written_uuid(table)}">')
-                + generated_types(table, EXTERNAL_TABLE_TYPES, 2)
-                + named_properties(2, "Items", ["<TableDataType>NonobjectData</TableDataType>",
-                                                "<NameInDataSource>items</NameInDataSource>"])
-                + xml_line(2, "<ChildObjects>") + field + xml_line(2, "</ChildObjects>")
-                + xml_line(1, "</Table>") + "</MetaDataObject>\r\n")
-        tables = directory / name / "Tables"
-        tables.mkdir(parents=True)
-        (tables / "Items.xml").write_text(body, encoding="utf-8-sig", newline="")
+        children = write_external_source_children(directory / name, name)
     else:
         module = directory / name / "Ext"
         module.mkdir(parents=True)
