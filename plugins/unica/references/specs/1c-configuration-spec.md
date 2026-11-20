@@ -167,8 +167,8 @@ ClassId — фиксированные идентификаторы классо
 |----------|-----|----------|
 | `RequiredMobileApplicationPermissions` | list | Обязательные разрешения |
 | `UsedMobileApplicationFunctionalities` | list | Используемые функциональности (см. ниже) |
-| `MobileApplicationURLs` | list | URL мобильного приложения |
-| `AllowedIncomingShareRequestTypes` | list | Разрешённые типы входящих share-запросов |
+| `MobileApplicationURLs` | list of `xs:string` | URL мобильного приложения в элементах `v8:Value`. |
+| `AllowedIncomingShareRequestTypes` | list of `app:AllowedIncomingShareRequestType` | Элементы `v8:Value` с полями `mime`, `uti`, `ext`, `processingVariant` (0 или 1) и `isCustom`. |
 
 **UsedMobileApplicationFunctionalities** — список из `app:functionality` с подэлементами `app:functionality` (имя) и `app:use` (boolean):
 

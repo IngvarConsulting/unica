@@ -61,7 +61,7 @@ pub const NSTR_PATTERN: &str = r"^\s*(?:[A-Za-z0-9_-]+\s*=\s*'(?:[^']|'')*'\s*(?
 pub const LOCALIZED_VALUE_FORM: &str =
     "a multilingual value is a string in NStr form: ru = 'Валюты'; en = 'Currencies'";
 
-fn is_xml_text_character(ch: char) -> bool {
+pub(crate) fn is_xml_text_character(ch: char) -> bool {
     matches!(ch, '\t' | '\n' | '\r' | '\u{20}'..='\u{D7FF}' | '\u{E000}'..='\u{FFFD}' | '\u{10000}'..='\u{10FFFF}')
 }
 

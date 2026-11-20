@@ -171,6 +171,7 @@ pub enum DescriptorPropertyKind {
     Parts,
     /// A set of distinct values of the property's closed enumeration.
     List,
+    MobileList,
 }
 
 macro_rules! descriptor_properties {
@@ -279,6 +280,8 @@ descriptor_properties!(
     DefaultExtensionPropertyCheckAction => ("DefaultExtensionPropertyCheckAction", "defaultExtensionPropertyCheckAction", Enum, false, false, false, true),
     TypeReductionByConfigurationExtensionMode => ("TypeReductionByConfigurationExtensionMode", "typeReductionByConfigurationExtensionMode", Enum, false, false, false, true),
     ActionOnExtendedConfigurationObjectsMissing => ("ActionOnExtendedConfigurationObjectsMissing", "actionOnExtendedConfigurationObjectsMissing", Parts, false, false, false, true),
+    MobileApplicationUrls => ("MobileApplicationURLs", "mobileApplicationURLs", MobileList, false, false, true, false),
+    AllowedIncomingShareRequestTypes => ("AllowedIncomingShareRequestTypes", "allowedIncomingShareRequestTypes", MobileList, false, false, true, false),
     // Form descriptor properties (`PropertiesSite::FormDescriptor`).
     UsePurposes => ("UsePurposes", "usePurposes", List, false, false, false, false),
     UseInInterfaceCompatibilityMode => ("UseInInterfaceCompatibilityMode", "useInInterfaceCompatibilityMode", Enum, false, false, false, false),
@@ -668,6 +671,26 @@ impl PropertiesSite {
                         }
                         DescriptorPropertyKind::List => json!({"type":"array", "uniqueItems":true,
                             "items":{"type":"string", "enum":self.enum_values(field)}}),
+                        DescriptorPropertyKind::MobileList => {
+                            let item = match field {
+                                DescriptorProperty::MobileApplicationUrls => {
+                                    json!({"type":"string"})
+                                }
+                                _ => json!({
+                                    "type": "object",
+                                    "properties": {
+                                        "mime": {"type":"string"},
+                                        "uti": {"type":"string"},
+                                        "ext": {"type":"string"},
+                                        "processingVariant": {"type":"integer", "enum":[0, 1]},
+                                        "isCustom": {"type":"boolean"},
+                                    },
+                                    "required": ["mime", "uti", "ext", "processingVariant", "isCustom"],
+                                    "additionalProperties": false,
+                                }),
+                            };
+                            json!({"type":"array", "items":item, "description":"Ordered list. An empty array clears the property."})
+                        }
                     };
                     let schema = if field == DescriptorProperty::Location {
                         let mut schema = schema;

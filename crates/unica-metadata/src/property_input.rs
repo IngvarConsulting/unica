@@ -40,6 +40,7 @@ pub enum DescriptorPropertyValue {
     Parts(Vec<(&'static str, String)>),
     /// Distinct values of a closed enumeration, in the order given.
     List(Vec<String>),
+    Mobile(crate::configuration::ConfigurationMobileList),
 }
 
 /// Form descriptor property changes in profile order; each property appears
@@ -441,6 +442,68 @@ impl<'a> PropertyArgumentReader<'a> {
         Ok(Some(values))
     }
 
+    fn mobile_list(
+        &mut self,
+        field: DescriptorProperty,
+    ) -> DecodeResult<Option<crate::configuration::ConfigurationMobileList>> {
+        use crate::configuration::{ConfigurationMobileList, IncomingShareRequestType};
+        let Some((value, path)) = self.alias(field)? else {
+            return Ok(None);
+        };
+        let items = value
+            .as_array()
+            .ok_or_else(|| invalid(&path, "property value must be an array"))?;
+        if field == DescriptorProperty::MobileApplicationUrls {
+            let items = items
+                .iter()
+                .enumerate()
+                .map(|(index, item)| {
+                    let item_path = format!("{path}[{index}]");
+                    let item = item
+                        .as_str()
+                        .ok_or_else(|| invalid(&item_path, "a URL must be a string"))?;
+                    if !item.chars().all(crate::properties::is_xml_text_character) {
+                        return Err(invalid(
+                            &item_path,
+                            "text contains a character not allowed in XML 1.0",
+                        ));
+                    }
+                    Ok(item.to_string())
+                })
+                .collect::<DecodeResult<Vec<_>>>()?;
+            return Ok(Some(ConfigurationMobileList::Urls(items)));
+        }
+        let items = items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| {
+                let item_path = format!("{path}[{index}]");
+                let entry: IncomingShareRequestType = serde_json::from_value(item.clone())
+                    .map_err(|error| invalid(&item_path, error.to_string()))?;
+                for (key, text) in [
+                    ("mime", &entry.mime),
+                    ("uti", &entry.uti),
+                    ("ext", &entry.ext),
+                ] {
+                    if !text.chars().all(crate::properties::is_xml_text_character) {
+                        return Err(invalid(
+                            format!("{item_path}.{key}"),
+                            "text contains a character not allowed in XML 1.0",
+                        ));
+                    }
+                }
+                if entry.processing_variant > 1 {
+                    return Err(invalid(
+                        format!("{item_path}.processingVariant"),
+                        "expected 0 or 1",
+                    ));
+                }
+                Ok(entry)
+            })
+            .collect::<DecodeResult<Vec<_>>>()?;
+        Ok(Some(ConfigurationMobileList::ShareTypes(items)))
+    }
+
     fn finish<T>(self, decoded: T) -> DecodeResult<T> {
         for name in self.object.keys() {
             if self.shape.property(name).is_none() {
@@ -779,6 +842,9 @@ fn decode_with_contract(
                             DescriptorPropertyKind::List => values_reader
                                 .list(field, &field.allowed_values_in(line))?
                                 .map(DescriptorPropertyValue::List),
+                            DescriptorPropertyKind::MobileList => values_reader
+                                .mobile_list(field)?
+                                .map(DescriptorPropertyValue::Mobile),
                         };
                         if let Some(value) = value {
                             changes.push((field, value));
@@ -802,7 +868,7 @@ fn decode_with_contract(
                             DescriptorPropertyKind::List => values_reader
                                 .list(field, field.allowed_values())?
                                 .map(DescriptorPropertyValue::List),
-                            DescriptorPropertyKind::Parts => {
+                            DescriptorPropertyKind::Parts | DescriptorPropertyKind::MobileList => {
                                 return Err(invalid(
                                     &values_path,
                                     "form descriptor has no composite property",
@@ -1172,6 +1238,7 @@ mod tests {
                             json!({field.parts()[0][0]: field.allowed_values()[0]})
                         }
                         DescriptorPropertyKind::List => json!([field.allowed_values()[0]]),
+                        DescriptorPropertyKind::MobileList => json!([]),
                     };
                     assert!(
                         decode(site, json!({"values":{*spelling:value}})).is_ok(),
@@ -1224,6 +1291,7 @@ mod tests {
                             json!({field.parts()[0][0]: field.allowed_values()[0]})
                         }
                         DescriptorPropertyKind::List => json!([field.allowed_values()[0]]),
+                        DescriptorPropertyKind::MobileList => json!([]),
                     };
                     let other = if equal { value.clone() } else { json!(false) };
                     let error = decode(site, json!({"values":{names[0]:value,names[1]:other}}))
@@ -1238,6 +1306,7 @@ mod tests {
                         DescriptorPropertyKind::Enum => json!("NotAPlatformValue"),
                         DescriptorPropertyKind::Parts => json!("Error"),
                         DescriptorPropertyKind::List => json!("PlatformApplication"),
+                        DescriptorPropertyKind::MobileList => json!("value"),
                     };
                     assert_eq!(
                         decode(site, json!({"values":{*spelling:invalid}}))
