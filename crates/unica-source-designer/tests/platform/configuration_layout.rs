@@ -4,7 +4,7 @@ use std::collections::HashSet;
 fn cf_consumers_share_the_canonical_metadata_kind_order() {
     let validate_kinds = cf_validate_child_object_types();
 
-    assert_eq!(validate_kinds.len(), 47);
+    assert!(validate_kinds.contains(&"WebSocketClient"));
     assert_eq!(validate_kinds, cf_type_order());
     let bot_index = validate_kinds
         .iter()
@@ -100,11 +100,7 @@ fn every_addressed_root_kind_has_a_place_in_the_root_order() {
         NodeKind::ExternalDataProcessor,
         NodeKind::ExternalReport,
     ];
-    for kind in NodeKind::metadata_kinds()
-        .iter()
-        .copied()
-        .chain([NodeKind::WebSocketClient])
-    {
+    for kind in NodeKind::metadata_kinds().iter().copied() {
         assert!(kind.is_metadata_kind(), "{}", kind.as_str());
         if NOT_ROOT.contains(&kind) {
             continue;
@@ -144,13 +140,14 @@ fn a_new_ws_reference_stands_before_the_web_socket_client() {
         "	<WebSocketClient>Phone</WebSocketClient>
 ",
     )));
-    assert!(crate::registration::cf_edit_add_child_object_text(
-        &mut xml,
-        "WebSocketClient",
-        "Chat"
-    )
-    .expect_err("a kind without a layout is not created")
-    .contains("Unknown type 'WebSocketClient'"));
+    assert_eq!(
+        cf_validate_child_type_dir("WebSocketClient"),
+        Some("WebSocketClients")
+    );
+    assert_eq!(
+        crate::configuration_layout::cfe_borrow_type_dir("WebSocketClient"),
+        None
+    );
 }
 
 /// rule: INV.SOURCE.CHILD-OBJECTS-PLATFORM-ORDER

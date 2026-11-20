@@ -60,6 +60,9 @@ pub fn cf_edit_dir_to_type(value: &str) -> Option<&'static str> {
 }
 
 pub fn cfe_borrow_type_dir(type_name: &str) -> Option<&'static str> {
+    if type_name == "WebSocketClient" {
+        return None;
+    }
     cf_validate_child_type_dir(type_name)
 }
 

@@ -148,6 +148,7 @@ impl AttachedPathResource {
             ["commonforms", _, "ext", "form", "module.bsl"] => Some(Self::FormModule),
             [_, _, "forms", _, "ext", "form.xml"] => Some(Self::Form),
             [_, _, "forms", _, "ext", "form", "module.bsl"] => Some(Self::FormModule),
+            ["websocketclients", _, "ext", "module.bsl"] => Some(Self::RoleModule),
             [.., "ext", file] if file.ends_with("module.bsl") && *file != "module.bsl" => {
                 Some(Self::RoleModule)
             }

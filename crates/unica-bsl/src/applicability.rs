@@ -18,6 +18,12 @@ impl OperationApplicability {
     pub fn matches(self, site: &OperationSite<'_>) -> bool {
         let segments = site.segments();
         let terminal = site.terminal();
+        if segments
+            .first()
+            .is_some_and(|owner| owner.kind() == NodeKind::WebSocketClient)
+        {
+            return false;
+        }
         match self {
             Self::CodeInsert => {
                 site.route() == RouteClass::Module

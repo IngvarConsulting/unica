@@ -161,6 +161,13 @@ fn plan_one_code_operation(
                 )
                 .at_path(&at_path)
             })?;
+    if capability.role() == unica_address::module_routes::ModuleRole::WebSocketClient {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::ProviderUnavailable,
+            "writing WebSocket client modules is unavailable for the actor-issued profile",
+        )
+        .at_path(&at_path));
+    }
     let target = module_source_address(
         &module_at,
         capability.owner_kind(),
@@ -474,6 +481,9 @@ fn resolve_target(
         .expect("module resolver returns metadataPath");
     let segments = metadata_path.segments().collect::<Vec<_>>();
     let (owner, module_role) = match segments.as_slice() {
+        ["WebSocketClient", ..] => {
+            return Err("writing WebSocket client modules is unavailable".to_string());
+        }
         [module_role] => ("Configuration".to_string(), (*module_role).to_string()),
         [kind, name, .., module_role] => (format!("{kind}.{name}"), (*module_role).to_string()),
         _ => {
