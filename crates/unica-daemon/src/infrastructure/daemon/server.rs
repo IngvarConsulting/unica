@@ -754,7 +754,7 @@ enum ActorBoundCanonicalInvocationState {
     /// Терминальный запуск клиента: как выгрузка, готовится до admission
     /// PlatformXml и известен длинным по внешнему процессу.
     ClientRun {
-        launch: Arc<super::v13_client_run::PreparedClientRun>,
+        launch: Arc<super::v13_client_run::PreparedTerminalRun>,
         workspace_identity_hash: unica_execution_contract::invocation::SafeIdentityHash,
         delivery: RunEngineDelivery,
     },
@@ -826,7 +826,7 @@ enum PreparedCanonicalInvocationState {
         delivery: RunEngineDelivery,
     },
     ClientRun {
-        launch: Arc<super::v13_client_run::PreparedClientRun>,
+        launch: Arc<super::v13_client_run::PreparedTerminalRun>,
         delivery: RunEngineDelivery,
     },
     InfobaseCreate {
