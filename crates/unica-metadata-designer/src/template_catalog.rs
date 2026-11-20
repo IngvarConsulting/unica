@@ -623,7 +623,8 @@ pub fn minimal_module_files(kind: MetadataKind) -> &'static [&'static str] {
         MetadataKind::ScheduledJob
         | MetadataKind::EventSubscription
         | MetadataKind::DocumentJournal
-        | MetadataKind::DefinedType => &[],
+        | MetadataKind::DefinedType
+        | MetadataKind::CommandGroup => &[],
     }
 }
 
@@ -839,6 +840,9 @@ pub fn minimal_metadata_xml<G>(
         }
         unica_metadata::MetadataKind::DefinedType => {
             emit_meta_defined_type_properties(&mut lines, "\t\t\t", &defn, obj_name, &synonym)
+        }
+        unica_metadata::MetadataKind::CommandGroup => {
+            emit_meta_command_group_properties(&mut lines, "\t\t\t", &defn, obj_name, &synonym)
         }
     }
     Ok(close_minimal_object(
@@ -2369,6 +2373,22 @@ pub fn emit_meta_queue_properties(
         "{indent}<ProcessingPortionSize>1000</ProcessingPortionSize>"
     ));
     lines.push(format!("{indent}<AutoProcessing>true</AutoProcessing>"));
+}
+
+/// Группа команд, как её создаёт Конфигуратор 8.3.27: представление `Auto`,
+/// пустые подсказка и картинка, категория панели навигации.
+pub fn emit_meta_command_group_properties(
+    lines: &mut Vec<String>,
+    indent: &str,
+    defn: &MetaTemplateDefinition,
+    obj_name: &str,
+    synonym: &str,
+) {
+    emit_meta_base_properties(lines, indent, defn, obj_name, synonym);
+    lines.push(format!("{indent}<Representation>Auto</Representation>"));
+    lines.push(format!("{indent}<ToolTip/>"));
+    lines.push(format!("{indent}<Picture/>"));
+    lines.push(format!("{indent}<Category>NavigationPanel</Category>"));
 }
 
 pub fn emit_meta_defined_type_properties(

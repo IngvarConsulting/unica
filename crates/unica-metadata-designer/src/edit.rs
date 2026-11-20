@@ -752,7 +752,7 @@ pub fn typed_operations_write_multilingual_text(operations: &[MetaEditOperation]
         // Every language of a full multilingual value is named by the caller.
         MetaEditOperation::SetProperties { values } => {
             values.entries().iter().any(|(key, value)| {
-                *key == MetaPropertyKey::Synonym && matches!(value, MetaPropertyValue::String(_))
+                key.is_localized() && matches!(value, MetaPropertyValue::String(_))
             })
         }
         MetaEditOperation::Add { .. } => true,
@@ -1106,14 +1106,14 @@ pub fn typed_operation_effect_value(
                     );
                     continue;
                 }
-                if *key == MetaPropertyKey::Synonym {
+                if key.is_localized() {
                     let properties = properties.ok_or_else(|| {
-                        synonym_update_error("metadata Synonym has no Properties".to_string())
+                        synonym_update_error(format!("metadata {public_key} has no Properties"))
                     })?;
                     let value = super::info_projection::localized_property_as_nstr(
                         properties,
                         kind.as_str(),
-                        "Synonym",
+                        &public_key,
                     )
                     .map_err(synonym_update_error)?
                     .unwrap_or_default();
@@ -1879,7 +1879,7 @@ pub fn apply_typed_properties(
                     Some("values.Type"),
                 ))
             }
-            (MetaPropertyKey::Synonym, MetaPropertyValue::String(value)) => {
+            (key, MetaPropertyValue::String(value)) if key.is_localized() => {
                 unica_xml_format::localized::replace_language_value(
                     parsed_body,
                     property,
@@ -1897,7 +1897,7 @@ pub fn apply_typed_properties(
                     format!("{indent}{opening}>{escaped}</{qname}>")
                 }
             }
-            (MetaPropertyKey::Synonym, MetaPropertyValue::Localized(items)) => {
+            (key, MetaPropertyValue::Localized(items)) if key.is_localized() => {
                 let values = items
                     .iter()
                     .map(|item| (item.language.clone(), item.content.clone()))
@@ -1918,6 +1918,14 @@ pub fn apply_typed_properties(
             }
             (MetaPropertyKey::Comment, MetaPropertyValue::String(value)) if value.is_empty() => {
                 format!("{indent}{opening}/>")
+            }
+            // Чтение XML нормализует литеральный CR; ссылка сохраняет
+            // переводы строк комментария такими, какими их передали.
+            (MetaPropertyKey::Comment, MetaPropertyValue::String(value)) => {
+                format!(
+                    "{indent}{opening}>{}</{qname}>",
+                    unica_xml_format::text::escape_xml(value).replace('\r', "&#13;")
+                )
             }
             (_, MetaPropertyValue::String(value)) => {
                 format!(

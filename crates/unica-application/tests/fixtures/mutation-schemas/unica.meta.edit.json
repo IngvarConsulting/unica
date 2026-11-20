@@ -956,7 +956,7 @@
       },
       "metadataPath": {
         "minLength": 1,
-        "pattern": "^(Catalog|Справочник|Document|Документ|Enum|Перечисление|Constant|Константа|InformationRegister|РегистрСведений|AccumulationRegister|РегистрНакопления|AccountingRegister|РегистрБухгалтерии|CalculationRegister|РегистрРасчета|РегистрРасчёта|ChartOfAccounts|ПланСчетов|ChartOfCharacteristicTypes|ПланВидовХарактеристик|ChartOfCalculationTypes|ПланВидовРасчета|ПланВидовРасчёта|BusinessProcess|БизнесПроцесс|Task|Задача|ExchangePlan|ПланОбмена|DocumentJournal|ЖурналДокументов|Report|Отчет|Отчёт|DataProcessor|Обработка|CommonModule|ОбщийМодуль|ScheduledJob|РегламентноеЗадание|EventSubscription|ПодпискаНаСобытие|HTTPService|HTTPСервис|WebService|ВебСервис|DefinedType|ОпределяемыйТип)\\.[^.]+$",
+        "pattern": "^(Catalog|Справочник|Document|Документ|Enum|Перечисление|Constant|Константа|InformationRegister|РегистрСведений|AccumulationRegister|РегистрНакопления|AccountingRegister|РегистрБухгалтерии|CalculationRegister|РегистрРасчета|РегистрРасчёта|ChartOfAccounts|ПланСчетов|ChartOfCharacteristicTypes|ПланВидовХарактеристик|ChartOfCalculationTypes|ПланВидовРасчета|ПланВидовРасчёта|BusinessProcess|БизнесПроцесс|Task|Задача|ExchangePlan|ПланОбмена|DocumentJournal|ЖурналДокументов|Report|Отчет|Отчёт|DataProcessor|Обработка|CommonModule|ОбщийМодуль|ScheduledJob|РегламентноеЗадание|EventSubscription|ПодпискаНаСобытие|HTTPService|HTTPСервис|WebService|ВебСервис|DefinedType|ОпределяемыйТип|CommandGroup|ГруппаКоманд)\\.[^.]+$",
         "type": "string"
       },
       "operations": {
@@ -989,6 +989,15 @@
                     },
                     "BasePeriod": {
                       "type": "boolean"
+                    },
+                    "Category": {
+                      "enum": [
+                        "NavigationPanel",
+                        "ActionsPanel",
+                        "FormNavigationPanel",
+                        "FormCommandBar"
+                      ],
+                      "type": "string"
                     },
                     "CheckUnique": {
                       "type": "boolean"
@@ -1297,6 +1306,15 @@
                       ],
                       "type": "string"
                     },
+                    "Representation": {
+                      "enum": [
+                        "Auto",
+                        "Text",
+                        "Picture",
+                        "PictureAndText"
+                      ],
+                      "type": "string"
+                    },
                     "RestartCountOnFailure": {
                       "maximum": 4294967295,
                       "minimum": 0,
@@ -1359,6 +1377,10 @@
                       "type": "string"
                     },
                     "Synonym": {
+                      "pattern": "^\\s*(?:[A-Za-z0-9_-]+\\s*=\\s*'(?:[^']|'')*'\\s*(?:;\\s*[A-Za-z0-9_-]+\\s*=\\s*'(?:[^']|'')*'\\s*)*;?\\s*)?$",
+                      "type": "string"
+                    },
+                    "ToolTip": {
                       "pattern": "^\\s*(?:[A-Za-z0-9_-]+\\s*=\\s*'(?:[^']|'')*'\\s*(?:;\\s*[A-Za-z0-9_-]+\\s*=\\s*'(?:[^']|'')*'\\s*)*;?\\s*)?$",
                       "type": "string"
                     },
