@@ -301,7 +301,30 @@ fn confirmed_supplier_replacement_publishes_files_and_locked_together() {
     let mut expected = canonical;
     expected.remove(Path::new(MARKER));
     assert_eq!(after, expected);
-    assert_ne!(marker, local[Path::new(MARKER)]);
+    let before = restore_support_records(&local[Path::new(MARKER)]).unwrap();
+    let after = restore_support_records(&marker).unwrap();
+    let rules = |records: unica_metadata_designer::support_restore::RestoreSupportRecords| {
+        records
+            .vendors
+            .into_iter()
+            .flat_map(|vendor| {
+                let name = vendor.name;
+                vendor
+                    .objects
+                    .into_iter()
+                    .map(move |object| ((name.clone(), object.object_uuid), object.rule))
+            })
+            .collect::<BTreeMap<_, _>>()
+    };
+    let before = rules(before);
+    let after = rules(after);
+    assert!(before.keys().eq(after.keys()));
+    let changes = after
+        .iter()
+        .filter(|(identity, rule)| before.get(*identity) != Some(*rule))
+        .map(|(_, rule)| *rule)
+        .collect::<Vec<_>>();
+    assert_eq!(changes, [0]);
     assert_eq!(supplier.calls.get(), 1);
 }
 
