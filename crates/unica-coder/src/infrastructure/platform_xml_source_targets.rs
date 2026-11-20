@@ -1,6 +1,6 @@
 use unica_source_designer::module_layout::{
-    metadata_descriptor, platform_xml_module_identity, platform_xml_module_relative,
-    PlatformXmlModuleIdentity, PlatformXmlModuleRole,
+    platform_xml_module_identity, platform_xml_module_relative, PlatformXmlModuleIdentity,
+    PlatformXmlModuleRole,
 };
 use unica_source_designer::owner::PlatformXmlResourceEvidence;
 
@@ -24,7 +24,9 @@ use unica_address::source_target::{
 };
 use unica_source_contract::discovery::{NamedSourceSetError, NamedSourceSetErrorKind};
 use unica_source_contract::workspace::WorkspaceContext;
-use unica_source_designer::layout::{metadata_kind, metadata_kind_by_directory, MetadataLayout};
+use unica_source_designer::layout::{
+    metadata_kind, metadata_kind_by_directory, nested_directory, MetadataLayout,
+};
 use unica_work_control::cancellation::{cancelled_error, CancellationToken};
 use unica_workspace::compile_transaction::CompileTransaction;
 use unica_workspace::path_policy::WorkspacePathPolicy;
@@ -521,10 +523,10 @@ fn exact_object_outcome_with_policy(
 ) -> Result<ExactCandidate, String> {
     check_navigation_cancellation(cancellation)?;
     let parts = address.segments().collect::<Vec<_>>();
-    // A nested child is only as real as the owner that declares it, so the
+    // A nested child is only as real as the owners that declare it, so each
     // owner descriptor is proven first and its verdict wins when it fails.
-    if parts.len() == 4 {
-        let Some(owner) = object_descriptor_evidence(&parts[..2]) else {
+    for end in (2..parts.len()).step_by(2) {
+        let Some(owner) = object_descriptor_evidence(&parts[..end]) else {
             return Ok(ExactCandidate::Absent);
         };
         let outcome = descriptor_outcome_with_policy(
@@ -582,41 +584,35 @@ struct ObjectDescriptorEvidence {
 /// that proves it. Navigation, resolution and resource access all read this
 /// mapping so they cannot disagree about what a logical object is.
 fn object_descriptor_evidence(parts: &[&str]) -> Option<ObjectDescriptorEvidence> {
-    match parts {
-        [kind, name] => {
-            let kind = metadata_kind(kind)?;
-            Some(ObjectDescriptorEvidence {
-                path: metadata_descriptor(kind.directory, name),
-                kind: kind.tag.to_string(),
-                name: (*name).to_string(),
-            })
-        }
-        [kind, name, child_kind, child_name]
-            if matches!(
-                *child_kind,
-                "Form" | "Template" | "Command" | "Recalculation"
-            ) =>
-        {
-            let kind = metadata_kind(kind)?;
-            let child_directory = match *child_kind {
-                "Form" => "Forms",
-                "Template" => "Templates",
-                "Command" => "Commands",
-                "Recalculation" if kind.tag == "CalculationRegister" => "Recalculations",
-                "Recalculation" => return None,
-                _ => unreachable!("nested metadata kind match is closed"),
-            };
-            Some(ObjectDescriptorEvidence {
-                path: PathBuf::from(kind.directory)
-                    .join(name)
-                    .join(child_directory)
-                    .join(format!("{child_name}.xml")),
-                kind: (*child_kind).to_string(),
-                name: (*child_name).to_string(),
-            })
-        }
-        _ => None,
+    let [kind, name, rest @ ..] = parts else {
+        return None;
+    };
+    if rest.len() % 2 != 0 {
+        return None;
     }
+    let owner = metadata_kind(kind)?;
+    let mut path = PathBuf::from(owner.directory);
+    let (mut parent, mut last_kind, mut last_name) = (owner.tag, owner.tag, *name);
+    for (index, pair) in rest.chunks(2).enumerate() {
+        let directory = match (index, pair[0]) {
+            (0, "Recalculation") if owner.tag == "CalculationRegister" => "Recalculations",
+            (0, "Recalculation") => return None,
+            // A nested object described inline in its owner has no
+            // descriptor of its own and is no source target.
+            (depth, nested) => nested_directory(parent, depth + 1, nested)?,
+        };
+        path.push(last_name);
+        path.push(directory);
+        parent = pair[0];
+        last_kind = pair[0];
+        last_name = pair[1];
+    }
+    path.push(format!("{last_name}.xml"));
+    Some(ObjectDescriptorEvidence {
+        path,
+        kind: last_kind.to_string(),
+        name: last_name.to_string(),
+    })
 }
 
 fn descriptor_outcome(
@@ -725,6 +721,26 @@ fn module_descriptor_identity_is_proven(
                 child_name,
                 cancellation,
             )?
+        }
+        // A module of a declared nested object: one descriptor per link of
+        // the chain, each proving its own kind and name.
+        ([owner_kind, _, child_kind, ..], descriptors)
+            if parts.len() % 2 == 1
+                && descriptors.len() == parts.len() / 2
+                && unica_address::kinds::nested_place(owner_kind, child_kind).is_some() =>
+        {
+            for (index, descriptor) in descriptors.iter().enumerate() {
+                if !descriptor_identity_matches(
+                    source_root,
+                    descriptor,
+                    parts[index * 2],
+                    parts[index * 2 + 1],
+                    cancellation,
+                )? {
+                    return Ok(false);
+                }
+            }
+            true
         }
         _ => false,
     };
@@ -1162,6 +1178,23 @@ fn resolve_platform_xml_module(
     if !identity_proven {
         return Err(metadata_owner_evidence_error(target));
     }
+    // A module of a declared nested object is as real as its registration
+    // chain: the configuration registers the top owner and every owner lists
+    // the next link in its `ChildObjects`.
+    let parts = identity.address.segments().collect::<Vec<_>>();
+    if parts.len() >= 5 && unica_address::kinds::nested_place(parts[0], parts[2]).is_some() {
+        let owner = MetadataAddress::parse_logical(&parts[..parts.len() - 1].join("."))
+            .map_err(|_| metadata_owner_evidence_error(target))?;
+        if object_registration_evidence(context, &selected, &owner)?.is_none() {
+            return Err(SourceTargetError::new(
+                SourceTargetErrorCode::MetadataAddressNotFound,
+                format!(
+                    "metadataPath `{address}` was not found in sourceSet `{}`",
+                    target.source_set
+                ),
+            ));
+        }
+    }
 
     let workspace_root = normalize_path_identity(&context.workspace_root)
         .map_err(|_| target_containment_error(&target.source_set))?;
@@ -1318,74 +1351,103 @@ fn object_registration_evidence(
     let source_owner_version = source_owner_evidence.version().map(str::to_owned);
 
     let parts = address.segments().collect::<Vec<_>>();
-    let [owner_kind, owner_name, child_kind @ ("Form" | "Template" | "Command" | "Recalculation"), child_name] =
-        parts.as_slice()
-    else {
-        return match parts.as_slice() {
-            [kind, name] if source_owner_evidence.registers(kind, name) => Ok(Some(
-                ObjectOwnerVersionEvidence::Exact(source_owner_version),
-            )),
-            [_, _] => Ok(None),
-            _ => Ok(None),
-        };
-    };
-    let owner = object_descriptor_evidence(&[*owner_kind, *owner_name])
-        .ok_or_else(|| metadata_owner_evidence_error(&logical_target))?;
-    if !source_owner_evidence.registers(&owner.kind, &owner.name) {
-        return Ok(None);
+    match parts.as_slice() {
+        [kind, name] if source_owner_evidence.registers(kind, name) => {
+            return Ok(Some(ObjectOwnerVersionEvidence::Exact(
+                source_owner_version,
+            )))
+        }
+        [_, _] => return Ok(None),
+        [owner_kind, owner_name, ..] if parts.len() % 2 == 0 => {
+            let owner = object_descriptor_evidence(&[*owner_kind, *owner_name])
+                .ok_or_else(|| metadata_owner_evidence_error(&logical_target))?;
+            if !source_owner_evidence.registers(&owner.kind, &owner.name) {
+                return Ok(None);
+            }
+        }
+        _ => return Ok(None),
     }
+    // Each owner of the chain registers the next link in its `ChildObjects`
+    // and shares the format of the source set owner.
+    for end in (2..parts.len()).step_by(2) {
+        let registered = registers_nested_child(
+            context,
+            selected,
+            &logical_target,
+            &parts[..end],
+            (parts[end], parts[end + 1]),
+            &source_owner_version,
+        )?;
+        if !registered {
+            return Ok(None);
+        }
+    }
+    Ok(Some(ObjectOwnerVersionEvidence::Exact(
+        source_owner_version,
+    )))
+}
+
+/// Whether the descriptor of `owner_parts` lists `child` in its
+/// `ChildObjects`, read at the format of the source set owner.
+fn registers_nested_child(
+    context: &WorkspaceContext,
+    selected: &ResolvedNamedSourceSet,
+    logical_target: &SourceTarget,
+    owner_parts: &[&str],
+    (child_kind, child_name): (&str, &str),
+    source_owner_version: &Option<String>,
+) -> Result<bool, SourceTargetError> {
+    let owner_kind = owner_parts[owner_parts.len() - 2];
+    let owner_name = owner_parts[owner_parts.len() - 1];
+    let owner = object_descriptor_evidence(owner_parts)
+        .ok_or_else(|| metadata_owner_evidence_error(logical_target))?;
     validate_platform_xml_module_descriptors(
         context,
         &selected.path,
         std::slice::from_ref(&owner.path),
     )
-    .map_err(|error| public_evidence_error(&logical_target, error))?;
+    .map_err(|error| public_evidence_error(logical_target, error))?;
     let owner_path = selected.path.join(&owner.path);
     let owner = read_navigation_descriptor(&owner_path)
-        .map_err(|_| metadata_owner_evidence_error(&logical_target))?;
+        .map_err(|_| metadata_owner_evidence_error(logical_target))?;
     let (owner_version, actual_name) =
         descriptor_version_and_name_from_bytes(&owner, owner_kind)
-            .map_err(|_| metadata_owner_evidence_error(&logical_target))?;
-    if actual_name != *owner_name {
-        return Err(metadata_owner_evidence_error(&logical_target));
+            .map_err(|_| metadata_owner_evidence_error(logical_target))?;
+    if actual_name != owner_name {
+        return Err(metadata_owner_evidence_error(logical_target));
     }
-    if owner_version != source_owner_version {
+    if &owner_version != source_owner_version {
         return Err(SourceTargetError::source_format_unsupported(format!(
-            "metadata owner `{}.{}` format does not match sourceSet `{}` owner",
-            owner_kind, owner_name, selected.source_set.name
+            "metadata owner `{}` format does not match sourceSet `{}` owner",
+            owner_parts.join("."),
+            selected.source_set.name
         )));
     }
     let owner = std::str::from_utf8(&owner)
-        .map_err(|_| metadata_owner_evidence_error(&logical_target))?
+        .map_err(|_| metadata_owner_evidence_error(logical_target))?
         .trim_start_matches('\u{feff}');
     let document = roxmltree::Document::parse(owner)
-        .map_err(|_| metadata_owner_evidence_error(&logical_target))?;
+        .map_err(|_| metadata_owner_evidence_error(logical_target))?;
     let owner_node = document
         .root_element()
         .children()
         .find(|node| {
             node.is_element()
                 && node.tag_name().namespace() == Some(MD_CLASSES_NS)
-                && node.tag_name().name() == *owner_kind
+                && node.tag_name().name() == owner_kind
         })
-        .ok_or_else(|| metadata_owner_evidence_error(&logical_target))?;
-    if owner_node.children().any(|child_objects| {
+        .ok_or_else(|| metadata_owner_evidence_error(logical_target))?;
+    Ok(owner_node.children().any(|child_objects| {
         child_objects.is_element()
             && child_objects.tag_name().namespace() == Some(MD_CLASSES_NS)
             && child_objects.tag_name().name() == "ChildObjects"
             && child_objects.children().any(|node| {
                 node.is_element()
                     && node.tag_name().namespace() == Some(MD_CLASSES_NS)
-                    && node.tag_name().name() == *child_kind
-                    && node.text().is_some_and(|text| text.trim() == *child_name)
+                    && node.tag_name().name() == child_kind
+                    && node.text().is_some_and(|text| text.trim() == child_name)
             })
-    }) {
-        Ok(Some(ObjectOwnerVersionEvidence::Exact(
-            source_owner_version,
-        )))
-    } else {
-        Ok(None)
-    }
+    }))
 }
 
 fn resolve_platform_xml_root(
@@ -2036,6 +2098,147 @@ mod medium_tests {
         assert!(!error
             .message
             .contains(&context.workspace_root.display().to_string()));
+        cleanup(&context);
+    }
+
+    /// Источник `all_kinds` из выгрузки платформы: описание конфигурации
+    /// и дерево внешнего источника данных.
+    fn external_data_source_fixture(name: &str) -> WorkspaceContext {
+        fn copy_tree(from: &Path, to: &Path) {
+            fs::create_dir_all(to).unwrap();
+            for entry in fs::read_dir(from).unwrap() {
+                let path = entry.unwrap().path();
+                let target = to.join(path.file_name().unwrap());
+                if path.is_dir() {
+                    copy_tree(&path, &target);
+                } else {
+                    fs::copy(&path, &target).unwrap();
+                }
+            }
+        }
+        let context = fixture(name, project_yaml("main", "CONFIGURATION", "src"));
+        let export = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src");
+        let root = context.workspace_root.join("src");
+        fs::create_dir_all(&root).unwrap();
+        fs::copy(
+            export.join("Configuration.xml"),
+            root.join("Configuration.xml"),
+        )
+        .unwrap();
+        copy_tree(
+            &export.join("ExternalDataSources"),
+            &root.join("ExternalDataSources"),
+        );
+        context
+    }
+
+    /// Модули и описания таблиц, кубов и таблиц измерений внешнего источника
+    /// разрешаются по адресу полной глубины в свои файлы; функция описана
+    /// в источнике и своей цели не имеет.
+    #[test]
+    fn platform_xml_source_targets_resolve_external_data_source_objects_at_full_depth() {
+        let context = external_data_source_fixture("external-data-source-depth");
+        let source = "ExternalDataSource.AllKindsExternalSource";
+        for (address, relative) in [
+            (
+                "Table.Items.ObjectModule",
+                "Tables/Items/Ext/ObjectModule.bsl",
+            ),
+            (
+                "Table.Items.ManagerModule",
+                "Tables/Items/Ext/ManagerModule.bsl",
+            ),
+            (
+                "Table.Items.RecordSetModule",
+                "Tables/Items/Ext/RecordSetModule.bsl",
+            ),
+            (
+                "Cube.Sales.ManagerModule",
+                "Cubes/Sales/Ext/ManagerModule.bsl",
+            ),
+            (
+                "Cube.Sales.RecordSetModule",
+                "Cubes/Sales/Ext/RecordSetModule.bsl",
+            ),
+            (
+                "Cube.Sales.DimensionTable.Products.ObjectModule",
+                "Cubes/Sales/DimensionTables/Products/Ext/ObjectModule.bsl",
+            ),
+            (
+                "Cube.Sales.DimensionTable.Products.ManagerModule",
+                "Cubes/Sales/DimensionTables/Products/Ext/ManagerModule.bsl",
+            ),
+        ] {
+            let resolution = resolve_platform_xml_target(
+                &context,
+                &target("main", &format!("{source}.{address}")),
+            )
+            .unwrap_or_else(|error| panic!("{address}: {error}"));
+            assert!(
+                resolution.handle.target_path.ends_with(
+                    Path::new("ExternalDataSources/AllKindsExternalSource").join(relative)
+                ),
+                "{address}: {:?}",
+                resolution.handle.target_path
+            );
+        }
+        let dimension_table = resolve_platform_xml_object_target(
+            &context,
+            &target(
+                "main",
+                &format!("{source}.Cube.Sales.DimensionTable.Products"),
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            dimension_table.resolved.target_kind,
+            unica_address::source_target::TargetKind::MetadataObject
+        );
+        let function = resolve_platform_xml_object_target(
+            &context,
+            &target("main", &format!("{source}.Function.Total")),
+        )
+        .unwrap_err();
+        assert_eq!(
+            function.code,
+            SourceTargetErrorCode::MetadataAddressNotFound
+        );
+        cleanup(&context);
+    }
+
+    /// Таблица измерения, которую куб не регистрирует, не становится целью,
+    /// хотя её файлы на месте.
+    #[test]
+    fn platform_xml_source_targets_require_the_cube_to_register_its_dimension_table() {
+        let context = external_data_source_fixture("external-data-source-unregistered");
+        let cube = context
+            .workspace_root
+            .join("src/ExternalDataSources/AllKindsExternalSource/Cubes/Sales.xml");
+        let text = fs::read_to_string(&cube).unwrap();
+        fs::write(
+            &cube,
+            text.replacen("<DimensionTable>Products</DimensionTable>", "", 1),
+        )
+        .unwrap();
+        let error = resolve_platform_xml_object_target(
+            &context,
+            &target(
+                "main",
+                "ExternalDataSource.AllKindsExternalSource.Cube.Sales.DimensionTable.Products",
+            ),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, SourceTargetErrorCode::MetadataAddressNotFound);
+        let module = resolve_platform_xml_target(
+            &context,
+            &target(
+                "main",
+                "ExternalDataSource.AllKindsExternalSource.Cube.Sales.DimensionTable.Products.ObjectModule",
+            ),
+        )
+        .unwrap_err();
+        assert_eq!(module.code, SourceTargetErrorCode::MetadataAddressNotFound);
         cleanup(&context);
     }
 

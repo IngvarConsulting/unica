@@ -125,25 +125,35 @@ pub fn metadata_descriptor_relative(
     let owner = metadata_kind(owner_kind)
         .ok_or_else(|| format!("metadata kind `{owner_kind}` has no platform layout"))?;
     let mut relative = PathBuf::from(owner.directory);
-    match rest {
-        [] => relative.push(format!("{owner_name}.xml")),
-        [nested_kind, nested_name] => {
-            relative.push(owner_name);
-            relative.push(match *nested_kind {
-                "Form" => "Forms",
-                "Template" => "Templates",
-                "Command" => "Commands",
-                _ => {
-                    return Err(format!(
-                        "unsupported nested descriptor kind `{nested_kind}`"
-                    ))
-                }
-            });
-            relative.push(format!("{nested_name}.xml"));
-        }
-        _ => return Err("metadata descriptor target has unsupported depth".into()),
+    let mut parent = *owner_kind;
+    let mut name = *owner_name;
+    for (index, pair) in rest.chunks(2).enumerate() {
+        let [nested_kind, nested_name] = pair else {
+            return Err("metadata descriptor target has unsupported depth".into());
+        };
+        relative.push(name);
+        relative.push(
+            nested_directory(parent, index + 1, nested_kind)
+                .ok_or_else(|| format!("unsupported nested descriptor kind `{nested_kind}`"))?,
+        );
+        parent = nested_kind;
+        name = nested_name;
     }
+    relative.push(format!("{name}.xml"));
     Ok(relative)
+}
+
+/// The directory that holds the descriptors of a nested kind in its owner's
+/// directory. A form, template or command of a top-level object lies in its
+/// collection directory; any other nested kind declares its directory.
+/// A nested kind described inline in its owner has none.
+pub fn nested_directory(owner: &str, depth: usize, kind: &str) -> Option<&'static str> {
+    match (depth, kind) {
+        (1, "Form") => Some("Forms"),
+        (1, "Template") => Some("Templates"),
+        (1, "Command") => Some("Commands"),
+        _ => unica_address::kinds::nested_place(owner, kind)?.directory,
+    }
 }
 
 pub fn external_owner_parts(
