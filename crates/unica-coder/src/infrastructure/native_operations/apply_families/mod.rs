@@ -26,6 +26,7 @@ use unica_workspace::apply::ApplyStagedState;
 pub const PLAN_DETAIL_KEYS: &[unica_source_contract::proposal::PlanDetailKey] = &[
     unica_xdto::results::XDTO_OBJECTS,
     unica_metadata::EXCHANGE_CONTENT,
+    unica_metadata::support::SUPPORT_RESTORATION,
 ];
 
 /// The writable platform XML profile is single (`DEC.2026-08-21.SINGLE-WRITABLE-PLATFORM-XML-PROFILE`):
@@ -1913,11 +1914,46 @@ pub fn plan_hidden_v13_apply_with_person_choices(
     plan_apply(request, binding, admission, chosen)
 }
 
+pub fn plan_hidden_v13_apply_with_restore(
+    request: &ApplyRequest,
+    binding: &ProviderRootBinding,
+    admission: &ApplyAdmission,
+    restore_supplier: Option<&dyn unica_metadata_designer::support_restore::RestoreSupplierRead>,
+) -> Result<(ApplyStagedState, PlannedApplyEffects), ApplyPlanError> {
+    if request.ops().len() != 1 {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::InvalidState,
+            "supportRule.restore requires a separate apply as the sole operation",
+        ));
+    }
+    plan_apply_with_restore(
+        request,
+        binding,
+        admission,
+        PersonChosenChanges {
+            mode_raise: None,
+            support: Vec::new(),
+            remove_support: false,
+        },
+        restore_supplier,
+    )
+}
+
 fn plan_apply(
     request: &ApplyRequest,
     binding: &ProviderRootBinding,
     admission: &ApplyAdmission,
     chosen: PersonChosenChanges<'_>,
+) -> Result<(ApplyStagedState, PlannedApplyEffects), ApplyPlanError> {
+    plan_apply_with_restore(request, binding, admission, chosen, None)
+}
+
+fn plan_apply_with_restore(
+    request: &ApplyRequest,
+    binding: &ProviderRootBinding,
+    admission: &ApplyAdmission,
+    chosen: PersonChosenChanges<'_>,
+    restore_supplier: Option<&dyn unica_metadata_designer::support_restore::RestoreSupplierRead>,
 ) -> Result<(ApplyStagedState, PlannedApplyEffects), ApplyPlanError> {
     let PersonChosenChanges {
         mode_raise,
@@ -2119,6 +2155,7 @@ fn plan_apply(
         }),
     );
     let mut provisional = chosen_planned;
+    let mut restorations = Vec::new();
     let mut code_support_warnings = Vec::new();
     let mut xdto_validation = unica_xdto_designer::planner::XdtoValidationLedger::default();
     let mut borrowing = Vec::new();
@@ -2244,12 +2281,14 @@ fn plan_apply(
                     })
                     .collect::<Vec<_>>();
                 let authority = admission.form_resource_planning_authority(binding)?;
-                let planned = form_resource::plan_form_resource_batch(
+                let (planned, details) = form_resource::plan_form_resource_batch_with_restore(
                     &mut staged.proposal(),
                     &authority,
                     &operations,
+                    restore_supplier,
                 )?;
                 provisional.extend(planned);
+                restorations.extend(details);
             }
             ParsedApplyOperation::DcsMxl(_) => {
                 let operations = parsed[cursor..end]
@@ -2367,6 +2406,9 @@ fn plan_apply(
         .map_err(detail_error)?;
     effects
         .set_details(unica_metadata::EXCHANGE_CONTENT, &exchange_content)
+        .map_err(detail_error)?;
+    effects
+        .set_details(unica_metadata::support::SUPPORT_RESTORATION, &restorations)
         .map_err(detail_error)?;
     effects.set_borrowing(borrowing);
     Ok((staged, effects))

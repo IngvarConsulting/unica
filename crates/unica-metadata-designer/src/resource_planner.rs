@@ -23,6 +23,7 @@ use unica_source_contract::proposal::{
     hidden_apply_family_unimplemented, ApplyPlanError, ApplyPlanErrorKind, ApplyProposal,
     ApplySourceAuthority, ProvisionalApplyEffect,
 };
+use unica_source_contract::SourceSetKind;
 use unica_source_designer::registration::read_required;
 
 #[derive(Debug, Clone)]
@@ -79,6 +80,10 @@ pub enum MetadataResourcePlan {
         /// `Kind.Name[.Kind.Name…]`.
         target: String,
         rule: SupportObjectRule,
+    },
+    SupportRestore {
+        target: MetadataAddress,
+        replace_from_supplier: bool,
     },
 
     Unsupported,
@@ -788,7 +793,7 @@ pub fn parse_support_operation(
     args: &Map<String, Value>,
     op_index: usize,
     source_set_name: &str,
-    source_kind: unica_source_contract::SourceSetKind,
+    source_kind: SourceSetKind,
 ) -> Result<MetadataResourcePlan, ApplyPlanError> {
     let target =
         unica_source_contract::proposal::input::qualified_target(args, op_index, source_set_name)?;
@@ -801,6 +806,14 @@ pub fn parse_support_operation(
         .map_err(|error| {
             ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.message).at_path(error.path)
         })?;
+
+    if operation == SupportOperation::RuleRestore && source_kind != SourceSetKind::Configuration {
+        return Err(bad(
+            op_index,
+            "at",
+            "supportRule.restore requires a configuration source set",
+        ));
+    }
 
     match operation {
         SupportOperation::CapabilitySet => {
@@ -840,26 +853,32 @@ pub fn parse_support_operation(
                 SupportCapability::Off
             }))
         }
-        SupportOperation::RuleSet => {
-            let values = required_values(args, op_index, &["rule"])?;
-            let rule = unica_source_contract::proposal::input::required_string(
-                values, "rule", op_index, "values",
-            )?;
-            let rule = match rule {
-                "NotEditable" | "locked" => SupportObjectRule::Locked,
-                "EditableWithSupport" | "editable" => SupportObjectRule::Editable,
-                "NotSupported" | "off-support" => SupportObjectRule::OffSupport,
-                other => {
-                    return Err(bad(
-                        op_index,
-                        "values.rule",
-                        format!(
+        SupportOperation::RuleSet | SupportOperation::RuleRestore => {
+            let rule = if operation == SupportOperation::RuleRestore {
+                SupportObjectRule::Locked
+            } else {
+                let values = required_values(args, op_index, &["rule"])?;
+                let rule = unica_source_contract::proposal::input::required_string(
+                    values, "rule", op_index, "values",
+                )?;
+                let rule = match rule {
+                    "NotEditable" | "locked" => SupportObjectRule::Locked,
+                    "EditableWithSupport" | "editable" => SupportObjectRule::Editable,
+                    "NotSupported" | "off-support" => SupportObjectRule::OffSupport,
+                    other => {
+                        return Err(bad(
+                            op_index,
+                            "values.rule",
+                            format!(
                         "unknown support rule `{other}`; use `locked`, `editable` or `off-support`"
                     ),
-                    ))
-                }
+                        ))
+                    }
+                };
+                rule
             };
-            if source_kind == unica_source_contract::SourceSetKind::Configuration
+            if operation == SupportOperation::RuleSet
+                && source_kind == unica_source_contract::SourceSetKind::Configuration
                 && unica_metadata::applicability::support_configuration_root(target.segments())
             {
                 return Ok(MetadataResourcePlan::SupportRule {
@@ -886,7 +905,29 @@ pub fn parse_support_operation(
                 })
                 .collect::<Vec<_>>()
                 .join(".");
-            Ok(MetadataResourcePlan::SupportRule { target: raw, rule })
+            if operation == SupportOperation::RuleRestore {
+                if !(target.segments().len() == 1
+                    || (target.segments().len() == 2
+                        && target.segments()[1].kind() == NodeKind::Form))
+                {
+                    return Err(bad(
+                        op_index,
+                        "at",
+                        "supportRule.restore targets one object or its form",
+                    ));
+                }
+                let target = MetadataAddress::parse_logical(&raw)
+                    .map_err(|error| bad(op_index, "at", error.to_string()))?;
+                Ok(MetadataResourcePlan::SupportRestore {
+                    target,
+                    replace_from_supplier: args
+                        .get("replaceFromSupplier")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                })
+            } else {
+                Ok(MetadataResourcePlan::SupportRule { target: raw, rule })
+            }
         }
     }
 }
@@ -1345,7 +1386,8 @@ pub fn stage_metadata_resource_plan(
     plan: &MetadataResourcePlan,
     op_index: usize,
     provisional: &mut Vec<ProvisionalApplyEffect>,
-) -> Result<(), ApplyPlanError> {
+    restore_supplier: Option<&dyn crate::support_restore::RestoreSupplierRead>,
+) -> Result<Option<unica_metadata::support::SupportRestorationData>, ApplyPlanError> {
     match plan {
         MetadataResourcePlan::CreateSubsystem { name } => {
             let name_path = format!("ops[{op_index}].args.values.name");
@@ -1736,7 +1778,7 @@ pub fn stage_metadata_resource_plan(
             // Already in the requested state: nothing to switch, and the
             // object rules must not be reset as a side effect.
             if (global_flag == 0) == capability.enabled() {
-                return Ok(());
+                return Ok(None);
             }
             let root = authority.source_root();
             let (updated, _) = crate::support_codec::plan_capability_data(
@@ -1757,6 +1799,93 @@ pub fn stage_metadata_resource_plan(
                 &at_path,
                 provisional,
             )?;
+        }
+        MetadataResourcePlan::SupportRestore {
+            target,
+            replace_from_supplier,
+        } => {
+            let at_path = format!("ops[{op_index}].args.at");
+            if authority.source_kind() != SourceSetKind::Configuration {
+                return Err(ApplyPlanError::new(
+                    ApplyPlanErrorKind::BadValue,
+                    "support restoration requires a configuration source set",
+                )
+                .at_path(at_path));
+            }
+            let supplier = restore_supplier.ok_or_else(|| {
+                ApplyPlanError::new(
+                    ApplyPlanErrorKind::ProviderUnavailable,
+                    "no supplier conversion provider is available for support restoration",
+                )
+                .at_path(at_path.clone())
+            })?;
+            let proof = crate::support_restore::plan_support_restoration(
+                staged,
+                supplier,
+                target,
+                authority.expected_format(),
+                *replace_from_supplier,
+            )
+            .map_err(|error| error.at_path(at_path.clone()))?;
+            use unica_source_contract::portable_path::PortablePathExt;
+            let mut files_to_restore = Vec::new();
+            for file in proof.files {
+                let path = file.path;
+                let action = match (file.before, file.after) {
+                    (Some(before), Some(after)) => {
+                        staged
+                            .replace(&path, &before, after)
+                            .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
+                        "replace"
+                    }
+                    (None, Some(after)) => {
+                        staged
+                            .create(&path, after)
+                            .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
+                        "create"
+                    }
+                    (Some(before), None) => {
+                        staged
+                            .remove(&path, &before)
+                            .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
+                        "remove"
+                    }
+                    (None, None) => unreachable!("restore changes contain a file"),
+                };
+                files_to_restore.push(unica_metadata::support::RestorationFile {
+                    path: path.portable().to_string(),
+                    action,
+                });
+                provisional.push(ProvisionalApplyEffect::single(
+                    path,
+                    DomainEvent::new(
+                        DomainEventKind::MetadataChanged,
+                        target.as_str().to_string(),
+                    ),
+                    op_index,
+                ));
+            }
+            let detail = unica_metadata::support::SupportRestorationData {
+                at: format!("{}:{}", authority.source_set_name(), target.as_str()),
+                suppliers: proof.suppliers,
+                files_compared: proof.files_per_supplier,
+                files_to_restore,
+            };
+            if proof.original_marker != proof.locked_marker {
+                let path = PathBuf::from("Ext/ParentConfigurations.bin");
+                staged
+                    .replace(&path, &proof.original_marker, proof.locked_marker)
+                    .map_err(|error| ApplyPlanError::staging(error, at_path))?;
+                provisional.push(ProvisionalApplyEffect::single(
+                    path,
+                    DomainEvent::new(
+                        DomainEventKind::ConfigXmlChanged,
+                        "Configuration".to_string(),
+                    ),
+                    op_index,
+                ));
+            }
+            return Ok(Some(detail));
         }
         MetadataResourcePlan::SupportRule { target, rule } => {
             let at_path = format!("ops[{op_index}].args.at");
@@ -1788,7 +1917,7 @@ pub fn stage_metadata_resource_plan(
             return Err(hidden_apply_family_unimplemented(op_index))
         }
     }
-    Ok(())
+    Ok(None)
 }
 
 #[cfg(feature = "test-support")]

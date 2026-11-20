@@ -178,65 +178,59 @@ impl CanonicalV13ReadService {
             Vec<crate::domain::apply::ApplyOp>,
         )> = Vec::new();
         let mut remove_support = false;
-        let planned = loop {
-            let planned = families::plan_hidden_v13_apply_with_person_choices(
+        let mut supplier_reader = request
+            .ops()
+            .iter()
+            .any(|operation| operation.name() == "supportRule.restore")
+            .then(|| {
+                super::super::v13_support_restore::SupplierReader::new(
+                    invocation.workspace_context(),
+                    binding.source_root(),
+                    cancellation,
+                )
+            });
+        let planned = if let Some(reader) = supplier_reader.as_ref() {
+            families::plan_hidden_v13_apply_with_restore(
                 &request,
                 &binding,
                 &admission,
-                families::PersonChosenChanges {
-                    mode_raise: mode_raise.as_ref().map(|(read_only, request)| {
-                        families::PersonChosenModeRaise { read_only, request }
-                    }),
-                    support: support
-                        .iter()
-                        .map(|(lock, operations)| families::PersonChosenSupportChange {
-                            lock,
-                            operations,
-                        })
-                        .collect(),
-                    remove_support,
-                },
-            );
-            let Err(error) = &planned else {
-                break planned;
-            };
-            if !answered {
-                break planned;
-            }
-            if let Some(read_only) = error.read_only_mode().filter(|_| mode_raise.is_none()) {
-                if support_choice::mode_raise_chosen(read_only, &source_set, invocation.arguments())
-                {
-                    let raise = support_choice::mode_raise_request(read_only, &source_set);
-                    match parse_apply_request(&raise, &source_sets) {
-                        Ok(raise) => mode_raise = Some((read_only.clone(), raise)),
-                        Err(error) => {
-                            return error_result(
-                                Some(error.location().to_string()),
-                                error.code(),
-                                error.to_string(),
-                            )
-                        }
-                    }
-                    continue;
+                Some(reader),
+            )
+        } else {
+            loop {
+                let planned = families::plan_hidden_v13_apply_with_person_choices(
+                    &request,
+                    &binding,
+                    &admission,
+                    families::PersonChosenChanges {
+                        mode_raise: mode_raise.as_ref().map(|(read_only, request)| {
+                            families::PersonChosenModeRaise { read_only, request }
+                        }),
+                        support: support
+                            .iter()
+                            .map(|(lock, operations)| families::PersonChosenSupportChange {
+                                lock,
+                                operations,
+                            })
+                            .collect(),
+                        remove_support,
+                    },
+                );
+                let Err(error) = &planned else {
+                    break planned;
+                };
+                if !answered {
+                    break planned;
                 }
-            }
-            if error.support_state_unreadable()
-                && !remove_support
-                && support_choice::remove_support_chosen(&source_set, invocation.arguments())
-            {
-                remove_support = true;
-                continue;
-            }
-            // Each lock is lifted once; a lock the answers leave asks anew.
-            if let Some(lock) = error
-                .support_lock()
-                .filter(|lock| support.iter().all(|(lifted, _)| lifted != *lock))
-            {
-                if let Some(answer) = support_choice::chosen_answer(lock, invocation.arguments()) {
-                    let mut operations = Vec::new();
-                    for change in support_choice::support_requests(lock, &answer) {
-                        match parse_apply_request(&change, &source_sets) {
-                            Ok(change) => operations.extend(change.ops().iter().cloned()),
+                if let Some(read_only) = error.read_only_mode().filter(|_| mode_raise.is_none()) {
+                    if support_choice::mode_raise_chosen(
+                        read_only,
+                        &source_set,
+                        invocation.arguments(),
+                    ) {
+                        let raise = support_choice::mode_raise_request(read_only, &source_set);
+                        match parse_apply_request(&raise, &source_sets) {
+                            Ok(raise) => mode_raise = Some((read_only.clone(), raise)),
                             Err(error) => {
                                 return error_result(
                                     Some(error.location().to_string()),
@@ -245,12 +239,43 @@ impl CanonicalV13ReadService {
                                 )
                             }
                         }
+                        continue;
                     }
-                    support.push((lock.clone(), operations));
+                }
+                if error.support_state_unreadable()
+                    && !remove_support
+                    && support_choice::remove_support_chosen(&source_set, invocation.arguments())
+                {
+                    remove_support = true;
                     continue;
                 }
+                // Each lock is lifted once; a lock the answers leave asks anew.
+                if let Some(lock) = error
+                    .support_lock()
+                    .filter(|lock| support.iter().all(|(lifted, _)| lifted != *lock))
+                {
+                    if let Some(answer) =
+                        support_choice::chosen_answer(lock, invocation.arguments())
+                    {
+                        let mut operations = Vec::new();
+                        for change in support_choice::support_requests(lock, &answer) {
+                            match parse_apply_request(&change, &source_sets) {
+                                Ok(change) => operations.extend(change.ops().iter().cloned()),
+                                Err(error) => {
+                                    return error_result(
+                                        Some(error.location().to_string()),
+                                        error.code(),
+                                        error.to_string(),
+                                    )
+                                }
+                            }
+                        }
+                        support.push((lock.clone(), operations));
+                        continue;
+                    }
+                }
+                break planned;
             }
-            break planned;
         };
         let (staged, mut effects) = match planned {
             Err(error)
@@ -264,6 +289,15 @@ impl CanonicalV13ReadService {
                 )
             }
             Err(error) => {
+                if let Some(absence) = supplier_reader
+                    .as_mut()
+                    .and_then(super::super::v13_support_restore::SupplierReader::take_absence)
+                {
+                    return super::super::v13_infobase_exports::missing_runner_rejection(
+                        Some(request.at().to_string()),
+                        absence,
+                    );
+                }
                 let refusal = apply_plan_error_result(&error);
                 let node_exists = |at: &QualifiedAddress| {
                     crate::infrastructure::native_operations::apply_families::staged_node_existence(

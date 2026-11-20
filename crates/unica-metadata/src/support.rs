@@ -3,6 +3,31 @@ use serde_json::json;
 use unica_operation_contract::OperationSkeleton;
 use unica_operation_contract::{object, text, OperationContract};
 
+pub const SUPPORT_RESTORATION: unica_source_contract::proposal::PlanDetailKey =
+    unica_source_contract::proposal::PlanDetailKey::new("supportRestoration");
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SupportRestorationData {
+    pub at: String,
+    pub suppliers: Vec<RestorationSupplier>,
+    pub files_compared: usize,
+    pub files_to_restore: Vec<RestorationFile>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct RestorationFile {
+    pub path: String,
+    pub action: &'static str,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct RestorationSupplier {
+    pub name: String,
+    pub vendor: String,
+    pub version: String,
+}
+
 macro_rules! support_operations {
     ($($variant:ident => ($name:literal, $applicability:ident, $skeleton:ident)),+ $(,)?) => {
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,16 +67,28 @@ macro_rules! support_operations {
 support_operations!(
     CapabilitySet => ("supportCapability.set", Configuration, Values),
     RuleSet => ("supportRule.set", SupportRule, Values),
+    RuleRestore => ("supportRule.restore", SupportRestore, Target),
 );
 
 impl SupportOperation {
     pub const fn changes_support_state(self) -> bool {
         match self {
-            Self::CapabilitySet | Self::RuleSet => true,
+            Self::CapabilitySet | Self::RuleSet | Self::RuleRestore => true,
         }
     }
 
     pub fn contract(self) -> OperationContract {
+        if self == Self::RuleRestore {
+            return OperationContract {
+                schema: object(&[("at", text(true)), ("replaceFromSupplier", json!({"type":"boolean"}))], &[]),
+                target: "One existing metadata object or its named form in a configuration on vendor support.",
+                effect: "Preview a checked lock or a full object restore and lock in one saved plan.",
+                notes: "With replaceFromSupplier true, the preview lists files to create, replace, or remove and executionToken publishes them with locked. Omit the flag to require byte equality. Divergent suppliers or unavailable payloads refuse. Use this as the only operation in the plan.",
+                example_args: json!({}),
+                help: "skills/release-support/SKILL.md",
+                format_validators: &[],
+            };
+        }
         let (values, target, effect, notes, example_args) = match self {
             Self::CapabilitySet => (
                 json!({"anyOf":[
@@ -70,6 +107,7 @@ impl SupportOperation {
                 "locked/NotEditable prohibit edits; editable/EditableWithSupport allow edits while keeping vendor support; off-support/NotSupported remove the addressed record from vendor support. At Configuration this changes only its root rule. This Support-only apply must be separate from ordinary edits; source profile, registration and support state are still checked.",
                 json!({"values":{"rule":"editable"}}),
             ),
+            Self::RuleRestore => unreachable!("restoration has no values"),
         };
         OperationContract {
             schema: object(&[("at", text(true)), ("values", values)], &["values"]),

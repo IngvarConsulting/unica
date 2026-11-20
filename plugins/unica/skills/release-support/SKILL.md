@@ -27,6 +27,25 @@ For a configuration root with `reason: locked`, use a separate
 `supportCapability.set` changes the whole set's editing capability when
 `reason` is `configurationReadOnly`. Switching it resets individual rules to locked.
 
+## Восстановление запрета после сверки с поставкой
+
+После удаления прикладных изменений прочитай объект через `unica.view`
+и его контракт `…Can.supportRule.restore`.
+
+Подготовь отдельный `unica.apply` с адресом объекта и одной операцией
+`supportRule.restore`. Без аргументов предпросмотр требует побайтового
+совпадения дескриптора и файлов объекта со всеми его поставками. Чтобы
+предпросмотреть восстановление изменённых файлов, передай
+`args: {"replaceFromSupplier": true}`. Поставки должны дать один и тот же
+образ объекта с тем же UUID.
+
+В `data.supportRestoration` проверь поставщика, число сравнённых файлов и
+`filesToRestore`. Для просмотра содержимого правок используй `unica.diff`
+с выданным `executionToken`. При отсутствующей или неподтверждённой
+поставке готового плана нет. После подтверждения выполни `unica.apply`
+с этим токеном. Он публикует файлы объекта и правило `locked` вместе.
+Если входы изменились, подготовь новый план.
+
 ## References
 
 - Read `../../references/platform/compatibility-modes.md` when an upgrade, migration,
