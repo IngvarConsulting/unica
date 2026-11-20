@@ -232,12 +232,12 @@ mod tests {
         );
         for (kind, message) in [
             (
-                "Bot",
-                "Unica reads and edits metadata kind `Bot` but cannot create it yet; create the object in Designer and export the source set again",
+                "CommonForm",
+                "Unica reads and edits metadata kind `CommonForm` but cannot create it yet; create the object in Designer and export the source set again",
             ),
             (
-                "PaletteColor",
-                "Unica reads and edits metadata kind `PaletteColor` but cannot create it yet; create the object in Designer and export the source set again",
+                "XDTOPackage",
+                "Unica reads and edits metadata kind `XDTOPackage` but cannot create it yet; create the object in Designer and export the source set again",
             ),
             ("Role", "metadata kind `Role` is created by the `role.create` operation"),
             (
@@ -273,8 +273,9 @@ mod tests {
             );
             uncreatable.push(kind);
         }
-        assert!(uncreatable.contains(&"Bot"));
-        assert!(uncreatable.contains(&"PaletteColor"));
+        assert!(uncreatable.contains(&"CommonForm"));
+        assert!(uncreatable.contains(&"XDTOPackage"));
+        assert!(!uncreatable.contains(&"PaletteColor"));
         assert!(!uncreatable.contains(&"Queue"));
     }
 }

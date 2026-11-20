@@ -79,6 +79,9 @@ pub struct CreationDeclaration {
     /// Вид создаётся только в основной конфигурации: расширение
     /// заимствует такие объекты.
     pub main_configuration_only: bool,
+    /// Модуль, который Конфигуратор пишет новому объекту по шаблону.
+    /// `None` — новый объект модуля не получает.
+    pub module: Option<CreationModule>,
 }
 
 impl CreationDeclaration {
@@ -88,8 +91,21 @@ impl CreationDeclaration {
             properties,
             numbered_language_code: None,
             main_configuration_only: false,
+            module: None,
         }
     }
+}
+
+/// Модуль нового объекта в `<Имя>/Ext/`: текст шаблона зависит от варианта
+/// встроенного языка конфигурации (`ScriptVariant`).
+#[derive(Debug, Clone, Copy)]
+pub struct CreationModule {
+    /// Имя файла в `Ext`, например `CommandModule.bsl`.
+    pub file: &'static str,
+    /// Текст без BOM для `ScriptVariant` = `Russian`.
+    pub russian: &'static str,
+    /// Текст без BOM для `ScriptVariant` = `English`.
+    pub english: &'static str,
 }
 
 /// Вид объекта метаданных в адресе исходников.

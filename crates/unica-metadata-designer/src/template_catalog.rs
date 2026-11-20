@@ -353,6 +353,18 @@ pub fn required_registered_name<G>(
         })
 }
 
+/// `ScriptVariant` of the owner configuration or extension, as written;
+/// `None` when the owner does not set it.
+fn script_variant(owner: &[u8]) -> Option<String> {
+    let xml = std::str::from_utf8(owner).ok()?;
+    let document = Document::parse(xml.trim_start_matches('\u{feff}')).ok()?;
+    document
+        .descendants()
+        .find(|node| node.is_element() && node.tag_name().name() == "ScriptVariant")
+        .and_then(|node| node.text())
+        .map(|text| text.trim().to_string())
+}
+
 pub fn registered_names(owner: &[u8], tag: &str) -> Vec<String> {
     let Ok(xml) = std::str::from_utf8(owner) else {
         return Vec::new();
@@ -3228,6 +3240,21 @@ pub fn minimal_object<G>(
             mode: MetadataTemplateFileMode::Create,
             relative_path: ext.join(module),
             bytes: with_utf8_bom(&[]),
+            preimage: None,
+            guard_handle: None,
+            edit: None,
+        });
+    }
+    if let Some(module) = kind.template().and_then(|template| template.module) {
+        let text = match script_variant(source.owner_preimage).as_deref() {
+            Some("English") => module.english,
+            _ => module.russian,
+        };
+        files.push(MetadataTemplateFile {
+            role: MetadataTemplateFileRole::Module,
+            mode: MetadataTemplateFileMode::Create,
+            relative_path: ext.join(module.file),
+            bytes: with_utf8_bom(text.as_bytes()),
             preimage: None,
             guard_handle: None,
             edit: None,

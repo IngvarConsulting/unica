@@ -58,7 +58,7 @@
             "op": "object.create",
             "args": {
               "values": {
-                "kind": "Bot",
+                "kind": "CommonForm",
                 "name": "Helper"
               }
             }
@@ -68,7 +68,7 @@
       "expect": [
         "refused"
       ],
-      "refusal": "bad_value: Unica reads and edits metadata kind `Bot` but cannot create it yet; create the object in Designer and export the source set again"
+      "refusal": "bad_value: Unica reads and edits metadata kind `CommonForm` but cannot create it yet; create the object in Designer and export the source set again"
     }
   ]
 }

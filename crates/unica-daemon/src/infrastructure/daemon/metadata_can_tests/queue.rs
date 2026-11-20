@@ -6,7 +6,7 @@ const EXPORT: &str = include_str!(
 
 /// A 2.22 configuration, of the 8.5.4 line, with one language and the
 /// `registered` root entries.
-fn line_8_5_4_fixture(registered: &str) -> Fixture {
+pub(super) fn line_8_5_4_fixture(registered: &str) -> Fixture {
     let fixture = Fixture::blank();
     for relative in ["Configuration.xml", "Languages/Русский.xml"] {
         let path = fixture.source.join(relative);
@@ -256,8 +256,8 @@ fn creation_refusals_tell_a_missing_kind_from_one_unica_does_not_create() {
             "`PaletteColor` is a metadata kind of 1C 8.5.1 and later; this source set is 1C 8.3.27, where the kind does not exist. Only a set re-exported from 8.5.1 or later can hold a palette color.",
         ),
         (
-            "Bot",
-            "Unica reads and edits metadata kind `Bot` but cannot create it yet; create the object in Designer and export the source set again",
+            "CommonForm",
+            "Unica reads and edits metadata kind `CommonForm` but cannot create it yet; create the object in Designer and export the source set again",
         ),
         (
             "Role",

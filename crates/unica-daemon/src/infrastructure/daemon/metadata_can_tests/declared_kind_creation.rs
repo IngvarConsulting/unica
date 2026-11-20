@@ -2,6 +2,7 @@ use super::*;
 
 const EXPORT: &str = "../../tests/fixtures/formats/platform_xml/2.20/declared_creation";
 const CONFIGURATOR: &str = "../../tests/fixtures/formats/platform_xml/2.20/configurator_creation";
+const EXPORT_8_5_4: &str = "../../tests/fixtures/formats/platform_xml/2.22/declared_creation";
 
 /// The declared kinds outside the typed set that `object.create` writes on
 /// every described line, with the reference descriptor, its directory and
@@ -34,6 +35,20 @@ const KINDS: &[(&str, &str, &str, &str)] = &[
     ),
     ("Sequence", CONFIGURATOR, "Sequences", "Последовательность1"),
     ("Language", CONFIGURATOR, "Languages", "Язык1"),
+    ("Style", CONFIGURATOR, "Styles", "Стиль1"),
+    ("Bot", CONFIGURATOR, "Bots", "Бот1"),
+    (
+        "WebSocketClient",
+        CONFIGURATOR,
+        "WebSocketClients",
+        "WebSocketКлиент1",
+    ),
+    (
+        "CommonCommand",
+        CONFIGURATOR,
+        "CommonCommands",
+        "ОбщаяКоманда1",
+    ),
 ];
 
 /// The descriptor with every UUID replaced: the object, type and value
@@ -118,6 +133,77 @@ fn declared_kinds_are_created_as_their_reference_descriptor() {
             "{node}"
         );
     }
+}
+
+/// A new common command gets the handler module the Configurator writes, in
+/// the script variant of the configuration: Russian by default, English when
+/// the configuration says so.
+/// rule: INV.SOURCE.PROFILE-CAPABILITIES
+#[test]
+fn a_common_command_takes_the_module_of_the_script_variant() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(CONFIGURATOR);
+    for (english, name) in [(false, "ОбщаяКоманда1"), (true, "CommonCommand1")] {
+        let fixture = Fixture::blank();
+        if english {
+            let path = fixture.source.join("Configuration.xml");
+            let text = std::fs::read_to_string(&path).unwrap().replace(
+                "</DefaultLanguage>",
+                "</DefaultLanguage><ScriptVariant>English</ScriptVariant>",
+            );
+            std::fs::write(path, text).unwrap();
+        }
+        let runtime = runtime();
+        publish(
+            &runtime,
+            &fixture,
+            json!({"at":"main:Configuration","ops":[{"op":"object.create","args":{"values":{"kind":"CommonCommand","name":name}}}]}),
+        );
+        let module = format!("CommonCommands/{name}/Ext/CommandModule.bsl");
+        assert_eq!(
+            std::fs::read(fixture.source.join(&module)).unwrap(),
+            std::fs::read(root.join(&module)).unwrap(),
+            "{module}"
+        );
+        let descriptor = format!("CommonCommands/{name}.xml");
+        assert_eq!(
+            without_uuids(&without_synonym(
+                &std::fs::read_to_string(fixture.source.join(&descriptor)).unwrap()
+            )),
+            without_uuids(&std::fs::read_to_string(root.join(&descriptor)).unwrap()),
+            "{descriptor}"
+        );
+    }
+}
+
+/// A palette color of the 8.5.4 line is created as the platform exports one
+/// imported without its color.
+/// rule: INV.SOURCE.PROFILE-CAPABILITIES
+#[test]
+fn a_palette_color_is_created_as_the_platform_exports_it() {
+    let fixture = super::queue::line_8_5_4_fixture("");
+    let runtime = runtime();
+    publish(
+        &runtime,
+        &fixture,
+        json!({"at":"main:Configuration","ops":[{"op":"object.create","args":{"values":{"kind":"PaletteColor","name":"Probe"}}}]}),
+    );
+    let relative = "PaletteColors/Probe.xml";
+    let platform = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(EXPORT_8_5_4)
+            .join(relative),
+    )
+    .unwrap();
+    let written = std::fs::read_to_string(fixture.source.join(relative)).unwrap();
+    assert_eq!(
+        without_uuids(&without_synonym(&written)),
+        without_uuids(&platform)
+    );
+    assert!(
+        std::fs::read_to_string(fixture.source.join("Configuration.xml"))
+            .unwrap()
+            .contains("<PaletteColor>Probe</PaletteColor>")
+    );
 }
 
 /// Each new language takes the first free numbered code, as the Configurator
