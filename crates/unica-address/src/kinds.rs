@@ -39,6 +39,9 @@ pub struct KindDeclaration {
     /// Порядок, в котором выгрузка пишет виды дочерних объекта верхнего
     /// уровня его `ChildObjects`. `None` оставляет размещение вызывающему.
     pub child_order: Option<&'static [&'static str]>,
+    /// Шаблон, по которому `object.create` пишет новый объект вида вне
+    /// типизированного набора. `None` — Unica такой вид не создаёт.
+    pub creation: Option<CreationDeclaration>,
 }
 
 impl KindDeclaration {
@@ -53,8 +56,18 @@ impl KindDeclaration {
             generated_types: None,
             since: None,
             child_order: None,
+            creation: None,
         }
     }
+}
+
+/// Новый объект вида: свойства, которые выгрузка платформы пишет объекту
+/// с опущенными в описании значениями, после `Name`, `Synonym` и `Comment`.
+#[derive(Debug, Clone, Copy)]
+pub struct CreationDeclaration {
+    /// Строки XML внутри `Properties`, без отступа самого `Properties`:
+    /// вложенные строки начинаются со своих табуляций.
+    pub properties: &'static [&'static str],
 }
 
 /// Вид объекта метаданных в адресе исходников.
