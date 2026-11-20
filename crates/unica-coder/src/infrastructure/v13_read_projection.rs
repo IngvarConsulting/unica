@@ -763,14 +763,20 @@ pub(super) fn project_configuration_with_counts(
             _ => {}
         }
     }
-    if let Some(roles) = props
-        .get_mut("properties")
-        .and_then(|properties| properties.get_mut("defaultRoles"))
-        .and_then(Value::as_array_mut)
-    {
-        for role in roles {
-            if let Some(reference) = role.as_str() {
-                *role = Value::String(format!("{}:{reference}", address.source_set()));
+    for key in std::iter::once("defaultRoles").chain(
+        unica_metadata::descriptor_operations::CONFIGURATION_REFERENCE_LISTS
+            .iter()
+            .map(|property| property.names()[1]),
+    ) {
+        if let Some(references) = props
+            .get_mut("properties")
+            .and_then(|properties| properties.get_mut(key))
+            .and_then(Value::as_array_mut)
+        {
+            for item in references {
+                if let Some(reference) = item.as_str() {
+                    *item = Value::String(format!("{}:{reference}", address.source_set()));
+                }
             }
         }
     }

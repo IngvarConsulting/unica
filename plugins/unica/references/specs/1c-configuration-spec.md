@@ -124,7 +124,7 @@ ClassId — фиксированные идентификаторы классо
 | `UseManagedFormInOrdinaryApplication` | `xs:boolean` | Управл. формы в обычном приложении |
 | `UseOrdinaryFormInManagedApplication` | `xs:boolean` | Обычные формы в управл. приложении |
 | `Content` | list | Состав конфигурации (обычно пуст — используется при расширениях) |
-| `StandaloneConfigurationRestrictionRoles` | list | Роли ограничения автономной конфигурации |
+| `StandaloneConfigurationRestrictionRoles` | list of `xr:MDObjectRef` | Роли ограничения автономной конфигурации. Элементы `xr:Item` ссылаются на роли. |
 
 #### Хранилища настроек
 
@@ -159,7 +159,7 @@ ClassId — фиксированные идентификаторы классо
 
 | Свойство | Тип | Описание |
 |----------|-----|----------|
-| `AdditionalFullTextSearchDictionaries` | `xs:string` | Дополнительные словари |
+| `AdditionalFullTextSearchDictionaries` | list of `xr:MDObjectRef` | Дополнительные словари. Элементы `xr:Item` ссылаются на общие макеты и константы. |
 
 #### Мобильные настройки
 
