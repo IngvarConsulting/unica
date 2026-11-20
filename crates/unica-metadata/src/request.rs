@@ -102,7 +102,21 @@ pub fn parse_metadata_request_after_shape(
         }
         MetadataOperation::Add => {
             let raw_kind = required_string(args, "kind")?;
-            let kind = MetadataKind::parse(&raw_kind)?;
+            // The typed set only: a kind outside it is created by
+            // `object.create` or refused with what is wrong with it.
+            let kind =
+                MetadataKind::parse(&raw_kind).map_err(|_| {
+                    match crate::CreatableKind::parse(&raw_kind) {
+                        Ok(_) => MetaDiagnostic::error(
+                            MetaDiagnosticCode::UnsupportedKind,
+                            format!(
+                            "metadata kind `{raw_kind}` is created by the `object.create` operation"
+                        ),
+                        )
+                        .with_field("kind"),
+                        Err(refusal) => refusal,
+                    }
+                })?;
             let name = required_string(args, "name")?;
             let owner = metadata_owner(kind, &name)?;
             let operations = parse_operations(args.get("operations"), false, kind, &owner)?;

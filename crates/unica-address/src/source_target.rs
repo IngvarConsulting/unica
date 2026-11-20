@@ -492,6 +492,7 @@ mod tests {
                 "DocumentJournal",
                 "Enum",
                 "ExchangePlan",
+                "ExternalDataSource",
                 "FilterCriterion",
                 "InformationRegister",
                 "Report",

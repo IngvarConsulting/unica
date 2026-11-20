@@ -245,8 +245,44 @@ impl unica_operations::FamilyOperation for MetadataOperation {
             let line = site.source().classification_profile().semantic_line();
             offer_enum_value_color(&mut contract.schema["properties"]["values"], line);
         }
+        if self == Self::ObjectCreate {
+            let line = site.source().classification_profile().semantic_line();
+            offer_creatable_kinds(&mut contract.schema["properties"]["values"], line);
+        }
         Some(contract)
     }
+}
+
+/// A kind exists from the line that adds it: `can` offers its creation in
+/// a set of that line or later and otherwise names the line it exists from
+/// (INV.SOURCE.PROFILE-CAPABILITIES).
+fn offer_creatable_kinds(
+    values: &mut serde_json::Value,
+    line: Option<unica_source_contract::format_identity::PlatformLine>,
+) {
+    use unica_source_contract::format_identity::{metadata_kind_exists, metadata_kind_since};
+    let (offered, later): (Vec<_>, Vec<_>) = crate::CreatableKind::all()
+        .map(crate::CreatableKind::as_str)
+        .partition(|kind| metadata_kind_exists(line, kind));
+    values["properties"]["kind"]["enum"] = serde_json::json!(offered);
+    if later.is_empty() {
+        return;
+    }
+    values["x-unica-later-lines"] = serde_json::json!({
+        "line": line.map(|line| line.to_string()),
+        "format": line.map(crate::descriptor_operations::line_format),
+        "items": later
+            .into_iter()
+            .map(|kind| {
+                let since = metadata_kind_since(kind).expect("a later line adds the kind");
+                serde_json::json!({
+                    "kind": kind,
+                    "since": since.to_string(),
+                    "format": crate::descriptor_operations::line_format(since),
+                })
+            })
+            .collect::<Vec<_>>(),
+    });
 }
 
 /// `color` of an enumeration value exists from the line that adds it: `can`
@@ -321,6 +357,50 @@ mod tests {
                 }
             }
         }
+    }
+    /// `can` offers the creation of a kind only in a set of the line that
+    /// has it and names the line a later kind exists from.
+    /// rule: INV.SOURCE.PROFILE-CAPABILITIES
+    #[test]
+    fn can_offers_the_creation_of_the_kinds_of_the_set_line() {
+        use unica_operations::FamilyOperation;
+        use unica_source_contract::context::{OperationSite, SourceSetTraits};
+        use unica_source_contract::format_identity::PlatformLine;
+        use unica_source_contract::route::RouteClass;
+        use unica_source_contract::{SourceProfile, SourceSetKind};
+        let at = unica_address::address::QualifiedAddress::parse("main:Configuration").unwrap();
+        let values = |line: PlatformLine| {
+            let profile = SourceProfile::platform_xml_of_line(line).unwrap();
+            let source = SourceSetTraits::from_profiles(
+                SourceSetKind::Configuration,
+                Some(profile),
+                profile,
+            );
+            let site = OperationSite::from_route(&at, source, RouteClass::Metadata);
+            FamilyOperation::contract_at(MetadataOperation::ObjectCreate, &site)
+                .unwrap()
+                .schema["properties"]["values"]
+                .clone()
+        };
+        let offers = |values: &serde_json::Value, kind: &str| {
+            values["properties"]["kind"]["enum"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(kind))
+        };
+        for line in [PlatformLine::new(8, 3, 27), PlatformLine::new(8, 5, 1)] {
+            let old = values(line);
+            assert!(offers(&old, "Catalog"), "{line}");
+            assert!(!offers(&old, "Queue"), "{line}");
+            assert_eq!(
+                old["x-unica-later-lines"]["items"],
+                json!([{"kind":"Queue","since":"8.5.4","format":"2.22"}]),
+                "{line}"
+            );
+        }
+        let new = values(PlatformLine::new(8, 5, 4));
+        assert!(offers(&new, "Queue"));
+        assert!(new.get("x-unica-later-lines").is_none());
     }
 
     /// rule: INV.SOURCE.PROFILE-CAPABILITIES

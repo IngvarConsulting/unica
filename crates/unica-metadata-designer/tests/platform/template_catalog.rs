@@ -165,7 +165,7 @@ fn business_process_template_names_its_mandatory_task() {
         language: "ru".to_string(),
     };
     let (xml, _) = crate::template_catalog::minimal_metadata_xml(
-        MetadataKind::BusinessProcess,
+        unica_metadata::CreatableKind::Typed(MetadataKind::BusinessProcess),
         "Evidence",
         "2.20",
         &context,
@@ -194,7 +194,7 @@ fn document_journal_template_registers_its_mandatory_document() {
         language: "ru".to_string(),
     };
     let (xml, _) = crate::template_catalog::minimal_metadata_xml(
-        MetadataKind::DocumentJournal,
+        unica_metadata::CreatableKind::Typed(MetadataKind::DocumentJournal),
         "Evidence",
         "2.20",
         &context,

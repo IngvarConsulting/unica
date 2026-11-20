@@ -141,7 +141,7 @@ pub struct MetadataLayout {
 /// Виды корня, которые выгружает платформа, но которых Unica не знает,
 /// с местом в `ChildObjects` конфигурации. Их не создают; место только не
 /// даёт новой записи другого вида встать не с той стороны от них.
-pub const UNDECLARED_ROOT_KINDS: &[(&str, u32)] = &[("ExternalDataSource", 4650)];
+pub const UNDECLARED_ROOT_KINDS: &[(&str, u32)] = &[];
 
 impl NodeKind {
     pub const fn as_str(self) -> &'static str {

@@ -5,6 +5,11 @@ pub fn metadata_layout(kind: MetadataKind) -> &'static MetadataLayout {
     metadata_kind(kind.as_str()).expect("every domain metadata kind must have a physical layout")
 }
 
+/// The layout of a kind creation writes.
+pub fn creatable_layout(kind: unica_metadata::CreatableKind) -> &'static MetadataLayout {
+    metadata_kind(kind.as_str()).expect("every creatable kind has a physical layout")
+}
+
 /// Platform XML value-type spellings of a metadata kind.
 ///
 /// An event subscription names its source as a *type*, not as a metadata path:

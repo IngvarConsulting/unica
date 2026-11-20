@@ -1395,6 +1395,48 @@ pub(super) mod medium_cf_read_selector_bridge_tests {
         let _ = fs::remove_dir_all(&context.workspace_root);
     }
 
+    /// Внешний источник данных из выгрузки платформы проверка конфигурации
+    /// знает: ни «неизвестного типа», ни пропавшего каталога.
+    #[test]
+    fn cf_validate_knows_the_external_data_source_of_the_platform_export() {
+        for export in [
+            "../../tests/fixtures/formats/platform_xml/2.20/all_kinds",
+            "../../tests/fixtures/formats/platform_xml/2.21/all_kinds",
+            "../../tests/fixtures/formats/platform_xml/2.22/all_kinds",
+        ] {
+            let root = Path::new(env!("CARGO_MANIFEST_DIR")).join(export);
+            let context = WorkspaceContext {
+                cwd: root.clone(),
+                workspace_root: root.clone(),
+                cache_root: std::env::temp_dir().join("unica-cf-validate-all-kinds"),
+                workspace_epoch: 1,
+            };
+
+            let outcome = validate_cf(
+                &Map::from_iter([
+                    ("ConfigPath".to_string(), json!("src")),
+                    ("Detailed".to_string(), json!(true)),
+                ]),
+                &context,
+            );
+
+            let stdout = outcome.stdout.as_deref().unwrap_or_default();
+            // Проверка дошла до каталогов объектов: она прошла и `ChildObjects`.
+            assert!(
+                stdout.contains("8. Object directories:"),
+                "{export}: {stdout}"
+            );
+            assert!(
+                !stdout.contains("Unknown type 'ExternalDataSource'"),
+                "{export}: {stdout}"
+            );
+            assert!(
+                !stdout.contains("Missing directory: ExternalDataSources"),
+                "{export}: {stdout}"
+            );
+        }
+    }
+
     #[test]
     pub(crate) fn cf_validate_answers_identically_for_a_source_set_and_a_config_path() {
         let context = workspace("validate");

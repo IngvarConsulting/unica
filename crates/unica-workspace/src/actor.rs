@@ -422,6 +422,15 @@ impl ProviderRootBinding {
         self.source_set.source_profile
     }
 
+    /// The profile of a source set of the same workspace, by its name.
+    pub fn workspace_source_profile(&self, name: &str) -> Option<SourceProfile> {
+        self.actor_identity
+            .source_sets()
+            .iter()
+            .find(|set| set.name == name)
+            .map(|set| set.source_profile)
+    }
+
     pub fn source_root(&self) -> &Path {
         self.source_root.path()
     }

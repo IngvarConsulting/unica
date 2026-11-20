@@ -71,11 +71,18 @@
           }
         },
         {
-          "pointer": "/data/branches/46/at",
+          "pointer": "/data/branches/46",
+          "eq": {
+            "at": "main:ExternalDataSource",
+            "count": 0
+          }
+        },
+        {
+          "pointer": "/data/branches/47/at",
           "eq": "main:Module"
         },
         {
-          "pointer": "/data/branches/47",
+          "pointer": "/data/branches/48",
           "absent": true
         }
       ],
