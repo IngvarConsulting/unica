@@ -1559,6 +1559,18 @@ pub(super) mod medium_cf_read_selector_bridge_tests {
                 unset.errors
             );
         }
+
+        // A descriptor that cannot be read is an error, not a checked object.
+        fs::remove_file(root.join("src/Sequences/Probe.xml")).unwrap();
+        let missing = validate();
+        assert!(
+            missing
+                .errors
+                .iter()
+                .any(|error| error.contains("10. Sequence.Probe: Documents cannot be checked")),
+            "{:?}",
+            missing.errors
+        );
         let _ = fs::remove_dir_all(&root);
     }
 

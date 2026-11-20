@@ -2593,12 +2593,26 @@ pub fn validate_cf_source(
             let path = config_dir
                 .join(required.directory)
                 .join(format!("{name}.xml"));
-            // A missing or unreadable descriptor is reported by its own step.
-            let Ok(text) = read_utf8_sig(reader, &path) else {
-                continue;
+            let mut unreadable = |reason: String| {
+                unset += 1;
+                report.error(format!(
+                    "10. {}.{name}: {} cannot be checked: {reason}",
+                    required.kind, required.property
+                ));
             };
-            let Ok(document) = Document::parse(&text) else {
-                continue;
+            let text = match read_utf8_sig(reader, &path) {
+                Ok(text) => text,
+                Err(error) => {
+                    unreadable(error);
+                    continue;
+                }
+            };
+            let document = match Document::parse(&text) {
+                Ok(document) => document,
+                Err(error) => {
+                    unreadable(format!("{} is not XML: {error}", path.display()));
+                    continue;
+                }
             };
             let properties = document
                 .descendants()
