@@ -3,7 +3,7 @@
   "issue": 1568,
   "area": "Метаданные",
   "workspace": "tests/fixtures/acceptance/workspace-root-comments",
-  "task": "По каждому из 12 видов без собственного профиля (Language, StyleItem, CommonPicture, SessionParameter, FilterCriterion, CommonAttribute, SettingsStorage, FunctionalOption, FunctionalOptionsParameter, CommonCommand, DocumentNumerator, IntegrationService) пройти коллекцию → возвращённый адрес → деталь и сверить с XML выгрузки платформы базовые факты корня: синоним в форме НСтр, тип с вариантами и квалификаторами, флаги false и число 11. Исходники не меняются.",
+  "task": "По каждому из 13 видов без собственного профиля (Language, StyleItem, CommonPicture, SessionParameter, FilterCriterion, CommonAttribute, SettingsStorage, FunctionalOption, FunctionalOptionsParameter, CommonCommand, DocumentNumerator, WSReference, IntegrationService) пройти коллекцию → возвращённый адрес → деталь и сверить с XML выгрузки платформы базовые факты корня: синоним в форме НСтр, тип с вариантами и квалификаторами, флаги false и число 11. Исходники не меняются.",
   "wire": [
     {
       "tool": "unica.view",
@@ -68,6 +68,10 @@
         },
         "unchanged13": {
           "file": "src/IntegrationServices/Probe.xml",
+          "kind": "sha256"
+        },
+        "unchanged14": {
+          "file": "src/WSReferences/Probe.xml",
           "kind": "sha256"
         }
       }
@@ -565,6 +569,49 @@
     {
       "tool": "unica.view",
       "args": {
+        "at": "main:WSReference"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:WSReference.Probe"
+        }
+      ],
+      "captures": {
+        "node12": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.node12"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "WSReference"
+        },
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": "ru = 'Update files api impl service'"
+        },
+        {
+          "pointer": "/data/props/LocationURL",
+          "eq": "https://update-api.1c.ru/ws/files?wsdl"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
         "at": "main:IntegrationService"
       },
       "expect": [
@@ -665,6 +712,11 @@
           "path": "src/IntegrationServices/Probe.xml",
           "kind": "sha256",
           "eq": "$capture.unchanged13"
+        },
+        {
+          "path": "src/WSReferences/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged14"
         }
       ]
     }
