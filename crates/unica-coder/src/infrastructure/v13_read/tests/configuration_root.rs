@@ -766,6 +766,13 @@ fn websocket_client_of_the_platform_export_is_read_by_its_layout() {
             "{format}"
         );
         let module = view(&format!("{client}.Module.WebSocketClient"));
+        let events = view(&format!("{client}.Module.WebSocketClient.Event"));
+        let items = events["items"].as_array().unwrap();
+        assert!(!items.is_empty(), "{format}: {events}");
+        for item in items {
+            let event = view(item["at"].as_str().unwrap());
+            assert_eq!(event["kind"], "Event", "{format}: {event}");
+        }
         assert_eq!(module["kind"], "Module", "{format}");
         assert_eq!(
             module["props"],
