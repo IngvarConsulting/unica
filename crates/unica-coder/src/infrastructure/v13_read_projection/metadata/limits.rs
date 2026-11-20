@@ -34,6 +34,8 @@ fn unreadable_limits(payload: &Value) -> Vec<String> {
 pub(super) fn unreadable_collection(payload: &Value, kind: NodeKind) -> Option<String> {
     let (prefix, property) = match kind {
         NodeKind::AddressingAttribute => ("collections.addressingAttributes", None),
+        NodeKind::AccountingFlag => ("collections.accountingFlags", None),
+        NodeKind::ExtDimensionAccountingFlag => ("collections.extDimensionAccountingFlags", None),
         NodeKind::PredefinedItem => ("predefinedItems", None),
         NodeKind::UrlTemplate => ("details.urlTemplates", None),
         NodeKind::Operation => ("details.operations", None),
