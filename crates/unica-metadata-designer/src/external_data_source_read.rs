@@ -154,18 +154,25 @@ fn direct_children_with_namespace_opt<'a, 'input>(
 mod tests {
     use super::*;
 
-    const EXPORT: &str = "../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/ExternalDataSources/AllKindsExternalSource";
-
-    fn read(relative: &str, kind: &str, target: &str) -> Value {
-        let bytes = std::fs::read(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join(EXPORT)
-                .join(relative),
+    /// Описание вида `kind` с подчинёнными `children` в `ChildObjects`, в
+    /// форме выгрузки платформы 2.20.
+    fn descriptor(kind: &str, children: &str) -> String {
+        format!(
+            "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\"              xmlns:v8=\"http://v8.1c.ru/8.1/data/core\"              xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" version=\"2.20\">             <{kind} uuid=\"be05a1ec-2f25-54df-816a-7baed4264299\">             <Properties><Name>Probe</Name><Synonym/><Comment/></Properties>             <ChildObjects>{children}</ChildObjects></{kind}></MetaDataObject>"
         )
-        .unwrap();
+    }
+
+    /// Член, описанный прямо в `ChildObjects`: имя и строковый тип.
+    fn member(tag: &str, name: &str) -> String {
+        format!(
+            "<{tag} uuid=\"9ff1e2c8-e0b1-51c5-b64d-68b6b4c8f866\"><Properties>             <Name>{name}</Name><Synonym/><Comment/>             <Type><v8:Type>xs:string</v8:Type><v8:StringQualifiers>             <v8:Length>10</v8:Length><v8:AllowedLength>Variable</v8:AllowedLength>             </v8:StringQualifiers></Type></Properties></{tag}>"
+        )
+    }
+
+    fn read(kind: &str, children: &str, target: &str) -> Value {
         let mut payload = json!({"collections": {"forms": []}});
         enrich_external_data_source_members(
-            &bytes,
+            descriptor(kind, children).as_bytes(),
             kind,
             &MetadataAddress::parse_logical(target).unwrap(),
             &mut payload,
@@ -188,9 +195,12 @@ mod tests {
     #[test]
     fn a_source_lists_its_tables_cubes_and_functions() {
         let payload = read(
-            "../AllKindsExternalSource.xml",
             "ExternalDataSource",
-            "ExternalDataSource.AllKindsExternalSource",
+            &format!(
+                "<Table>Items</Table><Cube>Sales</Cube>{}",
+                member("Function", "Total")
+            ),
+            "ExternalDataSource.Probe",
         );
         assert_eq!(names(&payload, "tables"), ["Items"]);
         assert_eq!(names(&payload, "cubes"), ["Sales"]);
@@ -206,9 +216,13 @@ mod tests {
     #[test]
     fn a_cube_lists_its_dimension_tables_dimensions_and_resources() {
         let payload = read(
-            "Cubes/Sales.xml",
             "Cube",
-            "ExternalDataSource.AllKindsExternalSource.Cube.Sales",
+            &format!(
+                "<DimensionTable>Products</DimensionTable>{}{}",
+                member("Dimension", "Product"),
+                member("Resource", "Amount")
+            ),
+            "ExternalDataSource.Shop.Cube.Probe",
         );
         assert_eq!(names(&payload, "dimensionTables"), ["Products"]);
         assert_eq!(names(&payload, "dimensions"), ["Product"]);
@@ -217,19 +231,14 @@ mod tests {
 
     #[test]
     fn tables_and_dimension_tables_list_their_fields() {
-        for (relative, kind, target) in [
+        for (kind, target) in [
+            ("Table", "ExternalDataSource.Shop.Table.Probe"),
             (
-                "Tables/Items.xml",
-                "Table",
-                "ExternalDataSource.AllKindsExternalSource.Table.Items",
-            ),
-            (
-                "Cubes/Sales/DimensionTables/Products.xml",
                 "DimensionTable",
-                "ExternalDataSource.AllKindsExternalSource.Cube.Sales.DimensionTable.Products",
+                "ExternalDataSource.Shop.Cube.Sales.DimensionTable.Probe",
             ),
         ] {
-            let payload = read(relative, kind, target);
+            let payload = read(kind, &member("Field", "Code"), target);
             assert_eq!(names(&payload, "fields"), ["Code"], "{kind}");
             assert!(
                 payload["collections"]["fields"][0]["type"].is_object(),
@@ -241,18 +250,12 @@ mod tests {
     /// Ссылка без имени — повреждённая запись, а не отсутствие таблицы.
     #[test]
     fn a_reference_without_a_name_is_reported_unreadable() {
-        let text = std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join(EXPORT)
-                .join("../AllKindsExternalSource.xml"),
-        )
-        .unwrap()
-        .replacen("<Table>Items</Table>", "<Table/>", 1);
+        let text = descriptor("ExternalDataSource", "<Table/>");
         let mut payload = json!({});
         enrich_external_data_source_members(
             text.as_bytes(),
             "ExternalDataSource",
-            &MetadataAddress::parse_logical("ExternalDataSource.AllKindsExternalSource").unwrap(),
+            &MetadataAddress::parse_logical("ExternalDataSource.Probe").unwrap(),
             &mut payload,
         )
         .unwrap();
