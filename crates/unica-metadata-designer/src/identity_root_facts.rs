@@ -6,7 +6,7 @@
 //! отсутствием, а называется в `unreadable` своим полем.
 
 use crate::info_projection::{
-    direct_meta_info_property, direct_md_child, direct_text_content, localized_property_as_nstr,
+    direct_md_child, direct_meta_info_property, direct_text_content, localized_property_as_nstr,
     meta_info_property_value_is_valid, node_is_empty_placeholder,
     observed_type_is_strict_but_unmodelled, parse_observed_metadata_type_node,
 };
@@ -49,7 +49,10 @@ const PROFILE: &[(&str, &[(&str, Fact)])] = &[
     ),
     ("SettingsStorage", &[("Synonym", Fact::Localized)]),
     ("FunctionalOption", &[("Synonym", Fact::Localized)]),
-    ("FunctionalOptionsParameter", &[("Synonym", Fact::Localized)]),
+    (
+        "FunctionalOptionsParameter",
+        &[("Synonym", Fact::Localized)],
+    ),
     (
         "Bot",
         &[("Synonym", Fact::Localized), ("Predefined", Fact::Boolean)],
@@ -80,9 +83,8 @@ fn observe(
     fact: Fact,
 ) -> Result<Option<Value>, String> {
     if fact == Fact::Localized {
-        return localized_property_as_nstr(properties, kind, name).map(|value| {
-            value.map(|value| json!(MetaObservedPropertyValue::Text { value }))
-        });
+        return localized_property_as_nstr(properties, kind, name)
+            .map(|value| value.map(|value| json!(MetaObservedPropertyValue::Text { value })));
     }
     let Some(node) =
         direct_meta_info_property(properties, kind, name).map_err(|error| error.message)?
@@ -242,14 +244,21 @@ mod tests {
                 Some(&json!({"kind": "text", "value": "ru = 'Проба'"})),
                 "{kind}"
             );
-            assert_eq!(property(&payload, "Comment"), Some(&json!("kept")), "{kind}");
+            assert_eq!(
+                property(&payload, "Comment"),
+                Some(&json!("kept")),
+                "{kind}"
+            );
             assert!(unreadable(&payload).is_empty(), "{kind}");
         }
     }
 
     #[test]
     fn scalar_facts_keep_their_platform_type() {
-        let picture = read("CommonPicture", "<AvailabilityForChoice>false</AvailabilityForChoice>");
+        let picture = read(
+            "CommonPicture",
+            "<AvailabilityForChoice>false</AvailabilityForChoice>",
+        );
         assert_eq!(
             property(&picture, "AvailabilityForChoice"),
             Some(&json!({"kind": "boolean", "value": false}))
