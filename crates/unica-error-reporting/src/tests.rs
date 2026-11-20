@@ -38,6 +38,17 @@ fn unknown_errors_and_expected_user_failures_are_not_reported() {
     ] {
         assert!(sanitise(event(value), Component::Core).is_none());
     }
+    let bootstrap = sanitise(event("bootstrap_internal"), Component::Core).unwrap();
+    let runtime = sanitise(event("mcp_runtime_start"), Component::Core).unwrap();
+    assert_ne!(bootstrap.fingerprint, runtime.fingerprint);
+    assert_eq!(
+        bootstrap.fingerprint.as_ref(),
+        ["bootstrap_internal", "{{ default }}"]
+    );
+    let repeated = sanitise(event("bootstrap_internal"), Component::Core).unwrap();
+    assert_eq!(bootstrap.fingerprint, repeated.fingerprint);
+    let reconstructed = sanitise(bootstrap.clone(), Component::Core).unwrap();
+    assert_eq!(bootstrap.fingerprint, reconstructed.fingerprint);
 }
 
 // rule: INV.PKG.INTERNAL-ERROR-REPORTING
@@ -172,7 +183,7 @@ fn full_queue_and_shutdown_deadline_do_not_wait_for_network() {
 
 // rule: INV.PKG.INTERNAL-ERROR-REPORTING
 #[test]
-fn duplicate_events_and_events_after_shutdown_are_dropped() {
+fn repeated_events_are_delivered_and_events_after_shutdown_are_dropped() {
     let calls = Arc::new(AtomicUsize::new(0));
     let worker_calls = Arc::clone(&calls);
     let transport = QueuedTransport::new(Component::Bootstrap, move |_| {
@@ -180,12 +191,12 @@ fn duplicate_events_and_events_after_shutdown_are_dropped() {
     });
     for _ in 0..100 {
         transport.send_envelope(event("bootstrap_internal").into());
+        assert!(transport.flush(Duration::from_secs(1)));
     }
-    assert!(transport.flush(Duration::from_secs(1)));
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(calls.load(Ordering::SeqCst), 100);
     assert!(transport.shutdown(Duration::from_secs(1)));
     transport.send_envelope(event("mcp_runtime_start").into());
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(calls.load(Ordering::SeqCst), 100);
 }
 
 // rule: INV.PKG.INTERNAL-ERROR-REPORTING

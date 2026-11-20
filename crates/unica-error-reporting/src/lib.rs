@@ -6,7 +6,6 @@
 use sentry::protocol::{EnvelopeItem, Event, Exception, Frame, Level, Stacktrace};
 use sentry::{ClientInitGuard, ClientOptions, Envelope, Transport};
 use std::borrow::Cow;
-use std::collections::HashSet;
 use std::sync::mpsc::{self, SyncSender};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -46,17 +45,6 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(1);
 // problem: Default-on error reporting must remain bounded and best effort.
 // on-reach: new event is dropped without blocking the caller
 const QUEUE_CAPACITY: usize = 8;
-// resource-limit: error-reporting.distinct-events
-// class: retention
-// unit: count
-// scope: process
-// value: 32
-// resource: Bound collector volume and in-memory deduplication for one process lifetime.
-// status: unproven
-// origin: #3240
-// problem: Default-on error reporting must remain bounded and best effort.
-// on-reach: further events are dropped
-const MAX_DISTINCT_EVENTS: usize = 32;
 // resource-limit: error-reporting.stack-frames
 // class: result
 // unit: count
@@ -267,6 +255,7 @@ fn sanitise(event: Event<'static>, component: Component) -> Option<Event<'static
         release: Some(Cow::Borrowed(concat!("unica@", env!("CARGO_PKG_VERSION")))),
         environment: Some(Cow::Borrowed("production")),
         message: Some(kind.to_owned()),
+        fingerprint: Cow::Owned(vec![Cow::Borrowed(kind), Cow::Borrowed("{{ default }}")]),
         tags,
         exception: vec![Exception {
             ty: if kind == "rust_panic" {
@@ -299,7 +288,6 @@ impl sentry::TransportFactory for ReporterFactory {
 struct State {
     pending: usize,
     closed: bool,
-    signatures: HashSet<String>,
 }
 
 struct QueuedTransport {
@@ -343,15 +331,6 @@ impl Transport for QueuedTransport {
             let Some(event) = sanitise(*event, self.component) else {
                 continue;
             };
-            let signature = format!(
-                "{}:{:?}",
-                event.message.as_deref().unwrap_or_default(),
-                event
-                    .exception
-                    .values
-                    .first()
-                    .and_then(|exception| exception.stacktrace.as_ref())
-            );
             let mut safe = Envelope::new();
             safe.add_item(event);
             let mut bytes = Vec::new();
@@ -363,10 +342,7 @@ impl Transport for QueuedTransport {
             };
             let (lock, _) = &*self.state;
             let mut state = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            if state.closed
-                || state.signatures.len() >= MAX_DISTINCT_EVENTS
-                || state.signatures.contains(&signature)
-            {
+            if state.closed {
                 continue;
             }
             let sender = self
@@ -376,7 +352,6 @@ impl Transport for QueuedTransport {
             if let Some(sender) = sender.as_ref() {
                 if sender.try_send(body).is_ok() {
                     state.pending += 1;
-                    state.signatures.insert(signature);
                 }
             }
         }
