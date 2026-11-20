@@ -92,3 +92,55 @@ fn a_role_with_a_right_on_an_external_data_source_is_readable() {
     assert_eq!(right["props"]["objectKind"], "ExternalDataSource");
     assert_eq!(right["props"]["allowedCount"], 1);
 }
+
+const DIMENSION_TABLE_MODULE: &str = "ExternalDataSources/AllKindsExternalSource/Cubes/Sales/DimensionTables/Products/Ext/ObjectModule.bsl";
+
+/// Модули таблицы, куба и таблицы измерения куба читаются по адресу полной
+/// глубины.
+#[test]
+fn the_modules_of_external_data_source_objects_are_readable_at_full_depth() {
+    let f = fixture();
+    write(
+        &f.source.join(DIMENSION_TABLE_MODULE),
+        "Процедура Проверить() Экспорт\r\nКонецПроцедуры\r\n",
+    );
+    for at in [
+        "main:ExternalDataSource.AllKindsExternalSource.Table.Items.Module.Object",
+        "main:ExternalDataSource.AllKindsExternalSource.Table.Items.Module.RecordSet",
+        "main:ExternalDataSource.AllKindsExternalSource.Cube.Sales.Module.Manager",
+        "main:ExternalDataSource.AllKindsExternalSource.Cube.Sales.DimensionTable.Products.Module.Manager",
+    ] {
+        read(&f, at);
+    }
+    let method = read(
+        &f,
+        "main:ВнешнийИсточникДанных.AllKindsExternalSource.Куб.Sales.ТаблицаИзмерения.Products.Module.Object.Method.Проверить",
+    );
+    assert_eq!(
+        method["at"],
+        "main:ExternalDataSource.AllKindsExternalSource.Cube.Sales.DimensionTable.Products.Module.Object.Method.Проверить"
+    );
+}
+
+/// Модуль таблицы измерения, которую куб не регистрирует, не читается: файл
+/// на диске не доказывает объект.
+/// rule: INV.SOURCE.LOGICAL-READER-PARITY
+#[test]
+fn a_module_of_an_unregistered_dimension_table_is_not_readable() {
+    let f = fixture();
+    let cube = f
+        .source
+        .join("ExternalDataSources/AllKindsExternalSource/Cubes/Sales.xml");
+    let text = fs::read_to_string(&cube).unwrap();
+    write(
+        &cube,
+        &text.replacen("<DimensionTable>Products</DimensionTable>", "", 1),
+    );
+    let r = f.view_service().view(
+        ViewRequest::new(
+            "main:ExternalDataSource.AllKindsExternalSource.Cube.Sales.DimensionTable.Products.Module.Object",
+        )
+        .unwrap(),
+    );
+    assert_eq!(refusal_codes(&r), ["not_found"], "{r:?}");
+}
