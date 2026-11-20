@@ -112,7 +112,14 @@ fn every_addressed_root_kind_has_a_place_in_the_root_order() {
     ];
     for kind in NodeKind::metadata_kinds().iter().copied() {
         assert!(kind.is_metadata_kind(), "{}", kind.as_str());
-        if NOT_ROOT.contains(&kind) {
+        // A kind that declares its place in an owner lives there, not in
+        // the root.
+        if NOT_ROOT.contains(&kind) || kind.declaration().nested.is_some() {
+            assert!(
+                crate::layout::root_child_objects_order(kind.as_str()).is_none(),
+                "{} is not a root kind",
+                kind.as_str()
+            );
             continue;
         }
         assert!(

@@ -1021,7 +1021,7 @@ mod tests {
                     MetaPropertyValueKind::UnsignedInteger => {
                         (json!(0.0), MetaPropertyValue::UnsignedInteger(0))
                     }
-                    MetaPropertyValueKind::String if spec.key == MetaPropertyKey::Synonym => (
+                    MetaPropertyValueKind::String if spec.key.is_localized() => (
                         json!("ru = 'property text'"),
                         MetaPropertyValue::Localized(vec![crate::LocalizedItem {
                             language: "ru".into(),

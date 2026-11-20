@@ -39,6 +39,9 @@ pub struct KindDeclaration {
     /// Порядок, в котором выгрузка пишет виды дочерних объекта верхнего
     /// уровня его `ChildObjects`. `None` оставляет размещение вызывающему.
     pub child_order: Option<&'static [&'static str]>,
+    /// Место вида внутри владельца, если объект вида адресуется через него:
+    /// `<Владелец>.<Имя>.<Вид>.<Имя>`.
+    pub nested: Option<NestedPlace>,
 }
 
 impl KindDeclaration {
@@ -53,6 +56,7 @@ impl KindDeclaration {
             generated_types: None,
             since: None,
             child_order: None,
+            nested: None,
         }
     }
 }
@@ -103,6 +107,41 @@ pub struct RootPlace {
     /// и последовательностями, журналы и далее до задач. Выгрузка пишет виды
     /// в другом порядке; дерево показывает этот.
     pub tree: Option<u32>,
+}
+
+/// Место вложенного объекта метаданных в его владельце.
+#[derive(Debug, Clone, Copy)]
+pub struct NestedPlace {
+    /// Виды владельцев.
+    pub owners: &'static [&'static str],
+    /// Каталог описаний вида в каталоге владельца:
+    /// `<Каталог владельца>/<Имя>/<Каталог>/<Имя вида>.xml`. `None` — объект
+    /// описан прямо в `ChildObjects` владельца и своего файла не имеет.
+    pub directory: Option<&'static str>,
+    /// Роли модулей объекта: файлы `<Каталог>/<Имя>/Ext/<Роль>.bsl`.
+    pub modules: &'static [&'static str],
+}
+
+/// Место вида `child` во владельце вида `owner`.
+pub fn nested_place(owner: &str, child: &str) -> Option<&'static NestedPlace> {
+    DECLARED.iter().find_map(|(_, declaration)| {
+        (declaration.tag == child)
+            .then_some(declaration.nested.as_ref())
+            .flatten()
+            .filter(|place| place.owners.contains(&owner))
+    })
+}
+
+/// Вложенный вид владельца `owner`, чьи описания лежат в каталоге
+/// `directory` каталога владельца.
+pub fn nested_kind_by_directory(owner: &str, directory: &str) -> Option<&'static str> {
+    DECLARED.iter().find_map(|(_, declaration)| {
+        declaration
+            .nested
+            .as_ref()
+            .filter(|place| place.owners.contains(&owner) && place.directory == Some(directory))
+            .map(|_| declaration.tag)
+    })
 }
 
 /// Раскладка вида в выгрузке.

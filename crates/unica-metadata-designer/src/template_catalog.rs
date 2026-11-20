@@ -1,11 +1,11 @@
 //! Platform metadata descriptor templates and lazy prerequisite discovery.
-use super::layout::metadata_layout;
+use super::layout::creatable_layout;
 use roxmltree::Document;
 use std::path::{Path, PathBuf};
 use unica_address::source_target::{MetadataAddress, SourceTarget, TargetKind};
 use unica_bsl_parser::{first_exported_bsl_procedure, BslProcedureRequirement};
 
-use unica_metadata::{MetaDiagnostic, MetaDiagnosticCode, MetadataKind};
+use unica_metadata::{CreatableKind, MetaDiagnostic, MetaDiagnosticCode, MetadataKind};
 
 pub struct MetadataTemplateSource<'a, G> {
     pub source_root: &'a Path,
@@ -107,15 +107,9 @@ pub struct MinimalTemplateContext<G = ()> {
 }
 
 impl<G> MinimalTemplateContext<G> {
-    fn from_source(
-        source: &MetadataTemplateSource<'_, G>,
-        kind: MetadataKind,
-        new_name: &str,
-        overrides: MetadataTemplateOperationOverrides,
-        source_set: &str,
-        language: &str,
-    ) -> Result<Self, unica_metadata::request::MetaFailure> {
-        let mut context = Self {
+    /// The context of a kind whose template reads nothing from the source set.
+    fn without_dependencies(language: &str) -> Self {
+        Self {
             language: language.to_string(),
             chart_of_accounts: None,
             task: None,
@@ -125,7 +119,18 @@ impl<G> MinimalTemplateContext<G> {
             event_source: None,
             event_handler: None,
             dependencies: Vec::new(),
-        };
+        }
+    }
+
+    fn from_source(
+        source: &MetadataTemplateSource<'_, G>,
+        kind: MetadataKind,
+        new_name: &str,
+        overrides: MetadataTemplateOperationOverrides,
+        source_set: &str,
+        language: &str,
+    ) -> Result<Self, unica_metadata::request::MetaFailure> {
+        let mut context = Self::without_dependencies(language);
         match kind {
             MetadataKind::AccumulationRegister => {
                 context.dependencies.push(registrar_dependency(
@@ -618,7 +623,8 @@ pub fn minimal_module_files(kind: MetadataKind) -> &'static [&'static str] {
         MetadataKind::ScheduledJob
         | MetadataKind::EventSubscription
         | MetadataKind::DocumentJournal
-        | MetadataKind::DefinedType => &[],
+        | MetadataKind::DefinedType
+        | MetadataKind::CommandGroup => &[],
     }
 }
 
@@ -707,7 +713,7 @@ pub fn emit_meta_catalog_xml(
 }
 
 pub fn minimal_metadata_xml<G>(
-    kind: unica_metadata::MetadataKind,
+    kind: CreatableKind,
     obj_name: &str,
     format_version: &str,
     context: &MinimalTemplateContext<G>,
@@ -723,7 +729,7 @@ pub fn minimal_metadata_xml<G>(
         handler: context.event_handler.clone(),
         language: context.language.clone(),
     };
-    if kind == unica_metadata::MetadataKind::Catalog {
+    if kind == CreatableKind::Typed(MetadataKind::Catalog) {
         return emit_meta_catalog_xml(&defn, obj_name, format_version, fresh_uuid);
     }
 
@@ -742,6 +748,19 @@ pub fn minimal_metadata_xml<G>(
     ];
     emit_meta_internal_info(&mut lines, "\t\t", object_type, obj_name, &mut next_uuid);
     lines.push("\t\t<Properties>".to_string());
+    let kind = match kind {
+        CreatableKind::Typed(kind) => kind,
+        CreatableKind::Queue => {
+            emit_meta_queue_properties(&mut lines, "\t\t\t", &defn, obj_name, &synonym);
+            return Ok(close_minimal_object(
+                lines,
+                object_type,
+                format_version,
+                creatable_layout(CreatableKind::Queue).requires_child_objects,
+                obj_uuid,
+            ));
+        }
+    };
     match kind {
         unica_metadata::MetadataKind::Catalog => unreachable!(),
         unica_metadata::MetadataKind::Document => {
@@ -822,17 +841,37 @@ pub fn minimal_metadata_xml<G>(
         unica_metadata::MetadataKind::DefinedType => {
             emit_meta_defined_type_properties(&mut lines, "\t\t\t", &defn, obj_name, &synonym)
         }
+        unica_metadata::MetadataKind::CommandGroup => {
+            emit_meta_command_group_properties(&mut lines, "\t\t\t", &defn, obj_name, &synonym)
+        }
     }
+    Ok(close_minimal_object(
+        lines,
+        object_type,
+        format_version,
+        crate::format_contract::kind_declares_child_objects(kind),
+        obj_uuid,
+    ))
+}
+
+/// Closes the properties of a new object and the object itself.
+fn close_minimal_object(
+    mut lines: Vec<String>,
+    object_type: &str,
+    format_version: &str,
+    child_objects: bool,
+    obj_uuid: String,
+) -> (String, String) {
     lines.push("\t\t</Properties>".to_string());
     // Содержимое объекта задаёт вызывающий через `operations`: инструмент не
     // придумывает ресурсы, измерения и значения свойств за него.
-    if crate::format_contract::kind_declares_child_objects(kind) {
+    if child_objects {
         lines.push("\t\t<ChildObjects/>".to_string());
     }
     lines.push(format!("\t</{object_type}>"));
     lines.push("</MetaDataObject>".to_string());
     insert_format_object_properties(&mut lines, object_type, format_version);
-    Ok((lines.join("\r\n"), obj_uuid))
+    (lines.join("\r\n"), obj_uuid)
 }
 
 /// Writes after their 2.20 neighbours the properties the export format of
@@ -859,7 +898,7 @@ pub fn minimal_metadata_xml_for_tests(
     name: &str,
 ) -> Result<(String, String), String> {
     minimal_metadata_xml(
-        kind,
+        CreatableKind::Typed(kind),
         name,
         crate::dialect::root_version::writable(),
         &MinimalTemplateContext::<()> {
@@ -2319,6 +2358,39 @@ pub fn emit_meta_common_module_properties(
     ));
 }
 
+/// A new queue has the values 8.5.4 gives a queue whose descriptor omits
+/// them: transactional, portions of 1000, processed automatically.
+pub fn emit_meta_queue_properties(
+    lines: &mut Vec<String>,
+    indent: &str,
+    defn: &MetaTemplateDefinition,
+    obj_name: &str,
+    synonym: &str,
+) {
+    emit_meta_base_properties(lines, indent, defn, obj_name, synonym);
+    lines.push(format!("{indent}<Transactioned>true</Transactioned>"));
+    lines.push(format!(
+        "{indent}<ProcessingPortionSize>1000</ProcessingPortionSize>"
+    ));
+    lines.push(format!("{indent}<AutoProcessing>true</AutoProcessing>"));
+}
+
+/// Группа команд, как её создаёт Конфигуратор 8.3.27: представление `Auto`,
+/// пустые подсказка и картинка, категория панели навигации.
+pub fn emit_meta_command_group_properties(
+    lines: &mut Vec<String>,
+    indent: &str,
+    defn: &MetaTemplateDefinition,
+    obj_name: &str,
+    synonym: &str,
+) {
+    emit_meta_base_properties(lines, indent, defn, obj_name, synonym);
+    lines.push(format!("{indent}<Representation>Auto</Representation>"));
+    lines.push(format!("{indent}<ToolTip/>"));
+    lines.push(format!("{indent}<Picture/>"));
+    lines.push(format!("{indent}<Category>NavigationPanel</Category>"));
+}
+
 pub fn emit_meta_defined_type_properties(
     lines: &mut Vec<String>,
     indent: &str,
@@ -3045,7 +3117,7 @@ pub fn meta_synonym_word_boundary(previous: char, current: char) -> bool {
 
 pub fn minimal_object<G>(
     source: &MetadataTemplateSource<'_, G>,
-    kind: MetadataKind,
+    kind: CreatableKind,
     name: &str,
     overrides: MetadataTemplateOperationOverrides,
     source_set: &str,
@@ -3069,8 +3141,12 @@ pub fn minimal_object<G>(
                 .with_field("name"),
             )
         })?;
-    let context =
-        MinimalTemplateContext::from_source(source, kind, name, overrides, source_set, language)?;
+    let context = match kind {
+        CreatableKind::Typed(typed) => MinimalTemplateContext::from_source(
+            source, typed, name, overrides, source_set, language,
+        )?,
+        CreatableKind::Queue => MinimalTemplateContext::without_dependencies(language),
+    };
     let (xml, _) = minimal_metadata_xml(
         kind,
         name,
@@ -3079,7 +3155,7 @@ pub fn minimal_object<G>(
         source.fresh_uuid,
     )
     .map_err(|message| template_failure(&metadata_path, message))?;
-    let layout = metadata_layout(kind);
+    let layout = creatable_layout(kind);
     let mut files = vec![MetadataTemplateFile {
         role: MetadataTemplateFileRole::Descriptor,
         mode: MetadataTemplateFileMode::Create,
@@ -3090,7 +3166,7 @@ pub fn minimal_object<G>(
         edit: None,
     }];
     let ext = PathBuf::from(layout.directory).join(name).join("Ext");
-    for module in minimal_module_files(kind) {
+    for module in kind.typed().map_or(&[][..], minimal_module_files) {
         files.push(MetadataTemplateFile {
             role: MetadataTemplateFileRole::Module,
             mode: MetadataTemplateFileMode::Create,
@@ -3101,8 +3177,10 @@ pub fn minimal_object<G>(
             edit: None,
         });
     }
-    for (file_name, auxiliary_kind, content) in minimal_auxiliary_files(kind, source.format_version)
-    {
+    let auxiliary = kind.typed().map_or_else(Vec::new, |kind| {
+        minimal_auxiliary_files(kind, source.format_version)
+    });
+    for (file_name, auxiliary_kind, content) in auxiliary {
         files.push(MetadataTemplateFile {
             role: MetadataTemplateFileRole::AuxiliaryXml(auxiliary_kind),
             mode: MetadataTemplateFileMode::Create,
@@ -3160,12 +3238,12 @@ mod typed_template_tests {
     }
 
     #[test]
-    fn typed_minimal_catalog_emits_parseable_platform_xml_for_every_metadata_kind() {
+    fn typed_minimal_catalog_emits_parseable_platform_xml_for_every_creatable_kind() {
         let context = context();
-        for kind in MetadataKind::ALL {
+        for kind in CreatableKind::all() {
             let name = format!("Typed{}", kind.as_str());
             let (xml, uuid) =
-                minimal_metadata_xml(*kind, &name, "2.20", &context, metadata_fixture_uuid)
+                minimal_metadata_xml(kind, &name, "2.20", &context, metadata_fixture_uuid)
                     .unwrap_or_else(|error| panic!("{}: {error}", kind.as_str()));
             let document =
                 Document::parse(&xml).unwrap_or_else(|error| panic!("{}: {error}", kind.as_str()));
