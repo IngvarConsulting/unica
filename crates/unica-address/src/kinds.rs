@@ -213,9 +213,7 @@ const fn sorted<const N: usize>(
         while position > 0
             && order_key(items[position - 1].1, order) > order_key(items[position].1, order)
         {
-            let previous = items[position - 1];
-            items[position - 1] = items[position];
-            items[position] = previous;
+            items.swap(position - 1, position);
             position -= 1;
         }
         index += 1;
