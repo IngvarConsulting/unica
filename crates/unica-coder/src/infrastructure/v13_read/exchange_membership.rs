@@ -1,8 +1,9 @@
 //! Признак `inExchangePlan` у элементов ветвей видов: входит ли объект
 //! хотя бы в один план обмена набора (#3217).
 //!
-//! Состав всех планов собирается один раз на допущенную ревизию тем же
-//! чтением `Ext/Content.xml`, что и `Relation` плана. Конструктору запросов
+//! Состав всех планов собирается тем же чтением `Ext/Content.xml`, что и
+//! `Relation` плана, и сохраняется между вызовами, пока не изменился ни один
+//! файл, из которых он собран: страницы ветвей разных видов его не повторяют. Конструктору запросов
 //! признак приходит в тех же страницах ветвей, которые он уже читает для
 //! дерева источников, — без отдельного обхода составов планов.
 
@@ -29,7 +30,7 @@ const PROPERTY: &str = "inExchangePlan";
 
 /// Объединённый состав планов обмена одного набора исходников.
 #[derive(Debug, Default)]
-pub(super) struct ExchangeMembership {
+pub(crate) struct ExchangeMembership {
     /// `Вид.Имя` в нижнем регистре: имена метаданных регистр не различают.
     members: BTreeSet<String>,
     /// Планы, чей состав прочитан не целиком: отсутствие объекта в
@@ -115,8 +116,40 @@ impl LogicalViewReadAuthority<'_> {
         {
             return Ok(Arc::clone(membership));
         }
+        let membership = match self.read.retained_exchange_membership() {
+            Some(membership) => membership,
+            None => {
+                let plans = self.registered_kind_names(NodeKind::ExchangePlan, admitted)?;
+                // Стампы снимаются до чтения: изменение во время сборки
+                // делает сохранённое недействительным.
+                let stamps = self.read.exchange_membership_stamps(&plans);
+                let membership = Arc::new(self.build_exchange_membership(&plans, admitted)?);
+                if let Some(stamps) = stamps {
+                    self.read
+                        .retain_exchange_membership(stamps, Arc::clone(&membership));
+                }
+                membership
+            }
+        };
+        self.exchange_memberships
+            .lock()
+            .map_err(|_| {
+                ViewError::detailed(
+                    RefusalDetail::CachePoisoned,
+                    "exchange membership cache is poisoned",
+                )
+            })?
+            .insert(key, Arc::clone(&membership));
+        Ok(membership)
+    }
+
+    fn build_exchange_membership(
+        &self,
+        plans: &[String],
+        admitted: &ViewSourceSnapshot,
+    ) -> Result<ExchangeMembership, ViewError> {
         let mut membership = ExchangeMembership::default();
-        for plan in self.registered_kind_names(NodeKind::ExchangePlan, admitted)? {
+        for plan in plans {
             let owner = MetadataAddress::parse_logical(&format!(
                 "{}.{plan}",
                 NodeKind::ExchangePlan.as_str()
@@ -124,10 +157,28 @@ impl LogicalViewReadAuthority<'_> {
             .map_err(|error| {
                 ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
             })?;
-            self.verify_registered_owner(&owner, admitted)?;
+            // Повреждённое описание плана оставляет признак неизвестным, но
+            // не отнимает у ветви её объекты; отмена и срок — свои отказы.
+            match self.verify_registered_owner(&owner, admitted) {
+                Ok(()) => {}
+                Err(error)
+                    if matches!(
+                        error.code(),
+                        RefusalCode::Cancelled | RefusalCode::DeadlineExceeded
+                    ) =>
+                {
+                    return Err(error)
+                }
+                Err(error) => {
+                    membership
+                        .unread
+                        .push(format!("план {} не прочитан: {error}", owner.as_str()));
+                    continue;
+                }
+            }
             match self
                 .read
-                .exchange_plan_content(&plan, &mut || self.read_checkpoint())?
+                .exchange_plan_content(plan, &mut || self.read_checkpoint())?
             {
                 Ok(Some(content)) => {
                     for item in content.items {
@@ -152,16 +203,6 @@ impl LogicalViewReadAuthority<'_> {
                     .push(format!("состав {} не прочитан: {error}", owner.as_str())),
             }
         }
-        let membership = Arc::new(membership);
-        self.exchange_memberships
-            .lock()
-            .map_err(|_| {
-                ViewError::detailed(
-                    RefusalDetail::CachePoisoned,
-                    "exchange membership cache is poisoned",
-                )
-            })?
-            .insert(key, Arc::clone(&membership));
         Ok(membership)
     }
 

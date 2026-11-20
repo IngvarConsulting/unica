@@ -34,3 +34,53 @@ impl ProviderReadAuthority {
         }
     }
 }
+
+impl ProviderReadAuthority {
+    /// Состав планов обмена, сохранённый прежним чтением того же дерева.
+    /// Открытые буферы сеанса подменяют файлы, и стампы их не видят: при
+    /// них сохранённое не используется.
+    pub(crate) fn retained_exchange_membership(
+        &self,
+    ) -> Option<std::sync::Arc<crate::infrastructure::v13_read::ExchangeMembership>> {
+        if self.documents.is_some() {
+            return None;
+        }
+        self.artifacts.retained_exchange_membership(&self.root)
+    }
+
+    /// Стампы файлов, из которых собирается состав планов `plans`, снятые до
+    /// их чтения. `None` — стамп не снимается или открыты буферы сеанса:
+    /// такой состав не сохраняется.
+    pub(crate) fn exchange_membership_stamps(
+        &self,
+        plans: &[String],
+    ) -> Option<crate::infrastructure::v13_large_configuration::ExchangeMembershipStamps> {
+        if self.documents.is_some() {
+            return None;
+        }
+        let mut paths = vec![std::path::PathBuf::from("Configuration.xml")];
+        for plan in plans {
+            let directory = Path::new("ExchangePlans");
+            paths.push(directory.join(format!("{plan}.xml")));
+            paths.push(directory.join(plan).join("Ext/Content.xml"));
+        }
+        paths
+            .into_iter()
+            .map(|path| {
+                self.root
+                    .relative_file_stamp(&path)
+                    .ok()
+                    .map(|stamp| (path, stamp))
+            })
+            .collect()
+    }
+
+    pub(crate) fn retain_exchange_membership(
+        &self,
+        stamps: crate::infrastructure::v13_large_configuration::ExchangeMembershipStamps,
+        membership: std::sync::Arc<crate::infrastructure::v13_read::ExchangeMembership>,
+    ) {
+        self.artifacts
+            .retain_exchange_membership(stamps, membership);
+    }
+}

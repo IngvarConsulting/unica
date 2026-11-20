@@ -165,6 +165,7 @@ struct OwnerEdgeCacheKey {
 mod diagnostic_scope;
 mod editability_view;
 mod exchange_membership;
+pub(crate) use exchange_membership::ExchangeMembership;
 mod form_payload;
 mod http_service_handler;
 mod method_doc;

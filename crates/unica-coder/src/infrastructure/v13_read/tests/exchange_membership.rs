@@ -174,3 +174,41 @@ fn the_streaming_reader_gives_the_same_membership() {
     .unwrap();
     assert_eq!(membership(&fixture, "main:Catalog"), bounded);
 }
+
+/// Повреждённое описание плана не отнимает у ветви её объекты: признак
+/// объектов вне прочитанных составов неизвестен, ветвь называет план.
+/// rule: INV.SOURCE.INCOMPLETE-METADATA-READ
+#[test]
+fn a_damaged_plan_descriptor_keeps_the_branch_readable() {
+    let fixture = RealReaderFixture::new();
+    exchange_plan(&fixture, "Shops", Some(ITEMS));
+    exchange_plan(&fixture, "Warehouses", Some(ORDER));
+    fs::remove_file(fixture.source.join("ExchangePlans/Warehouses.xml")).unwrap();
+    let (catalogs, limits) = membership(&fixture, "main:Catalog");
+    assert_eq!(flag(&catalogs, "Items"), Some(true));
+    assert_eq!(flag(&catalogs, "Владельцы"), None);
+    assert!(
+        limits
+            .iter()
+            .any(|limit| limit.contains("ExchangePlan.Warehouses")),
+        "{limits:?}"
+    );
+}
+
+/// Изменённый состав виден следующему вызову: сохранённое между вызовами
+/// не переживает правку файла.
+#[test]
+fn a_changed_composition_is_seen_by_the_next_call() {
+    let fixture = RealReaderFixture::new();
+    exchange_plan(&fixture, "Shops", Some(ITEMS));
+    let (catalogs, _) = membership(&fixture, "main:Catalog");
+    assert_eq!(flag(&catalogs, "Items"), Some(true));
+    write(
+        &fixture.source.join("ExchangePlans/Shops/Ext/Content.xml"),
+        &format!(
+            r#"<ExchangePlanContent xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.20">{ORDER}</ExchangePlanContent>"#
+        ),
+    );
+    let (catalogs, _) = membership(&fixture, "main:Catalog");
+    assert_eq!(flag(&catalogs, "Items"), Some(false));
+}
