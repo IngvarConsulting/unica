@@ -516,7 +516,38 @@ impl<'a> LogicalViewReadAuthority<'a> {
             return Ok(payload);
         }
         if MetadataKind::parse(kind).is_err() {
-            return self.read.identity_metadata_payload(target);
+            let payload = self.read.identity_metadata_payload(target)?;
+            // Таблица, куб или таблица измерения, которых владелец называет,
+            // доказываются своим описанием до того, как попадут в ответ.
+            for (child_kind, key) in [
+                (NodeKind::Table, "tables"),
+                (NodeKind::Cube, "cubes"),
+                (NodeKind::DimensionTable, "dimensionTables"),
+            ] {
+                for child in payload
+                    .pointer(&format!("/collections/{key}"))
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
+                    let name = child.get("name").and_then(Value::as_str).ok_or_else(|| {
+                        ViewError::detailed(
+                            RefusalDetail::SourceUnreadable,
+                            format!("registered {key} entry has no name"),
+                        )
+                    })?;
+                    let child = MetadataAddress::parse_logical(&format!(
+                        "{}.{}.{name}",
+                        target.as_str(),
+                        child_kind.as_str()
+                    ))
+                    .map_err(|error| {
+                        ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+                    })?;
+                    self.verify_registered_owner(&child, admitted)?;
+                }
+            }
+            return Ok(payload);
         }
         let read = self
             .read

@@ -23,5 +23,6 @@ pub(super) const KIND: KindDeclaration = KindDeclaration {
         ("ExternalDataSourceTablesManager", "TablesManager"),
         ("ExternalDataSourceCubesManager", "CubesManager"),
     ]),
+    child_order: Some(&["Table", "Cube", "Function"]),
     ..KindDeclaration::new("ExternalDataSource")
 };

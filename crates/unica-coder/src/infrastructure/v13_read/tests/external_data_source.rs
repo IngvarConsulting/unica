@@ -356,3 +356,84 @@ fn a_form_of_an_external_data_source_table_is_reported_as_a_limit() {
         "{node}"
     );
 }
+
+/// Таблица, которую источник регистрирует, но чьего описания нет, не
+/// выдаётся ни ветвью источника, ни самим источником: регистрация без
+/// описания объекта не доказывает.
+/// rule: INV.SOURCE.LOGICAL-READER-PARITY
+#[test]
+fn a_registered_table_without_a_descriptor_refuses_its_owner_and_branch() {
+    let f = fixture();
+    fs::remove_file(
+        f.source
+            .join("ExternalDataSources/AllKindsExternalSource/Tables/Items.xml"),
+    )
+    .unwrap();
+    for at in [EDS.to_string(), format!("{EDS}.Table")] {
+        let r = f.view_service().view(ViewRequest::new(&at).unwrap());
+        assert_eq!(refusal_codes(&r), ["provider_unavailable"], "{at}: {r:?}");
+    }
+}
+
+/// Источник без таблиц, кубов и функций выдаёт их ветви пустыми, и
+/// пустая ветвь читается пустой коллекцией; так же — таблица без полей.
+/// rule: CTR.SOURCE.EMPTY-BRANCHES
+#[test]
+fn empty_branches_of_an_external_data_source_are_advertised() {
+    let f = fixture();
+    let source = f.source.join(SOURCE);
+    let text = fs::read_to_string(&source).unwrap();
+    let start = text.find("<Function").unwrap();
+    let end = text.find("</Function>").unwrap() + "</Function>".len();
+    let text = format!("{}{}", &text[..start], &text[end..])
+        .replacen("<Table>Items</Table>", "", 1)
+        .replacen("<Cube>Sales</Cube>", "", 1);
+    write(&source, &text);
+    let node = read(&f, EDS);
+    assert_eq!(
+        branches(&node),
+        [
+            ("Table".to_string(), 0),
+            ("Cube".to_string(), 0),
+            ("Function".to_string(), 0)
+        ]
+    );
+    let tables = read(&f, &format!("{EDS}.Table"));
+    assert!(titles(&tables).is_empty());
+
+    let f = fixture();
+    let table = f
+        .source
+        .join("ExternalDataSources/AllKindsExternalSource/Tables/Items.xml");
+    let text = fs::read_to_string(&table).unwrap();
+    let start = text.find("<Field ").unwrap();
+    let end = text.find("</Field>").unwrap() + "</Field>".len();
+    write(&table, &format!("{}{}", &text[..start], &text[end..]));
+    let node = read(&f, &format!("{EDS}.Table.Items"));
+    assert_eq!(branches(&node)[0], ("Field".to_string(), 0), "{node}");
+    let fields = read(&f, &format!("{EDS}.Table.Items.Field"));
+    assert!(titles(&fields).is_empty());
+}
+
+/// Безымянная запись таблицы не прячется: ветвь таблиц называет её
+/// пределом рядом с прочитанными записями.
+/// rule: INV.SOURCE.INCOMPLETE-METADATA-READ
+#[test]
+fn an_unnamed_table_registration_is_a_limit_of_the_branch() {
+    let f = fixture();
+    let source = f.source.join(SOURCE);
+    let text = fs::read_to_string(&source).unwrap();
+    write(
+        &source,
+        &text.replacen("<Table>Items</Table>", "<Table>Items</Table><Table/>", 1),
+    );
+    let tables = read(&f, &format!("{EDS}.Table"));
+    assert_eq!(titles(&tables), ["Items"]);
+    assert!(
+        tables["limits"][0]
+            .as_str()
+            .unwrap()
+            .starts_with("collections.tables[1]"),
+        "{tables}"
+    );
+}

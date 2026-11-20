@@ -9,5 +9,6 @@ pub(super) const KIND: KindDeclaration = KindDeclaration {
         directory: Some("Cubes"),
         modules: &["ManagerModule", "RecordSetModule"],
     }),
+    child_order: Some(&["DimensionTable", "Dimension", "Resource"]),
     ..KindDeclaration::new("Cube")
 };
