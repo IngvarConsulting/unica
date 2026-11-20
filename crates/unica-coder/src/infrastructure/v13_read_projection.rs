@@ -947,6 +947,26 @@ pub(super) fn project_registered_metadata_branch(
     project_registered_metadata_branch_names_inner(address, kind, names, support)
 }
 
+pub(super) fn project_ordinary_interface(
+    address: &QualifiedAddress,
+    name: &str,
+    synonym: Option<String>,
+) -> NodeViewData {
+    let key = "Synonym";
+    let kind = NodeKind::OrdinaryInterface.as_str();
+    let mut props = Map::new();
+    props.insert("Name".to_owned(), json!(name));
+    let mut limits = Vec::new();
+    if let Some(synonym) = synonym {
+        if synonym.len() <= prop_limit(key) {
+            props.insert(key.to_owned(), json!(synonym));
+        } else {
+            limits.push(compact_limit(key, address, key));
+        }
+    }
+    NodeViewData::Node(NodeView::new(address.to_string(), kind, name, props).with_limits(limits))
+}
+
 pub(super) fn project_registered_metadata_branch_names(
     address: &QualifiedAddress,
     names: &[String],

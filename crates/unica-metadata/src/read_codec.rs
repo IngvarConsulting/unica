@@ -45,6 +45,13 @@ pub trait MetadataReadCodec: Send + Sync {
         name: &str,
     ) -> Result<Option<String>, String>;
 
+    /// Подтверждает имя интерфейса обычного приложения и читает его синоним.
+    fn ordinary_interface_synonym(
+        &self,
+        descriptor: &[u8],
+        expected_name: &str,
+    ) -> Result<Option<String>, String>;
+
     /// Код языка из дескриптора `Language`.
     fn language_code(&self, descriptor: &[u8]) -> Result<String, String>;
 

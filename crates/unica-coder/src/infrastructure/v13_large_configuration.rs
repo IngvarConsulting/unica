@@ -892,6 +892,15 @@ pub(crate) struct StreamedConfigurationRoot {
     pub(crate) counts: BTreeMap<String, usize>,
 }
 
+pub(super) fn configuration_registration_kind(tag: &str) -> Option<NodeKind> {
+    if tag == unica_source_designer::layout::ORDINARY_INTERFACE_XML_TAG {
+        return Some(NodeKind::OrdinaryInterface);
+    }
+    NodeKind::parse(tag)
+        .ok()
+        .filter(|kind| kind.is_metadata_kind())
+}
+
 /// Reads the whole root owner through the retained descriptor. The XML parser
 /// validates the tail before any answer is published; root facts and a bounded
 /// run of registration keys are held in memory. An individual XML token still
@@ -917,14 +926,11 @@ pub(super) fn read_configuration_root(
     } = state;
     let mut counts = BTreeMap::<String, usize>::new();
     registrations.for_each_unique(checkpoint, |kind, _name| {
-        let Ok(kind_value) = NodeKind::parse(kind) else {
+        let Some(kind) = configuration_registration_kind(kind) else {
             return Ok(());
         };
-        if !kind_value.is_metadata_kind() {
-            return Ok(());
-        }
         checkpoint()?;
-        let count = counts.entry(kind.to_string()).or_default();
+        let count = counts.entry(kind.as_str().to_string()).or_default();
         *count = count.checked_add(1).ok_or_else(|| {
             ViewError::detailed(
                 RefusalDetail::SourceUnreadable,

@@ -14,7 +14,9 @@ use unica_bsl::profile::PlatformProfile;
 use unica_refusal::{RefusalCode, RefusalDetail};
 use unica_source_contract::read::{FileIdentity, SourceDirectory, SourceEntry, SourceFile};
 use unica_source_contract::SourceSetKind;
-use unica_source_designer::layout::metadata_kind_by_directory;
+use unica_source_designer::layout::{
+    metadata_kind_by_directory, ORDINARY_INTERFACE_DIRECTORY, ORDINARY_INTERFACE_XML_TAG,
+};
 use unica_source_designer::module_layout::{module_relative, module_source_address};
 use unica_work_control::cancellation::CancellationToken;
 use unica_work_control::provider_deadline::ProviderDeadline;
@@ -857,7 +859,24 @@ impl WorkspaceFindDirectoryBuilder {
                 let Some(directory_name) = directory.to_str() else {
                     continue;
                 };
-                let Some(layout) = metadata_kind_by_directory(directory_name) else {
+                let ordinary = source.kind == SourceSetKind::Configuration
+                    && directory_name.eq_ignore_ascii_case(ORDINARY_INTERFACE_DIRECTORY)
+                    && source
+                        .root
+                        .child_names_equivalent(
+                            &directory,
+                            OsStr::new(ORDINARY_INTERFACE_DIRECTORY),
+                        )
+                        .map_err(child_read_error)?;
+                let (descriptor_tag, address_kind, layout_directory) = if ordinary {
+                    (
+                        ORDINARY_INTERFACE_XML_TAG,
+                        NodeKind::OrdinaryInterface.as_str(),
+                        ORDINARY_INTERFACE_DIRECTORY,
+                    )
+                } else if let Some(layout) = metadata_kind_by_directory(directory_name) {
+                    (layout.tag, layout.tag, directory_name)
+                } else {
                     continue;
                 };
                 let collection =
@@ -873,11 +892,26 @@ impl WorkspaceFindDirectoryBuilder {
                     deadline,
                     cancellation,
                 )? {
-                    let Some(stem) = entry.to_str().and_then(|name| name.strip_suffix(".xml"))
-                    else {
+                    let Some(filename) = entry.to_str() else {
                         continue;
                     };
-                    let relative = PathBuf::from(directory_name).join(&entry);
+                    let Some((stem, extension)) = filename.rsplit_once('.') else {
+                        continue;
+                    };
+                    let relative = if ordinary && extension.eq_ignore_ascii_case("xml") {
+                        let canonical_name = format!("{stem}.xml");
+                        if !collection
+                            .child_names_equivalent(&entry, OsStr::new(&canonical_name))
+                            .map_err(child_read_error)?
+                        {
+                            continue;
+                        }
+                        PathBuf::from(layout_directory).join(canonical_name)
+                    } else if extension == "xml" {
+                        PathBuf::from(layout_directory).join(&entry)
+                    } else {
+                        continue;
+                    };
                     let file =
                         match retain_enumerated_child(&collection, &entry, deadline, cancellation)?
                         {
@@ -888,7 +922,7 @@ impl WorkspaceFindDirectoryBuilder {
                         &file,
                         &relative,
                         source,
-                        layout.tag,
+                        descriptor_tag,
                         Some(stem),
                         deadline,
                         cancellation,
@@ -897,8 +931,8 @@ impl WorkspaceFindDirectoryBuilder {
                         located,
                         find_document(
                             source,
-                            &format!("{}:{}.{stem}", source.name, layout.tag),
-                            layout.tag,
+                            &format!("{}:{address_kind}.{stem}", source.name),
+                            address_kind,
                             stem,
                             synonym.as_deref(),
                             &relative,
@@ -4060,6 +4094,40 @@ mod tests {
                 .code(),
             RefusalCode::InvalidSource
         );
+    }
+
+    /// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
+    #[test]
+    fn point_lookup_ordinary_interface_respects_filesystem_case_rules() {
+        let fixture = Fixture::new();
+        let path = "interfaces/Probe.XML";
+        write(
+            &fixture.source.join(path),
+            &owner("Probe", "Interface", "Probe", ""),
+        );
+        let root = unica_workspace::read::open_source_directory(&fixture.source).unwrap();
+        let source = LayoutFindSource::new("main", SourceSetKind::Configuration, &root);
+        let absolute = fs::canonicalize(&fixture.source).unwrap().join(path);
+        for query in [path, absolute.to_str().unwrap()] {
+            let result = WorkspaceFindDirectoryBuilder::default()
+                .locate_path(
+                    std::slice::from_ref(&source),
+                    query,
+                    ProviderDeadline::no_deadline(),
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            if fixture.source.join("Interfaces/Probe.xml").is_file() {
+                let found = result.expect("the physical file occupies the canonical path");
+                assert_eq!(found.at(), "main:OrdinaryInterface.Probe");
+                assert_eq!(found.placed_path(), Some("Interfaces/Probe.xml"));
+            } else {
+                assert!(
+                    result.is_none(),
+                    "the canonical path is absent on this volume"
+                );
+            }
+        }
     }
 
     /// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION

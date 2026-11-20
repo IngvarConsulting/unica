@@ -164,6 +164,26 @@ impl ProviderReadAuthority {
             .map_err(|message| ViewError::detailed(RefusalDetail::SourceUnreadable, message))
     }
 
+    pub(crate) fn ordinary_interface_synonym(
+        &self,
+        name: &str,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+    ) -> Result<Option<String>, ViewError> {
+        use unica_source_designer::layout::ORDINARY_INTERFACE_DIRECTORY;
+        let relative = Path::new(ORDINARY_INTERFACE_DIRECTORY).join(format!("{name}.xml"));
+        let descriptor = self
+            .read_optional_relative_with_checkpoint(&relative, checkpoint)?
+            .ok_or_else(|| {
+                ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
+                    format!("registered interface `{name}` has no descriptor"),
+                )
+            })?;
+        crate::infrastructure::family_codecs::metadata_read_codec()
+            .ordinary_interface_synonym(&descriptor, name)
+            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))
+    }
+
     pub(crate) fn identity_metadata_payload(
         &self,
         target: &MetadataAddress,
