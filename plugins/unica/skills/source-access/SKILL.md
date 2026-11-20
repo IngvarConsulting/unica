@@ -224,6 +224,7 @@ allowed-tools:
 | Схема компоновки | `<объект>.Template.<Макет>` → `DataSet` → набор → `Field`, `Query`; варианты настроек — `Setting` |
 | Табличный макет | `<объект>.Template.<Макет>` → `Area` → область → `Body` (непустой текст) и `Parameter` |
 | Реквизиты адресации задачи | `Task.<Имя>` → отдельная ветвь `AddressingAttribute`; обычные реквизиты — `Attribute` |
+| Признаки учёта плана счетов | `ChartOfAccounts.<Имя>` → ветви `AccountingFlag` и `ExtDimensionAccountingFlag`; обычные реквизиты — `Attribute` |
 | Пакет XDTO | `XDTOPackage.<Пакет>` → `Namespace`, `Type`, `Property` |
 | Подсистема | `Subsystem.<Имя>` → `Interface` → `Command` |
 | Структура модуля | `<объект>.Module.<Роль>` → `Method`, `Region`, `Event`, `Body`, `Variable` |
