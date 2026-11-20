@@ -47,7 +47,8 @@ impl PredefinedCodeTypePlan {
         for operation in operations {
             match &operation.operation().kind {
                 MetadataPlanKind::Create {
-                    kind: MetadataKind::ChartOfCalculationTypes,
+                    kind:
+                        unica_metadata::CreatableKind::Typed(MetadataKind::ChartOfCalculationTypes),
                     name,
                 } => {
                     let key = format!("ChartOfCalculationTypes.{name}");

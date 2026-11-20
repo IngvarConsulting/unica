@@ -13,7 +13,7 @@ pub fn metadata_object_create_input_schema() -> &'static Value {
             &[
                 ("at", text(true)),
                 ("values", object(&[
-                    ("kind", json!({"type":"string","enum":crate::MetadataKind::ALL.iter().map(|kind| kind.as_str()).collect::<Vec<_>>()})),
+                    ("kind", json!({"type":"string","enum":crate::CreatableKind::all().map(crate::CreatableKind::as_str).collect::<Vec<_>>()})),
                     // The identifier is checked during staging. Raw decoding
                     // must not move it ahead of a later operation's error.
                     ("name", json!({"type":"string","minLength":1})),
