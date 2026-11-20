@@ -330,7 +330,9 @@ fn medium_root_comment_refusals_and_late_batch_failure_do_not_publish_any_file()
             );
             assert!(!result.ok, "{at}: {result:?}");
             assert!(
-                result.summary.contains("is not present on this metadata object"),
+                result
+                    .summary
+                    .contains("is not present on this metadata object"),
                 "{at}: {result:?}"
             );
             assert_eq!(
