@@ -293,13 +293,12 @@ impl ProviderReadAuthority {
                         return;
                     };
                     let _ = read.metadata_owner_evidence(&target, &mut || Ok(()));
-                    if layout.tag == NodeKind::CommonModule.as_str() {
-                        if let Ok(at) = unica_address::address::QualifiedAddress::parse(&format!(
-                            "{}:{}.{name}",
-                            read.source_set, layout.tag
-                        )) {
-                            let _ = read.common_module_synonym(&at);
-                        }
+                    // Строка коллекции называет синоним каждого объекта.
+                    if let Ok(at) = unica_address::address::QualifiedAddress::parse(&format!(
+                        "{}:{}.{name}",
+                        read.source_set, layout.tag
+                    )) {
+                        let _ = read.object_synonym(&at);
                     }
                 }
             }

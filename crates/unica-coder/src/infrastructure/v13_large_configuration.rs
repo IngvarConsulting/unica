@@ -261,9 +261,9 @@ pub struct RegistrationCache {
     owner_evidence: Mutex<
         RetainedByDescriptor<unica_source_designer::owner::PlatformXmlSourceSetOwnerEvidence>,
     >,
-    /// Common module synonyms (with the limits of a damaged one) by
+    /// Top-level object synonyms (with the limits of a damaged one) by
     /// descriptor path, each under the stamp it had before it was read.
-    common_module_synonyms: Mutex<RetainedByDescriptor<CommonModuleSynonym>>,
+    object_synonyms: Mutex<RetainedByDescriptor<ObjectSynonym>>,
     /// The background proof of all top-level descriptors has been started.
     /// Test builds start it marked, so tests that watch which files a call
     /// opens see only that call; the test of the warm-up clears the mark.
@@ -278,9 +278,9 @@ pub struct RegistrationCache {
 /// descriptor had before it was read.
 type RetainedByDescriptor<T> = std::collections::HashMap<std::path::PathBuf, (FileStamp, Arc<T>)>;
 
-/// The synonym of a common module as its descriptor states it: absent or
+/// The synonym of a top-level object as its descriptor states it: absent or
 /// empty is `Ok(None)`, an unreadable property is `Err` with its reason.
-pub(crate) type CommonModuleSynonym = Result<Option<String>, String>;
+pub(crate) type ObjectSynonym = Result<Option<String>, String>;
 
 /// Timestamp granularity window: a stamp younger than this is never cached.
 // resource-limit: view.registration-settle-window-ms
@@ -305,7 +305,7 @@ impl Default for RegistrationCache {
             subsystems: Mutex::new(None),
             settle_window: SETTLE_WINDOW,
             owner_evidence: Mutex::new(std::collections::HashMap::new()),
-            common_module_synonyms: Mutex::new(std::collections::HashMap::new()),
+            object_synonyms: Mutex::new(std::collections::HashMap::new()),
             owner_warmup: std::sync::atomic::AtomicBool::new(cfg!(any(
                 test,
                 feature = "test-support"
@@ -414,26 +414,26 @@ impl RegistrationCache {
         &self.names
     }
 
-    pub(crate) fn retained_common_module_synonym(
+    pub(crate) fn retained_object_synonym(
         &self,
         relative: &std::path::Path,
         stamp: &FileStamp,
-    ) -> Option<Arc<CommonModuleSynonym>> {
-        let synonyms = self.common_module_synonyms.lock().ok()?;
+    ) -> Option<Arc<ObjectSynonym>> {
+        let synonyms = self.object_synonyms.lock().ok()?;
         synonyms
             .get(relative)
             .filter(|(cached, _)| cached == stamp)
             .map(|(_, fact)| Arc::clone(fact))
     }
 
-    pub(crate) fn retain_common_module_synonym(
+    pub(crate) fn retain_object_synonym(
         &self,
         relative: std::path::PathBuf,
         stamp: FileStamp,
-        fact: Arc<CommonModuleSynonym>,
+        fact: Arc<ObjectSynonym>,
     ) {
         if self.retains(&stamp) {
-            if let Ok(mut synonyms) = self.common_module_synonyms.lock() {
+            if let Ok(mut synonyms) = self.object_synonyms.lock() {
                 synonyms.insert(relative, (stamp, fact));
             }
         }

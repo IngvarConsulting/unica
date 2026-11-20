@@ -742,32 +742,47 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                 self.with_scheduled_job_handler(projected, at, handler.as_ref(), admitted)?;
             self.with_template_body_branches(projected, &route)?
         };
+        // Строка коллекции объектов верхнего уровня называет синоним и число
+        // подчинённых из `ChildObjects` дескриптора: по ней агент выбирает
+        // объект, не открывая каждый (#548).
         let projected = match projected {
             NodeViewData::Collection(collection)
-                if matches!(at.segments(), [root]
-                    if root.kind() == NodeKind::CommonModule && root.name().is_none()) =>
+                if route.reader() == LogicalReader::Metadata
+                    && route.reader_metadata_path().is_none()
+                    && matches!(at.segments(), [root]
+                        if root.name().is_none() && root.kind() != NodeKind::WebSocketClient) =>
             {
                 NodeViewData::Collection(collection.try_map_items(|mut row| {
                     let owner = row["at"].as_str().ok_or_else(|| {
                         ViewError::detailed(
                             RefusalDetail::SourceUnreadable,
-                            "common module row has no address",
+                            "metadata object row has no address",
                         )
                     })?;
                     let owner = QualifiedAddress::parse(owner).map_err(|error| {
                         ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
                     })?;
-                    let (synonym, limits) = match self.common_module_synonym(&owner) {
+                    let target =
+                        MetadataAddress::parse_logical(&owner.logical_path()).map_err(|error| {
+                            ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+                        })?;
+                    let children = self
+                        .owner_evidence(&target, admitted)?
+                        .registrations()
+                        .count();
+                    let (synonym, limits) = match self.object_synonym(&owner) {
                         Ok(fact) => fact,
-                        Err(error) if error.detail() == Some(RefusalDetail::SourceUnreadable) => (
-                            None,
-                            vec![format!("common module Synonym is unreadable: {error}")],
-                        ),
+                        Err(error) if error.detail() == Some(RefusalDetail::SourceUnreadable) => {
+                            (None, vec![format!("Synonym is unreadable: {error}")])
+                        }
                         Err(error) => return Err(error),
                     };
+                    let mut props = serde_json::Map::new();
                     if let Some(synonym) = synonym {
-                        row["props"] = json!({"synonym": synonym});
+                        props.insert("synonym".to_string(), synonym);
                     }
+                    props.insert("children".to_string(), json!(children));
+                    row["props"] = Value::Object(props);
                     if !limits.is_empty() {
                         row["limits"] = json!(limits);
                     }

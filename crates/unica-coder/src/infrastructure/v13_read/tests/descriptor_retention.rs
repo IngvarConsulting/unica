@@ -62,7 +62,7 @@ fn synonym_of(
     artifacts: &Arc<RegistrationCache>,
 ) -> Option<serde_json::Value> {
     operation(fixture, artifacts)
-        .common_module_synonym(&QualifiedAddress::parse(MODULE).unwrap())
+        .object_synonym(&QualifiedAddress::parse(MODULE).unwrap())
         .unwrap()
         .0
 }
@@ -154,7 +154,7 @@ fn common_module_synonym_is_retained_until_its_descriptor_changes() {
     let descriptor = fixture.source.join("CommonModules/РеактивныйСервер.xml");
     let reads = |artifacts: &Arc<RegistrationCache>| {
         let read = operation(&fixture, artifacts);
-        read.common_module_synonym(&QualifiedAddress::parse(MODULE).unwrap())
+        read.object_synonym(&QualifiedAddress::parse(MODULE).unwrap())
             .unwrap();
         read.metadata_descriptor_read_count("CommonModule.РеактивныйСервер")
     };
@@ -206,7 +206,7 @@ fn background_warmup_retains_top_level_descriptors_for_the_next_operation() {
         };
         if synonym {
             artifacts
-                .retained_common_module_synonym(relative, &stamp)
+                .retained_object_synonym(relative, &stamp)
                 .is_some()
         } else {
             artifacts
@@ -260,22 +260,16 @@ fn a_retained_long_synonym_is_still_read_whole() {
     .unwrap();
     let at = QualifiedAddress::parse(MODULE).unwrap();
 
-    let (compact, limits) = operation(&fixture, &artifacts)
-        .common_module_synonym(&at)
-        .unwrap();
+    let (compact, limits) = operation(&fixture, &artifacts).object_synonym(&at).unwrap();
     assert_eq!(compact, None);
     assert_eq!(limits.len(), 1, "{limits:?}");
 
     let whole = crate::infrastructure::v13_read_projection::with_whole_prop("synonym", || {
-        operation(&fixture, &artifacts)
-            .common_module_synonym(&at)
-            .unwrap()
+        operation(&fixture, &artifacts).object_synonym(&at).unwrap()
     });
     let fresh = Arc::new(RegistrationCache::default());
     let expected = crate::infrastructure::v13_read_projection::with_whole_prop("synonym", || {
-        operation(&fixture, &fresh)
-            .common_module_synonym(&at)
-            .unwrap()
+        operation(&fixture, &fresh).object_synonym(&at).unwrap()
     });
     assert!(
         expected
