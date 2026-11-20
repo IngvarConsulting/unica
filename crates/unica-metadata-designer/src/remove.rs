@@ -278,7 +278,8 @@ pub fn meta_remove_is_form(relative: &Path) -> bool {
 /// a form. An item keeps its other settings — visibility, order — and loses
 /// only `<CommandGroup>`, so its command returns to the default group. An
 /// item left with nothing but `<Command>` and `<Type>` carries no setting and
-/// goes whole: the platform writes no item for a command without settings.
+/// goes whole. The platform accepts such an item and keeps it on dump; dropping
+/// it is a normalisation, not a load requirement.
 pub fn remove_form_command_group_entries(
     xml_text: &str,
     qualified_group: &str,

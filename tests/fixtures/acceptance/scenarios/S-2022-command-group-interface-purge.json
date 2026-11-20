@@ -3,7 +3,7 @@
   "name": "command-group-interface-purge",
   "issue": 2022,
   "area": "Создание и удаление объектов",
-  "task": "Удалить группу команд, которую упоминает только командный интерфейс подсистемы: предпросмотр называет вычищаемый интерфейс и предупреждает, что команды вернутся в группы по умолчанию; исполнение убирает группу из порядка групп и записи о размещении и порядке её команд",
+  "task": "Удалить группу команд, которую упоминают только командные интерфейсы подсистемы и основного раздела: предпросмотр называет вычищаемый интерфейс и предупреждает, что команды вернутся в группы по умолчанию; исполнение убирает группу из порядка групп и записи о размещении и порядке её команд",
   "workspace": "tests/fixtures/acceptance/workspace-command-groups",
   "wire": [
     {
@@ -36,6 +36,10 @@
         "kept5": {
           "kind": "sha256",
           "file": "src/Subsystems/Подсистема1.xml"
+        },
+        "kept6": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Справочник1/Forms/ФормаСписка/Ext/Form.xml"
         }
       }
     },
@@ -65,6 +69,10 @@
           "pointer": "/warnings/0/entries",
           "eq": [
             {
+              "at": "main:Configuration",
+              "property": "MainSectionCommandInterface"
+            },
+            {
               "at": "main:Subsystem.Подсистема1",
               "property": "CommandInterface"
             }
@@ -72,7 +80,7 @@
         },
         {
           "pointer": "/warnings/0/message",
-          "eq": "the removal also takes `main:CommandGroup.ГруппаБ` out of `main:Subsystem.Подсистема1` → CommandInterface; the commands placed in it return to their default groups"
+          "eq": "the removal also takes `main:CommandGroup.ГруппаБ` out of `main:Configuration` → MainSectionCommandInterface, `main:Subsystem.Подсистема1` → CommandInterface; the commands placed in it return to their default groups"
         },
         {
           "pointer": "/warnings/1",
@@ -108,6 +116,10 @@
           "pointer": "/warnings/0/entries",
           "eq": [
             {
+              "at": "main:Configuration",
+              "property": "MainSectionCommandInterface"
+            },
+            {
               "at": "main:Subsystem.Подсистема1",
               "property": "CommandInterface"
             }
@@ -115,7 +127,7 @@
         },
         {
           "pointer": "/warnings/0/message",
-          "eq": "the removal also takes `main:CommandGroup.ГруппаБ` out of `main:Subsystem.Подсистема1` → CommandInterface; the commands placed in it return to their default groups"
+          "eq": "the removal also takes `main:CommandGroup.ГруппаБ` out of `main:Configuration` → MainSectionCommandInterface, `main:Subsystem.Подсистема1` → CommandInterface; the commands placed in it return to their default groups"
         },
         {
           "pointer": "/warnings/1",
@@ -160,6 +172,26 @@
           "eq": []
         },
         {
+          "kind": "xml",
+          "path": "src/Ext/MainSectionCommandInterface.xml",
+          "select": "./{http://v8.1c.ru/8.3/xcf/extrnprops}GroupsOrder/{http://v8.1c.ru/8.3/xcf/extrnprops}Group",
+          "eq": [
+            "ActionsPanelCreate"
+          ]
+        },
+        {
+          "kind": "xmlTags",
+          "path": "src/Ext/MainSectionCommandInterface.xml",
+          "select": "./{http://v8.1c.ru/8.3/xcf/extrnprops}CommandsPlacement/*",
+          "eq": []
+        },
+        {
+          "kind": "xmlTags",
+          "path": "src/Ext/MainSectionCommandInterface.xml",
+          "select": "./{http://v8.1c.ru/8.3/xcf/extrnprops}CommandsOrder/*",
+          "eq": []
+        },
+        {
           "kind": "sha256",
           "path": "src/CommandGroups/ГруппаА.xml",
           "eq": "$capture.kept0"
@@ -188,6 +220,11 @@
           "kind": "sha256",
           "path": "src/Subsystems/Подсистема1.xml",
           "eq": "$capture.kept5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Справочник1/Forms/ФормаСписка/Ext/Form.xml",
+          "eq": "$capture.kept6"
         }
       ]
     },
