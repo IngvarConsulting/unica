@@ -4828,6 +4828,7 @@ mod export_format_tests {
                 event_handler: None,
                 dependencies: Vec::new(),
                 language: "ru".to_owned(),
+                new_language_code: None,
             };
             let (catalog, _) = crate::template_catalog::minimal_metadata_xml(
                 unica_metadata::CreatableKind::Typed(MetadataKind::Catalog),
@@ -4875,6 +4876,7 @@ mod export_format_tests {
                 event_handler: None,
                 dependencies: Vec::new(),
                 language: "ru".to_owned(),
+                new_language_code: None,
             };
             let (report, _) = crate::template_catalog::minimal_metadata_xml(
                 unica_metadata::CreatableKind::Typed(MetadataKind::Report),

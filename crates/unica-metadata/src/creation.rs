@@ -62,6 +62,14 @@ impl CreatableKind {
         }
     }
 
+    /// Whether an extension creates its own object of the kind: it borrows
+    /// the kinds the declaration keeps to the main configuration.
+    pub fn created_in_extension(self) -> bool {
+        !self
+            .template()
+            .is_some_and(|template| template.main_configuration_only)
+    }
+
     fn creation(tag: &str) -> Option<unica_address::kinds::CreationDeclaration> {
         unica_address::kinds::declared(tag).and_then(|(_, declaration)| declaration.creation)
     }

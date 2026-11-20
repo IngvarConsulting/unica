@@ -45,6 +45,38 @@ pub trait MetadataPlanningRead {
         crate::remove::RemoveObservationHooks::NONE
     }
 }
+/// The `LanguageCode` of every language the staged configuration registers.
+fn staged_language_codes(
+    staged: &mut ApplyProposal<'_>,
+    owner_relative: &Path,
+    op_index: usize,
+) -> Result<Vec<String>, ApplyPlanError> {
+    let at_path = format!("ops[{op_index}].args.values.kind");
+    let owner = staged
+        .read(owner_relative)
+        .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
+        .unwrap_or_default();
+    let mut codes = Vec::new();
+    for language in crate::template_catalog::registered_names(&owner, "Language") {
+        let relative = Path::new("Languages").join(format!("{language}.xml"));
+        let Some(bytes) = staged
+            .read(&relative)
+            .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
+        else {
+            continue;
+        };
+        let code = crate::language_code::read_code(&bytes).map_err(|message| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::InvalidSource,
+                format!("language `{language}` has no readable LanguageCode: {message}"),
+            )
+            .at_path(at_path.clone())
+        })?;
+        codes.push(code);
+    }
+    Ok(codes)
+}
+
 /// Local composition belongs to the final descriptor, after every operation
 /// family has contributed its image. A borrowed descriptor contains only the
 /// extension's contribution and cannot establish the parent's composition.
@@ -822,11 +854,34 @@ pub fn stage_object_create<R: MetadataPlanningRead>(
             &format!("ops[{op_index}]"),
         )?;
     }
+    if source_kind == SourceSetKind::Extension && !kind.created_in_extension() {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            format!(
+                "an extension borrows `{}` from the main configuration instead of creating it",
+                kind.as_str()
+            ),
+        )
+        .at_path(format!("ops[{op_index}].args.values.kind")));
+    }
     reader.with_creation_source(op_index, &mut |source| {
         // The new descriptor's synonym is written in the source set's default
         // language, read from the staged image like every other edit (#909).
         let language =
             unica_source_designer::language::staged_text_language(staged, source_kind, op_index)?;
+        // A new language skips the codes of the staged image, which holds
+        // the languages an earlier operation of this batch created.
+        let language_codes = match kind
+            .template()
+            .and_then(|template| template.numbered_language_code)
+        {
+            Some(_) => Some(staged_language_codes(
+                staged,
+                &staged_relative(root, source.owner_path, op_index)?,
+                op_index,
+            )?),
+            None => None,
+        };
         let post_image = crate::template_catalog::minimal_object(
             source,
             kind,
@@ -834,6 +889,7 @@ pub fn stage_object_create<R: MetadataPlanningRead>(
             crate::template_catalog::MetadataTemplateOperationOverrides {
                 source: false,
                 handler: false,
+                language_codes,
             },
             source_set_name,
             &language,

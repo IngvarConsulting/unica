@@ -1495,6 +1495,85 @@ pub(super) mod medium_cf_read_selector_bridge_tests {
         }
     }
 
+    /// Конфигуратор 8.3.27 создаёт функциональную опцию, параметр
+    /// функциональных опций и последовательность с пустыми `Location`, `Use`
+    /// и `Documents`, а загрузка такой выгрузки отказывает. Проверка
+    /// конфигурации называет каждое пустое свойство ошибкой с отказом
+    /// платформы и молчит о выгрузке, где они заданы.
+    #[test]
+    fn cf_validate_reports_a_required_property_the_platform_refuses_without() {
+        let export = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src");
+        let root =
+            std::env::temp_dir().join(format!("unica-cf-validate-required-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        crate::infrastructure::test_fixtures::copy_tree(&export, &root.join("src"));
+        let context = WorkspaceContext {
+            cwd: root.clone(),
+            workspace_root: root.clone(),
+            cache_root: root.join(".cache"),
+            workspace_epoch: 1,
+        };
+        let validate = || {
+            validate_cf(
+                &Map::from_iter([
+                    ("ConfigPath".to_string(), json!("src")),
+                    ("Detailed".to_string(), json!(true)),
+                ]),
+                &context,
+            )
+        };
+        let set = validate();
+        let stdout = set.stdout.as_deref().unwrap_or_default();
+        assert!(
+            stdout.contains("10. Required properties: 3 objects checked"),
+            "{stdout}"
+        );
+
+        let empty = |relative: &str, property: &str| {
+            let path = root.join("src").join(relative);
+            let text = fs::read_to_string(&path).unwrap();
+            let open = format!("<{property}>");
+            let close = format!("</{property}>");
+            let start = text.find(&open).unwrap();
+            let end = text.find(&close).unwrap() + close.len();
+            fs::write(
+                &path,
+                format!("{}<{property}/>{}", &text[..start], &text[end..]),
+            )
+            .unwrap();
+        };
+        empty("FunctionalOptions/ByConstant.xml", "Location");
+        empty("FunctionalOptionsParameters/Probe.xml", "Use");
+        empty("Sequences/Probe.xml", "Documents");
+        let unset = validate();
+        assert!(!unset.ok, "{unset:?}");
+        for expected in [
+            "10. FunctionalOption.ByConstant: Location is not set; the platform refuses to load it: «Не установлено Хранение функциональной опции»",
+            "10. FunctionalOptionsParameter.Probe: Use is not set; the platform refuses to load it: «Не установлено Использование параметра функциональной опции»",
+            "10. Sequence.Probe: Documents is not set; the platform refuses to load it: «Не один документ не участвует в последовательности»",
+        ] {
+            assert!(
+                unset.errors.iter().any(|error| error.contains(expected)),
+                "{expected}: {:?}",
+                unset.errors
+            );
+        }
+
+        // A descriptor that cannot be read is an error, not a checked object.
+        fs::remove_file(root.join("src/Sequences/Probe.xml")).unwrap();
+        let missing = validate();
+        assert!(
+            missing
+                .errors
+                .iter()
+                .any(|error| error.contains("10. Sequence.Probe: Documents cannot be checked")),
+            "{:?}",
+            missing.errors
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
     #[test]
     pub(crate) fn cf_validate_answers_identically_for_a_source_set_and_a_config_path() {
         let context = workspace("validate");

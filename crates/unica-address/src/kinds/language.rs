@@ -15,5 +15,13 @@ pub(super) const KIND: KindDeclaration = KindDeclaration {
         ..LayoutDeclaration::EMPTY
     }),
     generated_types: Some(&[]),
+    // Конфигуратор 8.3.27 с русским интерфейсом даёт новому языку код «ru1»,
+    // следующему — «ru2», независимо от языков конфигурации: первое
+    // свободное N. Расширение языки заимствует.
+    creation: Some(CreationDeclaration {
+        numbered_language_code: Some("ru"),
+        main_configuration_only: true,
+        ..CreationDeclaration::properties(&[])
+    }),
     ..KindDeclaration::new("Language")
 };

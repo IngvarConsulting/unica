@@ -72,6 +72,24 @@ pub struct CreationDeclaration {
     /// Строки XML внутри `Properties`, без отступа самого `Properties`:
     /// вложенные строки начинаются со своих табуляций.
     pub properties: &'static [&'static str],
+    /// Префикс кода языка, который новый объект получает после свойств:
+    /// префикс и первое `N` от 1, при котором код не занят другим языком
+    /// набора. `None` — объект кода языка не несёт.
+    pub numbered_language_code: Option<&'static str>,
+    /// Вид создаётся только в основной конфигурации: расширение
+    /// заимствует такие объекты.
+    pub main_configuration_only: bool,
+}
+
+impl CreationDeclaration {
+    /// Объект, которому хватает перечисленных свойств.
+    pub const fn properties(properties: &'static [&'static str]) -> Self {
+        Self {
+            properties,
+            numbered_language_code: None,
+            main_configuration_only: false,
+        }
+    }
 }
 
 /// Вид объекта метаданных в адресе исходников.

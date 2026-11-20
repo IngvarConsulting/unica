@@ -1,0 +1,159 @@
+{
+  "id": "S-2994-configurator-kinds-create",
+  "issue": 2994,
+  "area": "Создание и удаление объектов",
+  "task": "Создать два языка, функциональную опцию, параметр функциональных опций и последовательность одним вызовом: каждый объект пишется так, как его создаёт Конфигуратор, регистрируется в конфигурации и читается.",
+  "workspace": "tests/fixtures/acceptance/workspace-all-kinds",
+  "formats": [
+    "2.20",
+    "2.21",
+    "2.22"
+  ],
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "object.create",
+            "args": {
+              "values": {
+                "kind": "Language",
+                "name": "Probe2994"
+              }
+            }
+          },
+          {
+            "op": "object.create",
+            "args": {
+              "values": {
+                "kind": "Language",
+                "name": "Probe2994Second"
+              }
+            }
+          },
+          {
+            "op": "object.create",
+            "args": {
+              "values": {
+                "kind": "FunctionalOption",
+                "name": "Probe2994"
+              }
+            }
+          },
+          {
+            "op": "object.create",
+            "args": {
+              "values": {
+                "kind": "FunctionalOptionsParameter",
+                "name": "Probe2994"
+              }
+            }
+          },
+          {
+            "op": "object.create",
+            "args": {
+              "values": {
+                "kind": "Sequence",
+                "name": "Probe2994"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "token": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Language.Probe2994"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Language"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Language.Probe2994Second"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Language"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:FunctionalOption.Probe2994"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "FunctionalOption"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:FunctionalOptionsParameter.Probe2994"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "FunctionalOptionsParameter"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Sequence.Probe2994"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Sequence"
+        }
+      ]
+    }
+  ]
+}

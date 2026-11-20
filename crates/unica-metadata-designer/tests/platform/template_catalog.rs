@@ -163,6 +163,7 @@ fn business_process_template_names_its_mandatory_task() {
         event_handler: None,
         dependencies: Vec::new(),
         language: "ru".to_string(),
+        new_language_code: None,
     };
     let (xml, _) = crate::template_catalog::minimal_metadata_xml(
         unica_metadata::CreatableKind::Typed(MetadataKind::BusinessProcess),
@@ -192,6 +193,7 @@ fn document_journal_template_registers_its_mandatory_document() {
         event_handler: None,
         dependencies: Vec::new(),
         language: "ru".to_string(),
+        new_language_code: None,
     };
     let (xml, _) = crate::template_catalog::minimal_metadata_xml(
         unica_metadata::CreatableKind::Typed(MetadataKind::DocumentJournal),
