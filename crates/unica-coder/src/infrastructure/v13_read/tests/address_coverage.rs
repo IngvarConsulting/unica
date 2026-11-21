@@ -1433,7 +1433,7 @@ fn check_metadata_child_branches(
 
     for ((at, _), fact) in expected.iter().zip(facts) {
         let collection = read(authority, at);
-        let evidence =
+        let evidence_label =
             if fact.kind == NodeKind::Schedule && collection["props"]["state"] == "absent" {
                 "declared; native Schedule.xml absent"
             } else if fact.count == 0 {
@@ -1442,7 +1442,7 @@ fn check_metadata_child_branches(
                 "observed"
             };
         println!(
-            "| {} | {owner} | {} | {at} | {evidence} |",
+            "| {} | {owner} | {} | {at} | {evidence_label} |",
             profile.id(),
             fact.kind.as_str()
         );
