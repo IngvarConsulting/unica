@@ -137,11 +137,13 @@ impl PreparedSourceExport {
         }
         let source_set = match args.get("sourceSet") {
             None => None,
-            Some(Value::String(value)) if valid_source_set_name(value) => Some(value.clone()),
+            Some(Value::String(value)) if valid_source_set_name_spelling(value) => {
+                Some(value.clone())
+            }
             Some(_) => {
                 return Err(reject_fetch(
                     RefusalCode::BadValue,
-                    source_set_name_guidance(FETCH),
+                    exchange_source_set_name_guidance(FETCH),
                 ))
             }
         };

@@ -379,44 +379,65 @@ fn fetch_names_the_stage_when_refusal_cleanup_fails() {
 /// rule: INV.RUNTIME.FETCH-LEAVES-THE-WORKING-COPY
 #[test]
 fn fetch_exports_the_named_extension_to_a_separate_snapshot() {
+    let name = "ДемонстрационноеРасширениеПримера1";
+    let undeclared = "ДемонстрационноеРасширениеПримера2";
+    assert_eq!(name.len(), 67);
+    assert_eq!(undeclared.len(), name.len());
     let workspace = workspace();
     let root = workspace.path();
     let config_path = root.join(CONFIG_NAME);
     let mut config = fs::read_to_string(&config_path).unwrap();
-    config.push_str("  - name: Sales\n    type: EXTENSION\n    path: Sales\n");
-    fs::write(config_path, config).unwrap();
-    let extension = root.join("Sales");
+    config.push_str(&format!(
+        "  - name: {name}\n    type: EXTENSION\n    path: {name}\n"
+    ));
+    fs::write(&config_path, &config).unwrap();
+    let extension = root.join(name);
     fs::create_dir(&extension).unwrap();
     fs::write(extension.join("Configuration.xml"), "<local-extension/>").unwrap();
     let before_base = tree(&root.join("main"));
     let before_extension = tree(&extension);
     let runner = ProtocolRunner::new(Script::Exports);
 
-    let missing_name = prepared_with_args(root, json!({"sourceSet": "Sales"}), false);
-    let rejected = run(root, &missing_name, &runner);
+    let missing_extension = prepared_with_args(root, json!({"sourceSet": name}), false);
+    let rejected = run(root, &missing_extension, &runner);
     assert!(!rejected.ok, "{rejected:?}");
-    assert!(runner.args.lock().unwrap().is_empty());
-    assert!(snapshots(root).is_empty());
 
-    let prepared = prepared_with_args(
+    let unknown_set = prepared_with_args(
         root,
-        json!({"sourceSet": "Sales", "extension": "Sales"}),
+        json!({"sourceSet": undeclared, "extension": undeclared}),
         false,
     );
+    let rejected = run(root, &unknown_set, &runner);
+    assert!(!rejected.ok, "{rejected:?}");
+    assert_eq!(rejected.diagnostics[0]["code"], "bad_value");
+    assert!(
+        rejected
+            .summary
+            .contains(&format!("`{undeclared}` is not declared in v8project.yaml")),
+        "{rejected:?}"
+    );
+    assert!(runner.args.lock().unwrap().is_empty());
+    assert!(runner.decisions().is_empty());
+    assert!(snapshots(root).is_empty());
+    assert_eq!(tree(&root.join("main")), before_base);
+    assert_eq!(tree(&extension), before_extension);
+    assert_eq!(fs::read_to_string(&config_path).unwrap(), config);
+
+    let prepared = prepared_with_args(root, json!({"sourceSet": name, "extension": name}), false);
     let result = run(root, &prepared, &runner);
 
     assert!(result.ok, "{result:?}");
     assert_eq!(runner.decisions(), ["selected:continue", "ready:rejected"]);
     let args = runner.args.lock().unwrap().join(" ");
     assert!(
-        args.contains("pull Sales --force --publication-stdio"),
+        args.contains(&format!("pull {name} --force --publication-stdio")),
         "{args}"
     );
-    assert!(args.ends_with("--extension Sales"), "{args}");
+    assert!(args.ends_with(&format!("--extension {name}")), "{args}");
     let data = result.data.unwrap();
-    assert_eq!(data["extension"], "Sales");
-    assert_eq!(data["sourceSet"], "Sales");
-    assert_eq!(data["target"], "Sales");
+    assert_eq!(data["extension"], name);
+    assert_eq!(data["sourceSet"], name);
+    assert_eq!(data["target"], name);
     assert_eq!(
         tree(&root.join(data["snapshot"].as_str().unwrap())),
         [(
