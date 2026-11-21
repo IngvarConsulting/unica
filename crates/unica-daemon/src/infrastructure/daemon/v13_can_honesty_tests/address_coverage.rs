@@ -47,17 +47,29 @@ impl EvidenceRows {
         };
         let address = parsed(at);
         let (branch, owner_segments) = address.segments().split_last().unwrap();
-        let role = branch.name();
-        if level == "roundtrip" {
-            assert_eq!(branch.kind(), NodeKind::Module, "{at}");
-            assert!(role.is_some(), "{at}: expected a named module role");
+        let (owner, branch_kind, role) = if branch.kind() == NodeKind::CommonModule
+            && branch.name().is_some()
+            && level == "read"
+        {
+            assert!(
+                owner_segments.is_empty(),
+                "{at}: expected a root CommonModule"
+            );
+            (address.clone(), NodeKind::Module, Some("Common"))
         } else {
-            assert!(role.is_none(), "{at}: expected a branch address");
-        }
-        let owner = if owner_segments.is_empty() {
-            parsed(&format!("{}:Configuration", address.source_set()))
-        } else {
-            address.prefix(owner_segments.len())
+            let role = branch.name();
+            if level == "roundtrip" {
+                assert_eq!(branch.kind(), NodeKind::Module, "{at}");
+                assert!(role.is_some(), "{at}: expected a named module role");
+            } else {
+                assert!(role.is_none(), "{at}: expected a branch address");
+            }
+            let owner = if owner_segments.is_empty() {
+                parsed(&format!("{}:Configuration", address.source_set()))
+            } else {
+                address.prefix(owner_segments.len())
+            };
+            (owner, branch.kind(), role)
         };
         let (_, source_kind, root) = source_sets(&fixture.workspace)
             .into_iter()
@@ -103,7 +115,7 @@ impl EvidenceRows {
                     "line": line.to_string(),
                     "source_kind": source_kind,
                     "owner_shape": owner_shape,
-                    "branch": branch.kind().as_str(),
+                    "branch": branch_kind.as_str(),
                     "role": role,
                 },
                 "witness": {
@@ -1005,8 +1017,8 @@ fn check_notification_binding_fixture(
 fn check_resource(
     runtime: &V5CanonicalInvocationRuntime,
     fixture: &Fixture,
-    at: &str,
     relative: &str,
+    (at, at_from_path): (&str, &str),
 ) {
     let owner = parsed(at);
     let source = source_root(&fixture.workspace, owner.source_set());
@@ -1031,7 +1043,7 @@ fn check_resource(
     );
     assert!(by_path.ok, "{relative}: {by_path:?}");
     let data = by_path.data.unwrap();
-    assert_eq!(data["at"], at);
+    assert_eq!(data["at"], at_from_path);
     assert_eq!(data["path"], relative);
 }
 
@@ -1117,7 +1129,7 @@ fn check_external_modules(
             check_fixture_members(runtime, fixture, &branch, [role]);
             let at = format!("{branch}.{role}");
             let file = format!("{stem}/{file}");
-            check_resource(runtime, fixture, &at, &file);
+            check_resource(runtime, fixture, &file, (&at, &at));
             evidence.record_evidence(
                 fixture,
                 ("workspace-external-alias", &file),
@@ -1258,7 +1270,7 @@ fn check_configuration_module_role(
     let modules = check_fixture_members(runtime, fixture, &branch, roles.iter().copied());
     assert_eq!(modules[role]["props"]["role"], role);
     let at = format!("{branch}.{role}");
-    check_resource(runtime, fixture, &at, origin.1);
+    check_resource(runtime, fixture, origin.1, (&at, &at));
     evidence.record_evidence(
         fixture,
         origin,
@@ -1301,7 +1313,8 @@ fn check_extension_common_module(
         .collect();
     assert_eq!(registered, [NAME]);
 
-    let descriptor = fixture_xml(fixture, COLL, &format!("CommonModules/{NAME}.xml"));
+    let descriptor_path = format!("CommonModules/{NAME}.xml");
+    let descriptor = fixture_xml(fixture, COLL, &descriptor_path);
     let descriptor = roxmltree::Document::parse(descriptor.trim_start_matches('\u{feff}')).unwrap();
     let descriptor_root = descriptor.root_element();
     check_metadata_identity(descriptor_root, KIND, NAME);
@@ -1309,11 +1322,8 @@ fn check_extension_common_module(
         descriptor_root.attribute("version"),
         root.attribute("version")
     );
-    let module = fixture_xml(
-        fixture,
-        COLL,
-        &format!("CommonModules/{NAME}/Ext/Module.bsl"),
-    );
+    let module_path = format!("CommonModules/{NAME}/Ext/Module.bsl");
+    let module = fixture_xml(fixture, COLL, &module_path);
     let source = module.trim_start_matches('\u{feff}');
     assert!(!source.is_empty());
 
@@ -1332,7 +1342,10 @@ fn check_extension_common_module(
         registered,
         NodeKind::Module,
     );
-    let body = format!("{COLL}.{NAME}.Body");
+    let at = format!("{COLL}.{NAME}");
+    let body = format!("{at}.Body");
+    check_resource(runtime, fixture, &descriptor_path, (&at, &at));
+    check_resource(runtime, fixture, &module_path, (&body, &at));
     let response = invoke_on(
         runtime,
         &fixture.workspace,
@@ -1340,9 +1353,13 @@ fn check_extension_common_module(
         json!({"at":body}),
     );
     assert!(response.ok, "{body}: {response:?}");
-    assert_eq!(response.data.unwrap()["at"], body);
+    let data = response.data.unwrap();
+    assert_eq!(data["at"], body);
+    assert_eq!(data["kind"], "Body");
     assert_eq!(response.source_text.as_deref(), Some(source), "{body}");
     evidence.record(fixture, ("workspace-code", "Configuration.xml"), COLL);
+    evidence.record(fixture, ("workspace-code", &module_path), &at);
+    evidence.record(fixture, ("workspace-code", &module_path), &body);
 }
 
 /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
@@ -1457,8 +1474,11 @@ fn medium_published_document_and_bsl_branches_have_canonical_addresses() {
             check_resource(
                 &runtime,
                 &fixture,
-                "main:Module.ManagedApplication",
                 "Ext/ManagedApplicationModule.bsl",
+                (
+                    "main:Module.ManagedApplication",
+                    "main:Module.ManagedApplication",
+                ),
             );
         }
     }
