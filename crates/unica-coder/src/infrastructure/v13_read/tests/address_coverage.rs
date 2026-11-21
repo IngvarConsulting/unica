@@ -1850,8 +1850,229 @@ fn check_metadata_child_branches(
 }
 
 /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
+/// rule: INV.SOURCE.PROFILE-CAPABILITIES
+/// rule: INV.SOURCE.RESOLVED-RESOURCE-IDENTITY
+#[test]
+fn native_registered_modules_match_profile_and_physical_paths() {
+    let profile_fixture = module_capability_fixture();
+    assert_eq!(profile_fixture.profile, PlatformProfile::v8_3_27().id());
+    let mut evidence = EvidenceRows::new(
+        "native_registered_modules_match_profile_and_physical_paths",
+        SourceSetKind::Configuration,
+    );
+    for xml in ["2.20", "2.21", "2.22"] {
+        let source = fixture_path(&format!("formats/platform_xml/{xml}/all_kinds/src"));
+        let line = export_format_line(xml).unwrap();
+        let profile = PlatformProfile::for_line(line).unwrap();
+        let cancellation = CancellationToken::new();
+        let authority = native_authority(&cancellation, &source, profile);
+        let root =
+            unica_workspace::read::open_source_directory(&source.canonicalize().unwrap()).unwrap();
+        let layout = [LayoutFindSource::new(
+            "main",
+            SourceSetKind::Configuration,
+            &root,
+        )];
+        let finder = WorkspaceFindDirectoryBuilder::default();
+        let registrations = root_registrations(&source, xml);
+        for (kind, descriptor, role, modules) in [
+            (
+                "Document",
+                "Documents/Приход.xml",
+                "Object",
+                &[(None, "Documents/Приход/Ext/ObjectModule.bsl")][..],
+            ),
+            (
+                "Document",
+                "Documents/Orders.xml",
+                "Command",
+                &[
+                    (
+                        Some("Probe"),
+                        "Documents/Orders/Commands/Probe/Ext/CommandModule.bsl",
+                    ),
+                    (
+                        Some("Other"),
+                        "Documents/Orders/Commands/Other/Ext/CommandModule.bsl",
+                    ),
+                ][..],
+            ),
+            (
+                "HTTPService",
+                "HTTPServices/ПроверкаСвязи.xml",
+                "HTTPService",
+                &[(None, "HTTPServices/ПроверкаСвязи/Ext/Module.bsl")][..],
+            ),
+            (
+                "WebService",
+                "WebServices/ОбменДанными.xml",
+                "WebService",
+                &[(None, "WebServices/ОбменДанными/Ext/Module.bsl")][..],
+            ),
+            (
+                "Bot",
+                "Bots/AllKindsBot.xml",
+                "Bot",
+                &[(None, "Bots/AllKindsBot/Ext/Module.bsl")][..],
+            ),
+            (
+                "WebSocketClient",
+                "WebSocketClients/AllKindsWebSocketClient.xml",
+                "WebSocketClient",
+                &[(
+                    None,
+                    "WebSocketClients/AllKindsWebSocketClient/Ext/Module.bsl",
+                )][..],
+            ),
+        ] {
+            let descriptor = source.join(descriptor);
+            let raw = read_fixture_descriptor(&descriptor);
+            let document = parse_fixture_descriptor(&raw, &descriptor);
+            assert_eq!(document.root_element().attribute("version"), Some(xml));
+            let artifact = fixture_artifact(&document, kind, &descriptor);
+            let name = fixture_properties_name(artifact).expect("native owner Properties.Name");
+            assert_eq!(descriptor.file_stem().unwrap().to_str(), Some(name));
+            assert_eq!(
+                registrations
+                    .iter()
+                    .filter(|(k, n)| k == kind && n == name)
+                    .count(),
+                1,
+                "{xml}: exactly one {kind}.{name} registration",
+            );
+            let owner = format!("main:{kind}.{name}");
+            let commands = if role == "Command" {
+                let commands = native_command_owners(&owner, artifact);
+                assert_eq!(
+                    commands.keys().copied().collect::<BTreeSet<_>>(),
+                    modules
+                        .iter()
+                        .map(|(command, _)| command.unwrap())
+                        .collect::<BTreeSet<_>>(),
+                    "{xml}: exact native command owners for {owner}",
+                );
+                check_native_branch(
+                    &authority,
+                    &read(&authority, &owner),
+                    &format!("{owner}.Command"),
+                    &commands.values().cloned().collect(),
+                );
+                commands
+            } else {
+                BTreeMap::new()
+            };
+            for &(command, relative) in modules {
+                let parent = command.map_or(owner.as_str(), |name| commands[name].as_str());
+                let at = check_registered_module_read(&authority, &profile_fixture, parent, role);
+                let file = source.join(relative);
+                let metadata = fs::metadata(&file).expect("native module resource");
+                assert!(metadata.is_file(), "{xml}: {relative}");
+                assert_eq!(authority.existing_export_path(&at, None).unwrap(), relative);
+                let at_text = at.to_string();
+                let (proof, level) = if kind == "WebSocketClient" {
+                    // The reverse layout is tracked separately in #3256.
+                    (AddressEvidence::Read(&at_text), "read + forward layout")
+                } else {
+                    let placed = finder
+                        .locate_path(
+                            &layout,
+                            relative,
+                            ProviderDeadline::no_deadline(),
+                            &cancellation,
+                        )
+                        .unwrap()
+                        .unwrap_or_else(|| panic!("{xml}: missing reverse layout for {relative}"));
+                    assert_eq!(placed.at(), at_text);
+                    assert_eq!(placed.placed_path(), Some(relative));
+                    (AddressEvidence::RoundTrip(&at_text), "roundtrip")
+                };
+                evidence.record(
+                    line,
+                    parent,
+                    "Module",
+                    Some(role),
+                    &fixture_origin(&file),
+                    proof,
+                );
+                println!(
+                    "{line} {at}: {level}; {relative} ({} bytes)",
+                    metadata.len()
+                );
+            }
+        }
+    }
+    evidence.finish();
+}
+
+fn native_command_owners<'a, 'input: 'a>(
+    owner: &str,
+    descriptor: roxmltree::Node<'a, 'input>,
+) -> BTreeMap<&'a str, String> {
+    let collection = QualifiedAddress::parse(&format!("{owner}.Command")).unwrap();
+    let mut result = BTreeMap::new();
+    let mut ids = BTreeSet::new();
+    for command in native_child_objects(descriptor)
+        .filter(|node| node.has_tag_name((MD_CLASSES_NS, "Command")))
+    {
+        let name = fixture_properties_name(command).expect("native command Properties.Name");
+        let id = uuid::Uuid::parse_str(command.attribute("uuid").unwrap()).unwrap();
+        assert!(ids.insert(id), "{owner}: duplicate native Command UUID");
+        let at = collection.member(name).unwrap().to_string();
+        assert!(
+            result.insert(name, at).is_none(),
+            "{owner}: duplicate Command {name}"
+        );
+    }
+    result
+}
+
+fn check_registered_module_read(
+    authority: &LogicalViewReadAuthority<'_>,
+    profile_fixture: &ModuleCapabilityFixture,
+    owner: &str,
+    role: &str,
+) -> QualifiedAddress {
+    let owner_address = QualifiedAddress::parse(owner).unwrap();
+    let branch = QualifiedAddress::parse(&format!("{owner}.Module")).unwrap();
+    let mut expected = BTreeSet::new();
+    for case in profile_fixture
+        .module_capabilities
+        .iter()
+        .filter(|case| case.exists)
+    {
+        let at = QualifiedAddress::parse(&case.at).unwrap();
+        let (module, case_owner) = at.segments().split_last().unwrap();
+        if at.source_set() == branch.source_set()
+            && module.kind() == NodeKind::Module
+            && case_owner
+                .iter()
+                .map(|part| part.kind())
+                .eq(owner_address.segments().iter().map(|part| part.kind()))
+        {
+            let expected_role = case.role.as_deref().expect("recorded module role");
+            assert_eq!(module.name(), Some(expected_role));
+            expected.insert(branch.member(expected_role).unwrap().to_string());
+        }
+    }
+    let at = branch.member(role).unwrap();
+    assert!(
+        expected.contains(&at.to_string()),
+        "profile fixture does not admit {at}"
+    );
+    check_native_branch(
+        authority,
+        &read(authority, owner),
+        &branch.to_string(),
+        &expected,
+    );
+    assert_eq!(read(authority, &at.to_string())["kind"], "Module", "{at}");
+    at
+}
+
+/// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
 #[test]
 fn native_websocket_modules_have_a_readable_address_and_forward_layout() {
+    let profile_fixture = module_capability_fixture();
     for (xml, line) in [
         ("2.20", PlatformLine::new(8, 3, 27)),
         ("2.21", PlatformLine::new(8, 5, 1)),
@@ -1862,15 +2083,9 @@ fn native_websocket_modules_have_a_readable_address_and_forward_layout() {
         let cancellation = CancellationToken::new();
         let authority = native_authority(&cancellation, &source, profile);
         let owner = "main:WebSocketClient.AllKindsWebSocketClient";
-        let branch = format!("{owner}.Module");
-        assert!(addresses(&read(&authority, owner), "branches").contains(&branch));
-        let items = addresses(&read(&authority, &branch), "items");
-        let at = format!("{branch}.WebSocketClient");
-        assert!(items.contains(&at));
-        read(&authority, &at);
-        let path = authority
-            .existing_export_path(&QualifiedAddress::parse(&at).unwrap(), None)
-            .unwrap();
+        let at =
+            check_registered_module_read(&authority, &profile_fixture, owner, "WebSocketClient");
+        let path = authority.existing_export_path(&at, None).unwrap();
         assert_eq!(
             path,
             "WebSocketClients/AllKindsWebSocketClient/Ext/Module.bsl"

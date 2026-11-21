@@ -24,6 +24,7 @@ NATIVE_SHARDS = frozenset({
     "native_recalculation_module_address_table_matches_registered_owner",
     "native_metadata_address_table_matches_declared_and_observed_child_branches",
     "native_form_and_template_addresses_follow_text_registrations",
+    "native_registered_modules_match_profile_and_physical_paths",
     EXTENSION_LANGUAGE_SHARD,
     EXTERNAL_ROOT_SHARD,
 })
@@ -31,7 +32,8 @@ DAEMON_SHARD = "medium_published_document_and_bsl_branches_have_canonical_addres
 NATIVE_SCOPE = (
     "Configuration source sets and native Language registrations in extension source sets "
     "across three platform lines, plus native external processor and report root descriptors "
-    "in the unica-coder address_coverage tests. For these external root witnesses, key.line "
+    "in the unica-coder address_coverage tests. Module role and path checks cover roles with "
+    "physical BSL witnesses in native configuration fixtures. For the external root witnesses, key.line "
     "records the native XML export line. Read checks use the actual workspace profile selector "
     "and establish neither write support nor a match with the runtime profile."
 )
