@@ -6,6 +6,7 @@ use std::ffi::{OsStr, OsString};
 use std::io::{self, Seek, SeekFrom, Write};
 use std::path::Path;
 
+pub use crate::platform::filesystem::retained_tree_removal::StateTreeRemovalError;
 pub use crate::platform::filesystem::FileIdentity;
 pub use physical::{PublicationCertainty, PublicationFailure, PublishMode};
 
@@ -54,6 +55,16 @@ impl StateDirectory {
         self.retained
             .create_directory_child(name)
             .map(|retained| Self { retained })
+    }
+
+    /// Removes a retained child through owner-only quarantine. A failure
+    /// reports a surviving path only when that directory's identity is verified.
+    pub fn remove_retained_directory_tree_child(
+        &self,
+        name: &OsStr,
+        expected: &Self,
+    ) -> Result<(), StateTreeRemovalError> {
+        filesystem::retained_tree_removal::remove(&self.retained, name, &expected.retained)
     }
 
     pub fn retain_regular_child(&self, name: &OsStr) -> io::Result<StateFile> {

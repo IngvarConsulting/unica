@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 pub(crate) mod execution_store;
+pub(crate) mod retained_tree_removal;
 
 #[cfg(target_os = "macos")]
 mod macos_acl;
@@ -932,7 +933,7 @@ impl RetainedDirectoryCapability {
         expected: &Self,
         recovery_name: &std::ffi::OsStr,
     ) -> Result<Self, RetainedDirectoryPublicationError> {
-        self.move_directory_child_no_replace_observed(source_name, expected, recovery_name)
+        self.move_directory_child_no_replace_observed(source_name, expected, self, recovery_name)
     }
 
     /// Restores an exact displaced child through the retained parent without
@@ -949,7 +950,12 @@ impl RetainedDirectoryCapability {
                 "source-root directory is not a displaced child",
             ))
         })?;
-        self.move_directory_child_no_replace_observed(&parent.name, displaced, destination_name)
+        self.move_directory_child_no_replace_observed(
+            &parent.name,
+            displaced,
+            self,
+            destination_name,
+        )
     }
 
     fn rebound_directory_child(&self, retained: &Self, name: &std::ffi::OsStr) -> Self {
@@ -967,6 +973,7 @@ impl RetainedDirectoryCapability {
         &self,
         source_name: &std::ffi::OsStr,
         expected: &Self,
+        destination: &Self,
         destination_name: &std::ffi::OsStr,
     ) -> Result<Self, RetainedDirectoryPublicationError> {
         let before = RetainedDirectoryPublicationError::without_artifact;
@@ -982,10 +989,12 @@ impl RetainedDirectoryCapability {
                 "retained directory belongs to another parent or child name",
             )));
         }
-        if self
-            .child_name_comparator()
-            .and_then(|comparator| comparator.names_equivalent(source_name, destination_name))
-            .map_err(before)?
+        let same_parent = self.identity() == destination.identity();
+        if same_parent
+            && self
+                .child_name_comparator()
+                .and_then(|comparator| comparator.names_equivalent(source_name, destination_name))
+                .map_err(before)?
         {
             return Err(before(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -997,14 +1006,14 @@ impl RetainedDirectoryCapability {
             source_name,
             expected.identity(),
             &expected.retained.directory,
-            &self.retained.directory,
+            &destination.retained.directory,
             destination_name,
         )
         .map_err(before)?;
 
         // Keep the original descriptor even when observation or a later sync
         // fails. Reopening the destination is evidence, not new authority.
-        let rebound = self.rebound_directory_child(expected, destination_name);
+        let rebound = destination.rebound_directory_child(expected, destination_name);
         let after = |error, artifact: Self, name: &std::ffi::OsStr| {
             RetainedDirectoryPublicationError::with_artifact(
                 error,
@@ -1017,13 +1026,14 @@ impl RetainedDirectoryCapability {
         if let Err(error) = run_after_retained_directory_move_hook() {
             return Err(after(error, rebound, destination_name));
         }
-        let observed = self
+        let observed = destination
             .retain_directory_child(destination_name)
             .map_err(|error| after(error, rebound.clone(), destination_name))?;
         if observed.identity() != expected.identity() {
-            return Err(match self.restore_unexpected_directory_move(
+            return Err(match destination.restore_unexpected_directory_move(
                 destination_name,
                 &observed,
+                self,
                 source_name,
             ) {
                 Ok(()) => before(io::Error::other(
@@ -1045,6 +1055,13 @@ impl RetainedDirectoryCapability {
         }
         drop(observed);
         sync_directory(&self.retained.directory)
+            .and_then(|()| {
+                if same_parent {
+                    Ok(())
+                } else {
+                    sync_directory(&destination.retained.directory)
+                }
+            })
             .and_then(|()| rebound.validate_named_identity())
             .map_err(|error| after(error, rebound.clone(), destination_name))?;
         Ok(rebound)
@@ -1057,6 +1074,7 @@ impl RetainedDirectoryCapability {
         &self,
         moved_name: &std::ffi::OsStr,
         moved: &Self,
+        original_parent: &Self,
         source_name: &std::ffi::OsStr,
     ) -> Result<(), (io::Error, Self, std::ffi::OsString)> {
         rename_identity_bound_directory_child_no_replace(
@@ -1064,12 +1082,12 @@ impl RetainedDirectoryCapability {
             moved_name,
             moved.identity(),
             &moved.retained.directory,
-            &self.retained.directory,
+            &original_parent.retained.directory,
             source_name,
         )
         .map_err(|error| (error, moved.clone(), moved_name.to_os_string()))?;
-        let restored = self.rebound_directory_child(moved, source_name);
-        let observed = self
+        let restored = original_parent.rebound_directory_child(moved, source_name);
+        let observed = original_parent
             .retain_directory_child(source_name)
             .map_err(|error| (error, restored.clone(), source_name.to_os_string()))?;
         if observed.identity() != moved.identity() {
@@ -1082,6 +1100,13 @@ impl RetainedDirectoryCapability {
             ));
         }
         sync_directory(&self.retained.directory)
+            .and_then(|()| {
+                if self.identity() == original_parent.identity() {
+                    Ok(())
+                } else {
+                    sync_directory(&original_parent.retained.directory)
+                }
+            })
             .map_err(|error| (error, restored, source_name.to_os_string()))
     }
 

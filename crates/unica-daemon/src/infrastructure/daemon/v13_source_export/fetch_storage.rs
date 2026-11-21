@@ -7,8 +7,8 @@ use std::time::{Duration, SystemTime};
 use unica_work_control::cancellation::CancellationToken;
 use unica_workspace::runner_lock::RunnerLockFailure;
 use unica_workspace::state_fs::{
-    is_file_lock_contended, open_state_ownership_lock, remove_state_directory_tree_child,
-    StateDirectory, StateFile, StateHandle,
+    is_file_lock_contended, open_state_ownership_lock, StateDirectory, StateFile, StateHandle,
+    StateTreeRemovalError,
 };
 
 pub(super) struct SnapshotStorage {
@@ -155,32 +155,21 @@ impl SnapshotStorage {
         Ok(snapshots)
     }
 
-    pub(super) fn remove(&self, snapshot: &OwnedSnapshot) -> io::Result<()> {
+    pub(super) fn remove(&self, snapshot: &OwnedSnapshot) -> Result<(), StateTreeRemovalError> {
         snapshot.ownership.validate_named_identity()?;
         self.remove_stage(&snapshot.id, &snapshot.directory)?;
-        snapshot.ownership.remove_named_identity_relative()
+        Ok(snapshot.ownership.remove_named_identity_relative()?)
     }
 
     /// Только созданный либо подтверждённый каталог. Родитель удерживается;
     /// удаление не идёт по подставленным путям рабочей копии.
-    pub(super) fn remove_stage(&self, id: &str, stage: &StateDirectory) -> io::Result<()> {
-        let parent = self.directory.open_retained_handle()?;
-        let mut retries = 9;
-        loop {
-            match stage.validate_named_identity() {
-                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-                result => result?,
-            }
-            match remove_state_directory_tree_child(&parent, OsStr::new(id)) {
-                Ok(()) => return Ok(()),
-                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-                Err(error) if retries == 0 => return Err(error),
-                Err(_) => {
-                    retries -= 1;
-                    std::thread::sleep(Duration::from_millis(500));
-                }
-            }
-        }
+    pub(super) fn remove_stage(
+        &self,
+        id: &str,
+        stage: &StateDirectory,
+    ) -> Result<(), StateTreeRemovalError> {
+        self.directory
+            .remove_retained_directory_tree_child(OsStr::new(id), stage)
     }
 }
 

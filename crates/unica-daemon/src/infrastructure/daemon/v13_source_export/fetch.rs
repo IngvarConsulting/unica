@@ -16,7 +16,7 @@ use unica_process::STREAM_LINE_TOO_LONG_ERROR;
 use unica_workspace::path_policy::WorkspacePathPolicy;
 use unica_workspace::paths::{metadata_is_link_or_reparse_point, GENERATED_DIR_NAME};
 use unica_workspace::runner_lock::RunnerLockFailure;
-use unica_workspace::state_fs::{DirectoryCursor, StateDirectory};
+use unica_workspace::state_fs::{DirectoryCursor, StateDirectory, StateTreeRemovalError};
 
 #[path = "fetch_storage.rs"]
 mod storage;
@@ -307,13 +307,19 @@ pub(super) fn drop_snapshot(
                 .push(json!({"path": snapshot, "kind": "deleted"}));
             result
         }
-        Err(error) => reject_at(
-            FETCH_DROP,
-            RefusalCode::InvalidState,
-            format!(
-                "fetch.drop could not delete the snapshot {snapshot} ({error}); repeat when no program holds its files"
-            ),
-        ),
+        Err(error) => {
+            let mut result = reject_at(
+                FETCH_DROP,
+                RefusalCode::InvalidState,
+                format!("fetch.drop could not finish deleting the snapshot {snapshot} ({error})"),
+            );
+            result.warnings.push(snapshot_cleanup_warning(
+                &root,
+                "fetch.drop could not clean up the snapshot",
+                &error,
+            ));
+            result
+        }
     }
 }
 
@@ -453,14 +459,11 @@ pub(super) fn execute_with_tool(
         Err(mut result) => {
             // Отказ, отмена или неподтверждённый итог: снимка нет.
             if let Err(error) = storage.remove_stage(&id, &stage) {
-                result.warnings.push(json!({
-                    "code": SNAPSHOT_KEPT_WARNING,
-                    "message": format!(
-                        "fetch could not remove its unfinished snapshot {} ({error}); delete the directory when no 1C process holds it",
-                        relative(stage.path(), &root)
-                    ),
-                    "path": relative(stage.path(), &root),
-                }));
+                result.warnings.push(snapshot_cleanup_warning(
+                    &root,
+                    "fetch could not remove its unfinished snapshot",
+                    &error,
+                ));
             }
             return result;
         }
@@ -847,24 +850,31 @@ fn prune_snapshots(
             .cmp(&left.0)
             .then_with(|| left.1.id.cmp(&right.1.id))
     });
-    let snapshots = root.join(SNAPSHOT_ROOT.iter().collect::<PathBuf>());
     Ok(existing
         .into_iter()
         .skip(keep)
         .filter_map(|(_, snapshot)| {
             storage.remove(&snapshot).err().map(|error| {
-                let path = snapshots.join(snapshot.id);
-                json!({
-                    "code": SNAPSHOT_KEPT_WARNING,
-                    "message": format!(
-                        "fetch could not remove the older snapshot {} ({error}); delete the directory when no program holds it",
-                        relative(&path, root)
-                    ),
-                    "path": relative(&path, root),
-                })
+                snapshot_cleanup_warning(root, "fetch could not remove the older snapshot", &error)
             })
         })
         .collect())
+}
+
+fn snapshot_cleanup_warning(root: &Path, context: &str, error: &StateTreeRemovalError) -> Value {
+    if let Some(path) = error.preserved_path() {
+        let path = relative(path, root);
+        json!({
+            "code": SNAPSHOT_KEPT_WARNING,
+            "message": format!("{context} at {path} ({error}); delete the directory when no program holds it"),
+            "path": path,
+        })
+    } else {
+        json!({
+            "code": SNAPSHOT_KEPT_WARNING,
+            "message": format!("{context} ({error}); the remaining directory could not be located"),
+        })
+    }
 }
 
 fn fetch_arguments(prepared: &PreparedSourceExport) -> Value {

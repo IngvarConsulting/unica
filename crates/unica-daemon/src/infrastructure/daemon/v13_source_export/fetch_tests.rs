@@ -134,10 +134,10 @@ impl ProcessRunner for ProtocolRunner {
                         .unwrap(),
                 );
             }
-            #[cfg(not(windows))]
+            #[cfg(unix)]
             {
-                fs::remove_dir(&stage).unwrap();
-                fs::write(&stage, "unexpected file in place of the stage").unwrap();
+                std::os::unix::fs::symlink("missing-target", stage.join("unexpected-link"))
+                    .unwrap();
             }
         }
         let refused_before_ready = matches!(
@@ -249,7 +249,9 @@ fn snapshots(root: &Path) -> Vec<String> {
         .map(|entries| {
             entries
                 .map(Result::unwrap)
-                .filter(|entry| entry.file_type().unwrap().is_dir())
+                .filter(|entry| {
+                    entry.file_type().unwrap().is_dir() && entry.file_name() != ".fetch-cleanup"
+                })
                 .map(|entry| entry.file_name().to_string_lossy().into_owned())
                 .collect::<Vec<_>>()
         })
