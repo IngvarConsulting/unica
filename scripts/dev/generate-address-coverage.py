@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the independently witnessed native slice of the #484 address map."""
+"""Generate the independently witnessed slice of the #484 address map."""
 
 from __future__ import annotations
 
@@ -23,10 +23,10 @@ NATIVE_SHARDS = frozenset({
     "native_metadata_address_table_matches_declared_and_observed_child_branches",
     "native_form_and_template_addresses_follow_text_registrations",
 })
-NATIVE_SCOPE = (
-    "Configuration source sets in the native address_coverage tests of unica-coder. "
-    "This slice is not the complete #484 map or the other #2958 evidence columns."
-)
+DAEMON_SHARD = "medium_published_document_and_bsl_branches_have_canonical_addresses"
+NATIVE_SCOPE = "Configuration source sets in the native address_coverage tests of unica-coder."
+DAEMON_SCOPE = "Read witnesses from the selected document and BSL coverage test of unica-daemon."
+SCOPE_BOUNDARY = "This slice is not the complete #484 map or the other #2958 evidence columns."
 
 
 def exact_fields(value: object, fields: set[str], label: str) -> None:
@@ -69,7 +69,7 @@ def validate_record(record: object, test_case: str) -> None:
     exact_fields(key, {"line", "source_kind", "owner_shape", "branch", "role"}, "key")
     version = line_number(key["line"])
     if key["source_kind"] != "configuration":
-        raise ValueError("this native shard expects the configuration source-set kind")
+        raise ValueError("this evidence slice expects the configuration source-set kind")
     token(key["branch"], "branch kind")
     if key["role"] is not None:
         token(key["role"], "branch role")
@@ -127,21 +127,21 @@ def canonical_json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
-def merge_native_shards(directory: Path) -> list[dict]:
-    expected = {f"{test_case}.jsonl" for test_case in NATIVE_SHARDS}
+def merge_shards(directory: Path, required_shards: frozenset[str]) -> list[dict]:
+    expected = {f"{test_case}.jsonl" for test_case in required_shards}
     actual = {path.name for path in directory.iterdir()}
     if actual != expected:
-        raise ValueError(f"native shards missing={sorted(expected - actual)}, extra={sorted(actual - expected)}")
+        raise ValueError(f"evidence shards missing={sorted(expected - actual)}, extra={sorted(actual - expected)}")
 
     groups = {}
     seen = set()
     for name in sorted(expected):
         shard = directory / name
         if not shard.is_file() or shard.is_symlink():
-            raise ValueError(f"native shard is not a regular file: {name}")
+            raise ValueError(f"evidence shard is not a regular file: {name}")
         lines = shard.read_text(encoding="utf-8").splitlines()
         if not lines:
-            raise ValueError(f"empty native shard: {name}")
+            raise ValueError(f"empty evidence shard: {name}")
         for index, line in enumerate(lines, 1):
             try:
                 record = json.loads(line, object_pairs_hook=json_object)
@@ -173,7 +173,7 @@ def render_markdown(report: dict) -> str:
         return value.replace("|", r"\|")
 
     rows = [
-        "# Native address coverage",
+        "# Address coverage",
         "",
         f"Revision `{report['revision']}` ({'dirty' if report['dirty'] else 'clean'} checkout).",
         report["scope"],
@@ -206,30 +206,39 @@ def git_state() -> tuple[str, bytes]:
     return revision.decode("ascii").strip(), status
 
 
-def generate_report() -> dict:
+def generate_report(native_only: bool) -> dict:
     revision, status = git_state()
+    cases = [("unica-coder", "address_coverage")]
+    required_shards = NATIVE_SHARDS
+    scope = NATIVE_SCOPE
+    if not native_only:
+        cases.append(("unica-daemon", DAEMON_SHARD))
+        required_shards |= {DAEMON_SHARD}
+        scope += f" {DAEMON_SCOPE}"
     with tempfile.TemporaryDirectory(prefix="unica-address-coverage-") as scratch:
         env = {**os.environ, EMITTER_ENV: scratch}
-        subprocess.run(
-            ["cargo", "test", "--locked", "-p", "unica-coder", "--lib", "address_coverage"],
-            cwd=REPO,
-            env=env,
-            stdout=sys.stderr,
-            check=True,
-        )
-        rows = merge_native_shards(Path(scratch))
+        for package, test_filter in cases:
+            subprocess.run(
+                ["cargo", "test", "--locked", "-p", package, "--lib", test_filter],
+                cwd=REPO,
+                env=env,
+                stdout=sys.stderr,
+                check=True,
+            )
+        rows = merge_shards(Path(scratch), required_shards)
     if git_state() != (revision, status):
         raise ValueError("Git revision or worktree status changed during the address coverage run")
     return {"schema_version": SCHEMA_VERSION, "revision": revision, "dirty": bool(status),
-            "scope": NATIVE_SCOPE, "rows": rows}
+            "scope": f"{scope} {SCOPE_BOUNDARY}", "rows": rows}
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--markdown", action="store_true", help="render the report as a Markdown table")
+    parser.add_argument("--native-only", action="store_true", help="run only the native unica-coder tests")
     args = parser.parse_args()
     try:
-        report = generate_report()
+        report = generate_report(args.native_only)
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"{parser.prog}: {error}\n")
     output = render_markdown(report) if args.markdown else json.dumps(

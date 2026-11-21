@@ -1,6 +1,95 @@
 //! Собираем таблицу из ветвей канонического view на существующих фикстурах.
 use super::*;
 use crate::infrastructure::daemon::v13_call_graph::call_graph_support;
+use unica_source_contract::format_identity::export_format_line;
+
+const EVIDENCE_TEST_CASE: &str =
+    "medium_published_document_and_bsl_branches_have_canonical_addresses";
+
+struct EvidenceRows {
+    directory: Option<PathBuf>,
+    lines: Vec<String>,
+}
+
+impl EvidenceRows {
+    fn new() -> Self {
+        Self {
+            directory: std::env::var_os("UNICA_484_ADDRESS_JSONL_DIR").map(PathBuf::from),
+            lines: Vec::new(),
+        }
+    }
+
+    fn record(&mut self, fixture: &Fixture, origin: (&str, &str), at: &str) {
+        if self.directory.is_none() {
+            return;
+        }
+        let address = parsed(at);
+        let (branch, owner_segments) = address.segments().split_last().unwrap();
+        assert!(branch.name().is_none(), "{at}: expected a branch address");
+        let owner = address.prefix(owner_segments.len());
+        let (alias, source_kind, root) = source_sets(&fixture.workspace)
+            .into_iter()
+            .find(|(name, _, _)| name == owner.source_set())
+            .expect("fixture source set for evidence");
+        assert_eq!(source_kind, SourceSetKind::Configuration, "{alias}");
+        let config = std::fs::read_to_string(root.join("Configuration.xml")).unwrap();
+        let config = roxmltree::Document::parse(config.trim_start_matches('\u{feff}')).unwrap();
+        let format = config.root_element().attribute("version").unwrap();
+        let line = export_format_line(format).expect("fixture export format");
+        let source = root.strip_prefix(&fixture.workspace).unwrap();
+        let origin_path = source.join(origin.1).to_string_lossy().replace('\\', "/");
+        let origin = format!("tests/fixtures/acceptance/{}/{origin_path}", origin.0);
+        let owner_shape: Vec<_> = owner_segments
+            .iter()
+            .map(|segment| {
+                json!({
+                    "kind": segment.kind().as_str(),
+                    "named": segment.name().is_some(),
+                    "role": (segment.kind() == NodeKind::Interface)
+                        .then_some(segment.name())
+                        .flatten(),
+                })
+            })
+            .collect();
+        self.lines.push(
+            json!({
+                "schema_version": 1,
+                "record_type": "evidence",
+                "key": {
+                    "line": line.to_string(),
+                    "source_kind": source_kind,
+                    "owner_shape": owner_shape,
+                    "branch": branch.kind().as_str(),
+                    "role": null,
+                },
+                "witness": {
+                    "owner": owner.to_string(),
+                    "at": at,
+                    "level": "read",
+                    "origin": origin,
+                    "test_case": EVIDENCE_TEST_CASE,
+                    "reason": null,
+                },
+            })
+            .to_string(),
+        );
+    }
+
+    fn finish(mut self) {
+        if let Some(directory) = self.directory {
+            use std::io::Write;
+            self.lines.sort_unstable();
+            let output = directory.join(format!("{EVIDENCE_TEST_CASE}.jsonl"));
+            let mut file = std::fs::File::create_new(&output)
+                .unwrap_or_else(|error| panic!("address evidence {}: {error}", output.display()));
+            for line in self.lines {
+                writeln!(file, "{line}").unwrap_or_else(|error| {
+                    panic!("address evidence {}: {error}", output.display())
+                });
+            }
+        }
+    }
+}
 
 fn read_view(
     runtime: &V5CanonicalInvocationRuntime,
@@ -246,11 +335,19 @@ fn child_name<'a>(parent: roxmltree::Node<'a, '_>, namespace: &str) -> &'a str {
         .expect("fixture node has no name")
 }
 
-fn check_role_xml(runtime: &V5CanonicalInvocationRuntime, fixture: &Fixture) {
+fn check_role_xml(
+    runtime: &V5CanonicalInvocationRuntime,
+    fixture: &Fixture,
+    evidence: &mut EvidenceRows,
+) {
     const NS: &str = "http://v8.1c.ru/8.2/roles";
+    const ORIGIN: (&str, &str) = (
+        "workspace-role-comment-subsystem-help",
+        "Roles/Reader/Ext/Rights.xml",
+    );
     let owner = "main:Role.Reader";
     let branch = "main:Role.Reader.Right";
-    let raw = fixture_xml(fixture, owner, "Roles/Reader/Ext/Rights.xml");
+    let raw = fixture_xml(fixture, owner, ORIGIN.1);
     let document = roxmltree::Document::parse(raw.trim_start_matches('\u{feff}')).unwrap();
     let root = document.root_element();
     assert!(root.has_tag_name((NS, "Rights")));
@@ -287,20 +384,30 @@ fn check_role_xml(runtime: &V5CanonicalInvocationRuntime, fixture: &Fixture) {
         branch,
         restrictions.keys().map(String::as_str),
     );
+    evidence.record(fixture, ORIGIN, branch);
     for (name, rights) in restrictions {
         let view = &objects[&name];
         let at = format!("{}.RLS", view["at"].as_str().unwrap());
         check_fixture_branches(view, [(&at, FixtureBranch::from_count(rights.len()))]);
         if !rights.is_empty() {
             check_fixture_members(runtime, fixture, &at, rights);
+            evidence.record(fixture, ORIGIN, &at);
         }
     }
 }
 
-fn check_xdto_xml(runtime: &V5CanonicalInvocationRuntime, fixture: &Fixture) {
+fn check_xdto_xml(
+    runtime: &V5CanonicalInvocationRuntime,
+    fixture: &Fixture,
+    evidence: &mut EvidenceRows,
+) {
     const NS: &str = "http://v8.1c.ru/8.1/xdto";
+    const ORIGIN: (&str, &str) = (
+        "workspace-xdto-anonymous",
+        "XDTOPackages/ПримерФормата/Ext/Package.bin",
+    );
     let owner = "main:XDTOPackage.ПримерФормата";
-    let raw = fixture_xml(fixture, owner, "XDTOPackages/ПримерФормата/Ext/Package.bin");
+    let raw = fixture_xml(fixture, owner, ORIGIN.1);
     let document = roxmltree::Document::parse(raw.trim_start_matches('\u{feff}')).unwrap();
     let root = document.root_element();
     assert!(root.has_tag_name((NS, "package")));
@@ -330,13 +437,16 @@ fn check_xdto_xml(runtime: &V5CanonicalInvocationRuntime, fixture: &Fixture) {
         ],
     );
     let (view, _) = read_view(runtime, &fixture.workspace, &namespace_at);
+    assert_eq!(view["kind"], "Namespace");
     assert_eq!(view["props"]["namespace"], namespace);
+    evidence.record(fixture, ORIGIN, &namespace_at);
     let nodes = check_fixture_members(
         runtime,
         fixture,
         &types_at,
         types.iter().map(|node| node.attribute("name").unwrap()),
     );
+    evidence.record(fixture, ORIGIN, &types_at);
     let mut counts = BTreeSet::new();
     for ty in types {
         let view = &nodes[ty.attribute("name").unwrap()];
@@ -350,21 +460,26 @@ fn check_xdto_xml(runtime: &V5CanonicalInvocationRuntime, fixture: &Fixture) {
         check_fixture_branches(view, [(&at, FixtureBranch::from_count(properties.len()))]);
         if !properties.is_empty() {
             check_fixture_members(runtime, fixture, &at, properties);
+            evidence.record(fixture, ORIGIN, &at);
         }
     }
     assert!(counts.contains(&0) && counts.iter().any(|count| *count > 0));
 }
 
-fn check_mxl_xml(runtime: &V5CanonicalInvocationRuntime, fixture: &Fixture) {
+fn check_mxl_xml(
+    runtime: &V5CanonicalInvocationRuntime,
+    fixture: &Fixture,
+    evidence: &mut EvidenceRows,
+) {
     const NS: &str = "http://v8.1c.ru/8.2/data/spreadsheet";
     const XSI: &str = "http://www.w3.org/2001/XMLSchema-instance";
-    let owner = "cf:Report.F06Report.Template.F06Template";
-    let branch = "cf:Report.F06Report.Template.F06Template.Area";
-    let raw = fixture_xml(
-        fixture,
-        owner,
+    const ORIGIN: (&str, &str) = (
+        "workspace-mxl",
         "Reports/F06Report/Templates/F06Template/Ext/Template.xml",
     );
+    let owner = "cf:Report.F06Report.Template.F06Template";
+    let branch = "cf:Report.F06Report.Template.F06Template.Area";
+    let raw = fixture_xml(fixture, owner, ORIGIN.1);
     let document = roxmltree::Document::parse(raw.trim_start_matches('\u{feff}')).unwrap();
     let root = document.root_element();
     assert!(root.has_tag_name((NS, "document")));
@@ -380,6 +495,7 @@ fn check_mxl_xml(runtime: &V5CanonicalInvocationRuntime, fixture: &Fixture) {
     let (view, _) = read_view(runtime, &fixture.workspace, owner);
     check_fixture_branches(&view, [(branch, FixtureBranch::Present(names.len()))]);
     check_fixture_members(runtime, fixture, branch, names);
+    evidence.record(fixture, ORIGIN, branch);
 }
 
 fn check_resource(
@@ -417,6 +533,7 @@ fn check_resource(
 #[test]
 fn medium_published_document_and_bsl_branches_have_canonical_addresses() {
     let mut table = BTreeSet::new();
+    let mut evidence = EvidenceRows::new();
     for (name, addresses) in [
         (
             "workspace-form-item-bindings",
@@ -485,9 +602,11 @@ fn medium_published_document_and_bsl_branches_have_canonical_addresses() {
             table.extend(check_branches(&runtime, &fixture.workspace, at));
         }
         match name {
-            "workspace-role-comment-subsystem-help" => check_role_xml(&runtime, &fixture),
-            "workspace-xdto-anonymous" => check_xdto_xml(&runtime, &fixture),
-            "workspace-mxl" => check_mxl_xml(&runtime, &fixture),
+            "workspace-role-comment-subsystem-help" => {
+                check_role_xml(&runtime, &fixture, &mut evidence)
+            }
+            "workspace-xdto-anonymous" => check_xdto_xml(&runtime, &fixture, &mut evidence),
+            "workspace-mxl" => check_mxl_xml(&runtime, &fixture, &mut evidence),
             _ => {}
         }
         if name == "workspace-command-groups" {
@@ -537,4 +656,5 @@ fn medium_published_document_and_bsl_branches_have_canonical_addresses() {
     for (kind, branch, at, evidence) in table {
         println!("| {kind} | {branch} | {at} | {evidence} |");
     }
+    evidence.finish();
 }
