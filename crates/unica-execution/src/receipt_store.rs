@@ -1219,10 +1219,17 @@ struct GenerationState {
 
 type RecoveryStagingEntry = (OsString, FileIdentity);
 
+struct StandaloneReceiptCopy {
+    digest: ReceiptKeyDigest,
+    identity: FileIdentity,
+    encoded_digest: [u8; 32],
+}
+
 struct RecoveredCatalog {
     catalog: ReceiptCatalog,
     maximum_mutation_sequence: u64,
     staging: Vec<RecoveryStagingEntry>,
+    standalone_copies: Vec<StandaloneReceiptCopy>,
     expired_deletions: Vec<RecoveryStagingEntry>,
     expired_deletion_mutation_sequence: Option<u64>,
     acknowledgement_recovery: Option<AcknowledgementRecovery>,
@@ -1467,6 +1474,7 @@ impl ReceiptLedgerStore {
                 catalog: ReceiptCatalog::default(),
                 maximum_mutation_sequence: 0,
                 staging: Vec::new(),
+                standalone_copies: Vec::new(),
                 expired_deletions: Vec::new(),
                 expired_deletion_mutation_sequence: None,
                 acknowledgement_recovery: None,
@@ -1559,6 +1567,11 @@ impl ReceiptLedgerStore {
             ));
         }
         check_optional_deadline(deadline)?;
+        store.remove_standalone_copies(
+            &recovered.catalog,
+            &recovered.standalone_copies,
+            deadline,
+        )?;
         store.remove_active_staging(recovered.staging, deadline)?;
         store.remove_generation_staging(generation_staging, deadline)?;
         if persisted_generation < recovered.maximum_mutation_sequence {
@@ -2345,6 +2358,7 @@ impl ReceiptLedgerStore {
             rows.push(ReceiptBatchRow { record, encoded });
         }
         validate_catalog_replace_batch(&catalog, &replacements)?;
+        self.checkpoint_standalone_reservations(&mut catalog, &replacements, deadline)?;
         self.publish_record_batch(&mut catalog, &rows, generation, deadline, move |catalog| {
             for (_, replacement) in replacements {
                 commit_catalog_replace(catalog, replacement);
@@ -6239,6 +6253,7 @@ impl ReceiptLedgerStore {
         let mut recovered_invocations = HashMap::new();
         let mut recovered_tasks = HashMap::new();
         let mut temporary_entries = Vec::new();
+        let mut standalone_copies = Vec::new();
         let mut expired_deletions = Vec::new();
         let mut expired_deletion_mutation_sequence = None;
         let mut acknowledgement_recovery = None;
@@ -6346,7 +6361,12 @@ impl ReceiptLedgerStore {
             check_optional_deadline(deadline)?;
             if let Some(previous) = catalog.records.get(&digest).cloned() {
                 if catalog.batch_backing.contains_key(&digest) && previous == entry {
-                    catalog.batch_backing.remove(&digest);
+                    let bytes = read_active_record_bytes_from_retained(&mut retained)?;
+                    standalone_copies.push(StandaloneReceiptCopy {
+                        digest,
+                        identity,
+                        encoded_digest: Sha256::digest(&bytes).into(),
+                    });
                     continue;
                 }
                 let compact_tombstone_successor = matches!(
@@ -6464,6 +6484,7 @@ impl ReceiptLedgerStore {
             catalog,
             maximum_mutation_sequence,
             staging: temporary_entries,
+            standalone_copies,
             expired_deletions,
             expired_deletion_mutation_sequence,
             acknowledgement_recovery,
@@ -6685,6 +6706,130 @@ impl ReceiptLedgerStore {
         self.verify_named_authority()?;
         remove_state_regular_child(directory, name, expected_identity, &retained)
             .map_err(|error| storage_error("remove validated receipt recovery entry", error))
+    }
+
+    // Preserve the old logical rows in a durable batch before publishing their
+    // terminal successors. Recovery can normalize equal copies after any crash;
+    // it never needs to accept an unproven standalone predecessor.
+    fn checkpoint_standalone_reservations(
+        &self,
+        catalog: &mut ReceiptCatalog,
+        replacements: &[(CatalogEntry, CatalogEntry)],
+        deadline: OperationDeadline,
+    ) -> Result<(), ReceiptLedgerError> {
+        let mut rows = Vec::new();
+        let mut copies = Vec::new();
+        for (expected, _) in replacements {
+            let digest = &expected.record.key_digest;
+            if catalog.batch_backing.contains_key(digest) {
+                continue;
+            }
+            let name = format!("{}.json", digest.as_str());
+            let mut retained = open_state_regular_child(&self.active_file, OsStr::new(&name))
+                .map_err(|error| storage_error("open standalone reservation checkpoint", error))?;
+            verify_state_owner_only(&retained)
+                .map_err(|error| storage_error("verify standalone reservation ownership", error))?;
+            let identity = state_file_identity(&retained)
+                .map_err(|error| storage_error("identify standalone reservation", error))?;
+            let actual = read_active_record_from_retained(&mut retained, digest)?;
+            if actual != *expected {
+                return latch_catalog_error(
+                    catalog,
+                    ReceiptLedgerError::Corrupt("standalone reservation changed before checkpoint"),
+                );
+            }
+            let encoded = read_active_record_bytes_from_retained(&mut retained)?;
+            copies.push(StandaloneReceiptCopy {
+                digest: digest.clone(),
+                identity,
+                encoded_digest: Sha256::digest(&encoded).into(),
+            });
+            rows.push(ReceiptBatchRow {
+                record: actual.record,
+                encoded,
+            });
+        }
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let generation = self.generation_under_writer_lock()?;
+        self.publish_record_batch(catalog, &rows, generation, deadline, |_| {})?;
+        if self
+            .remove_standalone_copies(catalog, &copies, deadline.as_instant())
+            .is_err()
+        {
+            catalog.unavailable = true;
+            return Err(ReceiptLedgerError::CommitUncertain {
+                receipt_key_digest: rows[0].record.key_digest.clone(),
+            });
+        }
+        Ok(())
+    }
+
+    fn remove_standalone_copies(
+        &self,
+        catalog: &ReceiptCatalog,
+        copies: &[StandaloneReceiptCopy],
+        deadline: Option<Instant>,
+    ) -> Result<(), ReceiptLedgerError> {
+        if copies.is_empty() {
+            return Ok(());
+        }
+        let removal = (|| {
+            for copy in copies {
+                check_optional_deadline(deadline)?;
+                self.verify_named_authority()?;
+                let backing =
+                    catalog
+                        .batch_backing
+                        .get(&copy.digest)
+                        .ok_or(ReceiptLedgerError::Corrupt(
+                            "standalone copy has no selected batch",
+                        ))?;
+                let batch = self.read_verified_receipt_batch(backing)?;
+                let row = batch
+                    .rows
+                    .iter()
+                    .find(|row| row.record.key_digest == copy.digest)
+                    .ok_or(ReceiptLedgerError::Corrupt(
+                        "standalone copy is absent from selected batch",
+                    ))?;
+                let name = format!("{}.json", copy.digest.as_str());
+                let mut retained =
+                    open_state_regular_child(&self.active_file, OsStr::new(&name))
+                        .map_err(|error| storage_error("reopen standalone receipt copy", error))?;
+                verify_state_owner_only(&retained).map_err(|error| {
+                    storage_error("verify standalone receipt copy ownership", error)
+                })?;
+                let identity = state_file_identity(&retained)
+                    .map_err(|error| storage_error("identify standalone receipt copy", error))?;
+                let encoded = read_active_record_bytes_from_retained(&mut retained)?;
+                if identity != copy.identity
+                    || <[u8; 32]>::from(Sha256::digest(&encoded)) != copy.encoded_digest
+                    || encoded != row.encoded
+                {
+                    return Err(ReceiptLedgerError::Corrupt(
+                        "standalone receipt copy changed before cleanup",
+                    ));
+                }
+                check_optional_deadline(deadline)?;
+                self.verify_named_authority()?;
+                remove_state_regular_child(
+                    &self.active_file,
+                    OsStr::new(&name),
+                    identity,
+                    &retained,
+                )
+                .map_err(|error| storage_error("remove exact standalone receipt copy", error))?;
+            }
+            Ok(())
+        })();
+        // A partial cleanup must be durable even when the next verification fails.
+        sync_receipt_row_directory(&self.active_file)
+            .map_err(|error| storage_error("sync standalone receipt copy cleanup", error))?;
+        removal?;
+        self.verify_named_authority()?;
+        check_optional_deadline(deadline)
     }
 
     fn materialize_batch_backed_record(
