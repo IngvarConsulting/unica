@@ -93,12 +93,16 @@ pub(crate) fn replace(
         None => {
             let anchors: &[&str] = match property {
                 DescriptorProperty::DefaultReportAppearanceTemplate => {
-                    &["DefaultDynamicListSettingsForm"]
+                    &["DefaultDynamicListSettingsForm", "DefaultSearchForm"]
                 }
-                DescriptorProperty::DefaultInterface => {
-                    &["Caption", "ShortCaption", "DefaultStyle", "DefaultLanguage"]
-                }
-                DescriptorProperty::DefaultStyle => &["DefaultLanguage"],
+                DescriptorProperty::DefaultInterface => &[
+                    "Caption",
+                    "ShortCaption",
+                    "DefaultStyle",
+                    "DefaultLanguage",
+                    "BriefInformation",
+                ],
+                DescriptorProperty::DefaultStyle => &["DefaultLanguage", "BriefInformation"],
                 _ => return Err(format!("no platform position for {tag}")),
             };
             let place = anchors
@@ -171,6 +175,43 @@ mod tests {
             )
         );
         assert_eq!(replace(&assigned, field, None).unwrap(), source);
+    }
+
+    #[test]
+    fn missing_reference_uses_the_next_native_property_when_its_usual_neighbor_is_absent() {
+        for (field, address, xml_target, anchor) in [
+            (
+                DescriptorProperty::DefaultReportAppearanceTemplate,
+                "main:CommonTemplate.Probe",
+                "CommonTemplate.Probe",
+                "DefaultSearchForm",
+            ),
+            (
+                DescriptorProperty::DefaultStyle,
+                "main:Style.Probe",
+                "Style.Probe",
+                "BriefInformation",
+            ),
+            (
+                DescriptorProperty::DefaultInterface,
+                "main:OrdinaryInterface.Probe",
+                "Interface.Probe",
+                "BriefInformation",
+            ),
+        ] {
+            let source = format!(
+                "<m:MetaDataObject xmlns:m=\"{MD_CLASSES_NS}\"><m:Configuration><m:Properties>\r\n\t<m:Name>Probe</m:Name>\r\n\t<!-- neighbor -->\r\n\t<m:{anchor}/>\r\n\t<m:DetailedInformation/>\r\n</m:Properties></m:Configuration></m:MetaDataObject>"
+            );
+            assert_eq!(replace(&source, field, None).unwrap(), source);
+            let target = QualifiedAddress::parse(address).unwrap();
+            let tag = field.names()[0];
+            let expected = source.replace(
+                &format!("<m:{anchor}/>"),
+                &format!("<m:{tag}>{xml_target}</m:{tag}>\r\n\t<m:{anchor}/>"),
+            );
+            assert_eq!(replace(&source, field, Some(&target)).unwrap(), expected);
+            assert_eq!(replace(&expected, field, Some(&target)).unwrap(), expected);
+        }
     }
 
     #[test]
