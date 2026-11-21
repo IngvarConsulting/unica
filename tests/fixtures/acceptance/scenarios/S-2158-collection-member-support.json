@@ -27,7 +27,7 @@
           "eq": "main:Catalog.Free"
         },
         {
-          "pointer": "/data/items/1/props",
+          "pointer": "/data/items/1/support",
           "absent": true
         },
         {
@@ -43,8 +43,8 @@
           "eq": "main:Catalog.NoUuid"
         },
         {
-          "pointer": "/data/items/4/props",
-          "absent": true
+          "pointer": "/data/items/4/support",
+          "eq": "unknown"
         },
         {
           "pointer": "/data/limits/0",
