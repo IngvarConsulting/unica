@@ -1031,6 +1031,10 @@ fn native_form_and_template_addresses_follow_text_registrations() {
         for witness in [
             "main:Catalog.Валюты.Form",
             "main:DataProcessor.Обработка.Form",
+            "main:DataProcessor.Обработка.Form.Форма.Item",
+            "main:Catalog.Валюты.Form.ФормаСписка.Item.List.Item",
+            "main:Catalog.Валюты.Form.ФормаЭлемента.Item",
+            "main:CommonForm.MainA.Item",
             "main:DataProcessor.Обработка.Template",
             "main:Report.АнализВерсийОбъектов.Template",
             "main:CommonForm.MainA.Metadata",
@@ -1044,6 +1048,7 @@ fn native_form_and_template_addresses_follow_text_registrations() {
             );
         }
     }
+    check_native_command_and_bound_events(&mut evidence);
     evidence.finish();
 }
 
@@ -1113,6 +1118,38 @@ fn check_native_form_or_template(
         );
         let owner_view = read(authority, &at_text);
         assert_eq!(owner_view["kind"], "Form");
+        let root = body.root_element();
+        let origin = fixture_origin(&payload);
+        check_native_form_items(authority, &at_text, root, &origin, covered, evidence);
+        if let Some(attributes) = native_form_children(root, "Attributes").next() {
+            let names: Vec<_> = native_form_children(attributes, "Attribute")
+                .map(|node| node.attribute("name").expect("native form attribute name"))
+                .collect();
+            if names.is_empty() {
+                let branch = format!("{at}.Attribute");
+                assert!(!addresses(&owner_view, "branches").contains(&branch));
+                let view = read(authority, &branch);
+                assert_eq!(view["total"], 0, "{branch}");
+                assert!(addresses(&view, "items").is_empty(), "{branch}");
+                evidence.record(
+                    authority.platform_profile().line(),
+                    &at_text,
+                    "Attribute",
+                    None,
+                    &origin,
+                    AddressEvidence::Read(&branch),
+                );
+            } else {
+                check_native_form_collection(
+                    authority,
+                    &at_text,
+                    "Attribute",
+                    &names,
+                    &origin,
+                    evidence,
+                );
+            }
+        }
         verify_path(at, &payload);
         let metadata = format!("{at}.Metadata");
         assert!(
@@ -1236,6 +1273,169 @@ fn check_native_form_or_template(
         "| {} | {kind} | {at} | {status}; native registration and descriptor |",
         authority.platform_profile().id()
     );
+}
+
+const NATIVE_FORM_NS: &str = "http://v8.1c.ru/8.3/xcf/logform";
+
+fn native_form_children<'a, 'input: 'a>(
+    owner: roxmltree::Node<'a, 'input>,
+    tag: &'a str,
+) -> impl Iterator<Item = roxmltree::Node<'a, 'input>> + 'a {
+    owner
+        .children()
+        .filter(move |node| node.has_tag_name((NATIVE_FORM_NS, tag)))
+}
+
+fn check_native_form_items(
+    authority: &LogicalViewReadAuthority<'_>,
+    owner: &str,
+    raw: roxmltree::Node<'_, '_>,
+    origin: &str,
+    covered: &mut BTreeSet<String>,
+    evidence: &mut EvidenceRows,
+) {
+    let bars = native_form_children(raw, "AutoCommandBar").filter(|bar| {
+        // Unnamed platform chrome has no logical item identity.
+        bar.attribute("name").is_some_and(|name| !name.is_empty())
+    });
+    let children: Vec<_> = bars
+        .chain(
+            native_form_children(raw, "ChildItems")
+                .flat_map(|container| container.children().filter(|node| node.is_element())),
+        )
+        .map(|node| {
+            assert_eq!(node.tag_name().namespace(), Some(NATIVE_FORM_NS));
+            let name = node.attribute("name").expect("native form item name");
+            assert!(!name.is_empty());
+            (name, node)
+        })
+        .collect();
+    if children.is_empty() {
+        return;
+    }
+    let names: Vec<_> = children.iter().map(|(name, _)| *name).collect();
+    check_native_form_collection(authority, owner, "Item", &names, origin, evidence);
+    let branch = format!("{owner}.Item");
+    assert!(
+        covered.insert(branch.clone()),
+        "duplicate form branch {branch}"
+    );
+    let branch = QualifiedAddress::parse(&branch).unwrap();
+    for (name, node) in children {
+        let item = branch.member(name).unwrap().to_string();
+        check_native_form_items(authority, &item, node, origin, covered, evidence);
+    }
+}
+
+fn check_native_form_collection(
+    authority: &LogicalViewReadAuthority<'_>,
+    owner: &str,
+    kind: &str,
+    names: &[&str],
+    origin: &str,
+    evidence: &mut EvidenceRows,
+) {
+    let branch_at = format!("{owner}.{kind}");
+    let branch = QualifiedAddress::parse(&branch_at).unwrap();
+    let expected: BTreeSet<_> = names
+        .iter()
+        .map(|name| branch.member(name).unwrap().to_string())
+        .collect();
+    assert_eq!(
+        expected.len(),
+        names.len(),
+        "{branch_at}: duplicate native name"
+    );
+    check_native_branch(authority, &read(authority, owner), &branch_at, &expected);
+    let line = authority.platform_profile().line();
+    evidence.record(
+        line,
+        owner,
+        kind,
+        None,
+        origin,
+        AddressEvidence::Read(&branch_at),
+    );
+    for item in expected {
+        assert_eq!(read(authority, &item)["kind"], kind, "{item}");
+        evidence.record(
+            line,
+            owner,
+            kind,
+            None,
+            origin,
+            AddressEvidence::Read(&item),
+        );
+    }
+}
+
+fn check_native_command_and_bound_events(evidence: &mut EvidenceRows) {
+    const OWNER: &str = "main:DataProcessor.ТестHTML.Form.Форма";
+    let source = fixture_path("formats/platform_xml/2.20/support-edit-bin-only/src");
+    assert!(
+        root_registrations(&source, "2.20").contains(&("DataProcessor".into(), "ТестHTML".into()))
+    );
+    let owner_path = source.join("DataProcessors/ТестHTML.xml");
+    let xml = read_fixture_descriptor(&owner_path);
+    let config_owner = parse_fixture_descriptor(&xml, &owner_path);
+    let owner = fixture_artifact(&config_owner, "DataProcessor", &owner_path);
+    assert_eq!(fixture_properties_name(owner), Some("ТестHTML"));
+    assert_eq!(
+        native_child_objects(owner)
+            .filter(|node| {
+                node.has_tag_name((MD_CLASSES_NS, "Form")) && node.text() == Some("Форма")
+            })
+            .count(),
+        1
+    );
+    let form_path = source.join("DataProcessors/ТестHTML/Forms/Форма.xml");
+    let xml = read_fixture_descriptor(&form_path);
+    let form = parse_fixture_descriptor(&xml, &form_path);
+    let descriptor = fixture_artifact(&form, "Form", &form_path);
+    assert_eq!(fixture_properties_name(descriptor), Some("Форма"));
+    assert_eq!(form.root_element().attribute("version"), Some("2.20"));
+    let path = form_path.with_extension("").join("Ext/Form.xml");
+    let xml = read_fixture_descriptor(&path);
+    let form = parse_fixture_descriptor(&xml, &path);
+    let root = form.root_element();
+    assert!(root.has_tag_name((NATIVE_FORM_NS, "Form")));
+    assert_eq!(root.attribute("version"), Some("2.20"));
+    let origin = fixture_origin(&path);
+    let cancellation = CancellationToken::new();
+    let profile = PlatformProfile::v8_3_27();
+    let authority = native_authority(&cancellation, &source, profile);
+    let commands = native_form_children(root, "Commands").next().unwrap();
+    let names: Vec<_> = native_form_children(commands, "Command")
+        .map(|node| node.attribute("name").expect("native form command name"))
+        .collect();
+    assert_eq!(names, ["Команда1"]);
+    check_native_form_collection(&authority, OWNER, "Command", &names, &origin, evidence);
+
+    let items = native_form_children(root, "ChildItems").next().unwrap();
+    let html = native_form_children(items, "HTMLDocumentField")
+        .find(|node| node.attribute("name") == Some("ПолеHTML"))
+        .unwrap();
+    let item = format!("{OWNER}.Item.ПолеHTML");
+    for (owner, node, event) in [(OWNER, root, "OnCreateAtServer"), (&item, html, "OnClick")] {
+        let events = native_form_children(node, "Events").next().unwrap();
+        let handler = native_form_children(events, "Event")
+            .find(|node| node.attribute("name") == Some(event))
+            .and_then(|node| node.text())
+            .filter(|handler| !handler.is_empty())
+            .expect("native bound form event");
+        let event_at = format!("{owner}.Event.{event}");
+        let view = read(&authority, &event_at);
+        assert_eq!(view["kind"], "Event");
+        assert_eq!(view["props"]["handler"], handler, "{event_at}");
+        evidence.record(
+            profile.line(),
+            owner,
+            "Event",
+            None,
+            &origin,
+            AddressEvidence::Read(&event_at),
+        );
+    }
 }
 
 fn check_eds_module_rows(
