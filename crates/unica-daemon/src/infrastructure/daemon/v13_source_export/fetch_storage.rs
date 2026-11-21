@@ -199,7 +199,33 @@ impl SnapshotStorage {
             OsStr::new(&owner),
             &stage.identity().stable_bytes(),
         ) {
-            Ok(_) => Ok(()),
+            Ok(published) => {
+                #[cfg(test)]
+                AFTER_OWNER_PUBLICATION.with(|hook| {
+                    if let Some(hook) = hook.take() {
+                        hook();
+                    }
+                });
+                let expected = stage.identity().stable_bytes();
+                let confirm_owner = || {
+                    let current = self.record(&owner)?.ok_or_else(ownership_changed)?;
+                    same_record(&published, &current, &expected)
+                };
+                let Err(error) = confirm_owner().and_then(|()| stage.validate_named_identity())
+                else {
+                    return Ok(());
+                };
+                // Discard only the record this fetch published. A changed stage
+                // name or owner is never permission to touch another tree.
+                let error = confirm_owner()
+                    .and_then(|()| published.remove_named_identity())
+                    .err()
+                    .unwrap_or(error);
+                Err(RememberFailure::Uncertain(CleanupFailure::ownership(
+                    error,
+                    Some(stage),
+                )))
+            }
             Err(failure) => {
                 let (error, observation) = failure.into_observation();
                 let current = self.record(&owner);
@@ -400,6 +426,12 @@ fn same_record(
         return Err(ownership_changed());
     }
     Ok(())
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(super) static AFTER_OWNER_PUBLICATION: std::cell::Cell<Option<Box<dyn FnOnce()>>> =
+        std::cell::Cell::new(None);
 }
 
 fn ownership_changed() -> io::Error {

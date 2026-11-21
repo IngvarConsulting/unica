@@ -617,6 +617,56 @@ fn fetch_drop_deletes_one_snapshot_and_treats_an_absent_one_as_deleted() {
 
 /// rule: INV.RUNTIME.FETCH-LEAVES-THE-WORKING-COPY
 #[test]
+fn a_rebound_stage_after_owner_publication_cannot_be_reported_ready() {
+    let workspace = workspace();
+    let root = workspace.path();
+    let workspace_path = root.to_path_buf();
+    let displaced = root.join("displaced-stage");
+    let displaced_path = displaced.clone();
+    let runner = ProtocolRunner::new(Script::Exports);
+    storage::AFTER_OWNER_PUBLICATION.with(|hook| {
+        hook.set(Some(Box::new(move || {
+            let ids = snapshots(&workspace_path);
+            let [id] = ids.as_slice() else {
+                panic!("expected one stage, got {ids:?}");
+            };
+            let fetch = workspace_path.join(".build/unica/fetch");
+            let path = fetch.join(id);
+            assert!(fetch
+                .join(".fetch-cleanup")
+                .join(format!("{id}.owner"))
+                .is_file());
+            fs::rename(&path, displaced_path).unwrap();
+            fs::create_dir(&path).unwrap();
+            fs::write(path.join("foreign.txt"), "foreign content").unwrap();
+        })));
+    });
+
+    let result = run(root, &prepared(root, false), &runner);
+
+    assert!(!result.ok, "{result:?}");
+    assert_eq!(result.diagnostics[0]["code"], "rollback_incomplete");
+    assert!(result.data.is_none());
+    assert!(result.changed.is_empty());
+    let warning = &result.warnings[0];
+    assert!(warning.get("path").is_none(), "{warning}");
+    let id = warning["snapshotId"].as_str().unwrap();
+    let fetch = root.join(".build/unica/fetch");
+    assert_eq!(
+        fs::read_to_string(fetch.join(id).join("foreign.txt")).unwrap(),
+        "foreign content"
+    );
+    assert!(displaced.join("Configuration.xml").is_file());
+    assert!(!fetch
+        .join(".fetch-cleanup")
+        .join(format!("{id}.owner"))
+        .exists());
+    let storage = SnapshotStorage::open(root, false).unwrap().unwrap();
+    assert!(storage.owned_snapshots().unwrap().is_empty());
+}
+
+/// rule: INV.RUNTIME.FETCH-LEAVES-THE-WORKING-COPY
+#[test]
 fn a_late_owner_publication_failure_rolls_back_the_exact_record_and_stage() {
     let workspace = workspace();
     let root = workspace.path();
