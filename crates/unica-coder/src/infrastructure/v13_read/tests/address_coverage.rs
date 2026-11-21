@@ -855,8 +855,20 @@ fn native_external_root_descriptors_match_published_addresses() {
 /// rule: INV.SOURCE.PLATFORM-CAPABILITY-EXISTENCE
 #[test]
 fn native_recalculation_module_address_table_matches_registered_owner() {
-    let source = fixture_path("formats/platform_xml/2.20/recalculation/src");
-    let profile = PlatformProfile::v8_3_27();
+    let mut evidence = EvidenceRows::new(
+        "native_recalculation_module_address_table_matches_registered_owner",
+        SourceSetKind::Configuration,
+    );
+    for format in ["2.20", "2.21", "2.22"] {
+        check_native_recalculation_modules(format, &mut evidence);
+    }
+    evidence.finish();
+}
+
+fn check_native_recalculation_modules(format: &str, evidence: &mut EvidenceRows) {
+    let source = fixture_path(&format!("formats/platform_xml/{format}/recalculation/src"));
+    let line = export_format_line(format).unwrap();
+    let profile = PlatformProfile::for_line(line).unwrap();
     let cancellation = CancellationToken::new();
     let authority = native_authority(&cancellation, &source, profile);
     let root =
@@ -867,15 +879,20 @@ fn native_recalculation_module_address_table_matches_registered_owner() {
         &root,
     )];
     let finder = WorkspaceFindDirectoryBuilder::default();
-    let mut evidence = EvidenceRows::new(
-        "native_recalculation_module_address_table_matches_registered_owner",
-        SourceSetKind::Configuration,
-    );
     let register = "main:CalculationRegister.Начисления";
+    assert_eq!(
+        root_registrations(&source, format)
+            .iter()
+            .filter(|(kind, name)| kind == "CalculationRegister" && name == "Начисления")
+            .count(),
+        1,
+        "{format}: the calculation register has one native registration"
+    );
     let parent_branch = format!("{register}.Recalculation");
     let descriptor = source.join("CalculationRegisters/Начисления.xml");
     let xml = read_fixture_descriptor(&descriptor);
     let document = parse_fixture_descriptor(&xml, &descriptor);
+    assert_eq!(document.root_element().attribute("version"), Some(format));
     let artifact = fixture_artifact(&document, "CalculationRegister", &descriptor);
     let mut branches = native_described_branches(register, &descriptor, artifact);
     let native_owners = branches
@@ -915,7 +932,7 @@ fn native_recalculation_module_address_table_matches_registered_owner() {
         let owner_descriptor = source.join(format!("{relative_owner}.xml"));
         let raw = read_fixture_descriptor(&owner_descriptor);
         let document = parse_fixture_descriptor(&raw, &owner_descriptor);
-        assert_eq!(document.root_element().attribute("version"), Some("2.20"));
+        assert_eq!(document.root_element().attribute("version"), Some(format));
         let artifact = fixture_artifact(&document, "Recalculation", &owner_descriptor);
         assert_eq!(fixture_properties_name(artifact), Some(name));
         assert!(uuid::Uuid::parse_str(artifact.attribute("uuid").unwrap()).is_ok());
@@ -963,7 +980,6 @@ fn native_recalculation_module_address_table_matches_registered_owner() {
             AddressEvidence::RoundTrip(&role),
         );
     }
-    evidence.finish();
 }
 
 /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS

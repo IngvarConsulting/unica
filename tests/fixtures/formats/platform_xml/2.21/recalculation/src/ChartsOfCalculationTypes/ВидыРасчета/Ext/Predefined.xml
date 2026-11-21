@@ -1,0 +1,15 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="CalculationTypePredefinedItems" version="2.21">
+	<Item id="727d07dc-e9b4-52ec-aaa5-a43d30d4ec54">
+		<Name>Запасной</Name>
+		<Code>00002</Code>
+		<Description>Запасной вид расчета</Description>
+		<ActionPeriodIsBase>false</ActionPeriodIsBase>
+	</Item>
+	<Item id="72b411aa-172c-5a16-9fa1-da8e0489f8b6">
+		<Name>ОкладПоДням</Name>
+		<Code>00001</Code>
+		<Description>Оклад по дням</Description>
+		<ActionPeriodIsBase>false</ActionPeriodIsBase>
+	</Item>
+</PredefinedData>
