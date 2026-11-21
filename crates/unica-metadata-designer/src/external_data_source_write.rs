@@ -149,7 +149,10 @@ pub(crate) fn insert_child(
 ) -> Result<String, String> {
     let children = direct(owner, "ChildObjects")?;
     if find_child(children, kind, name, storage)?.is_some() {
-        return Err(format!("the owner already contains {kind}.{name}"));
+        return Err(format!(
+            "the owner already contains {}.{name}",
+            kind.as_str()
+        ));
     }
     let kind = kind.as_str();
     let order = unica_address::kinds::declared(owner.tag_name().name())
