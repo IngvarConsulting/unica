@@ -39,6 +39,10 @@ impl CreatableKind {
             .chain(Self::declared())
     }
 
+    pub fn requires_creation_namespace(self) -> bool {
+        matches!(self, Self::Declared("XDTOPackage"))
+    }
+
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Typed(kind) => kind.as_str(),
@@ -60,6 +64,11 @@ impl CreatableKind {
             Self::Typed(_) => None,
             Self::Declared(tag) => Self::creation(tag),
         }
+    }
+
+    pub fn requires_creation_type(self) -> bool {
+        self.template()
+            .is_some_and(|template| template.requires_type)
     }
 
     /// Whether an extension creates its own object of the kind: it borrows
@@ -217,8 +226,8 @@ mod tests {
         }
     }
 
-    /// A kind Unica reads but cannot create is refused differently from a
-    /// kind another operation creates and from a name that is no kind.
+    /// Root kinds supported by object.create parse, while a kind created by
+    /// another operation and an unknown name get their own refusals.
     #[test]
     fn creation_refusals_name_what_is_wrong() {
         assert_eq!(
@@ -232,19 +241,17 @@ mod tests {
         );
         for (kind, message) in [
             (
-                "CommonForm",
-                "Unica reads and edits metadata kind `CommonForm` but cannot create it yet; create the object in Designer and export the source set again",
+                "Role",
+                "metadata kind `Role` is created by the `role.create` operation",
             ),
-            (
-                "XDTOPackage",
-                "Unica reads and edits metadata kind `XDTOPackage` but cannot create it yet; create the object in Designer and export the source set again",
-            ),
-            ("Role", "metadata kind `Role` is created by the `role.create` operation"),
             (
                 "Subsystem",
                 "metadata kind `Subsystem` is created by the `subsystem.create` operation",
             ),
-            ("SyntheticMetadata", "unsupported metadata kind `SyntheticMetadata`"),
+            (
+                "SyntheticMetadata",
+                "unsupported metadata kind `SyntheticMetadata`",
+            ),
             ("catalog", "unsupported metadata kind `catalog`"),
             ("Attribute", "unsupported metadata kind `Attribute`"),
         ] {
@@ -273,9 +280,7 @@ mod tests {
             );
             uncreatable.push(kind);
         }
-        assert!(uncreatable.contains(&"CommonForm"));
-        assert!(uncreatable.contains(&"XDTOPackage"));
-        assert!(!uncreatable.contains(&"PaletteColor"));
-        assert!(!uncreatable.contains(&"Queue"));
+        uncreatable.sort_unstable();
+        assert_eq!(uncreatable, ["Role", "Subsystem"]);
     }
 }

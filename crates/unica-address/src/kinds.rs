@@ -72,6 +72,8 @@ pub struct CreationDeclaration {
     /// Строки XML внутри `Properties`, без отступа самого `Properties`:
     /// вложенные строки начинаются со своих табуляций.
     pub properties: &'static [&'static str],
+    /// Write the caller's metadata type before the fixed properties.
+    pub requires_type: bool,
     /// Префикс кода языка, который новый объект получает после свойств:
     /// префикс и первое `N` от 1, при котором код не занят другим языком
     /// набора. `None` — объект кода языка не несёт.
@@ -89,6 +91,7 @@ impl CreationDeclaration {
     pub const fn properties(properties: &'static [&'static str]) -> Self {
         Self {
             properties,
+            requires_type: false,
             numbered_language_code: None,
             main_configuration_only: false,
             module: None,

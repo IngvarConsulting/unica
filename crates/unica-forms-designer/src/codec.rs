@@ -15,6 +15,7 @@ use unica_operation_contract::input::*;
 use unica_source_contract::discovery::ProjectDiscoveryRead;
 use unica_source_contract::format_identity::PlatformLine;
 use unica_source_contract::ScriptVariant;
+use unica_source_designer::layout::{form_command_bar_name, form_root_namespaces};
 use unica_source_designer::read::{path_exists, read_string, read_utf8_sig_snapshot};
 use unica_source_designer::roots::root_version_literal;
 use unica_xml_format::text::*;
@@ -3258,35 +3259,6 @@ pub fn form_add_metadata_xml(
     unica_source_designer::layout::declare_format_namespaces(descriptor, format_version)
 }
 
-/// Namespace declarations of a `Form.xml` root in `format_version`.
-pub(crate) fn form_root_namespaces(format_version: &str) -> String {
-    unica_source_designer::layout::format_namespace_declarations(
-        FORM_ROOT_NAMESPACES,
-        format_version,
-    )
-}
-
-/// Namespace declarations of a `Form.xml` root as 8.3.27 exports them.
-const FORM_ROOT_NAMESPACES: &str = concat!(
-    "xmlns=\"http://v8.1c.ru/8.3/xcf/logform\"",
-    " xmlns:app=\"http://v8.1c.ru/8.2/managed-application/core\"",
-    " xmlns:cfg=\"http://v8.1c.ru/8.1/data/enterprise/current-config\"",
-    " xmlns:dcscor=\"http://v8.1c.ru/8.1/data-composition-system/core\"",
-    " xmlns:dcssch=\"http://v8.1c.ru/8.1/data-composition-system/schema\"",
-    " xmlns:dcsset=\"http://v8.1c.ru/8.1/data-composition-system/settings\"",
-    " xmlns:ent=\"http://v8.1c.ru/8.1/data/enterprise\"",
-    " xmlns:lf=\"http://v8.1c.ru/8.2/managed-application/logform\"",
-    " xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\"",
-    " xmlns:sys=\"http://v8.1c.ru/8.1/data/ui/fonts/system\"",
-    " xmlns:v8=\"http://v8.1c.ru/8.1/data/core\"",
-    " xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\"",
-    " xmlns:web=\"http://v8.1c.ru/8.1/data/ui/colors/web\"",
-    " xmlns:win=\"http://v8.1c.ru/8.1/data/ui/colors/windows\"",
-    " xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\"",
-    " xmlns:xs=\"http://www.w3.org/2001/XMLSchema\"",
-    " xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\""
-);
-
 /// `Form.xml` of an object form borrowed into an extension, byte for byte
 /// as 8.3.27 exports it (#1982): the own part and `BaseForm` hold only the
 /// empty command bar and attributes, so the borrowed form changes nothing.
@@ -3333,7 +3305,7 @@ pub fn form_add_content_xml_with_variant(
 ) -> Result<String, String> {
     let ns = form_root_namespaces(format_version);
     let names = FormEmissionContext::with_script_variant(script_variant);
-    let command_bar = names.select("ФормаКоманднаяПанель", "FormCommandBar");
+    let command_bar = form_command_bar_name(script_variant);
     if matches!(purpose, "List" | "Choice") {
         let list_name = names.select("Список", "List");
         let main_table = format!("{object_type}.{object_name}");

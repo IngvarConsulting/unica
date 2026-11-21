@@ -2,7 +2,7 @@
   "id": "S-2994-kind-refusals",
   "issue": 2994,
   "area": "Создание и удаление объектов",
-  "task": "Создать очередь и бота в наборе формата 2.20: очередь отклоняется как вид, которого нет в линии 8.3.27, с линией вида; бот — как вид, который Unica читает, но ещё не создаёт. Изменение свойства очереди по адресу отклоняется тем же основанием линии.",
+  "task": "Проверить отказы создания в наборе формата 2.20. Очереди нет в линии 8.3.27, а для нового пакета XDTO требуется пространство имён. Изменение свойства очереди отклоняется тем же основанием линии.",
   "workspace": "tests/fixtures/acceptance/workspace-all-kinds",
   "formats": [
     "2.20"
@@ -58,7 +58,7 @@
             "op": "object.create",
             "args": {
               "values": {
-                "kind": "CommonForm",
+                "kind": "XDTOPackage",
                 "name": "Helper"
               }
             }
@@ -68,7 +68,7 @@
       "expect": [
         "refused"
       ],
-      "refusal": "bad_value: Unica reads and edits metadata kind `CommonForm` but cannot create it yet; create the object in Designer and export the source set again"
+      "refusal": "bad_value: XDTOPackage creation requires an explicit namespace URI"
     }
   ]
 }

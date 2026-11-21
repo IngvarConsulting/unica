@@ -231,9 +231,9 @@ fn refusal(runtime: &V5CanonicalInvocationRuntime, fixture: &Fixture, args: Valu
 }
 
 /// On the 8.3.27 line a kind of a later line is refused as one the platform
-/// does not have, whichever operation names it; a kind Unica reads but does
-/// not create, and a kind another operation creates, are each refused with
-/// their own reason.
+/// does not have, whichever operation names it. A kind with a required
+/// argument and a kind created by a different operation each get a distinct
+/// refusal.
 /// rule: INV.SOURCE.PROFILE-CAPABILITIES
 #[test]
 fn creation_refusals_tell_a_missing_kind_from_one_unica_does_not_create() {
@@ -256,12 +256,16 @@ fn creation_refusals_tell_a_missing_kind_from_one_unica_does_not_create() {
             "`PaletteColor` is a metadata kind of 1C 8.5.1 and later; this source set is 1C 8.3.27, where the kind does not exist. Only a set re-exported from 8.5.1 or later can hold a palette color.",
         ),
         (
-            "CommonForm",
-            "Unica reads and edits metadata kind `CommonForm` but cannot create it yet; create the object in Designer and export the source set again",
+            "XDTOPackage",
+            "XDTOPackage creation requires an explicit namespace URI",
         ),
         (
             "Role",
             "metadata kind `Role` is created by the `role.create` operation",
+        ),
+        (
+            "Subsystem",
+            "metadata kind `Subsystem` is created by the `subsystem.create` operation",
         ),
     ] {
         let refused = create(kind);
