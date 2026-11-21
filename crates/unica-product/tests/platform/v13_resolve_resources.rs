@@ -154,6 +154,52 @@ fn resolve_form_and_module_paths_preserve_the_exact_resource_of_an_extension_on_
 }
 
 /// rule: INV.SOURCE.RESOLVED-RESOURCE-IDENTITY
+/// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
+#[test]
+fn resolve_bot_module_round_trips_its_native_platform_path() {
+    let root = tempfile::tempdir().unwrap();
+    copy_tree(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/formats/platform_xml/2.20/all_kinds"),
+        root.path(),
+    );
+    let source = root.path().join("src");
+    let path = "Bots/AllKindsBot/Ext/Module.bsl";
+    let address = "main:Bot.AllKindsBot.Module.Bot";
+    let wrong_role = "Bots/AllKindsBot/Ext/ObjectModule.bsl";
+    let unregistered = "Bots/OrphanBot/Ext/Module.bsl";
+    std::fs::create_dir_all(source.join("Bots/OrphanBot/Ext")).unwrap();
+    let descriptor = std::fs::read_to_string(source.join("Bots/AllKindsBot.xml")).unwrap();
+    std::fs::write(
+        source.join("Bots/OrphanBot.xml"),
+        descriptor.replace("<Name>AllKindsBot</Name>", "<Name>OrphanBot</Name>"),
+    )
+    .unwrap();
+    for misplaced in [wrong_role, unregistered] {
+        std::fs::copy(source.join(path), source.join(misplaced)).unwrap();
+    }
+
+    let mut mcp = resource_resolve_mcp(root.path());
+    for (id, args) in [
+        (2, json!({"at":address})),
+        (3, json!({"path":path})),
+        (4, json!({"path":format!("src/{path}")})),
+    ] {
+        let result = mcp.completed_tool_call(call_tool(id, "unica.resolve", args));
+        assert_eq!(result["ok"], true, "{result:#}");
+        assert_eq!(result["data"]["at"], address);
+        assert_eq!(result["data"]["path"], path);
+        assert_eq!(result["data"]["kind"], "Module");
+    }
+    for (id, path) in [(5, wrong_role), (6, unregistered)] {
+        let result = mcp.completed_tool_call(call_tool(id, "unica.resolve", json!({"path":path})));
+        assert_eq!(result["ok"], false, "{path}: {result:#}");
+        assert_eq!(result["diagnostics"][0]["code"], "not_found", "{result:#}");
+    }
+    mcp.finish();
+}
+
+/// rule: INV.SOURCE.RESOLVED-RESOURCE-IDENTITY
 #[test]
 fn resolve_resources_refuse_unregistered_and_absent_targets_on_public_mcp() {
     let root = resource_resolve_fixture();
