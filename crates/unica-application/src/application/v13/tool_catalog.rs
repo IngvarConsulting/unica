@@ -267,7 +267,7 @@ impl RunOperation {
                 "additionalProperties": false,
                 "properties": {
                     "clientMode": {"type": "string", "enum": ["designer", "thin", "thick", "ordinary"], "description": "1C client to launch."},
-                    "debugUrl": {"type": "string", "pattern": "^http://127[.]0[.]0[.]1:[1-9][0-9]{0,4}$", "description": "Ready loopback dbgs URL; thin client only. Launch receipts confirm the request and process, while DAP confirms attachment."},
+                    "debugUrl": {"type": "string", "pattern": "^http://127[.]0[.]0[.]1:(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])(?![\\s\\S])", "description": "Ready loopback dbgs URL; thin client only. Launch receipts confirm the request and process, while DAP confirms attachment."},
                     "execute": {"type": "string", "description": "Workspace-relative .epf or .erf external processor to run with /Execute; enterprise clients only."},
                     "applicationParameter": {"type": "string", "description": "Exact /C value for an enterprise client; empty is distinct from omitted, NUL and designer are rejected. May accompany execute."},
                     "waitForExit": {"type": "boolean", "default": false, "description": "Wait for thin-client completion; requires execute (.epf) or applicationParameter, and waitTimeoutMs."},
@@ -1525,6 +1525,15 @@ mod tests {
             json!(["designer", "thin", "thick", "ordinary"])
         );
         let validator = jsonschema::validator_for(&schema).expect("valid launch args schema");
+        for url in ["http://127.0.0.1:1", "http://127.0.0.1:65535"] {
+            assert!(validator.is_valid(&json!({"clientMode": "thin", "debugUrl": url})));
+        }
+        for url in ["http://127.0.0.1:65536", "http://127.0.0.1:1\n"] {
+            assert!(
+                !validator.is_valid(&json!({"clientMode": "thin", "debugUrl": url})),
+                "{url:?}"
+            );
+        }
         for mode in ["designer", "thin", "thick", "ordinary"] {
             assert!(validator.is_valid(&json!({"clientMode": mode})));
         }
