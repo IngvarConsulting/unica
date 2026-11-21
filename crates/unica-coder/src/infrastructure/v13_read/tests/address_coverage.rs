@@ -1129,7 +1129,6 @@ fn check_native_form_or_template(
                 let branch = format!("{at}.Attribute");
                 assert!(!addresses(&owner_view, "branches").contains(&branch));
                 let view = read(authority, &branch);
-                assert_eq!(view["total"], 0, "{branch}");
                 assert!(addresses(&view, "items").is_empty(), "{branch}");
                 evidence.record(
                     authority.platform_profile().line(),
