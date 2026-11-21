@@ -655,6 +655,8 @@ impl RealReaderFixture {
             ("Document", "Заказ"),
             ("Document", "ЕщеНеВыгружен"),
             ("InformationRegister", "Цены"),
+            ("Sequence", "Probe"),
+            ("CalculationRegister", "Начисления"),
             ("Constant", "ОсновнаяВалюта"),
             ("CommonModule", "ЗаказыСервер"),
             ("CommonForm", "Подбор"),
@@ -693,6 +695,24 @@ impl RealReaderFixture {
             "Цены",
             "",
         );
+        for (fixture, relative) in [
+            ("all_kinds", "Sequences/Probe.xml"),
+            ("all_kinds", "Sequences/Probe/Ext/RecordSetModule.bsl"),
+            ("recalculation", "CalculationRegisters/Начисления.xml"),
+            (
+                "recalculation",
+                "CalculationRegisters/Начисления/Recalculations/Перерасчет1.xml",
+            ),
+            (
+                "recalculation",
+                "CalculationRegisters/Начисления/Recalculations/Перерасчет1/Ext/RecordSetModule.bsl",
+            ),
+        ] {
+            copy_fixture(
+                &format!("formats/platform_xml/2.20/{fixture}/src/{relative}"),
+                &self.source.join(relative),
+            );
+        }
         write_metadata_owner(&self.source, "Constants", "Constant", "ОсновнаяВалюта", "");
         let common = fixture_text(
             "formats/platform_xml/2.20/support-edit-bin-only/src/CommonModules/РеактивныйСервер.xml",
