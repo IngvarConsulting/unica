@@ -34,6 +34,8 @@ fn unreadable_limits(payload: &Value) -> Vec<String> {
 pub(super) fn unreadable_collection(payload: &Value, kind: NodeKind) -> Option<String> {
     let (prefix, property) = match kind {
         NodeKind::AddressingAttribute => ("collections.addressingAttributes", None),
+        NodeKind::AccountingFlag => ("collections.accountingFlags", None),
+        NodeKind::ExtDimensionAccountingFlag => ("collections.extDimensionAccountingFlags", None),
         NodeKind::PredefinedItem => ("predefinedItems", None),
         NodeKind::UrlTemplate => ("details.urlTemplates", None),
         NodeKind::Operation => ("details.operations", None),
@@ -100,4 +102,40 @@ pub(super) fn unreadable_entries(payload: &Value) -> impl Iterator<Item = (&str,
                 entry.get("message")?.as_str()?,
             ))
         })
+}
+
+/// Повреждённые записи коллекции внешнего источника, его таблицы или куба:
+/// ветвь, из которой читатель выбросил запись, называет её пределом, чтобы
+/// неполный список не выглядел полным.
+pub(super) fn external_data_source_collection_limits(
+    payload: &Value,
+    kind: NodeKind,
+) -> Vec<String> {
+    if !payload
+        .get("kind")
+        .and_then(Value::as_str)
+        .is_some_and(|owner| {
+            unica_address::kinds::is_described_nested_kind(owner) || owner == "ExternalDataSource"
+        })
+    {
+        return Vec::new();
+    }
+    let prefix = match kind {
+        NodeKind::Table => "collections.tables",
+        NodeKind::Cube => "collections.cubes",
+        NodeKind::Function => "collections.functions",
+        NodeKind::DimensionTable => "collections.dimensionTables",
+        NodeKind::Field => "collections.fields",
+        NodeKind::Dimension => "collections.dimensions",
+        NodeKind::Resource => "collections.resources",
+        _ => return Vec::new(),
+    };
+    unreadable_entries(payload)
+        .filter(|(field, _)| {
+            field
+                .strip_prefix(prefix)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with(['.', '[']))
+        })
+        .map(|(field, message)| format!("{field} не прочитано: {message}"))
+        .collect()
 }

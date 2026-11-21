@@ -168,6 +168,7 @@ mod method_doc;
 mod module_body_read;
 mod module_variables;
 mod notification_bindings;
+mod ordinary_interface;
 mod scheduled_job_handler;
 mod typed_payload_read;
 mod validation_input;
@@ -464,12 +465,6 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
             ));
         }
         self.verify_module_owner(&module_at, capability, admitted)?;
-        if capability.role() == ModuleRole::WebSocketClient {
-            return Err(ViewError::detailed(
-                RefusalDetail::ProviderAbsent,
-                "WebSocketClient source layout is not specified for platform profile 8.3.27",
-            ));
-        }
         let target = module_source_address(&module_at, capability)?;
         let text = match at.line_range() {
             Some(range) => self
@@ -543,6 +538,16 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         }
         let route = route_logical_address(at, self.profile)
             .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
+        if let [interface] = at.segments() {
+            if interface.kind() == NodeKind::OrdinaryInterface {
+                return Ok(interface.name().map(|name| {
+                    format!(
+                        "{}/{name}.xml",
+                        unica_source_designer::layout::ORDINARY_INTERFACE_DIRECTORY
+                    )
+                }));
+            }
+        }
         if route.reader() == LogicalReader::Configuration {
             return Ok(matches!(
                 self.read.source_set_kind(),
@@ -567,9 +572,6 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         let Some(target) = route.reader_metadata_path() else {
             return Ok(None);
         };
-        if target.as_str().split('.').next() == Some(NodeKind::WebSocketClient.as_str()) {
-            return Ok(None);
-        }
         if !route.nested_subsystems().is_empty() {
             let resource =
                 (route.reader() == LogicalReader::Interface).then_some("CommandInterface.xml");
@@ -619,12 +621,6 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         Ok(Some(path))
     }
 
-    fn permits_identity_fallback(&self, at: &QualifiedAddress) -> bool {
-        self.profile
-            .module_capability(at)
-            .is_some_and(|capability| capability.role() == ModuleRole::WebSocketClient)
-    }
-
     fn read_exact(
         &self,
         at: &QualifiedAddress,
@@ -641,6 +637,18 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         }
         let route = route_logical_address(at, self.profile)
             .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
+        if let [interface] = at.segments() {
+            if interface.kind() == NodeKind::OrdinaryInterface {
+                let view = self.ordinary_interface_view(at, interface.name(), admitted)?;
+                if admitted.revision != self.exact_revision()? {
+                    return Err(ViewError::new(
+                        RefusalCode::StaleCursor,
+                        "source revision changed during ordinary application interface read",
+                    ));
+                }
+                return Ok(view);
+            }
+        }
         let inherited = self.inherited_route_part(&route, admitted)?;
         let projected = if let Some((borrowing, resource)) = &inherited {
             project_inherited_part(&route, borrowing, resource)?
@@ -689,17 +697,16 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                 let index = self.streamed_configuration_registration_index(admitted)?;
                 let names =
                     index.names_for_kind(branch_kind.as_str(), &|| self.read_checkpoint())?;
-                if branch_kind != NodeKind::WebSocketClient {
-                    for name in &names {
-                        let owner = MetadataAddress::parse_logical(&format!(
-                            "{}.{name}",
-                            branch_kind.as_str()
-                        ))
-                        .map_err(|error| {
-                            ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
-                        })?;
-                        self.verify_registered_owner(&owner, admitted)?;
-                    }
+                for name in &names {
+                    let owner =
+                        MetadataAddress::parse_logical(&format!("{}.{name}", branch_kind.as_str()))
+                            .map_err(|error| {
+                                ViewError::detailed(
+                                    RefusalDetail::SourceUnreadable,
+                                    error.to_string(),
+                                )
+                            })?;
+                    self.verify_registered_owner(&owner, admitted)?;
                 }
                 let support = self.member_support(
                     route.at().source_set(),
@@ -715,31 +722,30 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
             } else {
                 self.read.stamp_descriptors_by_directory();
                 let payload = self.configuration_payload(admitted)?;
-                if branch_kind != NodeKind::WebSocketClient {
-                    for item in payload
-                        .get("registeredObjects")
-                        .and_then(Value::as_array)
-                        .into_iter()
-                        .flatten()
-                        .filter(|item| {
-                            item.get("kind").and_then(Value::as_str) == Some(branch_kind.as_str())
-                        })
-                    {
-                        let name = item.get("name").and_then(Value::as_str).ok_or_else(|| {
-                            ViewError::detailed(
-                                RefusalDetail::SourceUnreadable,
-                                "registered metadata owner has no name",
-                            )
-                        })?;
-                        let owner = MetadataAddress::parse_logical(&format!(
-                            "{}.{name}",
-                            branch_kind.as_str()
-                        ))
-                        .map_err(|error| {
-                            ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
-                        })?;
-                        self.verify_registered_owner(&owner, admitted)?;
-                    }
+                for item in payload
+                    .get("registeredObjects")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter(|item| {
+                        item.get("kind").and_then(Value::as_str) == Some(branch_kind.as_str())
+                    })
+                {
+                    let name = item.get("name").and_then(Value::as_str).ok_or_else(|| {
+                        ViewError::detailed(
+                            RefusalDetail::SourceUnreadable,
+                            "registered metadata owner has no name",
+                        )
+                    })?;
+                    let owner =
+                        MetadataAddress::parse_logical(&format!("{}.{name}", branch_kind.as_str()))
+                            .map_err(|error| {
+                                ViewError::detailed(
+                                    RefusalDetail::SourceUnreadable,
+                                    error.to_string(),
+                                )
+                            })?;
+                    self.verify_registered_owner(&owner, admitted)?;
                 }
                 let names = payload
                     .get("registeredObjects")
@@ -1106,22 +1112,7 @@ impl LogicalViewReadAuthority<'_> {
         else {
             return Ok(projected);
         };
-        if let Some(owner) = parent
-            .segments()
-            .first()
-            .filter(|owner| owner.kind() == NodeKind::WebSocketClient)
-        {
-            self.ensure_owner_registered_parts(
-                NodeKind::WebSocketClient.as_str(),
-                owner.name().ok_or_else(|| {
-                    ViewError::new(
-                        RefusalCode::NotFound,
-                        "WebSocketClient owner name is absent",
-                    )
-                })?,
-                admitted,
-            )?;
-        } else if let Some(owner) = module_branch_owner_address(parent)? {
+        if let Some(owner) = module_branch_owner_address(parent)? {
             self.verify_registered_module_owner(&owner, admitted)?;
         }
         Ok(projected.with_branch(branch))
@@ -1225,28 +1216,6 @@ fn module_branch_owner(branch: &QualifiedAddress) -> Result<Option<MetadataAddre
     MetadataAddress::parse_logical(&logical)
         .map(Some)
         .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()))
-}
-
-fn identity_only_metadata_payload(kind: &str, name: &str) -> Value {
-    json!({
-        "name": name,
-        "kind": kind,
-        "support": {"state": "not_supported"},
-        "properties": {},
-        "declarations": {},
-        "relations": {},
-        "collections": {
-            "attributes": [],
-            "tabularSections": [],
-            "dimensions": [],
-            "resources": [],
-            "enumValues": [],
-            "columns": [],
-            "forms": [],
-            "templates": [],
-            "commands": []
-        }
-    })
 }
 
 fn module_branch_owner_address(

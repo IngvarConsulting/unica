@@ -4,7 +4,7 @@ use std::collections::HashSet;
 fn cf_consumers_share_the_canonical_metadata_kind_order() {
     let validate_kinds = cf_validate_child_object_types();
 
-    assert_eq!(validate_kinds.len(), 47);
+    assert_eq!(validate_kinds.len(), 49);
     assert_eq!(validate_kinds, cf_type_order());
     let bot_index = validate_kinds
         .iter()
@@ -14,6 +14,16 @@ fn cf_consumers_share_the_canonical_metadata_kind_order() {
     assert_eq!(validate_kinds[bot_index + 1], "PaletteColor");
     assert_eq!(cf_validate_child_type_dir("Bot"), Some("Bots"));
     assert_eq!(cf_type_ru_name("Bot"), "Боты");
+    let source_index = validate_kinds
+        .iter()
+        .position(|kind| *kind == "ExternalDataSource")
+        .expect("ExternalDataSource must be a modeled metadata kind");
+    assert_eq!(validate_kinds[source_index - 1], "Task");
+    assert_eq!(validate_kinds[source_index + 1], "IntegrationService");
+    assert_eq!(
+        cf_validate_child_type_dir("ExternalDataSource"),
+        Some("ExternalDataSources")
+    );
     assert_eq!(cf_validate_child_type_dir("SyntheticMetadata"), None);
 
     let directories = validate_kinds
@@ -70,8 +80,8 @@ fn the_registry_follows_the_child_objects_order_of_the_platform_export() {
         ),
     ] {
         let exported = exported_root_kinds(export);
-        for (kind, _) in crate::layout::UNLAID_ROOT_KINDS {
-            assert!(exported.contains(kind), "{format}: no {kind} in the export");
+        for kind in crate::layout::unlaid_root_kinds() {
+            assert!(exported.contains(&kind), "{format}: no {kind} in the export");
         }
         let places = exported
             .iter()
@@ -100,13 +110,16 @@ fn every_addressed_root_kind_has_a_place_in_the_root_order() {
         NodeKind::ExternalDataProcessor,
         NodeKind::ExternalReport,
     ];
-    for kind in NodeKind::metadata_kinds()
-        .iter()
-        .copied()
-        .chain([NodeKind::WebSocketClient])
-    {
+    for kind in NodeKind::metadata_kinds().iter().copied() {
         assert!(kind.is_metadata_kind(), "{}", kind.as_str());
-        if NOT_ROOT.contains(&kind) {
+        // A kind that declares its place in an owner lives there, not in
+        // the root.
+        if NOT_ROOT.contains(&kind) || kind.declaration().nested.is_some() {
+            assert!(
+                crate::layout::root_child_objects_order(kind.as_str()).is_none(),
+                "{} is not a root kind",
+                kind.as_str()
+            );
             continue;
         }
         assert!(
@@ -149,8 +162,18 @@ fn a_new_ws_reference_stands_before_the_web_socket_client() {
         "WebSocketClient",
         "Chat"
     )
-    .expect_err("a kind without a layout is not created")
-    .contains("Unknown type 'WebSocketClient'"));
+    .unwrap());
+    assert!(
+        xml.contains(concat!(
+            "	<WebSocketClient>Chat</WebSocketClient>
+",
+            "	<WebSocketClient>Phone</WebSocketClient>
+",
+            "	<EventSubscription>OnWrite</EventSubscription>
+",
+        )),
+        "{xml}"
+    );
 }
 
 /// rule: INV.SOURCE.CHILD-OBJECTS-PLATFORM-ORDER

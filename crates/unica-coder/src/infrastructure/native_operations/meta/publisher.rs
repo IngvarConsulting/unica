@@ -522,11 +522,12 @@ pub(crate) fn prepare_meta_add(
         super::template_source::MetadataTemplateReadAdapter::new(&source, context, None);
     let mut post_image = unica_metadata_designer::template_catalog::minimal_object(
         &template_reader.source(),
-        request.kind,
+        unica_metadata::CreatableKind::Typed(request.kind),
         &request.name,
         unica_metadata_designer::template_catalog::MetadataTemplateOperationOverrides {
             source: source_is_replaced_by_operation,
             handler: handler_is_replaced_by_operation,
+            language_codes: None,
         },
         &request.source_set,
         &language,

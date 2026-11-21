@@ -5,12 +5,13 @@ exclude = ["crates/unica-research"]
 resolver = "2"
 
 [workspace.package]
-version = "0.16.0"
+version = "0.17.0"
 edition = "2021"
 license = "LGPL-3.0-or-later"
 repository = "https://github.com/IngvarConsulting/unica"
 
 [workspace.dependencies]
+sentry = { version = "=0.49.6", default-features = false, features = ["panic", "backtrace"] }
 base64 = "0.22.1"
 # Keep these revisions aligned with the bundled analyzer in tools.lock.json.
 bsl-parser = { package = "parser", git = "https://github.com/itrous/bsl-analyzer", rev = "0a82ed78e597dc3ffb1bbaebc66a98974a988435" }

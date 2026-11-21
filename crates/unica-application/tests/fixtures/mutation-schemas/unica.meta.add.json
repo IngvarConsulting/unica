@@ -978,7 +978,8 @@
           "EventSubscription",
           "HTTPService",
           "WebService",
-          "DefinedType"
+          "DefinedType",
+          "CommandGroup"
         ],
         "type": "string"
       },
@@ -1017,6 +1018,15 @@
                     },
                     "BasePeriod": {
                       "type": "boolean"
+                    },
+                    "Category": {
+                      "enum": [
+                        "NavigationPanel",
+                        "ActionsPanel",
+                        "FormNavigationPanel",
+                        "FormCommandBar"
+                      ],
+                      "type": "string"
                     },
                     "CheckUnique": {
                       "type": "boolean"
@@ -1325,6 +1335,15 @@
                       ],
                       "type": "string"
                     },
+                    "Representation": {
+                      "enum": [
+                        "Auto",
+                        "Text",
+                        "Picture",
+                        "PictureAndText"
+                      ],
+                      "type": "string"
+                    },
                     "RestartCountOnFailure": {
                       "maximum": 4294967295,
                       "minimum": 0,
@@ -1387,6 +1406,10 @@
                       "type": "string"
                     },
                     "Synonym": {
+                      "pattern": "^\\s*(?:[A-Za-z0-9_-]+\\s*=\\s*'(?:[^']|'')*'\\s*(?:;\\s*[A-Za-z0-9_-]+\\s*=\\s*'(?:[^']|'')*'\\s*)*;?\\s*)?$",
+                      "type": "string"
+                    },
+                    "ToolTip": {
                       "pattern": "^\\s*(?:[A-Za-z0-9_-]+\\s*=\\s*'(?:[^']|'')*'\\s*(?:;\\s*[A-Za-z0-9_-]+\\s*=\\s*'(?:[^']|'')*'\\s*)*;?\\s*)?$",
                       "type": "string"
                     },

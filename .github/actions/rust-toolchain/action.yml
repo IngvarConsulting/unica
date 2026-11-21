@@ -1,0 +1,110 @@
+name: Rust из rust-toolchain.toml
+description: >-
+  Ставит версию Rust, закреплённую в rust-toolchain.toml. На раннерах PVE
+  версия установлена заранее, и шаг сеть не трогает; на GitHub-hosted установка
+  повторяется при любом сбое загрузки.
+outputs:
+  name:
+    description: Имя версии для `cargo +<name>`.
+    value: ${{ steps.parse.outputs.toolchain }}
+  cachekey:
+    description: Дата и хеш коммита rustc, 12 знаков, как у dtolnay/rust-toolchain.
+    value: ${{ steps.version.outputs.cachekey }}
+runs:
+  using: composite
+  steps:
+    - id: parse
+      name: Версия из rust-toolchain.toml
+      shell: bash
+      run: |
+        file="$GITHUB_WORKSPACE/rust-toolchain.toml"
+        toolchain=$(sed -n 's/^channel *= *"\([^"]*\)".*$/\1/p' "$file")
+        components=$(sed -n 's/^components *= *\[\(.*\)\].*$/\1/p' "$file" | tr -d '" ')
+        if [ -z "$toolchain" ]; then
+          echo "::error file=rust-toolchain.toml::в rust-toolchain.toml нет channel" >&2
+          exit 1
+        fi
+        echo "toolchain=$toolchain" >> "$GITHUB_OUTPUT"
+        echo "components=$components" >> "$GITHUB_OUTPUT"
+    # Переменные `CARGO*` входят в ключ rust-cache: те же значения, что
+    # выставлял dtolnay/rust-toolchain, сохраняют прежние ключи.
+    - name: CARGO_HOME
+      shell: bash
+      run: echo CARGO_HOME=${CARGO_HOME:-"${{ runner.os == 'Windows' && '$USERPROFILE\.cargo' || '$HOME/.cargo' }}"} >> "$GITHUB_ENV"
+    # Внутри рабочей копии rustup доставляет компоненты из rust-toolchain.toml
+    # даже при RUSTUP_AUTO_INSTALL=0; вне её он только читает установленное.
+    - name: Предустановленная версия (PVE)
+      if: runner.environment == 'self-hosted'
+      shell: bash
+      working-directory: ${{ runner.temp }}
+      env:
+        toolchain: ${{ steps.parse.outputs.toolchain }}
+        components: ${{ steps.parse.outputs.components }}
+        RUSTUP_AUTO_INSTALL: "0"
+      run: |
+        missing=""
+        if ! rustup toolchain list | grep -q "^$toolchain-"; then
+          missing="$toolchain"
+        else
+          installed=$(rustup component list --installed --toolchain "$toolchain")
+          for component in ${components//,/ }; do
+            echo "$installed" | grep -q "^$component-" || missing="$missing $component"
+          done
+        fi
+        if [ -n "$missing" ]; then
+          {
+            echo "::error::На раннере $RUNNER_NAME нет Rust $toolchain или компонентов:$missing."
+            echo "Подготовьте раннер от его пользователя:"
+            echo "  rustup toolchain install $toolchain --profile minimal --component ${components//,/ --component }"
+          } >&2
+          exit 1
+        fi
+    - name: Установка с повтором (GitHub-hosted)
+      if: runner.environment != 'self-hosted'
+      shell: bash
+      env:
+        toolchain: ${{ steps.parse.outputs.toolchain }}
+        components: ${{ steps.parse.outputs.components }}
+      run: |
+        flags=""
+        for component in ${components//,/ }; do flags="$flags --component $component"; done
+        for attempt in 1 2 3 4 5; do
+          # shellcheck disable=SC2086
+          if rustup toolchain install "$toolchain" $flags --profile minimal --no-self-update; then
+            exit 0
+          fi
+          if [ "$attempt" = 5 ]; then
+            exit 1
+          fi
+          echo "Повтор установки Rust $toolchain через $((attempt * 20)) с ($attempt из 4)" >&2
+          sleep $((attempt * 20))
+        done
+    - name: Версия по умолчанию
+      shell: bash
+      working-directory: ${{ runner.temp }}
+      env:
+        toolchain: ${{ steps.parse.outputs.toolchain }}
+        RUSTUP_AUTO_INSTALL: "0"
+      run: rustup default "$toolchain"
+    - id: version
+      name: Ключ кэша
+      shell: bash
+      working-directory: ${{ runner.temp }}
+      env:
+        toolchain: ${{ steps.parse.outputs.toolchain }}
+        RUSTUP_AUTO_INSTALL: "0"
+      run: |
+        verbose=$(rustc +"$toolchain" --version --verbose)
+        echo "$verbose"
+        date=$(echo "$verbose" | sed -ne 's/^commit-date: \(20[0-9][0-9]\)-\([01][0-9]\)-\([0-3][0-9]\)$/\1\2\3/p')
+        hash=$(echo "$verbose" | sed -ne 's/^commit-hash: //p')
+        echo "cachekey=$(echo "$date$hash" | head -c12)" >> "$GITHUB_OUTPUT"
+    - name: CARGO_INCREMENTAL и CARGO_TERM_COLOR
+      shell: bash
+      run: |
+        if [ -z "${CARGO_INCREMENTAL+set}" ]; then
+          echo CARGO_INCREMENTAL=0 >> "$GITHUB_ENV"
+        fi
+        if [ -z "${CARGO_TERM_COLOR+set}" ]; then
+          echo CARGO_TERM_COLOR=always >> "$GITHUB_ENV"
+        fi

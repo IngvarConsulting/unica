@@ -13,9 +13,16 @@ pub enum OperationApplicability {
     ConfigurationRoot,
     Event,
     ExtensionRoot,
+    ExternalDataSourceRoot,
+    ExternalDataCube,
+    ExternalDataTable,
+    MetadataDimensionsOrExternalCube,
+    MetadataResourcesOrExternalCube,
     Interface,
     InterfaceGroup,
     Metadata,
+    /// A typed metadata object whose descriptor may carry `Ext/Help`.
+    MetadataWithHelp,
     MetadataRelations,
     MetadataOrCommonTemplate,
     MetadataAttribute,
@@ -65,6 +72,9 @@ pub fn support_record_path(segments: &[unica_address::address::AddressSegment]) 
     {
         return false;
     }
+    if owner.kind() == NodeKind::ExternalDataSource {
+        return crate::external_data_source::kind(segments).is_some();
+    }
     let kinds = rest
         .iter()
         .map(|segment| segment.kind())
@@ -89,11 +99,17 @@ impl OperationApplicability {
             Self::Configuration => "`Configuration`",
             Self::ConfigurationRoot => "`Configuration` of a configuration, not of an extension",
             Self::ExtensionRoot => "`Configuration` of an extension",
+            Self::ExternalDataSourceRoot => "`ExternalDataSource.Name` of an ordinary configuration",
+            Self::ExternalDataCube => "`ExternalDataSource.S.Cube.C` of an ordinary configuration",
+            Self::ExternalDataTable => "`ExternalDataSource.S.Table.T` or `ExternalDataSource.S.Cube.C.DimensionTable.T` of an ordinary configuration",
+            Self::MetadataDimensionsOrExternalCube => "a register with dimensions or `ExternalDataSource.S.Cube.C`",
+            Self::MetadataResourcesOrExternalCube => "a register with resources or `ExternalDataSource.S.Cube.C`",
             Self::Metadata => "`Kind.Name`",
             Self::MetadataRelations => "`Kind.Name` of a kind with supported relations",
+            Self::MetadataWithHelp => "`Kind.Name` of a kind with a help page",
             Self::MetadataOrCommonTemplate => "`Kind.Name` or `CommonTemplate.Name`",
             Self::SupportRule => {
-                "`Configuration` of a configuration, `Kind.Name` or its node with an own support record: `.Form.F`, `.Template.T`, `.Command.C`, `.Attribute.A`, `.TabularSection.T[.Attribute.A]`, `.Dimension.D`, `.Resource.R`; `Subsystem.A[.Subsystem.B…]`"
+                "`Configuration` of a configuration, `Kind.Name` or its node with an own support record: `.Form.F`, `.Template.T`, `.Command.C`, `.Attribute.A`, `.TabularSection.T[.Attribute.A]`, `.Dimension.D`, `.Resource.R`; external data source descendants; `Subsystem.A[.Subsystem.B…]`"
             }
             Self::MetadataOrRoleOrSubsystem => {
                 "`Configuration`, `Kind.Name`, `CommonForm.Name.Metadata`, `Kind.Name.Form.Name.Metadata`, `Role.Name`, `Subsystem.Name[.Subsystem.Child]` or `Catalog.Name.StandardAttribute.Owner`"
@@ -131,7 +147,26 @@ impl OperationApplicability {
     pub fn matches(self, site: &OperationSite<'_>) -> bool {
         let segments = site.segments();
         let terminal = site.terminal();
+        let external = || {
+            (site.source().kind() == SourceSetKind::Configuration
+                && site.route() == RouteClass::Metadata)
+                .then(|| crate::external_data_source::kind(segments))
+                .flatten()
+        };
         match self {
+            Self::ExternalDataSourceRoot => external() == Some(NodeKind::ExternalDataSource),
+            Self::ExternalDataCube => external() == Some(NodeKind::Cube),
+            Self::ExternalDataTable => {
+                matches!(external(), Some(NodeKind::Table | NodeKind::DimensionTable))
+            }
+            Self::MetadataDimensionsOrExternalCube => {
+                external() == Some(NodeKind::Cube)
+                    || site.metadata_owner_with(MetaCollection::Dimensions)
+            }
+            Self::MetadataResourcesOrExternalCube => {
+                external() == Some(NodeKind::Cube)
+                    || site.metadata_owner_with(MetaCollection::Resources)
+            }
             Self::ExchangePlan => {
                 matches!(segments, [only] if only.kind() == NodeKind::ExchangePlan && only.name().is_some())
             }
@@ -145,6 +180,9 @@ impl OperationApplicability {
                     && site.source().kind() == SourceSetKind::Extension
             }
             Self::Metadata => site.metadata_object().is_some(),
+            Self::MetadataWithHelp => site
+                .metadata_object()
+                .is_some_and(crate::metadata_kind_has_help),
             Self::MetadataRelations => site
                 .metadata_object()
                 .is_some_and(|kind| !crate::metadata_relation_specs(kind).is_empty()),

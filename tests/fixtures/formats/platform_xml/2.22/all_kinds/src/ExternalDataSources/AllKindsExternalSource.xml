@@ -23,6 +23,23 @@
 		</Properties>
 		<ChildObjects>
 			<Table>Items</Table>
+			<Cube>Sales</Cube>
+			<Function uuid="8c3df80c-cd57-5e1c-af7b-17e2dbd81f02">
+				<Properties>
+					<Name>Total</Name>
+					<Synonym/>
+					<Comment/>
+					<ReturnValue>true</ReturnValue>
+					<Type>
+						<v8:Type>xs:string</v8:Type>
+						<v8:StringQualifiers>
+							<v8:Length>10</v8:Length>
+							<v8:AllowedLength>Variable</v8:AllowedLength>
+						</v8:StringQualifiers>
+					</Type>
+					<ExpressionInDataSource/>
+				</Properties>
+			</Function>
 		</ChildObjects>
 	</ExternalDataSource>
 </MetaDataObject>

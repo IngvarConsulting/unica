@@ -15,6 +15,7 @@ default = []
 test-support = ["unica-daemon-protocol/test-support", "dep:jsonschema", "dep:tempfile", "dep:unica-workspace", "unica-workspace?/test-support"]
 
 [dependencies]
+unica-error-reporting = { path = "../unica-error-reporting" }
 unica-application = { path = "../unica-application" }
 unica-bootstrap = { path = "../unica-bootstrap" }
 unica-code-intelligence = { path = "../unica-code-intelligence" }

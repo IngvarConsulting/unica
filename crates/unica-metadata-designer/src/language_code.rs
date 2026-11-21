@@ -124,7 +124,9 @@ pub(crate) fn replace(text: &str, name: &str, code: &str) -> Result<String, Stri
     Ok(result)
 }
 
-fn same(left: &str, right: &str) -> bool {
+/// Whether two language codes collide: the platform compares them
+/// without case.
+pub(crate) fn same(left: &str, right: &str) -> bool {
     left.to_lowercase() == right.to_lowercase()
 }
 fn error(kind: ApplyPlanErrorKind, path: &Path, message: impl Into<String>) -> ApplyPlanError {

@@ -40,6 +40,7 @@ pub enum DescriptorPropertyValue {
     Parts(Vec<(&'static str, String)>),
     /// Distinct values of a closed enumeration, in the order given.
     List(Vec<String>),
+    References(Vec<String>),
 }
 
 /// Form descriptor property changes in profile order; each property appears
@@ -65,6 +66,7 @@ pub struct WsReferencePropertyChanges {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PropertiesIntent {
+    ExternalDataSource(crate::external_data_source::Changes),
     DocumentNumerator(crate::document_numerator::DocumentNumeratorChanges),
     Metadata(MetaPropertyChanges),
     LanguageCode {
@@ -441,6 +443,29 @@ impl<'a> PropertyArgumentReader<'a> {
         Ok(Some(values))
     }
 
+    fn reference_list(&mut self, field: DescriptorProperty) -> DecodeResult<Option<Vec<String>>> {
+        let Some((value, path)) = self.alias(field)? else {
+            return Ok(None);
+        };
+        let items = value
+            .as_array()
+            .ok_or_else(|| invalid(&path, "property value must be an array"))?;
+        let mut references = Vec::with_capacity(items.len());
+        let mut seen = std::collections::HashSet::with_capacity(items.len());
+        for (index, item) in items.iter().enumerate() {
+            let item_path = format!("{path}[{index}]");
+            let reference = item
+                .as_str()
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| invalid(&item_path, "item must be a nonempty address string"))?;
+            if !seen.insert(reference) {
+                return Err(invalid(item_path, "reference is listed twice"));
+            }
+            references.push(reference.to_string());
+        }
+        Ok(Some(references))
+    }
+
     fn finish<T>(self, decoded: T) -> DecodeResult<T> {
         for name in self.object.keys() {
             if self.shape.property(name).is_none() {
@@ -530,10 +555,21 @@ fn decode_with_contract(
                 .property("values")
                 .expect("declared values field");
             let mut values_reader = PropertyArgumentReader::new(values, shape, &values_path)?;
+            if let PropertiesSite::ExternalDataSource(kind) = site {
+                let changes = crate::external_data_source::decode_values(
+                    kind,
+                    values_reader.object,
+                    &values_path,
+                )?;
+                return reader.finish(PropertiesIntent::ExternalDataSource(changes));
+            }
             if values_reader.object.is_empty() {
                 return Err(invalid(&values_path, "property changes must not be empty"));
             }
             let intent = match site {
+                PropertiesSite::ExternalDataSource(_) => {
+                    unreachable!("external source properties decoded above")
+                }
                 PropertiesSite::CatalogOwner => {
                     let value = values_reader
                         .field("FillFromFillingValue", false)?
@@ -779,6 +815,9 @@ fn decode_with_contract(
                             DescriptorPropertyKind::List => values_reader
                                 .list(field, &field.allowed_values_in(line))?
                                 .map(DescriptorPropertyValue::List),
+                            DescriptorPropertyKind::ReferenceList => values_reader
+                                .reference_list(field)?
+                                .map(DescriptorPropertyValue::References),
                         };
                         if let Some(value) = value {
                             changes.push((field, value));
@@ -802,7 +841,8 @@ fn decode_with_contract(
                             DescriptorPropertyKind::List => values_reader
                                 .list(field, field.allowed_values())?
                                 .map(DescriptorPropertyValue::List),
-                            DescriptorPropertyKind::Parts => {
+                            DescriptorPropertyKind::Parts
+                            | DescriptorPropertyKind::ReferenceList => {
                                 return Err(invalid(
                                     &values_path,
                                     "form descriptor has no composite property",
@@ -1021,7 +1061,7 @@ mod tests {
                     MetaPropertyValueKind::UnsignedInteger => {
                         (json!(0.0), MetaPropertyValue::UnsignedInteger(0))
                     }
-                    MetaPropertyValueKind::String if spec.key == MetaPropertyKey::Synonym => (
+                    MetaPropertyValueKind::String if spec.key.is_localized() => (
                         json!("ru = 'property text'"),
                         MetaPropertyValue::Localized(vec![crate::LocalizedItem {
                             language: "ru".into(),
@@ -1172,6 +1212,7 @@ mod tests {
                             json!({field.parts()[0][0]: field.allowed_values()[0]})
                         }
                         DescriptorPropertyKind::List => json!([field.allowed_values()[0]]),
+                        DescriptorPropertyKind::ReferenceList => json!([]),
                     };
                     assert!(
                         decode(site, json!({"values":{*spelling:value}})).is_ok(),
@@ -1224,6 +1265,7 @@ mod tests {
                             json!({field.parts()[0][0]: field.allowed_values()[0]})
                         }
                         DescriptorPropertyKind::List => json!([field.allowed_values()[0]]),
+                        DescriptorPropertyKind::ReferenceList => json!([]),
                     };
                     let other = if equal { value.clone() } else { json!(false) };
                     let error = decode(site, json!({"values":{names[0]:value,names[1]:other}}))
@@ -1238,6 +1280,7 @@ mod tests {
                         DescriptorPropertyKind::Enum => json!("NotAPlatformValue"),
                         DescriptorPropertyKind::Parts => json!("Error"),
                         DescriptorPropertyKind::List => json!("PlatformApplication"),
+                        DescriptorPropertyKind::ReferenceList => json!("main:Role.Reader"),
                     };
                     assert_eq!(
                         decode(site, json!({"values":{*spelling:invalid}}))

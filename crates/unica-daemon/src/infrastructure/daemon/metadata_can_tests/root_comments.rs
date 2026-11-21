@@ -219,6 +219,10 @@ fn medium_root_comments_preview_publish_read_and_repeat_preserve_native_companio
             } else if kind == "StyleItem" || kind == "Language" {
                 // Comment, its alias and Value or LanguageCode.
                 3
+            } else if kind == "CommandGroup" {
+                // Типизированный вид (#2060): Synonym, Comment, Representation,
+                // ToolTip и Category, без псевдонимов.
+                5
             } else if kind == "DocumentNumerator" {
                 // Five numerator scalars plus Comment and its alias.
                 7
@@ -285,7 +289,10 @@ fn medium_root_comments_preview_publish_read_and_repeat_preserve_native_companio
             let repeated = publish(
                 &runtime,
                 &fixture,
-                json!({"at":at,"ops":[{"op":"props.set","args":{"values":{"comment":text}}}]}),
+                // У типизированного вида (#2060) псевдонима `comment` нет.
+                json!({"at":at,"ops":[{"op":"props.set","args":{"values":{
+                    if kind == "CommandGroup" { "Comment" } else { "comment" }: text
+                }}}]}),
             );
             assert_eq!(repeated.data.as_ref().unwrap()["effects"], 0, "{at}");
             assert_eq!(
@@ -310,7 +317,30 @@ fn medium_root_comment_refusals_and_late_batch_failure_do_not_publish_any_file()
         let path = fixture.source.join(directory).join(format!("{name}.xml"));
         let original = std::fs::read(&path).unwrap();
         let source = String::from_utf8(original.clone()).unwrap();
-        for damaged in [
+        // Типизированный вид (#2060) не находит отсутствующее свойство, как
+        // любой вид метаданных; повреждённое присутствующее — дефект источника.
+        if kind == "CommandGroup" {
+            std::fs::write(&path, source.replace("<Comment/>", "")).unwrap();
+            let before = unica_workspace::test_support::tree_snapshot(&fixture.source);
+            let result = call(
+                &runtime,
+                &fixture,
+                ToolIdentity::Apply,
+                json!({"at":at,"ops":[{"op":"props.set","args":{"values":{"Comment":"rejected"}}}]}),
+            );
+            assert!(!result.ok, "{at}: {result:?}");
+            assert!(
+                result
+                    .summary
+                    .contains("is not present on this metadata object"),
+                "{at}: {result:?}"
+            );
+            assert_eq!(
+                unica_workspace::test_support::tree_snapshot(&fixture.source),
+                before
+            );
+        }
+        let damaged_images = [
             source.replace("<Comment/>", ""),
             source.replace("<Comment/>", "<Comment/><Comment/>"),
             source.replace("<Comment/>", "<Comment><Child/></Comment>"),
@@ -318,7 +348,9 @@ fn medium_root_comment_refusals_and_late_batch_failure_do_not_publish_any_file()
             source.replace("<Comment/>", "<Comment key=\"x\"/>"),
             source.replace("version=\"2.20\"", "version=\"2.23\""),
             source.replace(&format!("<Name>{name}</Name>"), "<Name>Other</Name>"),
-        ] {
+        ];
+        let skip_absent = usize::from(kind == "CommandGroup");
+        for damaged in damaged_images.into_iter().skip(skip_absent) {
             std::fs::write(&path, damaged).unwrap();
             let before = unica_workspace::test_support::tree_snapshot(&fixture.source);
             let result = call(
@@ -327,7 +359,12 @@ fn medium_root_comment_refusals_and_late_batch_failure_do_not_publish_any_file()
                 ToolIdentity::Apply,
                 json!({"at":at,"ops":[{"op":"props.set","args":{"values":{"Comment":"rejected"}}}]}),
             );
-            assert_source_refusal(&result, &at);
+            if kind == "CommandGroup" {
+                // Типизированный вид отказывает своим путём; записи нет.
+                assert!(!result.ok, "{at}: {result:?}");
+            } else {
+                assert_source_refusal(&result, &at);
+            }
             assert_eq!(
                 unica_workspace::test_support::tree_snapshot(&fixture.source),
                 before
@@ -344,7 +381,11 @@ fn medium_root_comment_refusals_and_late_batch_failure_do_not_publish_any_file()
                 {"op":"props.set","args":{"values":{"Comment":"invalid\u{0}text"}}}
             ]}),
         );
-        assert_source_refusal(&result, &at);
+        if kind == "CommandGroup" {
+            assert!(!result.ok, "{at}: {result:?}");
+        } else {
+            assert_source_refusal(&result, &at);
+        }
         assert_eq!(
             unica_workspace::test_support::tree_snapshot(&fixture.source),
             before

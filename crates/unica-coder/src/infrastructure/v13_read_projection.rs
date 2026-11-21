@@ -763,14 +763,20 @@ pub(super) fn project_configuration_with_counts(
             _ => {}
         }
     }
-    if let Some(roles) = props
-        .get_mut("properties")
-        .and_then(|properties| properties.get_mut("defaultRoles"))
-        .and_then(Value::as_array_mut)
-    {
-        for role in roles {
-            if let Some(reference) = role.as_str() {
-                *role = Value::String(format!("{}:{reference}", address.source_set()));
+    for key in std::iter::once("defaultRoles").chain(
+        unica_metadata::descriptor_operations::CONFIGURATION_REFERENCE_LISTS
+            .iter()
+            .map(|property| property.names()[1]),
+    ) {
+        if let Some(references) = props
+            .get_mut("properties")
+            .and_then(|properties| properties.get_mut(key))
+            .and_then(Value::as_array_mut)
+        {
+            for item in references {
+                if let Some(reference) = item.as_str() {
+                    *item = Value::String(format!("{}:{reference}", address.source_set()));
+                }
             }
         }
     }
@@ -857,65 +863,6 @@ pub(super) struct MemberSupport {
     pub(super) limits: Vec<String>,
 }
 
-/// Порядок групп дерева Конфигуратора 8.3.27: «Общие» (от подсистем до
-/// языков), затем константы, справочники, документы с нумераторами и
-/// последовательностями, журналы и далее до задач. Выгрузка пишет виды
-/// в другом порядке; дерево показывает этот.
-const CONFIGURATOR_ROOT_ORDER: &[NodeKind] = &[
-    NodeKind::Subsystem,
-    NodeKind::CommonModule,
-    NodeKind::SessionParameter,
-    NodeKind::Role,
-    NodeKind::CommonAttribute,
-    NodeKind::ExchangePlan,
-    NodeKind::FilterCriterion,
-    NodeKind::EventSubscription,
-    NodeKind::ScheduledJob,
-    // Очереди: дерево Конфигуратора 8.5.4, между регламентными
-    // заданиями и ботами.
-    NodeKind::Queue,
-    NodeKind::Bot,
-    NodeKind::FunctionalOption,
-    NodeKind::FunctionalOptionsParameter,
-    NodeKind::DefinedType,
-    NodeKind::SettingsStorage,
-    NodeKind::CommonCommand,
-    NodeKind::CommandGroup,
-    NodeKind::CommonForm,
-    NodeKind::CommonTemplate,
-    NodeKind::CommonPicture,
-    NodeKind::XdtoPackage,
-    NodeKind::WebService,
-    NodeKind::HttpService,
-    NodeKind::WsReference,
-    NodeKind::WebSocketClient,
-    NodeKind::IntegrationService,
-    // Цвета палитры: дерево Конфигуратора 8.5.4, между сервисами интеграции
-    // и элементами стиля.
-    NodeKind::PaletteColor,
-    NodeKind::StyleItem,
-    NodeKind::Style,
-    NodeKind::Language,
-    NodeKind::Constant,
-    NodeKind::Catalog,
-    NodeKind::Document,
-    NodeKind::DocumentNumerator,
-    NodeKind::Sequence,
-    NodeKind::DocumentJournal,
-    NodeKind::Enum,
-    NodeKind::Report,
-    NodeKind::DataProcessor,
-    NodeKind::ChartOfCharacteristicTypes,
-    NodeKind::ChartOfAccounts,
-    NodeKind::ChartOfCalculationTypes,
-    NodeKind::InformationRegister,
-    NodeKind::AccumulationRegister,
-    NodeKind::AccountingRegister,
-    NodeKind::CalculationRegister,
-    NodeKind::BusinessProcess,
-    NodeKind::Task,
-];
-
 /// Ветви корня: каждый вид метаданных, который профиль платформы допускает
 /// в корне, в порядке дерева Конфигуратора, в том числе пустой (`count: 0`),
 /// чтобы «пусто» отличалось от «вид не поддержан» (#2153). Вид вне этого
@@ -942,8 +889,8 @@ fn root_branches(
     let mut branches = Vec::new();
     let remaining = NodeKind::metadata_kinds()
         .iter()
-        .filter(|kind| !CONFIGURATOR_ROOT_ORDER.contains(kind));
-    for kind in CONFIGURATOR_ROOT_ORDER.iter().chain(remaining) {
+        .filter(|kind| !NodeKind::configurator_tree_order().contains(kind));
+    for kind in NodeKind::configurator_tree_order().iter().chain(remaining) {
         let kind = kind.as_str();
         let count = counts.remove(kind).unwrap_or(0);
         let at = format!("{source_set}:{kind}");
@@ -969,18 +916,20 @@ fn root_branches(
 }
 
 /// Подчинённые объекты и корни внешних обработок в корне конфигурации не
-/// живут: их ветвь пустой не выдаётся.
+/// живут: их ветвь пустой не выдаётся. Вложенные виды со своим местом во
+/// владельце (таблица и куб внешнего источника) — тоже.
 fn is_root_branch_kind(branch: &QualifiedAddress) -> bool {
+    let Some(kind) = branch.segments().first().map(AddressSegment::kind) else {
+        return true;
+    };
     !matches!(
-        branch.segments().first().map(AddressSegment::kind),
-        Some(
-            NodeKind::Form
-                | NodeKind::Template
-                | NodeKind::Command
-                | NodeKind::ExternalDataProcessor
-                | NodeKind::ExternalReport
-        )
-    )
+        kind,
+        NodeKind::Form
+            | NodeKind::Template
+            | NodeKind::Command
+            | NodeKind::ExternalDataProcessor
+            | NodeKind::ExternalReport
+    ) && kind.declaration().nested.is_none()
 }
 
 pub(super) fn project_registered_metadata_branch(
@@ -1002,6 +951,26 @@ pub(super) fn project_registered_metadata_branch(
         .filter(|item| item.get("kind").and_then(Value::as_str) == Some(kind.as_str()))
         .filter_map(|item| item.get("name").and_then(Value::as_str));
     project_registered_metadata_branch_names_inner(address, kind, names, support)
+}
+
+pub(super) fn project_ordinary_interface(
+    address: &QualifiedAddress,
+    name: &str,
+    synonym: Option<String>,
+) -> NodeViewData {
+    let key = "Synonym";
+    let kind = NodeKind::OrdinaryInterface.as_str();
+    let mut props = Map::new();
+    props.insert("Name".to_owned(), json!(name));
+    let mut limits = Vec::new();
+    if let Some(synonym) = synonym {
+        if synonym.len() <= prop_limit(key) {
+            props.insert(key.to_owned(), json!(synonym));
+        } else {
+            limits.push(compact_limit(key, address, key));
+        }
+    }
+    NodeViewData::Node(NodeView::new(address.to_string(), kind, name, props).with_limits(limits))
 }
 
 pub(super) fn project_registered_metadata_branch_names(

@@ -121,6 +121,7 @@ fn minimal_templates_emit_child_objects_only_where_the_kind_declares_them() {
     // descriptors every kind is all-or-nothing, never mixed — and confirmed by
     // the exact platform gate, where every other kind imports with the element.
     const CHILDLESS: &[MetadataKind] = &[
+        MetadataKind::CommandGroup,
         MetadataKind::CommonModule,
         MetadataKind::Constant,
         MetadataKind::DefinedType,
@@ -162,9 +163,10 @@ fn business_process_template_names_its_mandatory_task() {
         event_handler: None,
         dependencies: Vec::new(),
         language: "ru".to_string(),
+        new_language_code: None,
     };
     let (xml, _) = crate::template_catalog::minimal_metadata_xml(
-        MetadataKind::BusinessProcess,
+        unica_metadata::CreatableKind::Typed(MetadataKind::BusinessProcess),
         "Evidence",
         "2.20",
         &context,
@@ -191,9 +193,10 @@ fn document_journal_template_registers_its_mandatory_document() {
         event_handler: None,
         dependencies: Vec::new(),
         language: "ru".to_string(),
+        new_language_code: None,
     };
     let (xml, _) = crate::template_catalog::minimal_metadata_xml(
-        MetadataKind::DocumentJournal,
+        unica_metadata::CreatableKind::Typed(MetadataKind::DocumentJournal),
         "Evidence",
         "2.20",
         &context,
@@ -300,4 +303,36 @@ fn typed_auxiliary_xml_matches_platform_fixtures() {
     assert_eq!(process.len(), 1);
     assert!(process[0].2.contains("<GraphicalSchema "));
     assert!(process[0].2.contains("<Items/>"));
+}
+
+/// Новая группа команд совпадает с той, что создаёт Конфигуратор 8.3.27
+/// с умолчаниями. Различаются идентификатор объекта и синоним: эталон создан
+/// без интерфейса, а `object.create` у всех видов выводит синоним из имени.
+#[test]
+fn command_group_template_matches_configurator_defaults() {
+    let platform = include_str!(
+        "../../../../tests/fixtures/formats/platform_xml/2.20/command_group/CommandGroup.xml"
+    )
+    .replace("\r\n", "\n");
+    let (xml, _) = crate::template_catalog::minimal_metadata_xml_for_tests(
+        MetadataKind::CommandGroup,
+        "ГруппаКоманд1",
+    )
+    .unwrap();
+    let uuid = |text: &str| {
+        let start = text.find(" uuid=\"").unwrap() + 7;
+        text[start..start + 36].to_string()
+    };
+    let xml = xml
+        .replace("\r\n", "\n")
+        .replace(&uuid(&xml), &uuid(&platform));
+    let synonym = "\t\t\t<Synonym>\n\t\t\t\t<v8:item>\n\t\t\t\t\t<v8:lang>ru</v8:lang>\n\
+                   \t\t\t\t\t<v8:content>Группа команд 1</v8:content>\n\t\t\t\t</v8:item>\n\
+                   \t\t\t</Synonym>";
+    assert!(xml.contains(synonym), "{xml}");
+    let xml = xml.replace(synonym, "\t\t\t<Synonym/>");
+    assert_eq!(
+        xml.trim_start_matches('\u{feff}'),
+        platform.trim_start_matches('\u{feff}')
+    );
 }
