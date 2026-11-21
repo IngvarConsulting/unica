@@ -216,6 +216,14 @@ fn medium_published_document_and_bsl_branches_have_canonical_addresses() {
             &["main:XDTOPackage.ПримерФормата"][..],
         ),
         (
+            "workspace-command-groups",
+            &["main:Subsystem.Подсистема1"][..],
+        ),
+        (
+            "workspace-configuration-support",
+            &["main:Module.ManagedApplication"][..],
+        ),
+        (
             "workspace-role-comment-subsystem-help",
             &["main:Role.Reader"][..],
         ),
@@ -248,6 +256,29 @@ fn medium_published_document_and_bsl_branches_have_canonical_addresses() {
         );
         for at in addresses {
             table.extend(check_branches(&runtime, &fixture.workspace, at));
+        }
+        if name == "workspace-command-groups" {
+            let interface = "main:Subsystem.Подсистема1.Interface";
+            let group = format!("{interface}.Group");
+            for at in [interface, &format!("{interface}.Command"), &group] {
+                assert!(table.iter().any(|(_, _, row, _)| row == at), "{at}");
+            }
+            let (_, groups) = read_view(&runtime, &fixture.workspace, &group);
+            assert!(groups.iter().any(|row| {
+                row["at"].as_str()
+                    == Some(r"main:Subsystem.Подсистема1.Interface.Group.CommandGroup\.ГруппаБ")
+            }));
+        }
+        if name == "workspace-configuration-support" {
+            assert!(table
+                .iter()
+                .any(|(_, _, row, _)| row == "main:Module.ManagedApplication.Body"));
+            check_resource(
+                &runtime,
+                &fixture,
+                "main:Module.ManagedApplication",
+                "Ext/ManagedApplicationModule.bsl",
+            );
         }
         if name == "workspace-external-alias" {
             for (owner, stem) in [
