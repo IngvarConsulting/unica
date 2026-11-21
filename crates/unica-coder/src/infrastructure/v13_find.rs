@@ -12,7 +12,9 @@ use std::sync::Arc;
 use unica_address::address::{NodeKind, QualifiedAddress};
 use unica_bsl::profile::PlatformProfile;
 use unica_refusal::{RefusalCode, RefusalDetail};
-use unica_source_contract::read::{FileIdentity, SourceDirectory, SourceEntry, SourceFile};
+use unica_source_contract::read::{
+    FileIdentity, SourceDirectory, SourceEntry, SourceFile, SOURCE_TREE_TRAVERSAL_MAX_DEPTH,
+};
 use unica_source_contract::SourceSetKind;
 use unica_source_designer::layout::{
     metadata_kind_by_directory, ORDINARY_INTERFACE_DIRECTORY, ORDINARY_INTERFACE_XML_TAG,
@@ -39,11 +41,11 @@ const MAX_SOURCE_SETS: usize = 64;
 // unit: depth
 // scope: request
 // value: 8
-// resource: Число компонентов пути, по которому find сопоставляет точный путь ресурса.
+// resource: Число компонентов обычного точечного маршрута. Цепочки подсистем имеют собственный предел.
 // status: unproven
 // origin: 4288eaccd (#1510)
 // problem: неизвестно
-// on-reach: тихо: путь глубже 8 компонентов не сопоставляется как точный ресурс.
+// on-reach: тихо: обычный путь глубже 8 компонентов не сопоставляется как точный ресурс.
 const MAX_POINT_PATH_DEPTH: usize = 8;
 // resource-limit: find.directory-documents
 // class: corpus
@@ -568,7 +570,7 @@ impl WorkspaceFindDirectoryBuilder {
             }
         } else {
             for source in sources {
-                source_matches.push((1..=parts.len().min(MAX_POINT_PATH_DEPTH)).any(|depth| {
+                source_matches.push(point_path_depths(&parts).any(|depth| {
                     let tail = parts[parts.len() - depth..].join("/");
                     normalized != tail && source_path_ends_with_query(source, &normalized, &tail)
                 }));
@@ -583,7 +585,7 @@ impl WorkspaceFindDirectoryBuilder {
         // The full index chooses the longest stored path. Probe equal-length
         // candidates in every source set before trying shorter fallbacks, so
         // a damaged, unrelated fallback cannot block an exact target.
-        for depth in [8, 7, 6, 5, 4, 3, 2, 1] {
+        for depth in point_path_depths(&parts).rev() {
             let tail = parts
                 .len()
                 .checked_sub(depth)
@@ -732,6 +734,22 @@ impl WorkspaceFindDirectoryBuilder {
                 .as_ref()
                 .and_then(|names| names.get(index).copied())
         };
+        let tail = &parts[parts.len() - depth..];
+        if nested_subsystem_path(tail)
+            && matches!(
+                source.kind,
+                SourceSetKind::Configuration | SourceSetKind::Extension
+            )
+        {
+            return locate_nested_subsystem_path(
+                source,
+                tail,
+                physical_names.as_deref(),
+                deadline,
+                cancellation,
+                located,
+            );
+        }
         if matches!(
             source.kind,
             SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
@@ -2333,6 +2351,76 @@ impl WorkspaceFindDirectoryBuilder {
     }
 }
 
+/// Match the physical spelling through retained handles. The logical reader
+/// proves the registrations and descriptor names after path ambiguity is settled.
+fn locate_nested_subsystem_path(
+    source: &LayoutFindSource<'_>,
+    tail: &[&str],
+    physical_names: Option<&[&OsStr]>,
+    deadline: ProviderDeadline,
+    cancellation: &CancellationToken,
+    located: &mut Option<FindDocument>,
+) -> Result<(), FindBuildError> {
+    let mut directory = source.root.clone();
+    let mut relative = PathBuf::new();
+    let mut address = format!("{}:", source.name);
+    let kind = NodeKind::Subsystem.as_str();
+    for (index, component) in tail.iter().enumerate() {
+        let physical = physical_names.and_then(|names| names.get(index)).copied();
+        let Some(entry) = matching_names(&directory, component, physical, deadline, cancellation)?
+            .into_iter()
+            .next()
+        else {
+            return Ok(());
+        };
+        let Some(name) = entry.to_str() else {
+            return Ok(());
+        };
+        if index % 2 == 0 {
+            let collection = OsStr::new("Subsystems");
+            if !directory
+                .child_names_equivalent(&entry, collection)
+                .map_err(child_read_error)?
+            {
+                return Ok(());
+            }
+            relative.push(collection);
+            if index != 0 {
+                address.push('.');
+            }
+            address.push_str(kind);
+            address.push('.');
+        } else if index + 1 < tail.len() {
+            relative.push(&entry);
+            address.push_str(name);
+        }
+        match retain_enumerated_child(&directory, &entry, deadline, cancellation)? {
+            SourceEntry::Directory(next) if index + 1 < tail.len() => directory = next,
+            SourceEntry::RegularFile(file) if index + 1 == tail.len() => {
+                let Some((stem, _)) = name.rsplit_once('.') else {
+                    return Ok(());
+                };
+                let descriptor = format!("{stem}.xml");
+                if !directory
+                    .child_names_equivalent(&entry, OsStr::new(&descriptor))
+                    .map_err(child_read_error)?
+                {
+                    return Ok(());
+                }
+                relative.push(descriptor);
+                address.push_str(stem);
+                file.validate_named_identity().map_err(child_read_error)?;
+                return add_path_match(
+                    located,
+                    find_document(source, &address, kind, stem, None, &relative)?,
+                );
+            }
+            _ => return Err(unsafe_layout_entry()),
+        }
+    }
+    Ok(())
+}
+
 fn matching_names(
     directory: &SourceDirectory,
     normalized_name: &str,
@@ -2627,6 +2715,26 @@ fn absolute_query_relative_path(
     Ok(None)
 }
 
+fn nested_subsystem_path(parts: &[&str]) -> bool {
+    // The final component is the descriptor, not a traversed directory.
+    (4..=SOURCE_TREE_TRAVERSAL_MAX_DEPTH + 1).contains(&parts.len())
+        && parts.len().is_multiple_of(2)
+        && parts.last().is_some_and(|name| name.ends_with(".xml"))
+        && parts.iter().step_by(2).all(|part| *part == "subsystems")
+}
+
+fn point_path_depths<'a>(parts: &'a [&'a str]) -> impl DoubleEndedIterator<Item = usize> + 'a {
+    (1..=parts.len().min(SOURCE_TREE_TRAVERSAL_MAX_DEPTH + 1)).filter(|&depth| {
+        depth <= MAX_POINT_PATH_DEPTH || nested_subsystem_path(&parts[parts.len() - depth..])
+    })
+}
+
+fn is_nested_subsystem_relative_path(relative: &Path) -> bool {
+    let normalized = normalize_layout_path(&relative.to_string_lossy());
+    let parts = normalized.split('/').collect::<Vec<_>>();
+    nested_subsystem_path(&parts)
+}
+
 /// The selected source retains exactly the requested target through its own
 /// root; unrelated source trees and their descriptors are not consulted.
 fn retain_absolute_target(
@@ -2636,7 +2744,8 @@ fn retain_absolute_target(
     cancellation: &CancellationToken,
 ) -> Result<Option<AbsoluteTargetWitness>, FindBuildError> {
     let depth = relative.components().count();
-    if !(1..=MAX_POINT_PATH_DEPTH).contains(&depth) {
+    if !(1..=MAX_POINT_PATH_DEPTH).contains(&depth) && !is_nested_subsystem_relative_path(relative)
+    {
         return Ok(None);
     }
     let mut current = source.root.clone();
@@ -2699,7 +2808,7 @@ fn absolute_query_matches_placement(
     let requested = witness.relative.components().collect::<Vec<_>>();
     let placed = Path::new(placed_path).components().collect::<Vec<_>>();
     let depth = requested.len();
-    if depth != placed.len() || !(1..=MAX_POINT_PATH_DEPTH).contains(&depth) {
+    if depth != placed.len() {
         return Ok(false);
     }
     let mut parent = source.root.clone();
@@ -4135,20 +4244,26 @@ mod tests {
     fn point_lookup_refuses_ambiguous_paths_across_admitted_sources() {
         let first = Fixture::new();
         let second = Fixture::new();
+        let subsystem_path = "Subsystems/Sales/Subsystems/Returns.xml";
+        for source in [&first.source, &second.source] {
+            write(&source.join(subsystem_path), "<broken");
+        }
         let first_root = unica_workspace::read::open_source_directory(&first.source).unwrap();
         let second_root = unica_workspace::read::open_source_directory(&second.source).unwrap();
-        let error = WorkspaceFindDirectoryBuilder::default()
-            .locate_path(
-                &[
-                    LayoutFindSource::new("main", SourceSetKind::Configuration, &first_root),
-                    LayoutFindSource::new("other", SourceSetKind::Configuration, &second_root),
-                ],
-                "Catalogs/Валюты.xml",
-                ProviderDeadline::from_budget(Duration::from_secs(7)),
-                &CancellationToken::new(),
-            )
-            .expect_err("a suffix shared by two objects cannot select one");
-        assert_eq!(error.code(), RefusalCode::BadValue);
+        for path in ["Catalogs/Валюты.xml", subsystem_path] {
+            let error = WorkspaceFindDirectoryBuilder::default()
+                .locate_path(
+                    &[
+                        LayoutFindSource::new("main", SourceSetKind::Configuration, &first_root),
+                        LayoutFindSource::new("other", SourceSetKind::Configuration, &second_root),
+                    ],
+                    path,
+                    ProviderDeadline::from_budget(Duration::from_secs(7)),
+                    &CancellationToken::new(),
+                )
+                .expect_err("a path shared by two candidates cannot select one");
+            assert_eq!(error.code(), RefusalCode::BadValue, "{path}");
+        }
     }
 
     /// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
@@ -4355,6 +4470,26 @@ mod tests {
             )
             .expect_err("the existing external target must declare its actual kind");
         assert_eq!(error.code(), RefusalCode::InvalidSource);
+    }
+
+    #[test]
+    fn nested_subsystem_point_paths_count_directories_excluding_the_descriptor() {
+        use super::{nested_subsystem_path, point_path_depths, SOURCE_TREE_TRAVERSAL_MAX_DEPTH};
+
+        // The layout adds two directories per level. Its nearest valid
+        // descriptor paths lie one directory below and above the even limit.
+        let mut path = Vec::new();
+        for _ in 1..SOURCE_TREE_TRAVERSAL_MAX_DEPTH.div_ceil(2) {
+            path.extend(["subsystems", "parent"]);
+        }
+        path.extend(["subsystems", "level.xml"]);
+        assert_eq!(path.len() - 1, SOURCE_TREE_TRAVERSAL_MAX_DEPTH - 1);
+        assert!(nested_subsystem_path(&path));
+        assert_eq!(point_path_depths(&path).next_back(), Some(path.len()));
+        path.splice(0..0, ["subsystems", "parent"]);
+        assert_eq!(path.len() - 1, SOURCE_TREE_TRAVERSAL_MAX_DEPTH + 1);
+        assert!(!nested_subsystem_path(&path));
+        assert_ne!(point_path_depths(&path).next_back(), Some(path.len()));
     }
 
     /// Описания и модули вложенных объектов внешнего источника находятся по

@@ -287,6 +287,40 @@ impl<'a> LogicalViewReadAuthority<'a> {
         Ok(())
     }
 
+    /// Prove exactly the requested descriptor and its registered owners.
+    pub fn resolve_nested_subsystem_path(
+        &self,
+        at: &QualifiedAddress,
+    ) -> Result<String, ViewError> {
+        let snapshot = self.snapshot(at)?;
+        let route = route_logical_address(at, self.profile)
+            .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
+        let target = route
+            .reader_metadata_path()
+            .filter(|_| {
+                route.reader() == LogicalReader::Subsystem && !route.nested_subsystems().is_empty()
+            })
+            .ok_or_else(|| {
+                ViewError::new(
+                    RefusalCode::NotFound,
+                    "address has no nested subsystem descriptor",
+                )
+            })?;
+        self.verify_registered_owner(target, &snapshot)?;
+        let path = self.read.registered_nested_subsystem_export_path(
+            target,
+            route.nested_subsystems(),
+            &mut || self.read_checkpoint(),
+        )?;
+        if self.exact_revision()? != snapshot.revision {
+            return Err(ViewError::new(
+                RefusalCode::StaleCursor,
+                "source revision changed during source location resolution",
+            ));
+        }
+        Ok(path)
+    }
+
     /// Resolve can reuse the typed identity locator only after reading the
     /// exact node. View treats an absent BSL file as empty; a source location
     /// must distinguish that case from an existing empty file.
