@@ -136,3 +136,55 @@ fn locked_cube_warning_reaches_the_receipt_for_an_edited_dimension_table() {
         .unwrap()
         .contains("<NameInDataSource>new_items</NameInDataSource>"));
 }
+
+/// rule: INV.SAFETY.APPLY-SUPPORT-GATE
+#[test]
+fn a_locked_field_noop_does_not_warn_when_its_table_changes_in_the_same_xml() {
+    const FIELD: &str = "main:ExternalDataSource.AllKindsExternalSource.Table.Items.Field.Code";
+
+    let fixture = fixture_with_support("warn", "9ff1e2c8-e0b1-51c5-b64d-68b6b4c8f866");
+    let runtime = runtime();
+    let descriptor = fixture.source.join(ITEMS_XML);
+    let before = std::fs::read_to_string(&descriptor).unwrap();
+
+    let receipt = publish(
+        &runtime,
+        &fixture,
+        json!({"at": ITEMS, "ops":[
+            {"op": "props.set", "args":{"at": FIELD, "values":{"Comment":""}}},
+            {"op": "props.set", "args":{"values":{"NameInDataSource":"new_items"}}}
+        ]}),
+    );
+
+    assert!(
+        receipt
+            .warnings
+            .iter()
+            .all(|warning| warning["code"] != "support_locked"),
+        "{receipt:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&descriptor).unwrap(),
+        before.replacen(
+            "<NameInDataSource>items</NameInDataSource>",
+            "<NameInDataSource>new_items</NameInDataSource>",
+            1,
+        )
+    );
+
+    let changed = publish(
+        &runtime,
+        &fixture,
+        json!({"at": ITEMS, "ops":[
+            {"op": "props.set", "args":{"at": FIELD, "values":{"Comment":"Real field edit"}}}
+        ]}),
+    );
+
+    assert!(
+        changed
+            .warnings
+            .iter()
+            .any(|warning| { warning["code"] == "support_locked" && warning["at"] == FIELD }),
+        "{changed:?}"
+    );
+}

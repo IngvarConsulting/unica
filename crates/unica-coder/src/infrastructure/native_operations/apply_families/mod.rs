@@ -254,10 +254,17 @@ fn refuse_targets_on_locked_vendor_objects(
 ) -> Result<Vec<GateWarning>, ApplyPlanError> {
     let policy = admission.support_policy_mode();
     let mut warnings = Vec::new();
-    for (target, removes) in gate_targets(request, binding) {
-        warnings.extend(refuse_target_on_locked_vendor_object(
-            target, removes, policy, binding, staged,
-        )?);
+    for target in gate_targets(request, binding) {
+        if let Some(mut warning) = refuse_target_on_locked_vendor_object(
+            target.at,
+            target.removes,
+            policy,
+            binding,
+            staged,
+        )? {
+            warning.operation_indices = target.operation_indices;
+            warnings.push(warning);
+        }
     }
     Ok(warnings)
 }
@@ -273,8 +280,14 @@ fn locks_on_targets(
 ) -> Result<Vec<SupportLock>, ApplyPlanError> {
     let policy = admission.support_policy_mode();
     let mut locks = Vec::new();
-    for (target, removes) in gate_targets(request, binding) {
-        match refuse_target_on_locked_vendor_object(target, removes, policy, binding, staged) {
+    for target in gate_targets(request, binding) {
+        match refuse_target_on_locked_vendor_object(
+            target.at,
+            target.removes,
+            policy,
+            binding,
+            staged,
+        ) {
             Ok(_) => {}
             Err(error) => match error.support_lock() {
                 Some(lock) => locks.push(lock.clone()),
@@ -285,22 +298,47 @@ fn locks_on_targets(
     Ok(locks)
 }
 
+struct GateTarget<'a> {
+    at: &'a unica_address::address::QualifiedAddress,
+    removes: bool,
+    operation_indices: Option<Vec<usize>>,
+}
+
 /// The targets the gate checks: every operation answers for its own target,
 /// since an `args.at` below the request's node may sit under a node with its
 /// own `locked` record; with whether an operation removes it.
 fn gate_targets<'a>(
     request: &'a ApplyRequest,
     binding: &ProviderRootBinding,
-) -> Vec<(&'a unica_address::address::QualifiedAddress, bool)> {
-    let mut targets: Vec<(&unica_address::address::QualifiedAddress, bool)> = Vec::new();
-    for operation in request.ops() {
+) -> Vec<GateTarget<'a>> {
+    let mut targets: Vec<GateTarget<'_>> = Vec::new();
+    for (index, operation) in request.ops().iter().enumerate() {
         if changes_support_state(operation.name(), Some(operation.at()), binding) {
             continue;
         }
         let removes = removes_support_node(operation.name(), operation.at());
-        match targets.iter_mut().find(|(at, _)| *at == operation.at()) {
-            Some((_, target_removes)) => *target_removes |= removes,
-            None => targets.push((operation.at(), removes)),
+        match targets
+            .iter_mut()
+            .find(|target| target.at == operation.at())
+        {
+            Some(target) => {
+                target.removes |= removes;
+                if let Some(indices) = &mut target.operation_indices {
+                    indices.push(index);
+                }
+            }
+            None => targets.push(GateTarget {
+                at: operation.at(),
+                removes,
+                operation_indices: operation
+                    .at()
+                    .segments()
+                    .first()
+                    .is_some_and(|segment| {
+                        segment.kind() == unica_address::address::NodeKind::ExternalDataSource
+                    })
+                    .then(|| vec![index]),
+            }),
         }
     }
     targets
@@ -335,6 +373,9 @@ struct GateWarning {
     /// The paths of a locked node below its owner: the warning stands only
     /// when the plan changes one of them. `None`: any change of the plan.
     scope: Option<Vec<std::path::PathBuf>>,
+    /// External-source nodes can share a descriptor. Require an effect of
+    /// an operation checked for this target even if another target edits it.
+    operation_indices: Option<Vec<usize>>,
 }
 
 /// The gate's warnings that the plan's changes bear out, one per node: a
@@ -343,16 +384,34 @@ struct GateWarning {
 fn planned_gate_warnings(
     warnings: Vec<GateWarning>,
     changed: &[unica_source_contract::proposal::StagedApplyChange],
+    provisional: &[ProvisionalApplyEffect],
 ) -> Vec<serde_json::Value> {
     let mut kept: Vec<serde_json::Value> = Vec::new();
-    for GateWarning { warning, scope } in warnings {
-        let touched = match &scope {
-            None => !changed.is_empty(),
-            Some(scope) => changed.iter().any(|change| {
-                scope
-                    .iter()
-                    .any(|path| change.relative_path.starts_with(path))
-            }),
+    if warnings.is_empty() || changed.is_empty() {
+        return kept;
+    }
+    let changed_paths: std::collections::BTreeSet<_> = changed
+        .iter()
+        .map(|change| change.relative_path.as_path())
+        .collect();
+    for GateWarning {
+        warning,
+        scope,
+        operation_indices,
+    } in warnings
+    {
+        let in_scope = |candidate: &std::path::Path| {
+            scope
+                .as_ref()
+                .is_none_or(|paths| paths.iter().any(|path| candidate.starts_with(path)))
+        };
+        let touched = match operation_indices {
+            None => changed_paths.iter().any(|path| in_scope(path)),
+            Some(indices) => provisional
+                .iter()
+                .filter(|effect| indices.contains(&effect.operation_index()))
+                .flat_map(ProvisionalApplyEffect::paths)
+                .any(|path| in_scope(path) && changed_paths.contains(path.as_path())),
         };
         if touched && !kept.iter().any(|seen| seen["at"] == warning["at"]) {
             kept.push(warning);
@@ -414,6 +473,7 @@ fn refuse_target_on_locked_vendor_object(
                     format!("{reason}; the project support policy `warn` permits this edit"),
                 ),
                 scope: None,
+                operation_indices: None,
             }));
         }
         if !unreadable.marker {
@@ -480,6 +540,7 @@ fn refuse_target_on_locked_vendor_object(
         return Ok(Some(GateWarning {
             warning: support_locked(&lock.owner, message),
             scope: lock.scope,
+            operation_indices: None,
         }));
     }
     let mut error = ApplyPlanError::new(ApplyPlanErrorKind::InvalidState, message)
@@ -2186,6 +2247,7 @@ fn plan_apply(
             _ => None,
         }),
     );
+    let first_request_effect = chosen_planned.len();
     let mut provisional = chosen_planned;
     let mut code_support_warnings = Vec::new();
     let mut xdto_validation = unica_xdto_designer::planner::XdtoValidationLedger::default();
@@ -2411,11 +2473,17 @@ fn plan_apply(
         binding.source_kind(),
     )?;
     let legacy_inline = collapse_legacy_inline_registrations(&mut staged, binding)?;
-    let mut effects = reconcile_effects(staged.planned_changes(), provisional);
+    let changed = staged.planned_changes();
+    let gate_warnings = planned_gate_warnings(
+        support_warning,
+        &changed,
+        &provisional[first_request_effect..],
+    );
+    let mut effects = reconcile_effects(changed, provisional);
     // A plan whose operations cancel out edits nothing protected. The gate's
     // warnings go first: a module whose own owner is the locked node then
     // reports it once.
-    for warning in planned_gate_warnings(support_warning, &staged.planned_changes()) {
+    for warning in gate_warnings {
         effects.push_warning(warning);
     }
     for warning in code_support_warnings {
