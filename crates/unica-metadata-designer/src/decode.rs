@@ -62,6 +62,7 @@ pub enum MetadataPlanKind {
     Create {
         kind: unica_metadata::CreatableKind,
         name: String,
+        metadata_type: Option<unica_metadata::MetadataType>,
     },
     Remove {
         target: MetadataAddress,
@@ -911,9 +912,48 @@ pub fn parse_object_create(
         &values["name"],
         &format!("ops[{op_index}].args.values.name"),
     )?;
+    let type_path = format!("ops[{op_index}].args.values.type");
+    let metadata_type = if kind.requires_creation_type() {
+        let raw = values.get("type").ok_or_else(|| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::BadValue,
+                format!("{kind_text} creation requires a structured metadata type"),
+            )
+            .at_path(&type_path)
+        })?;
+        let metadata_type = unica_metadata::request::parse_metadata_type(raw, "type")
+            .and_then(|metadata_type| {
+                unica_metadata::validate_metadata_element_value_profile(
+                    Some(&metadata_type),
+                    None,
+                    unica_metadata::MetaValueProfileContext::NewElement,
+                )?;
+                Ok(metadata_type)
+            })
+            .map_err(|diagnostic| {
+                let suffix = diagnostic
+                    .field
+                    .as_deref()
+                    .and_then(|field| field.strip_prefix("type"))
+                    .unwrap_or_default();
+                ApplyPlanError::new(ApplyPlanErrorKind::BadValue, diagnostic.message)
+                    .at_path(format!("{type_path}{suffix}"))
+            })?;
+        Some(metadata_type)
+    } else {
+        if values.contains_key("type") {
+            return Err(ApplyPlanError::new(
+                ApplyPlanErrorKind::BadValue,
+                "object.create values accept only `kind` and `name`, not `type`",
+            )
+            .at_path(type_path));
+        }
+        None
+    };
     Ok(MetadataPlanKind::Create {
         kind,
         name: name.to_string(),
+        metadata_type,
     })
 }
 pub fn parse_object_remove(

@@ -209,3 +209,242 @@ fn uuids_are_masked_and_the_rest_is_kept() {
         "<a uuid=\"<uuid>\">ab-1 #000000 Синоним</a>"
     );
 }
+#[test]
+fn filter_criterion_create_advertises_only_its_own_type_arguments() {
+    let fixture = Fixture::blank();
+    let runtime = runtime();
+    let at = "main:Configuration";
+    let can = contract(&runtime, &fixture, at, "object.create");
+    let schema = &can["argsSchema"];
+    assert_eq!(
+        schema["properties"]["values"]["additionalProperties"],
+        false
+    );
+    let text_type = json!({"variants":[{"kind":"string","length":20,"allowedLength":"variable"}]});
+    let cases = [
+        (
+            json!({"values":{"kind":"FilterCriterion","name":"Criterion","type":text_type}}),
+            true,
+        ),
+        (
+            json!({"values":{"kind":"FilterCriterion","name":"Criterion","type":{
+                "variants":[{"kind":"reference","metadataPath":"Справочник.Products"}]
+            }}}),
+            true,
+        ),
+        (
+            json!({"values":{"kind":"FilterCriterion","name":"Criterion"}}),
+            false,
+        ),
+        (
+            json!({"values":{"kind":"FilterCriterion","name":"Criterion","type":null}}),
+            false,
+        ),
+        (
+            json!({"values":{"kind":"FilterCriterion","name":"Criterion","type":{"variants":[]}}}),
+            false,
+        ),
+        (
+            json!({"values":{"kind":"FilterCriterion","name":"Criterion","type":{
+                "variants":[{"kind":"reference","metadataPath":"CommonModule.NotAReference"}]
+            }}}),
+            false,
+        ),
+        (
+            json!({"values":{"kind":"FilterCriterion","name":"Criterion","type":{
+                "variants":[{"kind":"reference","metadataPath":"other:Catalog.Products"}]
+            }}}),
+            false,
+        ),
+        (
+            json!({"values":{"kind":"FilterCriterion","name":"Criterion","type":text_type,"content":[]}}),
+            false,
+        ),
+        (
+            json!({"values":{"kind":"Catalog","name":"Products","type":text_type}}),
+            false,
+        ),
+        (json!({"values":{"kind":"Catalog","name":"Products"}}), true),
+    ];
+    assert_parity(schema, &fixture.binding(false), at, "object.create", &cases);
+    let raw = unica_metadata::contracts::metadata_object_create();
+    for (args, expected) in [
+        (&cases[0].0, true),
+        (&cases[2].0, false),
+        (&cases[8].0, false),
+        (&cases[9].0, true),
+    ] {
+        assert_eq!(raw.normalize(args, "args").is_ok(), expected, "{args}");
+    }
+}
+
+#[test]
+fn filter_criterion_create_matches_native_descriptors_in_each_writable_format() {
+    const MD: &str = "http://v8.1c.ru/8.3/MDClasses";
+    const XR: &str = "http://v8.1c.ru/8.3/xcf/readable";
+    for version in ["2.20", "2.21", "2.22"] {
+        let fixture = Fixture::blank();
+        for relative in ["Configuration.xml", "Languages/Русский.xml"] {
+            let path = fixture.source.join(relative);
+            let xml = std::fs::read_to_string(&path).unwrap();
+            std::fs::write(
+                &path,
+                xml.replace("version=\"2.20\"", &format!("version=\"{version}\"")),
+            )
+            .unwrap();
+        }
+        let runtime = runtime();
+        let before = unica_workspace::test_support::tree_snapshot(&fixture.source);
+        let values = json!({"kind":"FilterCriterion","name":"Probe","type":{"variants":[
+            {"kind":"string","length":20,"allowedLength":"variable"}
+        ]}});
+        let args = json!({"values":values});
+        let can = contract(&runtime, &fixture, "main:Configuration", "object.create");
+        assert!(jsonschema::validator_for(&can["argsSchema"])
+            .unwrap()
+            .is_valid(&args));
+        publish(
+            &runtime,
+            &fixture,
+            json!({"at":"main:Configuration","ops":[{"op":"object.create","args":args}]}),
+        );
+
+        let relative = "FilterCriteria/Probe.xml";
+        let observed = std::fs::read_to_string(fixture.source.join(relative)).unwrap();
+        let native = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join(format!(
+                    "../../tests/fixtures/formats/platform_xml/{version}/all_kinds/src"
+                ))
+                .join(relative),
+        )
+        .unwrap();
+        let actual = roxmltree::Document::parse(observed.trim_start_matches('\u{feff}')).unwrap();
+        let oracle = roxmltree::Document::parse(native.trim_start_matches('\u{feff}')).unwrap();
+        let actual_root = actual.root_element();
+        assert_eq!(actual_root.attribute("version"), Some(version));
+        let metadata = actual_root.first_element_child().unwrap();
+        assert!(metadata.has_tag_name((MD, "FilterCriterion")));
+        let generated = metadata
+            .descendants()
+            .filter(|node| node.has_tag_name((XR, "GeneratedType")))
+            .map(|node| {
+                (
+                    node.attribute("name").unwrap(),
+                    node.attribute("category").unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            generated,
+            [
+                ("FilterCriterionManager.Probe", "Manager"),
+                ("FilterCriterionList.Probe", "List")
+            ]
+        );
+        let ids = metadata
+            .descendants()
+            .filter(|n| n.has_tag_name((XR, "TypeId")) || n.has_tag_name((XR, "ValueId")))
+            .map(|n| uuid::Uuid::parse_str(n.text().unwrap()).unwrap())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(ids.len(), 4);
+        let properties = |doc: &str| {
+            let doc = roxmltree::Document::parse(doc.trim_start_matches('\u{feff}')).unwrap();
+            doc.root_element()
+                .first_element_child()
+                .unwrap()
+                .children()
+                .find(|node| node.has_tag_name((MD, "Properties")))
+                .unwrap()
+                .children()
+                .filter(|node| node.is_element() && !node.has_tag_name((MD, "Synonym")))
+                .map(|node| doc.input_text()[node.range()].replace("\r\n", "\n"))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(properties(&observed), properties(&native), "{version}");
+        let children = metadata
+            .children()
+            .find(|n| n.has_tag_name((MD, "ChildObjects")))
+            .unwrap();
+        assert!(children.children().all(|n| !n.is_element()));
+        assert!(oracle
+            .root_element()
+            .first_element_child()
+            .unwrap()
+            .children()
+            .any(|n| n.has_tag_name((MD, "ChildObjects"))));
+        let config = std::fs::read_to_string(fixture.source.join("Configuration.xml")).unwrap();
+        assert!(config.contains("<FilterCriterion>Probe</FilterCriterion>"));
+        let after = unica_workspace::test_support::tree_snapshot(&fixture.source);
+        assert_eq!(
+            changed_paths(&before, &after),
+            (
+                BTreeSet::from([PathBuf::from(relative)]),
+                BTreeSet::from([PathBuf::from("Configuration.xml")]),
+                BTreeSet::new(),
+            )
+        );
+
+        let duplicate = call(
+            &runtime,
+            &fixture,
+            ToolIdentity::Apply,
+            json!({"at":"main:Configuration","ops":[{"op":"object.create","args":args}]}),
+        );
+        assert!(!duplicate.ok, "{duplicate:?}");
+        assert_eq!(duplicate.diagnostics[0]["code"], "invalid_state");
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&fixture.source),
+            after
+        );
+    }
+}
+
+#[test]
+fn filter_criterion_create_resolves_references_in_the_staged_source_set() {
+    let fixture = Fixture::blank();
+    let runtime = runtime();
+    let target = |name| {
+        json!({"op":"object.create","args":{"values":{
+            "kind":"FilterCriterion","name":"ForProducts","type":{"variants":[
+                {"kind":"reference","metadataPath":name}
+            ]}
+        }}})
+    };
+    let catalog =
+        json!({"op":"object.create","args":{"values":{"kind":"Catalog","name":"Products"}}});
+    let before = unica_workspace::test_support::tree_snapshot(&fixture.source);
+    for (name, code) in [
+        ("Department.Products", "bad_value"),
+        ("Catalog.Missing", "not_found"),
+    ] {
+        let refused = call(
+            &runtime,
+            &fixture,
+            ToolIdentity::Apply,
+            json!({
+                "at":"main:Configuration","ops":[catalog,target(name)]
+            }),
+        );
+        assert!(!refused.ok, "{refused:?}");
+        assert_eq!(
+            refused.at.as_deref(),
+            Some("ops[1].args.values.type.variants[0].metadataPath")
+        );
+        assert_eq!(refused.diagnostics[0]["code"], code);
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&fixture.source),
+            before
+        );
+    }
+    publish(
+        &runtime,
+        &fixture,
+        json!({
+            "at":"main:Configuration","ops":[catalog, target("Справочник.Products")]
+        }),
+    );
+    let xml =
+        std::fs::read_to_string(fixture.source.join("FilterCriteria/ForProducts.xml")).unwrap();
+    assert!(xml.contains("<v8:Type>cfg:CatalogRef.Products</v8:Type>"));
+}

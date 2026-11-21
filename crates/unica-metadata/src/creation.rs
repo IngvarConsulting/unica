@@ -62,6 +62,11 @@ impl CreatableKind {
         }
     }
 
+    pub fn requires_creation_type(self) -> bool {
+        self.template()
+            .is_some_and(|template| template.requires_type)
+    }
+
     /// Whether an extension creates its own object of the kind: it borrows
     /// the kinds the declaration keeps to the main configuration.
     pub fn created_in_extension(self) -> bool {

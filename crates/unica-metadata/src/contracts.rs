@@ -9,18 +9,28 @@ const METADATA_HELP: &str = "skills/meta-edit/SKILL.md";
 pub fn metadata_object_create_input_schema() -> &'static Value {
     static SCHEMA: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
     SCHEMA.get_or_init(|| {
-        object(
+        let kinds = crate::CreatableKind::all().collect::<Vec<_>>();
+        let typed = kinds
+            .iter()
+            .copied()
+            .filter(|kind| kind.requires_creation_type())
+            .map(crate::CreatableKind::as_str)
+            .collect::<Vec<_>>();
+        let mut values = object(
             &[
-                ("at", text(true)),
-                ("values", object(&[
-                    ("kind", json!({"type":"string","enum":crate::CreatableKind::all().map(crate::CreatableKind::as_str).collect::<Vec<_>>()})),
-                    // The identifier is checked during staging. Raw decoding
-                    // must not move it ahead of a later operation's error.
-                    ("name", json!({"type":"string","minLength":1})),
-                ], &["kind", "name"])),
+                ("kind", json!({"type":"string","enum":kinds.into_iter().map(crate::CreatableKind::as_str).collect::<Vec<_>>()})),
+                // The identifier is checked during staging. Raw decoding
+                // must not move it ahead of a later operation's error.
+                ("name", json!({"type":"string","minLength":1})),
+                ("type", crate::metadata_type_schema()),
             ],
-            &["values"],
-        )
+            &["kind", "name"],
+        );
+        values["anyOf"] = json!([
+            {"properties":{"kind":{"enum":typed}},"required":["type"]},
+            {"properties":{"kind":{"not":{"enum":typed}}},"not":{"required":["type"]}}
+        ]);
+        object(&[("at", text(true)), ("values", values)], &["values"])
     })
 }
 
@@ -487,7 +497,7 @@ pub fn metadata_object_create() -> OperationContract {
         schema,
         target: "The Configuration root: <source-set>:Configuration.",
         effect: "Create and register a new metadata object with its minimal supported files.",
-        notes: "Choose an unused valid 1C identifier. The operation accepts kind and name; configure properties and members with subsequent operations in the same apply call.",
+        notes: "Choose an unused valid 1C identifier. FilterCriterion also requires type as a structured metadata type and starts with empty content. Configure other properties and members with subsequent operations in the same apply call.",
         example_args: json!({"values":{"kind":"Catalog","name":"Sample"}}),
         help: "skills/meta-add/SKILL.md",
         format_validators: &[],

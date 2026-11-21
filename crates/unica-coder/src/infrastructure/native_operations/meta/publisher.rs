@@ -528,6 +528,7 @@ pub(crate) fn prepare_meta_add(
             source: source_is_replaced_by_operation,
             handler: handler_is_replaced_by_operation,
             language_codes: None,
+            creation_type: None,
         },
         &request.source_set,
         &language,

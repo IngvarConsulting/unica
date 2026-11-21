@@ -46,6 +46,7 @@ pub struct MetadataTemplateOperationOverrides {
     /// passes it so a new language skips the codes an earlier operation
     /// took; without it the template reads the languages on disk.
     pub language_codes: Option<Vec<String>>,
+    pub creation_type: Option<unica_metadata::MetadataType>,
 }
 
 pub struct MetadataPostImage<G = ()> {
@@ -739,6 +740,17 @@ pub fn minimal_metadata_xml<G>(
     context: &MinimalTemplateContext<G>,
     fresh_uuid: fn() -> String,
 ) -> Result<(String, String), String> {
+    minimal_metadata_xml_with_type(kind, obj_name, format_version, context, None, fresh_uuid)
+}
+
+fn minimal_metadata_xml_with_type<G>(
+    kind: CreatableKind,
+    obj_name: &str,
+    format_version: &str,
+    context: &MinimalTemplateContext<G>,
+    creation_type: Option<&unica_metadata::MetadataType>,
+    fresh_uuid: fn() -> String,
+) -> Result<(String, String), String> {
     let defn = MetaTemplateDefinition {
         chart_of_accounts: context.chart_of_accounts.clone(),
         chart_of_calculation_types: context.chart_of_calculation_types.clone(),
@@ -775,6 +787,11 @@ pub fn minimal_metadata_xml<G>(
                 format!("metadata kind `{object_type}` declares no creation template")
             })?;
             emit_meta_base_properties(&mut lines, "\t\t\t", &defn, obj_name, &synonym);
+            if template.requires_type {
+                let metadata_type = creation_type
+                    .ok_or_else(|| format!("metadata kind {object_type} needs a creation type"))?;
+                crate::xml_model::emit_meta_typed_value_type(&mut lines, "\t\t\t", metadata_type);
+            }
             for property in template.properties {
                 lines.push(format!("\t\t\t{property}"));
             }
@@ -3203,11 +3220,12 @@ pub fn minimal_object<G>(
             context
         }
     };
-    let (xml, _) = minimal_metadata_xml(
+    let (xml, _) = minimal_metadata_xml_with_type(
         kind,
         name,
         source.format_version,
         &context,
+        overrides.creation_type.as_ref(),
         source.fresh_uuid,
     )
     .map_err(|message| template_failure(&metadata_path, message))?;
@@ -3321,9 +3339,18 @@ mod typed_template_tests {
         let context = context();
         for kind in CreatableKind::all() {
             let name = format!("Typed{}", kind.as_str());
-            let (xml, uuid) =
-                minimal_metadata_xml(kind, &name, "2.20", &context, metadata_fixture_uuid)
-                    .unwrap_or_else(|error| panic!("{}: {error}", kind.as_str()));
+            let metadata_type = unica_metadata::MetadataType {
+                variants: vec![unica_metadata::MetadataTypeVariant::Boolean],
+            };
+            let (xml, uuid) = minimal_metadata_xml_with_type(
+                kind,
+                &name,
+                "2.20",
+                &context,
+                kind.requires_creation_type().then_some(&metadata_type),
+                metadata_fixture_uuid,
+            )
+            .unwrap_or_else(|error| panic!("{}: {error}", kind.as_str()));
             let document =
                 Document::parse(&xml).unwrap_or_else(|error| panic!("{}: {error}", kind.as_str()));
             let object = document
