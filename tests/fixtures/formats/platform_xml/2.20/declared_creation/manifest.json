@@ -1,0 +1,10 @@
+{
+  "format": "2.20",
+  "build": "8.3.27.2342",
+  "purpose": "Descriptors of the declared kinds object.create writes, as the platform exports them: each was written by the Unica creation template, imported into a clean file infobase and exported again. 8.5.1.1529 and 8.5.4.2028 export the same bytes apart from the format version.",
+  "steps": [
+    {"step": "create", "tool": "ibcmd infobase create --create-database", "build": "8.3.27.2342"},
+    {"step": "load", "tool": "ibcmd infobase config import", "build": "8.3.27.2342"},
+    {"step": "export", "tool": "ibcmd infobase config export", "build": "8.3.27.2342"}
+  ]
+}

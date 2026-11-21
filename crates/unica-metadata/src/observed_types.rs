@@ -36,6 +36,8 @@ pub enum ObservedMetadataTypeVariant {
         allowed_length: StringLengthMode,
     },
     ValueStorage,
+    /// The platform's fixed structure type is outside the metadata writer.
+    FixedStructure,
     Reference {
         metadata_path: MetadataAddress,
     },
@@ -242,6 +244,7 @@ fn observed_variant_into_writer(
         // Editable capability. In particular a family is never one reference.
         ObservedMetadataTypeVariant::CharacteristicTypes { .. }
         | ObservedMetadataTypeVariant::TypeId { .. }
+        | ObservedMetadataTypeVariant::FixedStructure
         | ObservedMetadataTypeVariant::ReferenceFamily { .. }
         | ObservedMetadataTypeVariant::Object { .. }
         | ObservedMetadataTypeVariant::RecordSet { .. } => return None,

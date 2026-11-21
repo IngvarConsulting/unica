@@ -15,5 +15,11 @@ pub(super) const KIND: KindDeclaration = KindDeclaration {
         ..LayoutDeclaration::EMPTY
     }),
     generated_types: Some(&[]),
+    // Значения, которые выгрузка 8.3.27, 8.5.1 и 8.5.4 одинаково пишет
+    // объекту с опущенными в описании свойствами.
+    creation: Some(CreationDeclaration::properties(&[
+        "<Type>Color</Type>",
+        "<Value xsi:type=\"v8ui:Color\">#000000</Value>",
+    ])),
     ..KindDeclaration::new("StyleItem")
 };

@@ -7,6 +7,14 @@ use std::collections::HashSet;
 // public name, so a new property does not edit a shared list here.
 include!(concat!(env!("OUT_DIR"), "/properties_modules.rs"));
 
+impl MetaPropertyKey {
+    /// Многоязычное свойство: принимается строкой НСтр или списком переводов
+    /// и пишется по языкам, как синоним.
+    pub const fn is_localized(self) -> bool {
+        matches!(self, Self::Synonym | Self::ToolTip)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MetaPropertyValueKind {
     Type,

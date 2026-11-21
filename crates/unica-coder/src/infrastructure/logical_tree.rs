@@ -132,6 +132,9 @@ pub fn route_logical_address(
             Ok(route(address, class, Some(target), None))
         }
         LogicalReader::Metadata => {
+            if matches!(segments, [interface] if interface.kind() == NodeKind::OrdinaryInterface) {
+                return Ok(route(address, class, None, None));
+            }
             if matches!(segments, [owner, definition]
                 if owner.kind() == NodeKind::WsReference && owner.name().is_some()
                     && definition.kind() == NodeKind::Definition && definition.name().is_none())
@@ -146,7 +149,6 @@ pub fn route_logical_address(
             }
 
             if matches!(segments, [branch] if branch.kind().is_metadata_kind() && branch.name().is_none())
-                || matches!(segments, [owner] if owner.kind() == NodeKind::WebSocketClient && owner.name().is_some())
             {
                 return Ok(route(address, class, None, None));
             }

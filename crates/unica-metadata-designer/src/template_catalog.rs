@@ -38,10 +38,14 @@ pub trait MetadataTemplateRead {
         relative: &Path,
     ) -> Result<Vec<u8>, crate::resource_plan::MetadataReadFailure>;
 }
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct MetadataTemplateOperationOverrides {
     pub source: bool,
     pub handler: bool,
+    /// The `LanguageCode` of every language of the staged image. A batch
+    /// passes it so a new language skips the codes an earlier operation
+    /// took; without it the template reads the languages on disk.
+    pub language_codes: Option<Vec<String>>,
 }
 
 pub struct MetadataPostImage<G = ()> {
@@ -104,6 +108,8 @@ pub struct MinimalTemplateContext<G = ()> {
     pub dependencies: Vec<MetadataTemplateFile<G>>,
     /// `LanguageCode` of the source set's default language.
     pub language: String,
+    /// `LanguageCode` of a new language: the first free numbered code.
+    pub new_language_code: Option<String>,
 }
 
 impl<G> MinimalTemplateContext<G> {
@@ -119,6 +125,7 @@ impl<G> MinimalTemplateContext<G> {
             event_source: None,
             event_handler: None,
             dependencies: Vec::new(),
+            new_language_code: None,
         }
     }
 
@@ -582,6 +589,19 @@ pub fn place_register_record(
     Some(output)
 }
 
+/// The code the Configurator gives a new language: the prefix and the first
+/// `N` from 1 that no language of the set uses.
+fn first_free_language_code(prefix: &str, codes: &[String]) -> String {
+    (1usize..)
+        .map(|number| format!("{prefix}{number}"))
+        .find(|code| {
+            !codes
+                .iter()
+                .any(|used| crate::language_code::same(used, code))
+        })
+        .expect("a free numbered code")
+}
+
 pub fn template_failure(
     target: &MetadataAddress,
     message: String,
@@ -623,7 +643,8 @@ pub fn minimal_module_files(kind: MetadataKind) -> &'static [&'static str] {
         MetadataKind::ScheduledJob
         | MetadataKind::EventSubscription
         | MetadataKind::DocumentJournal
-        | MetadataKind::DefinedType => &[],
+        | MetadataKind::DefinedType
+        | MetadataKind::CommandGroup => &[],
     }
 }
 
@@ -749,13 +770,30 @@ pub fn minimal_metadata_xml<G>(
     lines.push("\t\t<Properties>".to_string());
     let kind = match kind {
         CreatableKind::Typed(kind) => kind,
-        CreatableKind::Queue => {
-            emit_meta_queue_properties(&mut lines, "\t\t\t", &defn, obj_name, &synonym);
+        CreatableKind::Declared(_) => {
+            let template = kind.template().ok_or_else(|| {
+                format!("metadata kind `{object_type}` declares no creation template")
+            })?;
+            emit_meta_base_properties(&mut lines, "\t\t\t", &defn, obj_name, &synonym);
+            for property in template.properties {
+                lines.push(format!("\t\t\t{property}"));
+            }
+            if template.numbered_language_code.is_some() {
+                let code = context.new_language_code.as_deref().ok_or_else(|| {
+                    format!(
+                        "metadata kind `{object_type}` needs the language codes of the source set"
+                    )
+                })?;
+                lines.push(format!(
+                    "\t\t\t<LanguageCode>{}</LanguageCode>",
+                    unica_xml_format::text::escape_xml(code)
+                ));
+            }
             return Ok(close_minimal_object(
                 lines,
                 object_type,
                 format_version,
-                creatable_layout(CreatableKind::Queue).requires_child_objects,
+                creatable_layout(kind).requires_child_objects,
                 obj_uuid,
             ));
         }
@@ -840,6 +878,9 @@ pub fn minimal_metadata_xml<G>(
         unica_metadata::MetadataKind::DefinedType => {
             emit_meta_defined_type_properties(&mut lines, "\t\t\t", &defn, obj_name, &synonym)
         }
+        unica_metadata::MetadataKind::CommandGroup => {
+            emit_meta_command_group_properties(&mut lines, "\t\t\t", &defn, obj_name, &synonym)
+        }
     }
     Ok(close_minimal_object(
         lines,
@@ -907,6 +948,7 @@ pub fn minimal_metadata_xml_for_tests(
             event_handler: None,
             dependencies: Vec::new(),
             language: "ru".to_string(),
+            new_language_code: None,
         },
         metadata_fixture_uuid,
     )
@@ -2354,9 +2396,9 @@ pub fn emit_meta_common_module_properties(
     ));
 }
 
-/// A new queue has the values 8.5.4 gives a queue whose descriptor omits
-/// them: transactional, portions of 1000, processed automatically.
-pub fn emit_meta_queue_properties(
+/// Группа команд, как её создаёт Конфигуратор 8.3.27: представление `Auto`,
+/// пустые подсказка и картинка, категория панели навигации.
+pub fn emit_meta_command_group_properties(
     lines: &mut Vec<String>,
     indent: &str,
     defn: &MetaTemplateDefinition,
@@ -2364,11 +2406,10 @@ pub fn emit_meta_queue_properties(
     synonym: &str,
 ) {
     emit_meta_base_properties(lines, indent, defn, obj_name, synonym);
-    lines.push(format!("{indent}<Transactioned>true</Transactioned>"));
-    lines.push(format!(
-        "{indent}<ProcessingPortionSize>1000</ProcessingPortionSize>"
-    ));
-    lines.push(format!("{indent}<AutoProcessing>true</AutoProcessing>"));
+    lines.push(format!("{indent}<Representation>Auto</Representation>"));
+    lines.push(format!("{indent}<ToolTip/>"));
+    lines.push(format!("{indent}<Picture/>"));
+    lines.push(format!("{indent}<Category>NavigationPanel</Category>"));
 }
 
 pub fn emit_meta_defined_type_properties(
@@ -3123,9 +3164,44 @@ pub fn minimal_object<G>(
         })?;
     let context = match kind {
         CreatableKind::Typed(typed) => MinimalTemplateContext::from_source(
-            source, typed, name, overrides, source_set, language,
+            source,
+            typed,
+            name,
+            overrides.clone(),
+            source_set,
+            language,
         )?,
-        CreatableKind::Queue => MinimalTemplateContext::without_dependencies(language),
+        CreatableKind::Declared(_) => {
+            let mut context = MinimalTemplateContext::without_dependencies(language);
+            if let Some(prefix) = kind
+                .template()
+                .and_then(|template| template.numbered_language_code)
+            {
+                let mut codes = Vec::new();
+                for language in registered_names(source.owner_preimage, "Language") {
+                    let file = read_dependency(
+                        source,
+                        "Language",
+                        &language,
+                        MetadataTemplateFileMode::Guard,
+                        None,
+                    )?;
+                    let code = crate::language_code::read_code(&file.bytes).map_err(|message| {
+                        template_failure(
+                            &metadata_path,
+                            format!(
+                                "language `{language}` has no readable LanguageCode: {message}"
+                            ),
+                        )
+                    })?;
+                    codes.push(code);
+                    context.dependencies.push(file);
+                }
+                let codes = overrides.language_codes.clone().unwrap_or(codes);
+                context.new_language_code = Some(first_free_language_code(prefix, &codes));
+            }
+            context
+        }
     };
     let (xml, _) = minimal_metadata_xml(
         kind,
@@ -3200,7 +3276,30 @@ mod typed_template_tests {
             event_handler: Some("CommonModule.MetaAddHandlers.Handle".to_string()),
             dependencies: Vec::new(),
             language: "ru".to_string(),
+            new_language_code: Some("ru1".to_string()),
         }
+    }
+
+    /// The Configurator 8.3.27 gives new languages «ru1», then «ru2»,
+    /// whatever the languages of the configuration: the first free number.
+    #[test]
+    fn new_language_takes_the_first_free_numbered_code() {
+        let codes = |codes: &[&str]| {
+            codes
+                .iter()
+                .map(|code| code.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(first_free_language_code("ru", &codes(&["ru", "en"])), "ru1");
+        assert_eq!(
+            first_free_language_code("ru", &codes(&["ru", "ru1"])),
+            "ru2"
+        );
+        assert_eq!(
+            first_free_language_code("ru", &codes(&["en", "ru2"])),
+            "ru1"
+        );
+        assert_eq!(first_free_language_code("ru", &codes(&["RU1"])), "ru2");
     }
 
     #[test]
@@ -3247,6 +3346,54 @@ mod typed_template_tests {
                 !generated_types.is_empty(),
                 "{}",
                 kind.as_str()
+            );
+        }
+    }
+
+    #[test]
+    fn external_data_source_creation_has_platform_identity_and_empty_child_objects() {
+        let kind = CreatableKind::parse("ExternalDataSource").unwrap();
+        for version in ["2.20", "2.21", "2.22"] {
+            let (xml, _) = minimal_metadata_xml(
+                kind,
+                "Warehouse",
+                version,
+                &context(),
+                metadata_fixture_uuid,
+            )
+            .unwrap();
+            let document = Document::parse(&xml).unwrap();
+            let root = document.root_element();
+            assert_eq!(root.attribute("version"), Some(version));
+            let source = root.children().find(roxmltree::Node::is_element).unwrap();
+            assert_eq!(source.tag_name().name(), "ExternalDataSource");
+            let child = |name| {
+                source
+                    .children()
+                    .find(|node| node.has_tag_name(name))
+                    .unwrap()
+            };
+            assert_eq!(
+                child("ChildObjects")
+                    .children()
+                    .filter(roxmltree::Node::is_element)
+                    .count(),
+                0
+            );
+            assert!(child("Properties").children().any(|node| {
+                node.has_tag_name("DataLockControlMode") && node.text() == Some("Automatic")
+            }));
+            let generated = child("InternalInfo")
+                .children()
+                .filter_map(|node| node.attribute("name"))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                generated,
+                [
+                    "ExternalDataSourceManager.Warehouse",
+                    "ExternalDataSourceTablesManager.Warehouse",
+                    "ExternalDataSourceCubesManager.Warehouse",
+                ]
             );
         }
     }

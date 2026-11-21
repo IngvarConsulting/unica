@@ -1,6 +1,5 @@
 //! Базовые факты корня у видов без собственного профиля чтения: синоним
-//! и выбранные свойства платформы (#1568), настройки общей команды и группы
-//! команд (#1616).
+//! и выбранные свойства платформы (#1568), настройки общей команды (#1616).
 //!
 //! Вид без записи в профиле не получает здесь ничего. Каждое свойство
 //! читается независимо: порча одного не скрывает остальные и не становится
@@ -23,6 +22,7 @@ enum Fact {
     UnsignedInteger,
     /// Непустое слово без вложенных элементов.
     Text,
+    ExactText,
     /// Одно из значений перечисления платформы.
     Enum(&'static [&'static str]),
     /// Описание типа в форме, которую читает и `Type` константы; контейнер
@@ -35,14 +35,6 @@ enum Fact {
 /// ButtonRepresentation платформы.
 const REPRESENTATION: Fact = Fact::Enum(&["Auto", "Text", "Picture", "PictureAndText"]);
 const PARAMETER_USE_MODE: Fact = Fact::Enum(&["Single", "Multiple"]);
-/// CommandGroupCategory платформы.
-const COMMAND_GROUP_CATEGORY: Fact = Fact::Enum(&[
-    "NavigationPanel",
-    "ActionsPanel",
-    "FormNavigationPanel",
-    "FormCommandBar",
-]);
-const READABLE: &str = "http://v8.1c.ru/8.3/xcf/readable";
 
 /// Закрытый профиль: вид, затем его свойства в порядке XML.
 const PROFILE: &[(&str, &[(&str, Fact)])] = &[
@@ -89,16 +81,6 @@ const PROFILE: &[(&str, &[(&str, Fact)])] = &[
         ],
     ),
     (
-        "CommandGroup",
-        &[
-            ("Synonym", Fact::Localized),
-            ("Representation", REPRESENTATION),
-            ("ToolTip", Fact::Localized),
-            ("Picture", Fact::Picture),
-            ("Category", COMMAND_GROUP_CATEGORY),
-        ],
-    ),
-    (
         "DocumentNumerator",
         &[
             ("Synonym", Fact::Localized),
@@ -107,6 +89,31 @@ const PROFILE: &[(&str, &[(&str, Fact)])] = &[
     ),
     ("IntegrationService", &[("Synonym", Fact::Localized)]),
     ("WSReference", &[("Synonym", Fact::Localized)]),
+    ("ExternalDataSource", &[("Synonym", Fact::Localized)]),
+    (
+        "Table",
+        &[
+            ("Synonym", Fact::Localized),
+            ("TableType", Fact::Enum(&["Table", "Expression"])),
+            ("NameInDataSource", Fact::ExactText),
+            ("ExpressionInDataSource", Fact::ExactText),
+            ("ReadOnly", Fact::Boolean),
+        ],
+    ),
+    (
+        "Cube",
+        &[
+            ("Synonym", Fact::Localized),
+            ("NameInDataSource", Fact::ExactText),
+        ],
+    ),
+    (
+        "DimensionTable",
+        &[
+            ("Synonym", Fact::Localized),
+            ("NameInDataSource", Fact::ExactText),
+        ],
+    ),
 ];
 
 /// Виды, у которых профиль читает базовые факты корня.
@@ -152,10 +159,10 @@ fn observe(
                 value
             })))
         }
-        Fact::Text => {
+        Fact::Text | Fact::ExactText => {
             let value = direct_text_content(node);
             if !meta_info_property_value_is_valid(node, MetaInfoPropertyValueKind::String)
-                || value.trim() != value
+                || (fact == Fact::Text && value.trim() != value)
             {
                 return Err(malformed());
             }
@@ -172,7 +179,10 @@ fn observe(
             Ok(Some(json!(MetaObservedPropertyValue::Text { value })))
         }
         Fact::Type => observe_type(node, kind, name),
-        Fact::Picture => observe_picture(node).map_err(|_| malformed()),
+        Fact::Picture => crate::info_projection::parse_picture_node(node)
+            .map_err(|_| malformed())?
+            .map(|picture| serde_json::to_value(picture).map_err(|error| error.to_string()))
+            .transpose(),
     }
 }
 
@@ -197,44 +207,6 @@ fn observe_type(container: Node<'_, '_>, kind: &str, name: &str) -> Result<Optio
             diagnostic.message
         )),
     }
-}
-
-/// Пустая картинка свойства не создаёт. Ссылка обязательна; признак
-/// прозрачности публикуется, только если записан, и не подставляется.
-fn observe_picture(node: Node<'_, '_>) -> Result<Option<Value>, ()> {
-    if node_is_empty_placeholder(node) {
-        return Ok(None);
-    }
-    if node.attributes().len() != 0
-        || node
-            .children()
-            .any(|child| child.is_text() && !child.text().unwrap_or_default().trim().is_empty())
-    {
-        return Err(());
-    }
-    let mut picture = serde_json::Map::new();
-    for child in node.children().filter(Node::is_element) {
-        let name = child.tag_name().name();
-        if child.tag_name().namespace() != Some(READABLE)
-            || !["Ref", "LoadTransparent"].contains(&name)
-            || picture.contains_key(name)
-            || child.attributes().len() != 0
-            || child.children().any(|nested| nested.is_element())
-        {
-            return Err(());
-        }
-        let text = direct_text_content(child);
-        let value = match name {
-            "Ref" if !text.is_empty() && !text.contains(char::is_whitespace) => json!(text),
-            "LoadTransparent" if text == "true" || text == "false" => json!(text == "true"),
-            _ => return Err(()),
-        };
-        picture.insert(name.to_string(), value);
-    }
-    if !picture.contains_key("Ref") {
-        return Err(());
-    }
-    Ok(Some(Value::Object(picture)))
 }
 
 /// Добавляет в `payload` факты профиля вида `kind`. Вид вне профиля
@@ -401,7 +373,7 @@ mod tests {
     fn an_unmodelled_platform_type_is_a_limit_not_an_absence() {
         let payload = read(
             "SessionParameter",
-            "<Type><v8:Type>v8:FixedStructure</v8:Type></Type>",
+            "<Type><v8:Type>v8:UnknownType</v8:Type></Type>",
         );
         assert_eq!(property(&payload, "Type"), None);
         assert_eq!(unreadable(&payload), ["properties.Type"]);
@@ -409,6 +381,23 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("incomplete"));
+    }
+
+    /// rule: INV.SOURCE.OBSERVED-TYPE-CAPABILITY
+    #[test]
+    fn fixed_structure_is_observed_without_a_writer() {
+        let payload = read(
+            "SessionParameter",
+            "<Type><v8:Type>v8:FixedStructure</v8:Type></Type>",
+        );
+        assert_eq!(
+            property(&payload, "Type"),
+            Some(&json!({
+                "variants": [{"kind": "fixedStructure"}],
+                "mutationCapability": "readOnly"
+            }))
+        );
+        assert!(unreadable(&payload).is_empty());
     }
 
     #[test]
@@ -513,43 +502,6 @@ mod tests {
         );
     }
 
-    /// rule: INV.SOURCE.METADATA-NODE-PROPERTIES
-    #[test]
-    fn command_group_reads_only_its_own_settings() {
-        let payload = read(
-            "CommandGroup",
-            &format!(
-                "{SYNONYM}<Comment>Печать</Comment><Representation>Picture</Representation>\
-                 <ToolTip/><Picture><xr:Ref>StdPicture.Print</xr:Ref>\
-                 <xr:LoadTransparent>false</xr:LoadTransparent></Picture>\
-                 <Category>FormCommandBar</Category>\
-                 <ParameterUseMode>Single</ParameterUseMode><ModifiesData>true</ModifiesData>"
-            ),
-        );
-        assert!(unreadable(&payload).is_empty(), "{payload}");
-        assert_eq!(
-            property(&payload, "Representation"),
-            Some(&json!({"kind": "text", "value": "Picture"}))
-        );
-        assert_eq!(
-            property(&payload, "Picture"),
-            Some(&json!({"Ref": "StdPicture.Print", "LoadTransparent": false}))
-        );
-        assert_eq!(
-            property(&payload, "Category"),
-            Some(&json!({"kind": "text", "value": "FormCommandBar"}))
-        );
-        assert!(property(&payload, "Synonym").is_some());
-        for foreign in [
-            "ToolTip",
-            "ParameterUseMode",
-            "ModifiesData",
-            "CommandParameterType",
-        ] {
-            assert_eq!(property(&payload, foreign), None, "{foreign}");
-        }
-    }
-
     #[test]
     fn empty_command_settings_create_no_property() {
         let payload = read(
@@ -563,7 +515,7 @@ mod tests {
         );
         assert!(unreadable(&payload).is_empty(), "{payload}");
         let reference_only = read(
-            "CommandGroup",
+            "CommonCommand",
             "<Picture><xr:Ref>StdPicture.Print</xr:Ref></Picture>",
         );
         assert_eq!(
@@ -581,9 +533,8 @@ mod tests {
             ("CommonCommand", "<ModifiesData>bad</ModifiesData>", "ModifiesData"),
             ("CommonCommand", "<Picture><xr:Ref>CommonPicture.A</xr:Ref><xr:LoadTransparent>yes</xr:LoadTransparent></Picture>", "Picture"),
             ("CommonCommand", "<Picture><xr:LoadTransparent>true</xr:LoadTransparent></Picture>", "Picture"),
-            ("CommandGroup", "<Picture><xr:Ref>StdPicture.A</xr:Ref><xr:Ref>StdPicture.B</xr:Ref></Picture>", "Picture"),
-            ("CommandGroup", "<Picture>StdPicture.A</Picture>", "Picture"),
-            ("CommandGroup", "<Category>Toolbar</Category>", "Category"),
+            ("CommonCommand", "<Picture><xr:Ref>StdPicture.A</xr:Ref><xr:Ref>StdPicture.B</xr:Ref></Picture>", "Picture"),
+            ("CommonCommand", "<Picture>StdPicture.A</Picture>", "Picture"),
             ("CommonCommand", "<CommandParameterType><v8:Type>xs:string</v8:Type><v8:StringQualifiers><v8:Length>bad</v8:Length><v8:AllowedLength>Variable</v8:AllowedLength></v8:StringQualifiers></CommandParameterType>", "CommandParameterType"),
         ] {
             let payload = read(kind, &format!("{SYNONYM}{damaged}"));

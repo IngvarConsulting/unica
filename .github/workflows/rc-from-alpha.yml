@@ -72,9 +72,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           ACTOR: ${{ github.triggering_actor }}
         run: python scripts/ci/release-rc.py admit --actor "$ACTOR" --ref "$GITHUB_REF"
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
-        with:
-          toolchain: stable
+      - uses: ./.github/actions/rust-toolchain
       - id: publish
         env:
           GH_TOKEN: ${{ github.token }}

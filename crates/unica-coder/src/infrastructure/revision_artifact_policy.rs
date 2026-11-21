@@ -138,7 +138,8 @@ fn configuration_owner_capabilities(owner_kind: &str) -> ConfigurationOwnerCapab
         // The typed metadata registry is the closed set whose XML owners carry
         // Ext/Help. Subsystems and the direct CommonForm layout are the two
         // established non-typed owners with the same capability.
-        help: metadata_kind.is_some() || matches!(owner_kind, "Subsystem" | "CommonForm"),
+        help: metadata_kind.is_some_and(unica_metadata::metadata_kind_has_help)
+            || matches!(owner_kind, "Subsystem" | "CommonForm"),
     }
 }
 

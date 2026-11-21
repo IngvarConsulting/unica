@@ -39,6 +39,12 @@ pub struct KindDeclaration {
     /// Порядок, в котором выгрузка пишет виды дочерних объекта верхнего
     /// уровня его `ChildObjects`. `None` оставляет размещение вызывающему.
     pub child_order: Option<&'static [&'static str]>,
+    /// Шаблон, по которому `object.create` пишет новый объект вида вне
+    /// типизированного набора. `None` — Unica такой вид не создаёт.
+    pub creation: Option<CreationDeclaration>,
+    /// Место вида внутри владельца, если объект вида адресуется через него:
+    /// `<Владелец>.<Имя>.<Вид>.<Имя>`.
+    pub nested: Option<NestedPlace>,
 }
 
 impl KindDeclaration {
@@ -53,6 +59,35 @@ impl KindDeclaration {
             generated_types: None,
             since: None,
             child_order: None,
+            creation: None,
+            nested: None,
+        }
+    }
+}
+
+/// Новый объект вида: свойства, которые выгрузка платформы пишет объекту
+/// с опущенными в описании значениями, после `Name`, `Synonym` и `Comment`.
+#[derive(Debug, Clone, Copy)]
+pub struct CreationDeclaration {
+    /// Строки XML внутри `Properties`, без отступа самого `Properties`:
+    /// вложенные строки начинаются со своих табуляций.
+    pub properties: &'static [&'static str],
+    /// Префикс кода языка, который новый объект получает после свойств:
+    /// префикс и первое `N` от 1, при котором код не занят другим языком
+    /// набора. `None` — объект кода языка не несёт.
+    pub numbered_language_code: Option<&'static str>,
+    /// Вид создаётся только в основной конфигурации: расширение
+    /// заимствует такие объекты.
+    pub main_configuration_only: bool,
+}
+
+impl CreationDeclaration {
+    /// Объект, которому хватает перечисленных свойств.
+    pub const fn properties(properties: &'static [&'static str]) -> Self {
+        Self {
+            properties,
+            numbered_language_code: None,
+            main_configuration_only: false,
         }
     }
 }
@@ -103,6 +138,53 @@ pub struct RootPlace {
     /// и последовательностями, журналы и далее до задач. Выгрузка пишет виды
     /// в другом порядке; дерево показывает этот.
     pub tree: Option<u32>,
+}
+
+/// Место вложенного объекта метаданных в его владельце.
+#[derive(Debug, Clone, Copy)]
+pub struct NestedPlace {
+    /// Виды владельцев.
+    pub owners: &'static [&'static str],
+    /// Каталог описаний вида в каталоге владельца:
+    /// `<Каталог владельца>/<Имя>/<Каталог>/<Имя вида>.xml`. `None` — объект
+    /// описан прямо в `ChildObjects` владельца и своего файла не имеет.
+    pub directory: Option<&'static str>,
+    /// Роли модулей объекта: файлы `<Каталог>/<Имя>/Ext/<Роль>.bsl`.
+    pub modules: &'static [&'static str],
+}
+
+/// Место вида `child` во владельце вида `owner`.
+pub fn nested_place(owner: &str, child: &str) -> Option<&'static NestedPlace> {
+    DECLARED.iter().find_map(|(_, declaration)| {
+        (declaration.tag == child)
+            .then_some(declaration.nested.as_ref())
+            .flatten()
+            .filter(|place| place.owners.contains(&owner))
+    })
+}
+
+/// Вложенный вид, описанный своим файлом в каталоге владельца хотя бы
+/// у одного владельца: таблица, куб, таблица измерения куба.
+pub fn is_described_nested_kind(kind: &str) -> bool {
+    DECLARED.iter().any(|(_, declaration)| {
+        declaration.tag == kind
+            && declaration
+                .nested
+                .as_ref()
+                .is_some_and(|place| place.directory.is_some())
+    })
+}
+
+/// Вложенный вид владельца `owner`, чьи описания лежат в каталоге
+/// `directory` каталога владельца.
+pub fn nested_kind_by_directory(owner: &str, directory: &str) -> Option<&'static str> {
+    DECLARED.iter().find_map(|(_, declaration)| {
+        declaration
+            .nested
+            .as_ref()
+            .filter(|place| place.owners.contains(&owner) && place.directory == Some(directory))
+            .map(|_| declaration.tag)
+    })
 }
 
 /// Раскладка вида в выгрузке.

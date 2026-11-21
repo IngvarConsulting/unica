@@ -2184,3 +2184,114 @@ fn reference_family_never_downgrades_malformed_qualifiers_or_value_storage_compo
         assert!(!unmodelled, "invalid composition must remain an error: {primitive}");
     }
 }
+
+fn command_group(properties: &str) -> String {
+    format!(
+        "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" \
+         xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" \
+         xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" version=\"2.20\">\
+         <CommandGroup uuid=\"16000000-0000-4000-8000-000000002060\"><Properties>\
+         <Name>Печать</Name>{properties}</Properties></CommandGroup></MetaDataObject>"
+    )
+}
+
+fn command_group_details(properties: &str) -> (serde_json::Value, Vec<String>) {
+    let xml = command_group(properties);
+    let document = roxmltree::Document::parse(&xml).unwrap();
+    let object = document.root_element().first_element_child().unwrap();
+    let properties = unica_xml_format::read::child_element(object, "Properties");
+    let target = MetadataAddress::parse_logical("CommandGroup.Печать").unwrap();
+    let mut diagnostics = Vec::new();
+    let details = crate::info_projection::project_meta_info_details(
+        MetadataKind::CommandGroup,
+        properties,
+        None,
+        &target,
+        &mut diagnostics,
+    );
+    (
+        serde_json::to_value(details).unwrap()["details"].clone(),
+        diagnostics
+            .into_iter()
+            .map(|diagnostic| diagnostic.field.unwrap_or_default())
+            .collect(),
+    )
+}
+
+/// rule: INV.SOURCE.METADATA-NODE-PROPERTIES
+#[test]
+fn command_group_picture_keeps_platform_reference_and_transparency() {
+    let (details, diagnostics) = command_group_details(
+        "<Picture><xr:Ref>StdPicture.Print</xr:Ref>\
+         <xr:LoadTransparent>false</xr:LoadTransparent></Picture>",
+    );
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    assert_eq!(
+        details["picture"],
+        serde_json::json!({"Ref": "StdPicture.Print", "LoadTransparent": false})
+    );
+    // Признак прозрачности не подставляется, пустая картинка значения не даёт.
+    let (details, _) =
+        command_group_details("<Picture><xr:Ref>CommonPicture.Печать</xr:Ref></Picture>");
+    assert_eq!(
+        details["picture"],
+        serde_json::json!({"Ref": "CommonPicture.Печать"})
+    );
+    let (details, diagnostics) = command_group_details("<Picture/>");
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    assert!(details["picture"].is_null());
+}
+
+#[test]
+fn a_damaged_command_group_picture_is_a_diagnostic_not_an_absence() {
+    for damaged in [
+        "<Picture><xr:LoadTransparent>true</xr:LoadTransparent></Picture>",
+        "<Picture><xr:Ref>StdPicture.A</xr:Ref><xr:LoadTransparent>yes</xr:LoadTransparent></Picture>",
+        "<Picture><xr:Ref>StdPicture.A</xr:Ref><xr:Ref>StdPicture.B</xr:Ref></Picture>",
+        "<Picture>StdPicture.A</Picture>",
+    ] {
+        let (details, diagnostics) = command_group_details(damaged);
+        assert_eq!(diagnostics, ["details.picture"], "{damaged}");
+        assert!(details["picture"].is_null(), "{damaged}");
+    }
+}
+
+/// rule: INV.SOURCE.METADATA-NODE-PROPERTIES
+#[test]
+fn command_group_settings_are_read_with_platform_enumerations() {
+    let xml = command_group(
+        "<Representation>PictureAndText</Representation>\
+         <ToolTip><v8:item><v8:lang>ru</v8:lang><v8:content>Печать</v8:content></v8:item></ToolTip>\
+         <Category>FormNavigationPanel</Category><Representation2/>",
+    );
+    let document = roxmltree::Document::parse(&xml).unwrap();
+    let object = document.root_element().first_element_child().unwrap();
+    let props = unica_xml_format::read::child_element(object, "Properties").unwrap();
+    let observe = |name| {
+        crate::info_projection::observe_meta_info_property(props, MetadataKind::CommandGroup, name)
+    };
+    assert_eq!(
+        serde_json::to_value(observe("Representation").unwrap()).unwrap(),
+        "PictureAndText"
+    );
+    assert_eq!(
+        serde_json::to_value(observe("Category").unwrap()).unwrap(),
+        "FormNavigationPanel"
+    );
+    assert!(observe("ToolTip").unwrap().is_some());
+    assert!(observe("Representation2").is_err());
+
+    for (name, value) in [("Representation", "Button"), ("Category", "Toolbar")] {
+        let xml = command_group(&format!("<{name}>{value}</{name}>"));
+        let document = roxmltree::Document::parse(&xml).unwrap();
+        let object = document.root_element().first_element_child().unwrap();
+        let props = unica_xml_format::read::child_element(object, "Properties").unwrap();
+        let error = crate::info_projection::observe_meta_info_property(
+            props,
+            MetadataKind::CommandGroup,
+            name,
+        )
+        .unwrap_err();
+        assert_eq!(error.field, format!("properties.{name}"));
+    }
+}

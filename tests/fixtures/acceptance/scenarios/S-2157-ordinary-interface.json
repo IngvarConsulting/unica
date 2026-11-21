@@ -1,0 +1,231 @@
+{
+  "id": "S-2157-ordinary-interface",
+  "name": "read-and-resolve-ordinary-application-interfaces",
+  "issue": 2157,
+  "area": "Интерфейсы обычного приложения",
+  "task": "Прочитать интерфейсы из выгрузки 8.3.27, разрешить адрес дескриптора в обе стороны и подтвердить отказ записи.",
+  "workspace": "tests/fixtures/acceptance/workspace-ordinary-interface",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "main:OrdinaryInterface",
+            "count": 2
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:OrdinaryInterface"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/total",
+          "eq": 2
+        },
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:OrdinaryInterface.CovTemplate"
+        },
+        {
+          "pointer": "/data/items/1/at",
+          "eq": "main:OrdinaryInterface.CovSwitchable_false"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:OrdinaryInterface.CovTemplate"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "OrdinaryInterface"
+        },
+        {
+          "pointer": "/data/props/Name",
+          "eq": "CovTemplate"
+        },
+        {
+          "pointer": "/data/can",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "at": "main:OrdinaryInterface.CovTemplate"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:OrdinaryInterface.CovTemplate"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "OrdinaryInterface"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "Interfaces/CovTemplate.xml"
+        },
+        {
+          "pointer": "/data/lines/state",
+          "eq": "notLineBased"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "src/Interfaces/CovTemplate.xml"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:OrdinaryInterface.CovTemplate"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "OrdinaryInterface"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "Interfaces/CovTemplate.xml"
+        },
+        {
+          "pointer": "/data/lines/state",
+          "eq": "notLineBased"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "$workspace/src/Interfaces/CovTemplate.xml"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:OrdinaryInterface.CovTemplate"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "OrdinaryInterface"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "Interfaces/CovTemplate.xml"
+        },
+        {
+          "pointer": "/data/lines/state",
+          "eq": "notLineBased"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "paths": [
+          "src/Interfaces/CovTemplate.xml",
+          "src/Interfaces/Absent.xml"
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:OrdinaryInterface.CovTemplate"
+        },
+        {
+          "pointer": "/data/items/1/code",
+          "eq": "not_found"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Interface"
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "not_found"
+        }
+      ],
+      "refusal": "not_found: logical address `main:Interface` is not available in the platform profile"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:OrdinaryInterface.CovTemplate",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Name": "Changed"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "refusal": "bad_value: apply operation `props.set` does not apply to OrdinaryInterface `main:OrdinaryInterface.CovTemplate`; it applies at `main:Configuration`",
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "b9979f5b09811fa375bdbbbf5772f52959a1d9ac16d657bd389d3e46579b5b89"
+        },
+        {
+          "path": "src/Interfaces/CovTemplate.xml",
+          "kind": "sha256",
+          "eq": "4801f64f27bf5de0fc30a89db72c86ace0074329ebf316ced02089d4187e3f38"
+        }
+      ]
+    }
+  ]
+}

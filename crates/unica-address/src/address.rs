@@ -731,6 +731,30 @@ mod tests {
         assert_eq!(root.segments()[0].name(), None);
     }
 
+    /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
+    #[test]
+    fn ordinary_interfaces_have_their_own_address_kind() {
+        for (address, kind, name) in [
+            ("main:OrdinaryInterface", NodeKind::OrdinaryInterface, None),
+            (
+                "main:OrdinaryInterface.Public",
+                NodeKind::OrdinaryInterface,
+                Some("Public"),
+            ),
+            ("main:Subsystem.Sales.Interface", NodeKind::Interface, None),
+            (
+                "main:CommonModule.Shared.Interface.Public",
+                NodeKind::Interface,
+                Some("Public"),
+            ),
+        ] {
+            let parsed = QualifiedAddress::parse(address).unwrap();
+            assert_eq!(parsed.to_string(), address);
+            let terminal = parsed.segments().last().unwrap();
+            assert_eq!((terminal.kind(), terminal.name()), (kind, name));
+        }
+    }
+
     /// `<узел>.Props.<имя>` называет одно свойство узла: сегмент последний и
     /// с одним именем, владелец — адрес до него.
     /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS

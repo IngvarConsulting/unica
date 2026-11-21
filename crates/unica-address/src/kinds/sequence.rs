@@ -23,5 +23,15 @@ pub(super) const KIND: KindDeclaration = KindDeclaration {
         ("SequenceManager", "Manager"),
         ("SequenceRecordSet", "RecordSet"),
     ]),
+    // Пустые обязательные свойства — как у объекта, только что созданного в
+    // Конфигураторе 8.3.27; остальные значения выгрузка 8.3.27, 8.5.1 и 8.5.4
+    // пишет одинаково. Пока свойство не заполнено, `cf.validate` сообщает
+    // о нём, как платформа при загрузке.
+    creation: Some(CreationDeclaration::properties(&[
+        "<MoveBoundaryOnPosting>Move</MoveBoundaryOnPosting>",
+        "<Documents/>",
+        "<RegisterRecords/>",
+        "<DataLockControlMode>Managed</DataLockControlMode>",
+    ])),
     ..KindDeclaration::new("Sequence")
 };

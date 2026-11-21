@@ -76,6 +76,10 @@ pub struct CfInfoProperties {
 pub struct CfPurposeProperties {
     pub use_purposes: Option<Vec<String>>,
     pub default_roles: Option<Vec<String>>,
+    pub additional_full_text_search_dictionaries: Option<Vec<String>>,
+    pub standalone_configuration_restriction_roles: Option<Vec<String>>,
+    #[serde(skip)]
+    pub reference_list_limits: Vec<String>,
     pub used_mobile_application_functionalities: Option<Vec<CfMobileFunctionality>>,
     pub include_help_in_contents: Option<bool>,
     #[serde(rename = "mobileApplicationURLs")]

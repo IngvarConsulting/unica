@@ -458,18 +458,6 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 .read
                 .form_metadata_payload(target, &mut || self.read_checkpoint());
         }
-        if matches!(
-            route.at().segments(),
-            [owner] if owner.kind() == NodeKind::WebSocketClient && owner.name().is_some()
-        ) {
-            let owner = &route.at().segments()[0];
-            let name = owner.name().expect("matched named WebSocketClient owner");
-            self.ensure_owner_registered_parts(NodeKind::WebSocketClient.as_str(), name, admitted)?;
-            return Ok(identity_only_metadata_payload(
-                NodeKind::WebSocketClient.as_str(),
-                name,
-            ));
-        }
         let target = route.reader_metadata_path().ok_or_else(|| {
             ViewError::new(
                 RefusalCode::NotFound,
@@ -489,10 +477,6 @@ impl<'a> LogicalViewReadAuthority<'a> {
             return self
                 .read
                 .wsreference_payload(target, &mut || self.read_checkpoint());
-        }
-        if kind == NodeKind::WebSocketClient.as_str() {
-            let name = target.as_str().split('.').nth(1).unwrap_or_default();
-            return Ok(identity_only_metadata_payload(kind, name));
         }
         if kind == NodeKind::CommonTemplate.as_str() {
             let facts = self.read.common_template_facts(target)?;
@@ -516,7 +500,38 @@ impl<'a> LogicalViewReadAuthority<'a> {
             return Ok(payload);
         }
         if MetadataKind::parse(kind).is_err() {
-            return self.read.identity_metadata_payload(target);
+            let payload = self.read.identity_metadata_payload(target)?;
+            // Таблица, куб или таблица измерения, которых владелец называет,
+            // доказываются своим описанием до того, как попадут в ответ.
+            for (child_kind, key) in [
+                (NodeKind::Table, "tables"),
+                (NodeKind::Cube, "cubes"),
+                (NodeKind::DimensionTable, "dimensionTables"),
+            ] {
+                for child in payload
+                    .pointer(&format!("/collections/{key}"))
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
+                    let name = child.get("name").and_then(Value::as_str).ok_or_else(|| {
+                        ViewError::detailed(
+                            RefusalDetail::SourceUnreadable,
+                            format!("registered {key} entry has no name"),
+                        )
+                    })?;
+                    let child = MetadataAddress::parse_logical(&format!(
+                        "{}.{}.{name}",
+                        target.as_str(),
+                        child_kind.as_str()
+                    ))
+                    .map_err(|error| {
+                        ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+                    })?;
+                    self.verify_registered_owner(&child, admitted)?;
+                }
+            }
+            return Ok(payload);
         }
         let read = self
             .read
@@ -571,6 +586,16 @@ impl<'a> LogicalViewReadAuthority<'a> {
             .iter()
             .filter_map(|diagnostic| {
                 let field = diagnostic.field.as_deref()?;
+                // Непроверенный дочерний ресурс: сообщение называет его
+                // логический адрес, как в `check`.
+                if diagnostic.code == MetaDiagnosticCode::ProviderUnavailable
+                    && field.starts_with("resources.")
+                {
+                    return Some(json!({
+                        "field": field,
+                        "message": format!("provider_unavailable: {}", diagnostic.message),
+                    }));
+                }
                 if diagnostic.severity == MetaDiagnosticSeverity::Warning {
                     return (diagnostic.code == MetaDiagnosticCode::ValidationWarning
                         && field.starts_with("details."))
@@ -907,15 +932,6 @@ impl<'a> LogicalViewReadAuthority<'a> {
                     edges.insert(edge_key);
                 }
             }
-            if pair_count == 1 && parts[0] == NodeKind::WebSocketClient.as_str() {
-                if parts.len() != 2 {
-                    return Err(ViewError::new(
-                        RefusalCode::NotFound,
-                        "WebSocketClient has no specified nested export owners",
-                    ));
-                }
-                continue;
-            }
             if pair_count > 1 && parts[end - 2] == NodeKind::Command.as_str() {
                 // A command has no descriptor file: its full definition is the
                 // inline `ChildObjects` registration already proven above.
@@ -975,9 +991,6 @@ impl<'a> LogicalViewReadAuthority<'a> {
     ) -> Result<crate::infrastructure::v13_read_projection::MemberSupport, ViewError> {
         use unica_metadata::support_state::ObjectSupportState;
         let mut support = crate::infrastructure::v13_read_projection::MemberSupport::default();
-        if kind == NodeKind::WebSocketClient {
-            return Ok(support);
-        }
         let marker = match self.read.support_marker(&mut || self.read_checkpoint()) {
             Ok(Some(marker)) => marker,
             Ok(None) => return Ok(support),

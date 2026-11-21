@@ -57,10 +57,15 @@ metadata_operations!(
     ObjectBorrow => ("object.borrow", ExtensionRoot, From),
     ObjectCreate => ("object.create", Configuration, Values),
     ObjectRemove => ("object.remove", MetadataOrCommonTemplate, Target),
+    ExternalTableAdd => ("table.add", ExternalDataSourceRoot, Items),
+    ExternalCubeAdd => ("cube.add", ExternalDataSourceRoot, Items),
+    ExternalFunctionAdd => ("function.add", ExternalDataSourceRoot, Items),
+    ExternalDimensionTableAdd => ("dimensionTable.add", ExternalDataCube, Items),
+    ExternalFieldAdd => ("field.add", ExternalDataTable, Items),
     RelationAdd => ("relation.add", MetadataRelations, Values),
     RelationRemove => ("relation.remove", MetadataRelations, Values),
     RelationReplace => ("relation.replace", MetadataRelations, Values),
-    HelpCreate => ("help.create", Metadata, Values),
+    HelpCreate => ("help.create", MetadataWithHelp, Values),
     AttributeAdd => ("attribute.add", MetadataAttributeContainer, Items),
     AttributeSet => ("attribute.set", MetadataAttribute, Values),
     AttributeRemove => ("attribute.remove", MetadataAttribute, Target),
@@ -68,10 +73,10 @@ metadata_operations!(
     TabularSectionAdd => ("tabularSection.add", MetadataTabularSections, Items),
     TabularSectionSet => ("tabularSection.set", MetadataTabularSection, Values),
     TabularSectionRemove => ("tabularSection.remove", MetadataTabularSection, Target),
-    DimensionAdd => ("dimension.add", MetadataDimensions, Items),
+    DimensionAdd => ("dimension.add", MetadataDimensionsOrExternalCube, Items),
     DimensionSet => ("dimension.set", MetadataDimension, Values),
     DimensionRemove => ("dimension.remove", MetadataDimension, Target),
-    ResourceAdd => ("resource.add", MetadataResources, Items),
+    ResourceAdd => ("resource.add", MetadataResourcesOrExternalCube, Items),
     ResourceSet => ("resource.set", MetadataResource, Values),
     ResourceRemove => ("resource.remove", MetadataResource, Target),
     EnumValueAdd => ("enumValue.add", MetadataEnumValues, Items),
@@ -93,6 +98,34 @@ metadata_operations!(
 );
 
 impl MetadataOperation {
+    /// The registered external-source operations match the whole logical owner.
+    pub fn external_child(
+        self,
+        owner: Option<unica_address::address::NodeKind>,
+    ) -> Option<unica_address::address::NodeKind> {
+        use unica_address::address::NodeKind;
+        match (self, owner) {
+            (Self::ExternalTableAdd, None | Some(NodeKind::ExternalDataSource)) => {
+                Some(NodeKind::Table)
+            }
+            (Self::ExternalCubeAdd, None | Some(NodeKind::ExternalDataSource)) => {
+                Some(NodeKind::Cube)
+            }
+            (Self::ExternalFunctionAdd, None | Some(NodeKind::ExternalDataSource)) => {
+                Some(NodeKind::Function)
+            }
+            (Self::ExternalDimensionTableAdd, None | Some(NodeKind::Cube)) => {
+                Some(NodeKind::DimensionTable)
+            }
+            (Self::ExternalFieldAdd, None | Some(NodeKind::Table | NodeKind::DimensionTable)) => {
+                Some(NodeKind::Field)
+            }
+            (Self::DimensionAdd, Some(NodeKind::Cube)) => Some(NodeKind::Dimension),
+            (Self::ResourceAdd, Some(NodeKind::Cube)) => Some(NodeKind::Resource),
+            _ => None,
+        }
+    }
+
     /// Inline member arguments use the staged member reader. Templates and
     /// predefined items keep their own resource parsers and diagnostic order.
     pub const fn member_collection(self) -> Option<MetaCollection> {
@@ -116,7 +149,12 @@ impl MetadataOperation {
             Self::CommandAdd | Self::CommandSet | Self::CommandRemove => {
                 Some(MetaCollection::Commands)
             }
-            Self::ObjectBorrow
+            Self::ExternalTableAdd
+            | Self::ExternalCubeAdd
+            | Self::ExternalFunctionAdd
+            | Self::ExternalDimensionTableAdd
+            | Self::ExternalFieldAdd
+            | Self::ObjectBorrow
             | Self::ObjectCreate
             | Self::ObjectRemove
             | Self::RelationAdd
@@ -176,6 +214,14 @@ impl MetadataOperation {
             Self::AttributeCopy => crate::contracts::metadata_attribute_copy(),
             Self::ObjectBorrow => crate::contracts::metadata_object_borrow(),
             Self::ObjectCreate => crate::contracts::metadata_object_create(),
+            Self::ExternalTableAdd
+            | Self::ExternalCubeAdd
+            | Self::ExternalFunctionAdd
+            | Self::ExternalDimensionTableAdd
+            | Self::ExternalFieldAdd => crate::external_data_source::add_contract(
+                self.external_child(None)
+                    .expect("declared external child kind"),
+            ),
             Self::ObjectRemove => crate::contracts::metadata_object_remove(),
             Self::TemplateAdd => crate::contracts::metadata_template_add(),
             Self::TemplateSet => crate::contracts::metadata_template_set(),
@@ -223,6 +269,11 @@ impl unica_operations::FamilyOperation for MetadataOperation {
         self,
         site: &unica_source_contract::context::OperationSite<'_>,
     ) -> Option<unica_operation_contract::OperationContract> {
+        if let Some(kind) = crate::external_data_source::kind(site.segments())
+            .and_then(|owner| self.external_child(Some(owner)))
+        {
+            return Some(crate::external_data_source::add_contract(kind));
+        }
         let owner = site
             .segments()
             .first()
@@ -247,7 +298,12 @@ impl unica_operations::FamilyOperation for MetadataOperation {
         }
         if self == Self::ObjectCreate {
             let line = site.source().classification_profile().semantic_line();
-            offer_creatable_kinds(&mut contract.schema["properties"]["values"], line);
+            let extension = site.source().kind() == unica_source_contract::SourceSetKind::Extension;
+            offer_creatable_kinds(
+                &mut contract.schema["properties"]["values"],
+                line,
+                extension,
+            );
         }
         Some(contract)
     }
@@ -255,13 +311,16 @@ impl unica_operations::FamilyOperation for MetadataOperation {
 
 /// A kind exists from the line that adds it: `can` offers its creation in
 /// a set of that line or later and otherwise names the line it exists from
-/// (INV.SOURCE.PROFILE-CAPABILITIES).
+/// (INV.SOURCE.PROFILE-CAPABILITIES). An extension is not offered the kinds
+/// it borrows instead of creating.
 fn offer_creatable_kinds(
     values: &mut serde_json::Value,
     line: Option<unica_source_contract::format_identity::PlatformLine>,
+    extension: bool,
 ) {
     use unica_source_contract::format_identity::{metadata_kind_exists, metadata_kind_since};
     let (offered, later): (Vec<_>, Vec<_>) = crate::CreatableKind::all()
+        .filter(|kind| !extension || kind.created_in_extension())
         .map(crate::CreatableKind::as_str)
         .partition(|kind| metadata_kind_exists(line, kind));
     values["properties"]["kind"]["enum"] = serde_json::json!(offered);
@@ -497,7 +556,7 @@ mod tests {
             (
                 MetadataOperation::DimensionAdd,
                 "dimension.add",
-                OperationApplicability::MetadataDimensions,
+                OperationApplicability::MetadataDimensionsOrExternalCube,
                 OperationSkeleton::Items,
             ),
             (
@@ -515,7 +574,7 @@ mod tests {
             (
                 MetadataOperation::ResourceAdd,
                 "resource.add",
-                OperationApplicability::MetadataResources,
+                OperationApplicability::MetadataResourcesOrExternalCube,
                 OperationSkeleton::Items,
             ),
             (

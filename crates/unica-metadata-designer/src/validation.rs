@@ -62,6 +62,7 @@ pub fn meta_validate_valid_types() -> &'static [&'static str] {
         "HTTPService",
         "WebService",
         "DefinedType",
+        "CommandGroup",
     ]
 }
 pub fn meta_validate_property_values() -> &'static [(&'static str, &'static [&'static str])] {

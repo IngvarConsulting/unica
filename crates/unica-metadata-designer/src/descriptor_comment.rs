@@ -4,7 +4,10 @@ use roxmltree::{Document, Node};
 use unica_address::address::NodeKind;
 use unica_source_designer::owner::MD_CLASSES_NS;
 
-fn direct<'a, 'input>(parent: Node<'a, 'input>, tag: &str) -> Result<Node<'a, 'input>, String> {
+pub(crate) fn direct<'a, 'input>(
+    parent: Node<'a, 'input>,
+    tag: &str,
+) -> Result<Node<'a, 'input>, String> {
     let nodes = parent
         .children()
         .filter(|node| node.is_element() && node.tag_name().name() == tag)

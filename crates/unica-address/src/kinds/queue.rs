@@ -23,5 +23,12 @@ pub(super) const KIND: KindDeclaration = KindDeclaration {
     // Очередь пишет измерения перед реквизитами: выгрузка 8.5.4
     // собирает их в этом порядке даже из источника с обратным.
     child_order: Some(&["Dimension", "Attribute"]),
+    // Значения, которые 8.5.4 даёт очереди с опущенными свойствами:
+    // транзакционная, порции по 1000, обработка автоматическая.
+    creation: Some(CreationDeclaration::properties(&[
+        "<Transactioned>true</Transactioned>",
+        "<ProcessingPortionSize>1000</ProcessingPortionSize>",
+        "<AutoProcessing>true</AutoProcessing>",
+    ])),
     ..KindDeclaration::new("Queue")
 };

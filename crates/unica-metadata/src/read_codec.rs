@@ -45,6 +45,13 @@ pub trait MetadataReadCodec: Send + Sync {
         name: &str,
     ) -> Result<Option<String>, String>;
 
+    /// Подтверждает имя интерфейса обычного приложения и читает его синоним.
+    fn ordinary_interface_synonym(
+        &self,
+        descriptor: &[u8],
+        expected_name: &str,
+    ) -> Result<Option<String>, String>;
+
     /// Код языка из дескриптора `Language`.
     fn language_code(&self, descriptor: &[u8]) -> Result<String, String>;
 
@@ -72,6 +79,17 @@ pub trait MetadataReadCodec: Send + Sync {
     /// Дополняет ответ чтения очереди её синонимом, свойствами
     /// обработки и дочерними.
     fn queue(&self, descriptor: &[u8], payload: &mut Value) -> Result<(), String>;
+    /// Подчинённые внешнего источника данных, его таблицы, куба и таблицы
+    /// измерения куба в `payload.collections`. Вид вне профиля `payload`
+    /// не меняет.
+    fn external_data_source_members(
+        &self,
+        descriptor: &[u8],
+        kind: &str,
+        target: &MetadataAddress,
+        payload: &mut Value,
+    ) -> Result<(), String>;
+
     /// Синоним и выбранные свойства корня видов без собственного профиля
     /// чтения (#1568). Вид вне профиля `payload` не меняет.
     fn identity_root_facts(
@@ -247,6 +265,25 @@ pub trait MetadataReadCodec: Send + Sync {
     /// Имена реквизитов и табличных частей объекта с реквизитами каждой из
     /// них. Член без имени пропускается.
     fn object_member_names(&self, descriptor: &[u8]) -> Result<ObjectMemberNames, String>;
+
+    /// Ошибки форм, макетов и команд объекта — те же, что называет `check`,
+    /// без удержания их содержимого. `descriptor` — путь описания владельца
+    /// в пространстве путей `reader`.
+    fn child_resource_diagnostics(
+        &self,
+        reader: &dyn crate::child_resources::TypedChildResourceRead,
+        descriptor: &std::path::Path,
+        owner: &MetadataAddress,
+        kind: &str,
+        name: &str,
+        owner_xml: &str,
+    ) -> Vec<crate::MetaDiagnostic>;
+
+    /// Каталоги рядом с описанием владельца, которые читает эта проверка.
+    fn observed_child_directories(&self) -> Vec<&'static str>;
+
+    /// Глубина дерева дочернего ресурса, глубже которой проверка не читает.
+    fn child_tree_max_depth(&self) -> usize;
 }
 
 /// Имена членов объекта, которые видит код его модуля.

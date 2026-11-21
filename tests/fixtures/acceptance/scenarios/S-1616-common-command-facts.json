@@ -445,7 +445,9 @@
         },
         {
           "pointer": "/data/limits",
-          "absent": true
+          "eq": [
+            "properties.Vendor не прочитано: CommandGroup contains an unclassified property `Vendor`"
+          ]
         }
       ]
     },
@@ -491,7 +493,9 @@
         },
         {
           "pointer": "/data/limits",
-          "absent": true
+          "eq": [
+            "properties.Vendor не прочитано: CommandGroup contains an unclassified property `Vendor`"
+          ]
         }
       ]
     },
