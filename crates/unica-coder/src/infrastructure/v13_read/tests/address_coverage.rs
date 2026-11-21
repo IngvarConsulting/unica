@@ -259,6 +259,8 @@ fn native_ordinary_interface_has_a_registration_only_root_branch() {
     }
 }
 
+/// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
+/// rule: INV.SOURCE.LOGICAL-BRANCH-COUNT
 /// rule: INV.SOURCE.PLATFORM-CAPABILITY-EXISTENCE
 #[test]
 fn native_recalculation_module_address_table_matches_registered_owner() {
@@ -266,15 +268,50 @@ fn native_recalculation_module_address_table_matches_registered_owner() {
     let profile = PlatformProfile::v8_3_27();
     let cancellation = CancellationToken::new();
     let authority = native_authority(&cancellation, &source, profile);
-    let parent_branch = "main:CalculationRegister.Начисления.Recalculation";
-    let owners = addresses(&read(&authority, parent_branch), "items");
+    let register = "main:CalculationRegister.Начисления";
+    let parent_branch = format!("{register}.Recalculation");
+    let xml = fs::read_to_string(source.join("CalculationRegisters/Начисления.xml")).unwrap();
+    let document = roxmltree::Document::parse(xml.trim_start_matches('\u{feff}')).unwrap();
+    let registrations = document
+        .root_element()
+        .children()
+        .find(|node| node.has_tag_name((MD_CLASSES_NS, "CalculationRegister")))
+        .unwrap()
+        .children()
+        .find(|node| node.has_tag_name((MD_CLASSES_NS, "ChildObjects")))
+        .unwrap();
+    let native_owners: BTreeSet<_> = registrations
+        .children()
+        .filter(|node| node.has_tag_name((MD_CLASSES_NS, "Recalculation")))
+        .map(|node| format!("{parent_branch}.{}", node.text().unwrap()))
+        .collect();
+    assert!(!native_owners.is_empty());
+
+    let parent = read(&authority, register);
+    let mut published = parent["branches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| row["at"] == parent_branch);
+    let registration_branch = published
+        .next()
+        .expect("the register must publish Recalculation");
+    assert!(published.next().is_none(), "duplicate {parent_branch}");
     assert_eq!(
-        owners,
-        BTreeSet::from([format!("{parent_branch}.Перерасчет1")])
+        registration_branch["count"].as_u64(),
+        Some(native_owners.len() as u64)
+    );
+    let owners = addresses(&read(&authority, &parent_branch), "items");
+    assert_eq!(owners, native_owners);
+    println!(
+        "| {} | CalculationRegister | Recalculation | {parent_branch} |",
+        profile.line()
     );
     for owner in owners {
+        let node = read(&authority, &owner);
+        assert_eq!(node["kind"], "Recalculation", "{owner}");
         let branch = format!("{owner}.Module");
-        assert!(addresses(&read(&authority, &owner), "branches").contains(&branch));
+        assert!(addresses(&node, "branches").contains(&branch));
         let branch_at = QualifiedAddress::parse(&branch).unwrap();
         let roles = profile.module_children(&branch_at);
         let published = addresses(&read(&authority, &branch), "items");
