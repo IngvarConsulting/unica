@@ -389,6 +389,20 @@ pub fn plan_metadata_batch<R: MetadataPlanningRead>(
                 )?;
                 continue;
             }
+            MetadataPlanKind::ExternalDataSourceAdd { at, items } => {
+                provisional.extend(crate::external_data_source_plan::add_items(
+                    staged, at, items, op_index,
+                )?);
+                continue;
+            }
+            MetadataPlanKind::ExternalDataSourceProperties { at, changes } => {
+                if let Some(effect) =
+                    crate::external_data_source_plan::set(staged, at, changes, op_index)?
+                {
+                    provisional.push(effect);
+                }
+                continue;
+            }
             MetadataPlanKind::TemplateAdd { owner, items } => {
                 stage_template_add(
                     template_seed,
