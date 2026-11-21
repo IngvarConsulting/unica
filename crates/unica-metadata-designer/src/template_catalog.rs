@@ -935,9 +935,10 @@ fn insert_format_object_properties(lines: &mut Vec<String>, kind: &str, format_v
     for (after, property) in (dialect.added_object_properties)(kind) {
         let open = format!("<{after}>");
         let empty = format!("<{after}/>");
+        let close = format!("</{after}>");
         let Some(at) = lines.iter().position(|line| {
             let line = line.trim_start();
-            line.starts_with(&open) || line == empty
+            line == empty || line == close || (line.starts_with(&open) && line.ends_with(&close))
         }) else {
             continue;
         };

@@ -1022,6 +1022,15 @@ pub fn stage_object_create<R: MetadataPlanningRead>(
                 }
             }
         }
+        if kind.as_str() == "CommonForm" {
+            touched.extend(stage_common_form_files(
+                staged,
+                &post_image.metadata_path,
+                source_kind,
+                source.format_version,
+                op_index,
+            )?);
+        }
         // 8.3.27 lists a registrar's records in the order of the registers'
         // UUIDs; the new record moves to its place once every file of the new
         // register is staged and its UUID can be read.
@@ -1096,6 +1105,41 @@ pub fn stage_object_create<R: MetadataPlanningRead>(
         ));
         Ok(())
     })
+}
+
+fn stage_common_form_files(
+    staged: &mut ApplyProposal<'_>,
+    target: &MetadataAddress,
+    source_kind: SourceSetKind,
+    format_version: &str,
+    op_index: usize,
+) -> Result<[PathBuf; 2], ApplyPlanError> {
+    use unica_source_designer::layout::{attached_resource_relative, empty_managed_form_xml};
+    use unica_source_designer::module_layout::{form_module_target, platform_xml_module_relative};
+    use unica_xml_format::text::utf8_bom_bytes;
+
+    let at = format!("ops[{op_index}].args.values.name");
+    let script_variant =
+        unica_source_designer::language::staged_script_variant(staged, source_kind, &at)?;
+    let layout_error = |message| {
+        ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message).at_path(at.clone())
+    };
+    let body = attached_resource_relative(target, "Form.xml", source_kind).map_err(layout_error)?;
+    let module = form_module_target(target)
+        .and_then(|address| platform_xml_module_relative(&address))
+        .map_err(layout_error)?;
+    for (path, content) in [
+        (
+            &body,
+            empty_managed_form_xml(format_version, script_variant),
+        ),
+        (&module, String::new()),
+    ] {
+        staged
+            .create(path, utf8_bom_bytes(&content))
+            .map_err(|error| ApplyPlanError::staging(error, at.clone()))?;
+    }
+    Ok([body, module])
 }
 
 #[allow(clippy::too_many_arguments)]

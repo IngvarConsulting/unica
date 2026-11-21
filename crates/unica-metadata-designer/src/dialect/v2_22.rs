@@ -38,6 +38,10 @@ pub(crate) fn adopted_properties(node: super::AdoptedNode) -> &'static [&'static
 /// besides the auxiliary variant form of 2.21.
 pub(crate) fn added_object_properties(kind: &str) -> &'static [(&'static str, &'static str)] {
     match kind {
+        "CommonForm" => &[(
+            "UsePurposes",
+            "<UseInInterfaceCompatibilityMode>Any</UseInInterfaceCompatibilityMode>",
+        )],
         "Report" => &[
             ("MainDataCompositionSchema", "<MainAnalyticsSystemSchema/>"),
             ("DefaultVariantForm", "<AuxiliaryVariantForm/>"),
