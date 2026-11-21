@@ -114,7 +114,7 @@ fn native_configuration_root_address_table_matches_published_branches() {
         let cancellation = CancellationToken::new();
         let authority = native_authority(&cancellation, &source, profile);
 
-        let (admitted, unavailable): (BTreeSet<_>, Vec<_>) = DECLARED_ROOT_KINDS
+        let (admitted, unavailable): (BTreeSet<_>, BTreeSet<_>) = DECLARED_ROOT_KINDS
             .into_iter()
             .partition(|kind| metadata_kind_exists(Some(line), kind));
         let registrations = root_registrations(&source, xml);
