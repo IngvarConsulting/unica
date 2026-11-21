@@ -11,8 +11,10 @@ enum Script {
     Exports,
     DumpInfoIsDirectory,
     OnlyDumpInfo,
+    CancelsAfterReady,
     /// Раннер отказал до выгрузки.
     RefusesBeforeReady,
+    RefusesAndLeavesNonDirectoryStage,
     /// Итог утверждает публикацию, хотя её отклонили.
     ClaimsPublication,
 }
@@ -93,6 +95,11 @@ impl ProcessRunner for ProtocolRunner {
         let stage = PathBuf::from(&command.args[position + 1]);
         let set = command.args[position - 2].clone();
         let target = command.cwd.join(&set);
+        let extension = command
+            .args
+            .windows(2)
+            .find(|pair| pair[0] == "--extension")
+            .map(|pair| &pair[1]);
         let mut answer = |line: Vec<u8>| -> Option<Value> {
             match on_line(1, &line) {
                 ProcessLineReply::Reply(bytes) => {
@@ -109,13 +116,26 @@ impl ProcessRunner for ProtocolRunner {
             "executor": {"kind": "local", "executable": "1cv8", "endpoint": null},
         })));
         let continued = selected.is_some_and(|reply| reply["decision"] == "continue");
-        let (publication, result) = if self.script == Script::RefusesBeforeReady || !continued {
+        if self.script == Script::RefusesAndLeavesNonDirectoryStage {
+            fs::remove_dir(&stage).unwrap();
+            fs::write(&stage, "unexpected file in place of the stage").unwrap();
+        }
+        let refused_before_ready = matches!(
+            self.script,
+            Script::RefusesBeforeReady | Script::RefusesAndLeavesNonDirectoryStage
+        );
+        let (publication, result) = if refused_before_ready || !continued {
             ("not_published", refused("the platform refused"))
         } else {
             // Раннер забирает новую опись платформы до `ready`, но может
             // сохранить старую опись из исходников.
             if self.script != Script::OnlyDumpInfo {
-                fs::write(stage.join("Configuration.xml"), "<base/>").unwrap();
+                let dump = if extension.is_some() {
+                    "<extension-from-ib/>"
+                } else {
+                    "<base/>"
+                };
+                fs::write(stage.join("Configuration.xml"), dump).unwrap();
             }
             let dump_info = stage.join("ConfigDumpInfo.xml");
             if self.script == Script::DumpInfoIsDirectory {
@@ -125,7 +145,7 @@ impl ProcessRunner for ProtocolRunner {
             }
             answer(frame(json!({
                 "phase": "ready", "version": 1, "nonce": NONCE, "command": "pull",
-                "requested_mode": "FULL", "mode": "FULL", "extension": null,
+                "requested_mode": "FULL", "mode": "FULL", "extension": extension,
                 "mode_reason": null, "provider_dispatched": true, "source_set": set,
                 "target_path": target, "stage_path": stage, "snapshot": "prepared",
                 "snapshot_warning": null,
@@ -141,19 +161,23 @@ impl ProcessRunner for ProtocolRunner {
             )
         };
         drop(answer);
-        on_line(
-            1,
-            &frame(json!({
-                "phase": "terminal", "version": 1, "nonce": NONCE,
-                "publication": publication, "memory": "unchanged", "result": result,
-            })),
-        );
+        if self.script == Script::CancelsAfterReady {
+            command.cancellation.cancel();
+        } else {
+            on_line(
+                1,
+                &frame(json!({
+                    "phase": "terminal", "version": 1, "nonce": NONCE,
+                    "publication": publication, "memory": "unchanged", "result": result,
+                })),
+            );
+        }
         Ok(ProcessStreamOutput {
             status_success: false,
             status: "exit status: 2".into(),
             stderr: String::new(),
             timed_out: false,
-            cancelled: false,
+            cancelled: command.cancellation.is_cancelled(),
             stopped_by_consumer: false,
             line_error: None,
         })
@@ -174,9 +198,13 @@ fn workspace() -> tempfile::TempDir {
 }
 
 fn prepared(root: &Path, dry_run: bool) -> PreparedSourceExport {
+    prepared_with_args(root, json!({"sourceSet": "main"}), dry_run)
+}
+
+fn prepared_with_args(root: &Path, args: Value, dry_run: bool) -> PreparedSourceExport {
     let request = InvocationRequest::new(
         ToolIdentity::Run,
-        json!({"op": "fetch", "args": {"sourceSet": "main"}, "dryRun": dry_run}),
+        json!({"op": "fetch", "args": args, "dryRun": dry_run}),
         root.display().to_string(),
         7_000,
     )
@@ -233,7 +261,7 @@ fn fetch_returns_a_snapshot_and_leaves_the_sources_as_they_were() {
     )
     .unwrap();
     let runner = ProtocolRunner::new(Script::Exports);
-    let prepared = prepared(root, false);
+    let prepared = prepared_with_args(root, json!({}), false);
     assert!(!prepared.holds_source_writes());
 
     let result = run(root, &prepared, &runner);
@@ -283,6 +311,100 @@ fn a_refused_or_unconfirmed_fetch_leaves_no_snapshot() {
         assert!(snapshots(root).is_empty(), "{:?}", snapshots(root));
         assert_eq!(tree(&root.join("main")), before);
     }
+}
+
+/// rule: INV.RUNTIME.FETCH-LEAVES-THE-WORKING-COPY
+#[test]
+fn cancellation_after_ready_removes_the_snapshot_and_preserves_sources() {
+    let workspace = workspace();
+    let root = workspace.path();
+    let before = tree(&root.join("main"));
+    let runner = ProtocolRunner::new(Script::CancelsAfterReady);
+
+    let result = run(root, &prepared(root, false), &runner);
+
+    assert_eq!(runner.decisions(), ["selected:continue", "ready:rejected"]);
+    assert!(!result.ok, "{result:?}");
+    assert_eq!(result.at.as_deref(), Some(FETCH));
+    assert!(result.summary.contains("fetch was cancelled"), "{result:?}");
+    assert!(result.changed.is_empty(), "{result:?}");
+    assert!(snapshots(root).is_empty(), "{:?}", snapshots(root));
+    assert_eq!(tree(&root.join("main")), before);
+}
+
+/// rule: INV.RUNTIME.FETCH-LEAVES-THE-WORKING-COPY
+#[test]
+fn fetch_names_the_stage_when_refusal_cleanup_fails() {
+    let workspace = workspace();
+    let root = workspace.path();
+    let before = tree(&root.join("main"));
+    let runner = ProtocolRunner::new(Script::RefusesAndLeavesNonDirectoryStage);
+
+    let result = run(root, &prepared(root, false), &runner);
+
+    assert!(!result.ok, "{result:?}");
+    assert!(result.changed.is_empty(), "{result:?}");
+    let warning = result
+        .warnings
+        .iter()
+        .find(|warning| warning["code"] == SNAPSHOT_KEPT_WARNING)
+        .expect("the refusal names the stage it could not clean");
+    let path = warning["path"].as_str().unwrap();
+    assert!(path.starts_with(".build/unica/fetch/"), "{warning:?}");
+    assert!(root.join(path).is_file(), "{warning:?}");
+    assert_eq!(tree(&root.join("main")), before);
+}
+
+/// rule: INV.RUNTIME.FETCH-LEAVES-THE-WORKING-COPY
+#[test]
+fn fetch_exports_the_named_extension_to_a_separate_snapshot() {
+    let workspace = workspace();
+    let root = workspace.path();
+    let config_path = root.join(CONFIG_NAME);
+    let mut config = fs::read_to_string(&config_path).unwrap();
+    config.push_str("  - name: Sales\n    type: EXTENSION\n    path: Sales\n");
+    fs::write(config_path, config).unwrap();
+    let extension = root.join("Sales");
+    fs::create_dir(&extension).unwrap();
+    fs::write(extension.join("Configuration.xml"), "<local-extension/>").unwrap();
+    let before_base = tree(&root.join("main"));
+    let before_extension = tree(&extension);
+    let runner = ProtocolRunner::new(Script::Exports);
+
+    let missing_name = prepared_with_args(root, json!({"sourceSet": "Sales"}), false);
+    let rejected = run(root, &missing_name, &runner);
+    assert!(!rejected.ok, "{rejected:?}");
+    assert!(runner.args.lock().unwrap().is_empty());
+    assert!(snapshots(root).is_empty());
+
+    let prepared = prepared_with_args(
+        root,
+        json!({"sourceSet": "Sales", "extension": "Sales"}),
+        false,
+    );
+    let result = run(root, &prepared, &runner);
+
+    assert!(result.ok, "{result:?}");
+    assert_eq!(runner.decisions(), ["selected:continue", "ready:rejected"]);
+    let args = runner.args.lock().unwrap().join(" ");
+    assert!(
+        args.contains("pull Sales --force --publication-stdio"),
+        "{args}"
+    );
+    assert!(args.ends_with("--extension Sales"), "{args}");
+    let data = result.data.unwrap();
+    assert_eq!(data["extension"], "Sales");
+    assert_eq!(data["sourceSet"], "Sales");
+    assert_eq!(data["target"], "Sales");
+    assert_eq!(
+        tree(&root.join(data["snapshot"].as_str().unwrap())),
+        [(
+            "Configuration.xml".to_string(),
+            b"<extension-from-ib/>".to_vec()
+        )]
+    );
+    assert_eq!(tree(&root.join("main")), before_base);
+    assert_eq!(tree(&extension), before_extension);
 }
 
 /// rule: INV.RUNTIME.FETCH-LEAVES-THE-WORKING-COPY

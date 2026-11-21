@@ -338,25 +338,21 @@ pub(super) fn execute_with_tool(
     }
     // Отпечаток снимается до выгрузки: правка набора во время неё — уже
     // расхождение с тем, что видел снимок.
-    let fingerprint = match source_fingerprint(&root, &directory, &cancellation) {
-        Ok(value) => value,
-        Err(result) => {
-            let _ = remove_snapshot(&stage);
-            return result;
-        }
-    };
-    let outcome = exchange(
-        prepared,
-        &root,
-        &source_set,
-        &directory,
-        &stage,
-        runner,
-        &cancellation,
-        tool,
-    );
-    let envelope = match outcome {
-        Ok(envelope) => envelope,
+    let outcome = source_fingerprint(&root, &directory, &cancellation).and_then(|fingerprint| {
+        exchange(
+            prepared,
+            &root,
+            &source_set,
+            &directory,
+            &stage,
+            runner,
+            &cancellation,
+            tool,
+        )
+        .map(|envelope| (fingerprint, envelope))
+    });
+    let (fingerprint, envelope) = match outcome {
+        Ok(snapshot) => snapshot,
         Err(mut result) => {
             // Отказ, отмена или неподтверждённый итог: снимка нет.
             if let Err(error) = remove_snapshot(&stage) {
