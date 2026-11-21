@@ -819,8 +819,16 @@ fn native_metadata_address_table_matches_declared_and_observed_child_branches() 
             let route = route_logical_address(&at, profile).unwrap();
             if route.reader() == LogicalReader::Metadata {
                 check_metadata_owner(&authority, &source, &at, &mut verified, &mut evidence);
+            } else if route.reader() == LogicalReader::Xdto && name == "EnterpriseData_1_17_3" {
+                check_native_xdto_package(&authority, &source, &at, xml, &mut evidence);
+                assert!(verified.insert(format!("{at}.Type")), "duplicate {at}");
+            } else if route.reader() == LogicalReader::Role && name == "SalesReader" {
+                check_native_sales_role_rights(&authority, &source, &at, xml, &mut evidence);
+                assert!(verified.insert(format!("{at}.Right")), "duplicate {at}");
             }
         }
+        assert!(verified.contains("main:XDTOPackage.EnterpriseData_1_17_3.Type"));
+        assert!(verified.contains("main:Role.SalesReader.Right"));
         assert!(
             verified.contains(
                 "main:ExternalDataSource.AllKindsExternalSource.Cube.Sales.DimensionTable"
@@ -1864,6 +1872,367 @@ fn check_metadata_owner(
     check_metadata_child_branches(
         authority, source, owner, &published, &facts, verified, evidence,
     );
+}
+
+const NATIVE_XDTO_NS: &str = "http://v8.1c.ru/8.1/xdto";
+
+fn check_native_xdto_package(
+    authority: &LogicalViewReadAuthority<'_>,
+    source: &Path,
+    owner: &QualifiedAddress,
+    format: &str,
+    evidence: &mut EvidenceRows,
+) {
+    let name = owner.segments().last().unwrap().name().unwrap();
+    let descriptor = source.join(format!("XDTOPackages/{name}.xml"));
+    let xml = read_fixture_descriptor(&descriptor);
+    let document = parse_fixture_descriptor(&xml, &descriptor);
+    assert_eq!(document.root_element().attribute("version"), Some(format));
+    let artifact = fixture_artifact(&document, "XDTOPackage", &descriptor);
+    assert_eq!(fixture_properties_name(artifact), Some(name));
+    let descriptor_namespace = artifact
+        .children()
+        .find(|node| node.has_tag_name((MD_CLASSES_NS, "Properties")))
+        .and_then(|node| {
+            node.children()
+                .find(|child| child.has_tag_name((MD_CLASSES_NS, "Namespace")))
+        })
+        .and_then(|node| node.text())
+        .expect("native XDTO descriptor Namespace");
+
+    let payload = descriptor.with_extension("").join("Ext/Package.bin");
+    let xml = read_fixture_descriptor(&payload);
+    let document = parse_fixture_descriptor(&xml, &payload);
+    let root = document.root_element();
+    assert!(root.has_tag_name((NATIVE_XDTO_NS, "package")));
+    let namespace = root.attribute("targetNamespace").unwrap();
+    assert_eq!(namespace, descriptor_namespace);
+    let line = authority.platform_profile().line();
+    let origin = fixture_origin(&payload);
+    let owner = owner.to_string();
+    let view = read(authority, &owner);
+    assert_eq!(view["kind"], "XDTOPackage");
+    assert_eq!(view["props"]["targetNamespace"], namespace);
+    check_native_xdto_properties(authority, &owner, &view, root, &origin, evidence);
+    let namespace_at = format!("{owner}.Namespace");
+    check_native_xdto_count(&view, &namespace_at, 1);
+    let namespace_view = read(authority, &namespace_at);
+    assert_eq!(namespace_view["kind"], "Namespace");
+    assert_eq!(namespace_view["props"]["namespace"], namespace);
+    evidence.record(
+        line,
+        &owner,
+        "Namespace",
+        None,
+        &origin,
+        AddressEvidence::Read(&namespace_at),
+    );
+
+    let branch_at = format!("{owner}.Type");
+    let branch = QualifiedAddress::parse(&branch_at).unwrap();
+    let mut types = BTreeMap::new();
+    for node in root.children().filter(|node| {
+        node.has_tag_name((NATIVE_XDTO_NS, "valueType"))
+            || node.has_tag_name((NATIVE_XDTO_NS, "objectType"))
+    }) {
+        let at = branch
+            .member(node.attribute("name").expect("native named XDTO type"))
+            .unwrap();
+        assert!(
+            types.insert(at.to_string(), node).is_none(),
+            "duplicate native XDTO type {at}"
+        );
+    }
+    for kind in ["valueType", "objectType"] {
+        assert!(types
+            .values()
+            .any(|node| node.has_tag_name((NATIVE_XDTO_NS, kind))));
+    }
+    check_native_branch(
+        authority,
+        &view,
+        &branch_at,
+        &types.keys().cloned().collect(),
+    );
+    evidence.record(
+        line,
+        &owner,
+        "Type",
+        None,
+        &origin,
+        AddressEvidence::Read(&branch_at),
+    );
+    for (at, node) in types {
+        let view = read(authority, &at);
+        assert_eq!(view["kind"], "Type");
+        assert_eq!(view["props"]["kind"], node.tag_name().name(), "{at}");
+        check_native_xdto_qname(node, "base", &view["props"]["base"], &at);
+        evidence.record(
+            line,
+            &owner,
+            "Type",
+            None,
+            &origin,
+            AddressEvidence::Read(&at),
+        );
+        check_native_xdto_properties(authority, &at, &view, node, &origin, evidence);
+    }
+}
+
+fn check_native_xdto_count(view: &Value, at: &str, count: usize) {
+    let rows: Vec<_> = view["branches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| row["at"] == at)
+        .map(|row| row["count"].as_u64().unwrap())
+        .collect();
+    assert_eq!(rows, [count as u64], "{at}: published branch count");
+}
+
+fn check_native_xdto_qname(
+    node: roxmltree::Node<'_, '_>,
+    attribute: &str,
+    projected: &Value,
+    at: &str,
+) {
+    if let Some(raw) = node.attribute(attribute) {
+        let (prefix, local) = raw.split_once(':').unwrap();
+        assert_eq!(projected["raw"], raw, "{at}: {attribute}");
+        assert_eq!(projected["prefix"], prefix, "{at}: {attribute}");
+        assert_eq!(projected["local"], local, "{at}: {attribute}");
+        assert_eq!(
+            projected["namespace"],
+            node.lookup_namespace_uri(Some(prefix)).unwrap(),
+            "{at}: {attribute}",
+        );
+    }
+}
+
+fn check_native_xdto_properties(
+    authority: &LogicalViewReadAuthority<'_>,
+    owner: &str,
+    view: &Value,
+    raw_owner: roxmltree::Node<'_, '_>,
+    origin: &str,
+    evidence: &mut EvidenceRows,
+) {
+    let properties: Vec<_> = raw_owner
+        .children()
+        .filter(|node| node.has_tag_name((NATIVE_XDTO_NS, "property")))
+        .collect();
+    if properties.is_empty() {
+        return;
+    }
+    let branch_at = format!("{owner}.Property");
+    let branch = QualifiedAddress::parse(&branch_at).unwrap();
+    let mut named = BTreeMap::new();
+    let mut references = BTreeMap::new();
+    for property in &properties {
+        if let Some(name) = property.attribute("name") {
+            let at = branch.member(name).unwrap().to_string();
+            assert!(named.insert(at, property).is_none());
+        } else {
+            // A ref-only declaration is a counted row with a QName, without an address.
+            let raw = property
+                .attribute("ref")
+                .expect("unnamed native property reference");
+            let (prefix, local) = raw.split_once(':').unwrap();
+            let namespace = property.lookup_namespace_uri(Some(prefix)).unwrap();
+            assert!(references.insert(raw, (local, namespace)).is_none());
+        }
+    }
+    check_native_xdto_count(view, &branch_at, properties.len());
+    let collection = read(authority, &branch_at);
+    let items = collection["items"].as_array().unwrap();
+    assert_eq!(items.len(), properties.len(), "{branch_at}");
+    let mut addressed = BTreeSet::new();
+    for row in items {
+        if let Some(at) = row["at"].as_str() {
+            assert!(addressed.insert(at), "{branch_at}: duplicate {at}");
+        } else {
+            let reference = &row["ref"];
+            let raw = reference["raw"]
+                .as_str()
+                .expect("unaddressed XDTO reference row");
+            let (local, namespace) = references
+                .remove(raw)
+                .unwrap_or_else(|| panic!("{branch_at}: unexpected reference row {raw}"));
+            assert_eq!(reference["local"], local);
+            assert_eq!(reference["namespace"], namespace);
+        }
+    }
+    assert!(references.is_empty(), "{branch_at}: missing reference rows");
+    assert_eq!(
+        addressed,
+        named.keys().map(String::as_str).collect::<BTreeSet<_>>(),
+        "{branch_at}"
+    );
+    let line = authority.platform_profile().line();
+    evidence.record(
+        line,
+        owner,
+        "Property",
+        None,
+        origin,
+        AddressEvidence::Read(&branch_at),
+    );
+    for (at, raw) in named {
+        let value = read(authority, &at);
+        assert_eq!(value["kind"], "Property");
+        check_native_xdto_qname(*raw, "type", &value["props"]["type"], &at);
+        let lower = raw.attribute("lowerBound");
+        let upper = raw.attribute("upperBound");
+        assert_eq!(
+            value["props"]["bounds"],
+            serde_json::json!({
+                "lower": lower.unwrap_or("1"),
+                "upper": upper.unwrap_or("1"),
+                "lowerExplicit": lower.is_some(),
+                "upperExplicit": upper.is_some(),
+                "unbounded": upper == Some("-1"),
+            }),
+            "{at}: native bounds",
+        );
+        evidence.record(
+            line,
+            owner,
+            "Property",
+            None,
+            origin,
+            AddressEvidence::Read(&at),
+        );
+        let mut definitions = raw
+            .children()
+            .filter(|node| node.has_tag_name((NATIVE_XDTO_NS, "typeDef")));
+        if let Some(definition) = definitions.next() {
+            assert!(
+                definitions.next().is_none(),
+                "{at}: native anonymous type must be unique"
+            );
+            let kind = definition
+                .attribute(("http://www.w3.org/2001/XMLSchema-instance", "type"))
+                .expect("native anonymous type discriminator");
+            assert_eq!(value["props"]["anonymousType"], kind, "{at}");
+            check_native_xdto_properties(authority, &at, &value, definition, origin, evidence);
+        }
+    }
+}
+
+fn check_native_sales_role_rights(
+    authority: &LogicalViewReadAuthority<'_>,
+    source: &Path,
+    owner: &QualifiedAddress,
+    format: &str,
+    evidence: &mut EvidenceRows,
+) {
+    const NS: &str = "http://v8.1c.ru/8.2/roles";
+    let descriptor = source.join("Roles/SalesReader.xml");
+    let xml = read_fixture_descriptor(&descriptor);
+    let document = parse_fixture_descriptor(&xml, &descriptor);
+    assert_eq!(document.root_element().attribute("version"), Some(format));
+    let role = fixture_artifact(&document, "Role", &descriptor);
+    assert_eq!(fixture_properties_name(role), Some("SalesReader"));
+    assert!(uuid::Uuid::parse_str(role.attribute("uuid").unwrap()).is_ok());
+
+    let path = descriptor.with_extension("").join("Ext/Rights.xml");
+    let xml = read_fixture_descriptor(&path);
+    let document = parse_fixture_descriptor(&xml, &path);
+    let root = document.root_element();
+    assert!(root.has_tag_name((NS, "Rights")));
+    assert_eq!(root.attribute("version"), Some(format));
+    fn text<'a, 'input: 'a>(node: roxmltree::Node<'a, 'input>, tag: &str) -> &'a str {
+        node.children()
+            .find(|child| child.has_tag_name((NS, tag)))
+            .and_then(|child| child.text())
+            .unwrap()
+    }
+    let branch_at = format!("{owner}.Right");
+    let branch = QualifiedAddress::parse(&branch_at).unwrap();
+    let mut expected = BTreeMap::new();
+    for object in root
+        .children()
+        .filter(|node| node.has_tag_name((NS, "object")))
+    {
+        let target = text(object, "name");
+        let (kind, name) = target.split_once('.').unwrap();
+        let mut rights = BTreeSet::new();
+        for right in object
+            .children()
+            .filter(|node| node.has_tag_name((NS, "right")))
+        {
+            assert_eq!(text(right, "value"), "true", "{target}");
+            assert!(
+                !right
+                    .children()
+                    .any(|child| { child.has_tag_name((NS, "restrictionByCondition")) }),
+                "{target}: fixture must have no RLS restriction"
+            );
+            assert!(rights.insert(text(right, "name")), "{target}");
+        }
+        assert_eq!(rights, BTreeSet::from(["Read", "View"]), "{target}");
+        let at = branch
+            .member(&format!("{kind}_{name}"))
+            .unwrap()
+            .to_string();
+        assert!(expected
+            .insert(at, (target, kind, name, rights.len()))
+            .is_none());
+    }
+    assert_eq!(
+        expected
+            .values()
+            .map(|(target, ..)| *target)
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from(["Catalog.Валюты", "Document.Orders"]),
+    );
+    let owner = owner.to_string();
+    check_native_branch(
+        authority,
+        &read(authority, &owner),
+        &branch_at,
+        &expected.keys().cloned().collect(),
+    );
+    let line = authority.platform_profile().line();
+    let origin = fixture_origin(&path);
+    evidence.record(
+        line,
+        &owner,
+        "Right",
+        None,
+        &origin,
+        AddressEvidence::Read(&branch_at),
+    );
+    for (at, (_, kind, name, allowed)) in expected {
+        let view = read(authority, &at);
+        assert_eq!(view["kind"], "Right");
+        assert_eq!(view["title"], name);
+        assert_eq!(view["props"]["objectKind"], kind);
+        assert_eq!(view["props"]["allowedCount"], allowed);
+        assert_eq!(view["props"]["deniedCount"], 0);
+        let rls = format!("{at}.RLS");
+        assert!(
+            !view["branches"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|branch| branch["at"] == rls),
+            "{at}: unexpected RLS branch"
+        );
+        assert!(
+            addresses(&read(authority, &rls), "items").is_empty(),
+            "{rls}"
+        );
+        evidence.record(line, &at, "RLS", None, &origin, AddressEvidence::Read(&rls));
+        evidence.record(
+            line,
+            &owner,
+            "Right",
+            None,
+            &origin,
+            AddressEvidence::Read(&at),
+        );
+    }
 }
 
 fn read_fixture_descriptor(path: &Path) -> String {
