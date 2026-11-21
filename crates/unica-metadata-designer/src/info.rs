@@ -563,11 +563,18 @@ pub fn typed_element(
         || (Vec::new(), Vec::new()),
         |profile| super::member_properties::observe(node, profile, field, target, diagnostics),
     );
-    incomplete |= !property_limits.is_empty();
-    let property_limits = own_limits.into_iter().chain(property_limits).collect();
+    let (external_facts, external_limits) =
+        crate::external_data_source_facts::inline(target, node, properties, field);
+    incomplete |= !property_limits.is_empty() || !external_limits.is_empty();
+    let property_limits = own_limits
+        .into_iter()
+        .chain(property_limits)
+        .chain(external_limits)
+        .collect();
     let properties_readback = properties_readback
         .into_iter()
         .chain(profile_properties)
+        .chain(external_facts)
         .collect();
     let color = (node.tag_name().name() == "EnumValue")
         .then(|| crate::info_projection::direct_md_child_text(properties, "Color"))

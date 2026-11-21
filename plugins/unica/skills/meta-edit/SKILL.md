@@ -65,7 +65,7 @@ allowed-tools:
 
 `props.set` изменяет только строковый `Comment` у существующих
 `CommonAttribute`, `FunctionalOptionsParameter`,
-`SessionParameter`, `FilterCriterion`, `SettingsStorage`, `CommonCommand`,
+`SessionParameter`, `FilterCriterion`, `SettingsStorage`,
 `CommandGroup`, `CommonTemplate`, `CommonPicture`,
 `IntegrationService`, `XDTOPackage`,
 `Sequence` и `Style`. Эти владельцы адресуются как
@@ -73,6 +73,15 @@ allowed-tools:
 пустая строка очищает комментарий. Имя `comment` — допустимый псевдоним,
 одновременно оба написания не передаются. Отсутствующий, неоднозначный
 или составной `Comment` требует исправления исходного дескриптора.
+
+У общей команды в основной конфигурации `props.set` задаёт `Group`
+и меняет `Comment` (`comment`). Для `Group` укажите стандартную группу,
+например `NavigationPanelOrdinary`, или адрес зарегистрированной группы
+`CommandGroup.<Имя>` в том же наборе. Чтобы подготовить новую команду к
+импорту, выполните `object.create` и затем `props.set` с адресом
+`main:CommonCommand.<Имя>` в одном `apply` от `main:Configuration`.
+Если оставить группу пустой, `cf.validate` сообщит причину отказа импорта.
+У общей команды расширения `props.set` меняет только комментарий.
 
 Дескриптор формы адресуется как `main:CommonForm.<Имя>.Metadata` или
 `main:<Вид>.<Имя>.Form.<Форма>.Metadata`, в том числе у формы внешней
@@ -153,6 +162,30 @@ XML, литералов `НСтр`/`NStr` и встроенной справки
 `help.create` создаёт `Ext/Help.xml` и `Ext/Help/<lang>.html` владельца и
 включает `IncludeHelpInContents` его формам; повтор — отказ, операция
 создаёт только раз.
+
+### Внешний источник данных
+
+В обычной конфигурации `object.create` на `Configuration` создаёт
+`ExternalDataSource` по `values.kind` и `values.name`. В том же пакете
+укажи полные адреса новых владельцев.
+
+- Источник принимает `table.add`, `cube.add` и `function.add`. У таблицы
+  `Table` укажи `nameInDataSource`, у таблицы `Expression` —
+  `expressionInDataSource`.
+- Куб принимает `dimensionTable.add`, `dimension.add` и `resource.add`.
+  Тип измерения — адрес зарегистрированной `DimensionTable` того же куба.
+- Таблица и таблица измерения принимают `field.add`. Поле выбирается вместе
+  с адресом таблицы, поэтому одноимённые поля разных таблиц независимы.
+
+Проверяй точные поля в `Can.<операция>` у владельца. `props.set` меняет
+свойства по адресу самого узла, например `Table.Items.Field.Code`.
+Синоним задаётся в форме НСтр, тип — одной поддержанной разновидностью.
+У функции формальные параметры входят в `ExpressionInDataSource`, например
+`dbo.Total(&1{, &2})`. Поля табличного результата объявляются у таблицы
+`Expression`.
+
+Сначала подготовь пакет через `unica.apply`, затем исполни полученный
+`executionToken` и проверь результат через `unica.view`.
 
 ### Цвет элемента стиля
 

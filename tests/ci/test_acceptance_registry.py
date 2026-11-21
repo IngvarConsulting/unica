@@ -55,7 +55,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
     ROLE_REGISTRATIONS = declared_registrations("RoleOperation", "Role")
     # Runs of one family in the composition table of `apply.rs`, in order.
     FAMILY_RUNS = [
-        "Metadata", "Properties", "Metadata", "Form", "Metadata", "Form", "Role", "Dcs", "Mxl",
+        "Metadata", "Properties", "Metadata", "Form", "Metadata", "Form", "Role", "Dcs", "Metadata", "Mxl",
         "Xdto", "Subsystem", "Support", "Interface", "Code", "Event",
     ]
 
@@ -355,8 +355,8 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
                 [row for row in registry if row[1] == "Metadata"],
                 [row for row in self.CONTEXT_ROWS if row[1] == "Metadata"],
             )
-            self.assertEqual(len(registry), 131)
-            self.assertEqual(len({row[0] for row in registry}), 126)
+            self.assertEqual(len(registry), 136)
+            self.assertEqual(len({row[0] for row in registry}), 130)
             registration = f"({operation}::ObjectBorrow),"
             self.assertEqual(original.count(registration), 1)
             replacements = {
@@ -578,8 +578,8 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             self.assertLessEqual(migrated_names, implemented)
         self.assertIn(("content.set", "Metadata", "ExchangePlan", "Items"), registry)
         self.assertIn("content.set", implemented)
-        self.assertEqual(len(registry), 131)
-        self.assertEqual(len({entry[0] for entry in registry}), 126)
+        self.assertEqual(len(registry), 136)
+        self.assertEqual(len({entry[0] for entry in registry}), 130)
 
     def test_dcs_rows_keep_their_declared_metadata_and_family_order(self) -> None:
         module = self.renderer()

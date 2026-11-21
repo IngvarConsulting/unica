@@ -18,5 +18,13 @@ pub(super) const KIND: KindDeclaration = KindDeclaration {
         ..LayoutDeclaration::EMPTY
     }),
     generated_types: Some(&[]),
+    // A native empty picture has no Ext directory or image resource.
+    creation: Some(CreationDeclaration {
+        main_configuration_only: true,
+        ..CreationDeclaration::properties(&[
+            "<AvailabilityForChoice>false</AvailabilityForChoice>",
+            "<AvailabilityForAppearance>false</AvailabilityForAppearance>",
+        ])
+    }),
     ..KindDeclaration::new("CommonPicture")
 };
