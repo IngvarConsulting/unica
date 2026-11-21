@@ -250,11 +250,11 @@ fn native_metadata_address_table_matches_declared_and_observed_child_branches() 
                 check_metadata_owner(&authority, &at);
             }
         }
-        check_eds_table_manager_row(&authority, &source, &cancellation);
+        check_eds_module_rows(&authority, &source, &cancellation);
     }
 }
 
-fn check_eds_table_manager_row(
+fn check_eds_module_rows(
     authority: &LogicalViewReadAuthority<'_>,
     source: &Path,
     cancellation: &CancellationToken,
@@ -264,42 +264,57 @@ fn check_eds_table_manager_row(
     let owner = owners
         .get("main:ExternalDataSource.AllKindsExternalSource")
         .unwrap();
-    let tables = format!("{owner}.Table");
-    assert!(addresses(&read(authority, owner), "branches").contains(&tables));
-    let items = addresses(&read(authority, &tables), "items");
-    let table = items.get(&format!("{tables}.Items")).unwrap();
-    let modules = format!("{table}.Module");
-    assert!(addresses(&read(authority, table), "branches").contains(&modules));
-    let items = addresses(&read(authority, &modules), "items");
-    let manager = items.get(&format!("{modules}.Manager")).unwrap();
-    read(authority, &format!("{manager}.Body"));
-
-    let at = QualifiedAddress::parse(manager).unwrap();
-    let path = authority.existing_export_path(&at, None).unwrap();
-    assert_eq!(
-        path,
-        "ExternalDataSources/AllKindsExternalSource/Tables/Items/Ext/ManagerModule.bsl"
-    );
+    let branches = addresses(&read(authority, owner), "branches");
     let root =
         unica_workspace::read::open_source_directory(&source.canonicalize().unwrap()).unwrap();
-    let document = WorkspaceFindDirectoryBuilder::default()
-        .locate_path(
-            &[LayoutFindSource::new(
-                "main",
-                SourceSetKind::Configuration,
-                &root,
-            )],
-            &path,
-            ProviderDeadline::no_deadline(),
-            cancellation,
-        )
-        .unwrap()
-        .unwrap();
-    assert_eq!(document.at(), manager.as_str());
-    println!(
-        "| {} | {table} | Module.Manager | {manager} | native owner and table; file round-trip |",
-        authority.platform_profile().id()
-    );
+    let find_sources = [LayoutFindSource::new(
+        "main",
+        SourceSetKind::Configuration,
+        &root,
+    )];
+    let finder = WorkspaceFindDirectoryBuilder::default();
+    for (branch, name, role, native_path) in [
+        (
+            "Table",
+            "Items",
+            "Manager",
+            "ExternalDataSources/AllKindsExternalSource/Tables/Items/Ext/ManagerModule.bsl",
+        ),
+        (
+            "Cube",
+            "Sales",
+            "RecordSet",
+            "ExternalDataSources/AllKindsExternalSource/Cubes/Sales/Ext/RecordSetModule.bsl",
+        ),
+    ] {
+        let collection = format!("{owner}.{branch}");
+        assert!(branches.contains(&collection));
+        let items = addresses(&read(authority, &collection), "items");
+        let item = items.get(&format!("{collection}.{name}")).unwrap();
+        let modules = format!("{item}.Module");
+        assert!(addresses(&read(authority, item), "branches").contains(&modules));
+        let items = addresses(&read(authority, &modules), "items");
+        let module = items.get(&format!("{modules}.{role}")).unwrap();
+        read(authority, &format!("{module}.Body"));
+
+        let at = QualifiedAddress::parse(module).unwrap();
+        let path = authority.existing_export_path(&at, None).unwrap();
+        assert_eq!(path, native_path);
+        let document = finder
+            .locate_path(
+                &find_sources,
+                &path,
+                ProviderDeadline::no_deadline(),
+                cancellation,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(document.at(), module.as_str());
+        println!(
+            "| {} | {item} | Module.{role} | {module} | native owner and {branch}; file round-trip |",
+            authority.platform_profile().id()
+        );
+    }
 }
 
 fn check_metadata_owner(authority: &LogicalViewReadAuthority<'_>, owner: &QualifiedAddress) {
