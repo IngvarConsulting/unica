@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import subprocess
 import sys
 import tempfile
@@ -65,7 +66,7 @@ class SearchTests(unittest.TestCase):
             root = Path(directory)
             git(root, "init", "-q")
             (root / "src").mkdir()
-            (root / "src/lib.rs").write_text(f"fn a() {{}}\n// {TODO}#7): снять\n// TODO\n", encoding="utf-8")
+            (root / "src/lib.rs").write_text(f"fn a() {{}}\n// {TODO}#7): снять\n// TODO\n// NOT{TODO}#8)\n", encoding="utf-8")
             (root / "tool.py").write_text(f"# {TODO}later)\n", encoding="utf-8")
             # Documentation is not code: an example of the mark there is no mark.
             (root / "README.md").write_text(f"`{TODO}#7)`\n", encoding="utf-8")
@@ -79,6 +80,21 @@ class SearchTests(unittest.TestCase):
             self.assertEqual(at_revision, [("src/lib.rs:2", 7), ("tool.py:1", None)])
             # The working tree: the edit is seen, untracked files are not.
             self.assertEqual([(mark.place, mark.number) for mark in self.module.marks(root)], [("tool.py:1", None)])
+
+    @unittest.skipIf(os.name == "nt", "Windows does not allow colons in filenames")
+    def test_git_grep_separates_the_path_from_the_line(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            git(root, "init", "-q")
+            (root / "a:b.rs").write_text(
+                f"// NOT{TODO}#8)\n// {TODO}#7)\n", encoding="utf-8",
+            )
+            git(root, "add", "-A")
+            git(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "one")
+            for rev in (None, "HEAD"):
+                with self.subTest(rev=rev):
+                    [mark] = self.module.marks(root, rev)
+                    self.assertEqual((mark.path, mark.line, mark.number), ("a:b.rs", 2, 7))
 
     def test_a_tree_without_marks_has_none(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
