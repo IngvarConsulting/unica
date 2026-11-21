@@ -1,8 +1,8 @@
-//! «ПараметрФункциональнойОпции», `FunctionalOptionsParameter`.
+//! «ПараметрФункциональныхОпций», `FunctionalOptionsParameter`.
 use super::*;
 
 pub(super) const KIND: KindDeclaration = KindDeclaration {
-    russian: &["ПараметрФункциональнойОпции"],
+    russian: &["ПараметрФункциональныхОпций", "ПараметрФункциональнойОпции"],
     metadata: Some(MetadataDeclaration::new(&[
         "FunctionalOptionsParameters",
         "ПараметрыФункциональныхОпций",
