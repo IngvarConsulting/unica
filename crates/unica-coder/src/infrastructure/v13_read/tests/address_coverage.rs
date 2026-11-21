@@ -859,6 +859,14 @@ fn native_recalculation_module_address_table_matches_registered_owner() {
     let profile = PlatformProfile::v8_3_27();
     let cancellation = CancellationToken::new();
     let authority = native_authority(&cancellation, &source, profile);
+    let root =
+        unica_workspace::read::open_source_directory(&source.canonicalize().unwrap()).unwrap();
+    let layout = [LayoutFindSource::new(
+        "main",
+        SourceSetKind::Configuration,
+        &root,
+    )];
+    let finder = WorkspaceFindDirectoryBuilder::default();
     let mut evidence = EvidenceRows::new(
         "native_recalculation_module_address_table_matches_registered_owner",
         SourceSetKind::Configuration,
@@ -901,34 +909,59 @@ fn native_recalculation_module_address_table_matches_registered_owner() {
             &origin,
             AddressEvidence::Read(&owner),
         );
+        let owner_address = QualifiedAddress::parse(&owner).unwrap();
+        let name = owner_address.segments().last().unwrap().name().unwrap();
+        let relative_owner = format!("CalculationRegisters/Начисления/Recalculations/{name}");
+        let owner_descriptor = source.join(format!("{relative_owner}.xml"));
+        let raw = read_fixture_descriptor(&owner_descriptor);
+        let document = parse_fixture_descriptor(&raw, &owner_descriptor);
+        assert_eq!(document.root_element().attribute("version"), Some("2.20"));
+        let artifact = fixture_artifact(&document, "Recalculation", &owner_descriptor);
+        assert_eq!(fixture_properties_name(artifact), Some(name));
+        assert!(uuid::Uuid::parse_str(artifact.attribute("uuid").unwrap()).is_ok());
+
         let branch = format!("{owner}.Module");
-        assert!(addresses(&node, "branches").contains(&branch));
-        let branch_at = QualifiedAddress::parse(&branch).unwrap();
-        let roles = profile.module_children(&branch_at);
-        let published = addresses(&read(&authority, &branch), "items");
-        assert_eq!(
-            published,
-            roles
-                .iter()
-                .map(|child| child.at().to_string())
-                .collect::<BTreeSet<_>>()
+        let role = format!("{branch}.RecordSet");
+        check_native_branch(&authority, &node, &branch, &BTreeSet::from([role.clone()]));
+        evidence.record(
+            profile.line(),
+            &owner,
+            "Module",
+            None,
+            &fixture_origin(&owner_descriptor),
+            AddressEvidence::Read(&branch),
         );
-        assert_eq!(published, BTreeSet::from([format!("{branch}.RecordSet")]));
-        for role in roles {
-            let at = role.at();
-            let route = route_logical_address(at, profile).unwrap();
-            assert_eq!(route.reader(), LogicalReader::Module);
-            let node = read(&authority, &at.to_string());
-            assert!(
-                addresses(&node, "branches").contains(&format!("{at}.Body")),
-                "{node:#}"
-            );
-            println!(
-                "| {} | Recalculation | Module.{} | {at} |",
-                profile.line(),
-                role.capability().role().as_str()
-            );
-        }
+        let at = QualifiedAddress::parse(&role).unwrap();
+        assert_eq!(
+            route_logical_address(&at, profile).unwrap().reader(),
+            LogicalReader::Module
+        );
+        let module = read(&authority, &role);
+        assert_eq!(module["kind"], "Module");
+        assert!(addresses(&module, "branches").contains(&format!("{role}.Body")));
+        let relative = format!("{relative_owner}/Ext/RecordSetModule.bsl");
+        let file = source.join(&relative);
+        assert!(file.is_file(), "{relative}");
+        assert_eq!(authority.existing_export_path(&at, None).unwrap(), relative);
+        let placed = finder
+            .locate_path(
+                &layout,
+                &relative,
+                ProviderDeadline::no_deadline(),
+                &cancellation,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(placed.at(), role);
+        assert_eq!(placed.placed_path(), Some(relative.as_str()));
+        evidence.record(
+            profile.line(),
+            &owner,
+            "Module",
+            Some("RecordSet"),
+            &fixture_origin(&file),
+            AddressEvidence::RoundTrip(&role),
+        );
     }
     evidence.finish();
 }
@@ -3110,6 +3143,12 @@ fn native_registered_modules_match_profile_and_physical_paths() {
         }
         for (kind, descriptor, role, modules) in [
             (
+                "Sequence",
+                "Sequences/Probe.xml",
+                "RecordSet",
+                &[(None, "Sequences/Probe/Ext/RecordSetModule.bsl")][..],
+            ),
+            (
                 "Document",
                 "Documents/Приход.xml",
                 "Object",
@@ -3197,6 +3236,16 @@ fn native_registered_modules_match_profile_and_physical_paths() {
             for &(command, relative) in modules {
                 let parent = command.map_or(owner.as_str(), |name| commands[name].as_str());
                 let at = check_registered_module_read(&authority, &profile_fixture, parent, role);
+                if kind == "Sequence" {
+                    evidence.record(
+                        line,
+                        parent,
+                        "Module",
+                        None,
+                        &fixture_origin(&descriptor),
+                        AddressEvidence::Read(&format!("{parent}.Module")),
+                    );
+                }
                 let file = source.join(relative);
                 let metadata = fs::metadata(&file).expect("native module resource");
                 assert!(metadata.is_file(), "{xml}: {relative}");
