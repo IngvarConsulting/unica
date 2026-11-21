@@ -24,7 +24,7 @@ use unica_work_control::cancellation::{CancellationToken, CANCELLED_PREFIX};
 use unica_workspace::paths::normalize_path_identity;
 use unica_workspace::runner_lock::{RunnerLock, RunnerLockFailure};
 
-pub(super) const VERSION: &str = "0.18.0";
+pub(super) const VERSION: &str = "0.18.1";
 pub(super) fn check_version(version: &str) -> Result<(), String> {
     if version == VERSION {
         Ok(())
@@ -1530,7 +1530,7 @@ source-set:
     #[test]
     fn unknown_runner_versions_are_not_probed_by_executing_an_operation() {
         assert!(check_version(VERSION).is_ok());
-        assert!(check_version("0.18.0").is_ok());
+        assert!(check_version("0.18.1").is_ok());
         for version in [
             "0.9.0",
             "0.11.3",
@@ -1550,7 +1550,8 @@ source-set:
             "0.17.4",
             "0.17.5",
             "0.18.0-rc.1",
-            "0.18.1",
+            "0.18.0",
+            "0.18.2",
             "1.0.0",
             "1.0.0-rc.1",
             "",

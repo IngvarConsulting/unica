@@ -5,7 +5,7 @@ pub use predefined_code_type_plan::PredefinedCodeTypePlan;
 use crate::decode::*;
 use crate::dialect::root_version;
 use crate::edit::apply_typed_operations_to_image_with_seed;
-use crate::layout::metadata_layout;
+use crate::layout::creatable_layout;
 use crate::template_catalog::MetadataTemplateSource;
 use serde_json::{json, Map, Value};
 use sha2::Digest;
@@ -45,6 +45,38 @@ pub trait MetadataPlanningRead {
         crate::remove::RemoveObservationHooks::NONE
     }
 }
+/// The `LanguageCode` of every language the staged configuration registers.
+fn staged_language_codes(
+    staged: &mut ApplyProposal<'_>,
+    owner_relative: &Path,
+    op_index: usize,
+) -> Result<Vec<String>, ApplyPlanError> {
+    let at_path = format!("ops[{op_index}].args.values.kind");
+    let owner = staged
+        .read(owner_relative)
+        .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
+        .unwrap_or_default();
+    let mut codes = Vec::new();
+    for language in crate::template_catalog::registered_names(&owner, "Language") {
+        let relative = Path::new("Languages").join(format!("{language}.xml"));
+        let Some(bytes) = staged
+            .read(&relative)
+            .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
+        else {
+            continue;
+        };
+        let code = crate::language_code::read_code(&bytes).map_err(|message| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::InvalidSource,
+                format!("language `{language}` has no readable LanguageCode: {message}"),
+            )
+            .at_path(at_path.clone())
+        })?;
+        codes.push(code);
+    }
+    Ok(codes)
+}
+
 /// Local composition belongs to the final descriptor, after every operation
 /// family has contributed its image. A borrowed descriptor contains only the
 /// extension's contribution and cannot establish the parent's composition.
@@ -800,16 +832,16 @@ pub fn stage_object_create<R: MetadataPlanningRead>(
     source_kind: SourceSetKind,
     source_set_name: &str,
     root: &std::path::Path,
-    kind: MetadataKind,
+    kind: unica_metadata::CreatableKind,
     name: &str,
     op_index: usize,
     provisional: &mut Vec<ProvisionalApplyEffect>,
 ) -> Result<(), ApplyPlanError> {
-    let own = match kind {
-        MetadataKind::Catalog => {
+    let own = match kind.typed() {
+        Some(MetadataKind::Catalog) => {
             Some(unica_source_contract::compatibility::ExtensionOperation::AddOwnCatalog)
         }
-        MetadataKind::InformationRegister => Some(
+        Some(MetadataKind::InformationRegister) => Some(
             unica_source_contract::compatibility::ExtensionOperation::AddOwnInformationRegister,
         ),
         _ => None,
@@ -822,11 +854,34 @@ pub fn stage_object_create<R: MetadataPlanningRead>(
             &format!("ops[{op_index}]"),
         )?;
     }
+    if source_kind == SourceSetKind::Extension && !kind.created_in_extension() {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            format!(
+                "an extension borrows `{}` from the main configuration instead of creating it",
+                kind.as_str()
+            ),
+        )
+        .at_path(format!("ops[{op_index}].args.values.kind")));
+    }
     reader.with_creation_source(op_index, &mut |source| {
         // The new descriptor's synonym is written in the source set's default
         // language, read from the staged image like every other edit (#909).
         let language =
             unica_source_designer::language::staged_text_language(staged, source_kind, op_index)?;
+        // A new language skips the codes of the staged image, which holds
+        // the languages an earlier operation of this batch created.
+        let language_codes = match kind
+            .template()
+            .and_then(|template| template.numbered_language_code)
+        {
+            Some(_) => Some(staged_language_codes(
+                staged,
+                &staged_relative(root, source.owner_path, op_index)?,
+                op_index,
+            )?),
+            None => None,
+        };
         let post_image = crate::template_catalog::minimal_object(
             source,
             kind,
@@ -834,6 +889,7 @@ pub fn stage_object_create<R: MetadataPlanningRead>(
             crate::template_catalog::MetadataTemplateOperationOverrides {
                 source: false,
                 handler: false,
+                language_codes,
             },
             source_set_name,
             &language,
@@ -841,7 +897,7 @@ pub fn stage_object_create<R: MetadataPlanningRead>(
         .map_err(|failure| meta_failure_to_plan_error(failure, op_index))?;
         let owner_relative = staged_relative(root, source.owner_path, op_index)?;
         let descriptor_relative =
-            PathBuf::from(metadata_layout(kind).directory).join(format!("{name}.xml"));
+            PathBuf::from(creatable_layout(kind).directory).join(format!("{name}.xml"));
         let existing = staged.read(&descriptor_relative).map_err(|error| {
             ApplyPlanError::staging(error, format!("ops[{op_index}].args.values.name"))
         })?;
@@ -1020,9 +1076,10 @@ fn stage_object_remove<R: MetadataPlanningRead>(
     provisional: &mut Vec<ProvisionalApplyEffect>,
 ) -> Result<(), ApplyPlanError> {
     use crate::remove::{
-        meta_remove_composition, meta_remove_composition_image, meta_remove_references,
-        meta_remove_referrer, meta_remove_search_patterns, meta_remove_should_skip_file,
-        plan_meta_remove_subsystem_replacements, remove_composition_entries, MetaRemoveReference,
+        meta_remove_composition, meta_remove_composition_image, meta_remove_is_form,
+        meta_remove_references, meta_remove_referrer, meta_remove_search_patterns,
+        meta_remove_should_skip_file, plan_meta_remove_subsystem_replacements,
+        remove_composition_entries, remove_form_command_group_entries, MetaRemoveReference,
         MetaRemoveSearch,
     };
     let at_path = format!("ops[{op_index}].args.at");
@@ -1127,7 +1184,9 @@ fn stage_object_remove<R: MetadataPlanningRead>(
         );
         let composition =
             meta_remove_composition(relative).filter(|_| !absolute.starts_with(&object_dir));
-        if skipped && composition.is_none() {
+        // A form's command interface places commands into command groups.
+        let form_groups = kind == "CommandGroup" && meta_remove_is_form(relative);
+        if skipped && composition.is_none() && !form_groups {
             continue;
         }
         let bytes = staged
@@ -1157,6 +1216,23 @@ fn stage_object_remove<R: MetadataPlanningRead>(
             if removed_entries > 0 {
                 let (referrer, _) = meta_remove_referrer(relative);
                 cleaned.push((format!("{source_set}:{referrer}"), property));
+                cleaned_files.push((
+                    relative.clone(),
+                    bytes.clone(),
+                    meta_remove_composition_image(&bytes, updated.clone()),
+                ));
+                text = updated;
+            }
+        }
+        if form_groups {
+            let (updated, removed_entries) = remove_form_command_group_entries(&text, &qualified)
+                .map_err(|error| {
+                ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, error)
+                    .at_path(at_path.clone())
+            })?;
+            if removed_entries > 0 {
+                let (referrer, _) = meta_remove_referrer(relative);
+                cleaned.push((format!("{source_set}:{referrer}"), "CommandInterface"));
                 cleaned_files.push((
                     relative.clone(),
                     bytes.clone(),
@@ -1356,7 +1432,13 @@ fn stage_object_remove<R: MetadataPlanningRead>(
                 .take(20)
                 .map(|(at, property)| serde_json::json!({"at": at, "property": property}))
                 .collect::<Vec<_>>(),
-            "message": format!("the removal also takes `{removed}` out of {shown}"),
+            "message": if kind == "CommandGroup" {
+                format!(
+                    "the removal also takes `{removed}` out of {shown}; the commands placed in it return to their default groups"
+                )
+            } else {
+                format!("the removal also takes `{removed}` out of {shown}")
+            },
         }));
     }
     provisional.push(effect);

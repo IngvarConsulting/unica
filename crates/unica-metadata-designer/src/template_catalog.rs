@@ -1,11 +1,11 @@
 //! Platform metadata descriptor templates and lazy prerequisite discovery.
-use super::layout::metadata_layout;
+use super::layout::creatable_layout;
 use roxmltree::Document;
 use std::path::{Path, PathBuf};
 use unica_address::source_target::{MetadataAddress, SourceTarget, TargetKind};
 use unica_bsl_parser::{first_exported_bsl_procedure, BslProcedureRequirement};
 
-use unica_metadata::{MetaDiagnostic, MetaDiagnosticCode, MetadataKind};
+use unica_metadata::{CreatableKind, MetaDiagnostic, MetaDiagnosticCode, MetadataKind};
 
 pub struct MetadataTemplateSource<'a, G> {
     pub source_root: &'a Path,
@@ -38,10 +38,14 @@ pub trait MetadataTemplateRead {
         relative: &Path,
     ) -> Result<Vec<u8>, crate::resource_plan::MetadataReadFailure>;
 }
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct MetadataTemplateOperationOverrides {
     pub source: bool,
     pub handler: bool,
+    /// The `LanguageCode` of every language of the staged image. A batch
+    /// passes it so a new language skips the codes an earlier operation
+    /// took; without it the template reads the languages on disk.
+    pub language_codes: Option<Vec<String>>,
 }
 
 pub struct MetadataPostImage<G = ()> {
@@ -104,18 +108,14 @@ pub struct MinimalTemplateContext<G = ()> {
     pub dependencies: Vec<MetadataTemplateFile<G>>,
     /// `LanguageCode` of the source set's default language.
     pub language: String,
+    /// `LanguageCode` of a new language: the first free numbered code.
+    pub new_language_code: Option<String>,
 }
 
 impl<G> MinimalTemplateContext<G> {
-    fn from_source(
-        source: &MetadataTemplateSource<'_, G>,
-        kind: MetadataKind,
-        new_name: &str,
-        overrides: MetadataTemplateOperationOverrides,
-        source_set: &str,
-        language: &str,
-    ) -> Result<Self, unica_metadata::request::MetaFailure> {
-        let mut context = Self {
+    /// The context of a kind whose template reads nothing from the source set.
+    fn without_dependencies(language: &str) -> Self {
+        Self {
             language: language.to_string(),
             chart_of_accounts: None,
             task: None,
@@ -125,7 +125,19 @@ impl<G> MinimalTemplateContext<G> {
             event_source: None,
             event_handler: None,
             dependencies: Vec::new(),
-        };
+            new_language_code: None,
+        }
+    }
+
+    fn from_source(
+        source: &MetadataTemplateSource<'_, G>,
+        kind: MetadataKind,
+        new_name: &str,
+        overrides: MetadataTemplateOperationOverrides,
+        source_set: &str,
+        language: &str,
+    ) -> Result<Self, unica_metadata::request::MetaFailure> {
+        let mut context = Self::without_dependencies(language);
         match kind {
             MetadataKind::AccumulationRegister => {
                 context.dependencies.push(registrar_dependency(
@@ -577,6 +589,19 @@ pub fn place_register_record(
     Some(output)
 }
 
+/// The code the Configurator gives a new language: the prefix and the first
+/// `N` from 1 that no language of the set uses.
+fn first_free_language_code(prefix: &str, codes: &[String]) -> String {
+    (1usize..)
+        .map(|number| format!("{prefix}{number}"))
+        .find(|code| {
+            !codes
+                .iter()
+                .any(|used| crate::language_code::same(used, code))
+        })
+        .expect("a free numbered code")
+}
+
 pub fn template_failure(
     target: &MetadataAddress,
     message: String,
@@ -618,7 +643,8 @@ pub fn minimal_module_files(kind: MetadataKind) -> &'static [&'static str] {
         MetadataKind::ScheduledJob
         | MetadataKind::EventSubscription
         | MetadataKind::DocumentJournal
-        | MetadataKind::DefinedType => &[],
+        | MetadataKind::DefinedType
+        | MetadataKind::CommandGroup => &[],
     }
 }
 
@@ -707,7 +733,7 @@ pub fn emit_meta_catalog_xml(
 }
 
 pub fn minimal_metadata_xml<G>(
-    kind: unica_metadata::MetadataKind,
+    kind: CreatableKind,
     obj_name: &str,
     format_version: &str,
     context: &MinimalTemplateContext<G>,
@@ -723,7 +749,7 @@ pub fn minimal_metadata_xml<G>(
         handler: context.event_handler.clone(),
         language: context.language.clone(),
     };
-    if kind == unica_metadata::MetadataKind::Catalog {
+    if kind == CreatableKind::Typed(MetadataKind::Catalog) {
         return emit_meta_catalog_xml(&defn, obj_name, format_version, fresh_uuid);
     }
 
@@ -742,6 +768,36 @@ pub fn minimal_metadata_xml<G>(
     ];
     emit_meta_internal_info(&mut lines, "\t\t", object_type, obj_name, &mut next_uuid);
     lines.push("\t\t<Properties>".to_string());
+    let kind = match kind {
+        CreatableKind::Typed(kind) => kind,
+        CreatableKind::Declared(_) => {
+            let template = kind.template().ok_or_else(|| {
+                format!("metadata kind `{object_type}` declares no creation template")
+            })?;
+            emit_meta_base_properties(&mut lines, "\t\t\t", &defn, obj_name, &synonym);
+            for property in template.properties {
+                lines.push(format!("\t\t\t{property}"));
+            }
+            if template.numbered_language_code.is_some() {
+                let code = context.new_language_code.as_deref().ok_or_else(|| {
+                    format!(
+                        "metadata kind `{object_type}` needs the language codes of the source set"
+                    )
+                })?;
+                lines.push(format!(
+                    "\t\t\t<LanguageCode>{}</LanguageCode>",
+                    unica_xml_format::text::escape_xml(code)
+                ));
+            }
+            return Ok(close_minimal_object(
+                lines,
+                object_type,
+                format_version,
+                creatable_layout(kind).requires_child_objects,
+                obj_uuid,
+            ));
+        }
+    };
     match kind {
         unica_metadata::MetadataKind::Catalog => unreachable!(),
         unica_metadata::MetadataKind::Document => {
@@ -822,17 +878,37 @@ pub fn minimal_metadata_xml<G>(
         unica_metadata::MetadataKind::DefinedType => {
             emit_meta_defined_type_properties(&mut lines, "\t\t\t", &defn, obj_name, &synonym)
         }
+        unica_metadata::MetadataKind::CommandGroup => {
+            emit_meta_command_group_properties(&mut lines, "\t\t\t", &defn, obj_name, &synonym)
+        }
     }
+    Ok(close_minimal_object(
+        lines,
+        object_type,
+        format_version,
+        crate::format_contract::kind_declares_child_objects(kind),
+        obj_uuid,
+    ))
+}
+
+/// Closes the properties of a new object and the object itself.
+fn close_minimal_object(
+    mut lines: Vec<String>,
+    object_type: &str,
+    format_version: &str,
+    child_objects: bool,
+    obj_uuid: String,
+) -> (String, String) {
     lines.push("\t\t</Properties>".to_string());
     // Содержимое объекта задаёт вызывающий через `operations`: инструмент не
     // придумывает ресурсы, измерения и значения свойств за него.
-    if crate::format_contract::kind_declares_child_objects(kind) {
+    if child_objects {
         lines.push("\t\t<ChildObjects/>".to_string());
     }
     lines.push(format!("\t</{object_type}>"));
     lines.push("</MetaDataObject>".to_string());
     insert_format_object_properties(&mut lines, object_type, format_version);
-    Ok((lines.join("\r\n"), obj_uuid))
+    (lines.join("\r\n"), obj_uuid)
 }
 
 /// Writes after their 2.20 neighbours the properties the export format of
@@ -859,7 +935,7 @@ pub fn minimal_metadata_xml_for_tests(
     name: &str,
 ) -> Result<(String, String), String> {
     minimal_metadata_xml(
-        kind,
+        CreatableKind::Typed(kind),
         name,
         crate::dialect::root_version::writable(),
         &MinimalTemplateContext::<()> {
@@ -872,6 +948,7 @@ pub fn minimal_metadata_xml_for_tests(
             event_handler: None,
             dependencies: Vec::new(),
             language: "ru".to_string(),
+            new_language_code: None,
         },
         metadata_fixture_uuid,
     )
@@ -885,184 +962,8 @@ pub fn meta_xmlns_decl(format_version: &str) -> String {
 pub fn metadata_generated_types_8_3_27(
     object_type: &str,
 ) -> Option<&'static [(&'static str, &'static str)]> {
-    match object_type {
-        "Catalog" => Some(&[
-            ("CatalogObject", "Object"),
-            ("CatalogRef", "Ref"),
-            ("CatalogSelection", "Selection"),
-            ("CatalogList", "List"),
-            ("CatalogManager", "Manager"),
-        ]),
-        "Document" => Some(&[
-            ("DocumentObject", "Object"),
-            ("DocumentRef", "Ref"),
-            ("DocumentSelection", "Selection"),
-            ("DocumentList", "List"),
-            ("DocumentManager", "Manager"),
-        ]),
-        "BusinessProcess" => Some(&[
-            ("BusinessProcessObject", "Object"),
-            ("BusinessProcessRef", "Ref"),
-            ("BusinessProcessSelection", "Selection"),
-            ("BusinessProcessList", "List"),
-            ("BusinessProcessManager", "Manager"),
-            ("BusinessProcessRoutePointRef", "RoutePointRef"),
-        ]),
-        "Enum" => Some(&[
-            ("EnumRef", "Ref"),
-            ("EnumManager", "Manager"),
-            ("EnumList", "List"),
-        ]),
-        "Constant" => Some(&[
-            ("ConstantManager", "Manager"),
-            ("ConstantValueManager", "ValueManager"),
-            ("ConstantValueKey", "ValueKey"),
-        ]),
-        "InformationRegister" => Some(&[
-            ("InformationRegisterRecord", "Record"),
-            ("InformationRegisterManager", "Manager"),
-            ("InformationRegisterSelection", "Selection"),
-            ("InformationRegisterList", "List"),
-            ("InformationRegisterRecordSet", "RecordSet"),
-            ("InformationRegisterRecordKey", "RecordKey"),
-            ("InformationRegisterRecordManager", "RecordManager"),
-        ]),
-        "AccumulationRegister" => Some(&[
-            ("AccumulationRegisterRecord", "Record"),
-            ("AccumulationRegisterManager", "Manager"),
-            ("AccumulationRegisterSelection", "Selection"),
-            ("AccumulationRegisterList", "List"),
-            ("AccumulationRegisterRecordSet", "RecordSet"),
-            ("AccumulationRegisterRecordKey", "RecordKey"),
-        ]),
-        "AccountingRegister" => Some(&[
-            ("AccountingRegisterRecord", "Record"),
-            ("AccountingRegisterExtDimensions", "ExtDimensions"),
-            ("AccountingRegisterRecordSet", "RecordSet"),
-            ("AccountingRegisterRecordKey", "RecordKey"),
-            ("AccountingRegisterSelection", "Selection"),
-            ("AccountingRegisterList", "List"),
-            ("AccountingRegisterManager", "Manager"),
-        ]),
-        "CalculationRegister" => Some(&[
-            ("CalculationRegisterRecord", "Record"),
-            ("CalculationRegisterManager", "Manager"),
-            ("CalculationRegisterSelection", "Selection"),
-            ("CalculationRegisterList", "List"),
-            ("CalculationRegisterRecordSet", "RecordSet"),
-            ("CalculationRegisterRecordKey", "RecordKey"),
-            ("RecalculationsManager", "Recalcs"),
-        ]),
-        "Recalculation" => Some(&[("RecalculationRecordSet", "RecordSet")]),
-        "ChartOfAccounts" => Some(&[
-            ("ChartOfAccountsObject", "Object"),
-            ("ChartOfAccountsRef", "Ref"),
-            ("ChartOfAccountsSelection", "Selection"),
-            ("ChartOfAccountsList", "List"),
-            ("ChartOfAccountsManager", "Manager"),
-            ("ChartOfAccountsExtDimensionTypes", "ExtDimensionTypes"),
-            (
-                "ChartOfAccountsExtDimensionTypesRow",
-                "ExtDimensionTypesRow",
-            ),
-        ]),
-        "ChartOfCharacteristicTypes" => Some(&[
-            ("ChartOfCharacteristicTypesObject", "Object"),
-            ("ChartOfCharacteristicTypesRef", "Ref"),
-            ("ChartOfCharacteristicTypesSelection", "Selection"),
-            ("ChartOfCharacteristicTypesList", "List"),
-            ("Characteristic", "Characteristic"),
-            ("ChartOfCharacteristicTypesManager", "Manager"),
-        ]),
-        "ChartOfCalculationTypes" => Some(&[
-            ("ChartOfCalculationTypesObject", "Object"),
-            ("ChartOfCalculationTypesRef", "Ref"),
-            ("ChartOfCalculationTypesSelection", "Selection"),
-            ("ChartOfCalculationTypesList", "List"),
-            ("ChartOfCalculationTypesManager", "Manager"),
-            ("DisplacingCalculationTypes", "DisplacingCalculationTypes"),
-            (
-                "DisplacingCalculationTypesRow",
-                "DisplacingCalculationTypesRow",
-            ),
-            ("BaseCalculationTypes", "BaseCalculationTypes"),
-            ("BaseCalculationTypesRow", "BaseCalculationTypesRow"),
-            ("LeadingCalculationTypes", "LeadingCalculationTypes"),
-            ("LeadingCalculationTypesRow", "LeadingCalculationTypesRow"),
-        ]),
-        "Report" => Some(&[("ReportObject", "Object"), ("ReportManager", "Manager")]),
-        "DataProcessor" => Some(&[
-            ("DataProcessorObject", "Object"),
-            ("DataProcessorManager", "Manager"),
-        ]),
-        "Task" => Some(&[
-            ("TaskObject", "Object"),
-            ("TaskRef", "Ref"),
-            ("TaskSelection", "Selection"),
-            ("TaskList", "List"),
-            ("TaskManager", "Manager"),
-        ]),
-        "ExchangePlan" => Some(&[
-            ("ExchangePlanObject", "Object"),
-            ("ExchangePlanRef", "Ref"),
-            ("ExchangePlanSelection", "Selection"),
-            ("ExchangePlanList", "List"),
-            ("ExchangePlanManager", "Manager"),
-        ]),
-        "DocumentJournal" => Some(&[
-            ("DocumentJournalSelection", "Selection"),
-            ("DocumentJournalList", "List"),
-            ("DocumentJournalManager", "Manager"),
-        ]),
-        "FilterCriterion" => Some(&[
-            ("FilterCriterionManager", "Manager"),
-            ("FilterCriterionList", "List"),
-        ]),
-        "SettingsStorage" => Some(&[("SettingsStorageManager", "Manager")]),
-        // The platform writes these three for a sequence in its own export
-        // (`tests/fixtures/formats/platform_xml/<format>/all_kinds/src/
-        // Sequences/Probe.xml`, 2.20 to 2.22) and refuses to load a borrowed
-        // sequence without its record and manager.
-        "Sequence" => Some(&[
-            ("SequenceRecord", "Record"),
-            ("SequenceManager", "Manager"),
-            ("SequenceRecordSet", "RecordSet"),
-        ]),
-        // The platform writes the manager of a WS reference in its own export
-        // (`tests/fixtures/formats/platform_xml/<format>/all_kinds/src/
-        // WSReferences/Probe.xml`, 2.20 to 2.22) and refuses to load a
-        // borrowed WS reference without it.
-        "WSReference" => Some(&[("WSReferenceManager", "Manager")]),
-        "IntegrationService" => Some(&[("IntegrationServiceManager", "Manager")]),
-        "DefinedType" => Some(&[("DefinedType", "DefinedType")]),
-        // The queue of 8.5.4: its message is a record, its manager a manager.
-        // The platform refuses to import a queue descriptor without them.
-        "Queue" => Some(&[("QueueMessage", "Record"), ("QueueManager", "Manager")]),
-        "Language"
-        | "Subsystem"
-        | "StyleItem"
-        | "Style"
-        | "CommonPicture"
-        | "SessionParameter"
-        | "Role"
-        | "CommonTemplate"
-        | "CommonModule"
-        | "Bot"
-        | "CommonAttribute"
-        | "XDTOPackage"
-        | "WebService"
-        | "HTTPService"
-        | "EventSubscription"
-        | "ScheduledJob"
-        | "FunctionalOption"
-        | "FunctionalOptionsParameter"
-        | "PaletteColor"
-        | "CommonCommand"
-        | "CommandGroup"
-        | "CommonForm"
-        | "DocumentNumerator" => Some(&[]),
-        _ => None,
-    }
+    unica_address::kinds::declared(object_type)
+        .and_then(|(_, declaration)| declaration.generated_types)
 }
 
 pub fn emit_meta_internal_info<F>(
@@ -2495,6 +2396,22 @@ pub fn emit_meta_common_module_properties(
     ));
 }
 
+/// Группа команд, как её создаёт Конфигуратор 8.3.27: представление `Auto`,
+/// пустые подсказка и картинка, категория панели навигации.
+pub fn emit_meta_command_group_properties(
+    lines: &mut Vec<String>,
+    indent: &str,
+    defn: &MetaTemplateDefinition,
+    obj_name: &str,
+    synonym: &str,
+) {
+    emit_meta_base_properties(lines, indent, defn, obj_name, synonym);
+    lines.push(format!("{indent}<Representation>Auto</Representation>"));
+    lines.push(format!("{indent}<ToolTip/>"));
+    lines.push(format!("{indent}<Picture/>"));
+    lines.push(format!("{indent}<Category>NavigationPanel</Category>"));
+}
+
 pub fn emit_meta_defined_type_properties(
     lines: &mut Vec<String>,
     indent: &str,
@@ -3221,7 +3138,7 @@ pub fn meta_synonym_word_boundary(previous: char, current: char) -> bool {
 
 pub fn minimal_object<G>(
     source: &MetadataTemplateSource<'_, G>,
-    kind: MetadataKind,
+    kind: CreatableKind,
     name: &str,
     overrides: MetadataTemplateOperationOverrides,
     source_set: &str,
@@ -3245,8 +3162,47 @@ pub fn minimal_object<G>(
                 .with_field("name"),
             )
         })?;
-    let context =
-        MinimalTemplateContext::from_source(source, kind, name, overrides, source_set, language)?;
+    let context = match kind {
+        CreatableKind::Typed(typed) => MinimalTemplateContext::from_source(
+            source,
+            typed,
+            name,
+            overrides.clone(),
+            source_set,
+            language,
+        )?,
+        CreatableKind::Declared(_) => {
+            let mut context = MinimalTemplateContext::without_dependencies(language);
+            if let Some(prefix) = kind
+                .template()
+                .and_then(|template| template.numbered_language_code)
+            {
+                let mut codes = Vec::new();
+                for language in registered_names(source.owner_preimage, "Language") {
+                    let file = read_dependency(
+                        source,
+                        "Language",
+                        &language,
+                        MetadataTemplateFileMode::Guard,
+                        None,
+                    )?;
+                    let code = crate::language_code::read_code(&file.bytes).map_err(|message| {
+                        template_failure(
+                            &metadata_path,
+                            format!(
+                                "language `{language}` has no readable LanguageCode: {message}"
+                            ),
+                        )
+                    })?;
+                    codes.push(code);
+                    context.dependencies.push(file);
+                }
+                let codes = overrides.language_codes.clone().unwrap_or(codes);
+                context.new_language_code = Some(first_free_language_code(prefix, &codes));
+            }
+            context
+        }
+    };
     let (xml, _) = minimal_metadata_xml(
         kind,
         name,
@@ -3255,7 +3211,7 @@ pub fn minimal_object<G>(
         source.fresh_uuid,
     )
     .map_err(|message| template_failure(&metadata_path, message))?;
-    let layout = metadata_layout(kind);
+    let layout = creatable_layout(kind);
     let mut files = vec![MetadataTemplateFile {
         role: MetadataTemplateFileRole::Descriptor,
         mode: MetadataTemplateFileMode::Create,
@@ -3266,7 +3222,7 @@ pub fn minimal_object<G>(
         edit: None,
     }];
     let ext = PathBuf::from(layout.directory).join(name).join("Ext");
-    for module in minimal_module_files(kind) {
+    for module in kind.typed().map_or(&[][..], minimal_module_files) {
         files.push(MetadataTemplateFile {
             role: MetadataTemplateFileRole::Module,
             mode: MetadataTemplateFileMode::Create,
@@ -3277,8 +3233,10 @@ pub fn minimal_object<G>(
             edit: None,
         });
     }
-    for (file_name, auxiliary_kind, content) in minimal_auxiliary_files(kind, source.format_version)
-    {
+    let auxiliary = kind.typed().map_or_else(Vec::new, |kind| {
+        minimal_auxiliary_files(kind, source.format_version)
+    });
+    for (file_name, auxiliary_kind, content) in auxiliary {
         files.push(MetadataTemplateFile {
             role: MetadataTemplateFileRole::AuxiliaryXml(auxiliary_kind),
             mode: MetadataTemplateFileMode::Create,
@@ -3318,7 +3276,30 @@ mod typed_template_tests {
             event_handler: Some("CommonModule.MetaAddHandlers.Handle".to_string()),
             dependencies: Vec::new(),
             language: "ru".to_string(),
+            new_language_code: Some("ru1".to_string()),
         }
+    }
+
+    /// The Configurator 8.3.27 gives new languages «ru1», then «ru2»,
+    /// whatever the languages of the configuration: the first free number.
+    #[test]
+    fn new_language_takes_the_first_free_numbered_code() {
+        let codes = |codes: &[&str]| {
+            codes
+                .iter()
+                .map(|code| code.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(first_free_language_code("ru", &codes(&["ru", "en"])), "ru1");
+        assert_eq!(
+            first_free_language_code("ru", &codes(&["ru", "ru1"])),
+            "ru2"
+        );
+        assert_eq!(
+            first_free_language_code("ru", &codes(&["en", "ru2"])),
+            "ru1"
+        );
+        assert_eq!(first_free_language_code("ru", &codes(&["RU1"])), "ru2");
     }
 
     #[test]
@@ -3336,12 +3317,12 @@ mod typed_template_tests {
     }
 
     #[test]
-    fn typed_minimal_catalog_emits_parseable_platform_xml_for_every_metadata_kind() {
+    fn typed_minimal_catalog_emits_parseable_platform_xml_for_every_creatable_kind() {
         let context = context();
-        for kind in MetadataKind::ALL {
+        for kind in CreatableKind::all() {
             let name = format!("Typed{}", kind.as_str());
             let (xml, uuid) =
-                minimal_metadata_xml(*kind, &name, "2.20", &context, metadata_fixture_uuid)
+                minimal_metadata_xml(kind, &name, "2.20", &context, metadata_fixture_uuid)
                     .unwrap_or_else(|error| panic!("{}: {error}", kind.as_str()));
             let document =
                 Document::parse(&xml).unwrap_or_else(|error| panic!("{}: {error}", kind.as_str()));

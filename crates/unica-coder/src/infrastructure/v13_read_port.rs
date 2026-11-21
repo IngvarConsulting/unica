@@ -1,4 +1,5 @@
 include!(concat!(env!("OUT_DIR"), "/v13_read_port_modules.rs"));
+pub(crate) use child_resources::ChildResourceRevision;
 pub(crate) use editability::{attach_editability, own_rule, shows_editability};
 pub use editability::{NodeEditability, SupportReason};
 use metadata::identity_metadata_payload_from_evidence;

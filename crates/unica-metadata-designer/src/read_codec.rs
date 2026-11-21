@@ -98,6 +98,27 @@ impl MetadataReadCodec for DesignerMetadataReadCodec {
         crate::queue_read::enrich_queue(descriptor, payload)
     }
 
+    fn external_data_source_members(
+        &self,
+        descriptor: &[u8],
+        kind: &str,
+        target: &unica_address::source_target::MetadataAddress,
+        payload: &mut Value,
+    ) -> Result<(), String> {
+        crate::external_data_source_read::enrich_external_data_source_members(
+            descriptor, kind, target, payload,
+        )
+    }
+
+    fn identity_root_facts(
+        &self,
+        descriptor: &[u8],
+        kind: &str,
+        payload: &mut Value,
+    ) -> Result<(), String> {
+        crate::identity_root_facts::enrich_identity_root_facts(descriptor, kind, payload)
+    }
+
     fn style_properties(
         &self,
         descriptor: &str,
@@ -325,6 +346,37 @@ impl MetadataReadCodec for DesignerMetadataReadCodec {
 
     fn object_member_names(&self, descriptor: &[u8]) -> Result<ObjectMemberNames, String> {
         crate::object_member_names::read(descriptor)
+    }
+
+    fn child_resource_diagnostics(
+        &self,
+        reader: &dyn unica_metadata::child_resources::TypedChildResourceRead,
+        descriptor: &Path,
+        owner: &MetadataAddress,
+        kind: &str,
+        name: &str,
+        owner_xml: &str,
+    ) -> Vec<unica_metadata::MetaDiagnostic> {
+        match crate::child_resources::observe_typed_child_resources_with(
+            reader,
+            crate::child_resources::TypedChildObservationScope::Diagnostics,
+            descriptor,
+            owner,
+            kind,
+            name,
+            owner_xml,
+        ) {
+            Ok(observation) => observation.diagnostics,
+            Err(failure) => failure.diagnostics,
+        }
+    }
+
+    fn observed_child_directories(&self) -> Vec<&'static str> {
+        crate::child_resources::observed_child_directories().collect()
+    }
+
+    fn child_tree_max_depth(&self) -> usize {
+        crate::child_resources::TYPED_CHILD_TREE_MAX_DEPTH
     }
 }
 

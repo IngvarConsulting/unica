@@ -117,13 +117,13 @@ async fn compatibility_daemon_restart_case() {
         daemon.owner(),
         workspace_hint.clone(),
     ));
+    first.initialize().await;
     first
         .send(json!({
             "jsonrpc":"2.0", "id":1, "method":"tools/call",
             "params":{
                 "name":"unica.run",
                 "arguments":{"op": "test.long-work", "args": {}},
-                "_meta":modern_meta()
             }
         }))
         .await;
@@ -140,7 +140,6 @@ async fn compatibility_daemon_restart_case() {
             "jsonrpc":"2.0", "id":2, "method":"tools/call",
             "params":{
                 "name":"unica.task.result", "arguments":{"taskId":task_id_text},
-                "_meta":modern_meta()
             }
         }))
         .await;
@@ -154,7 +153,6 @@ async fn compatibility_daemon_restart_case() {
             "jsonrpc":"2.0", "id":3, "method":"tools/call",
             "params":{
                 "name":"unica.task.get", "arguments":{"taskId":task_id.to_string()},
-                "_meta":modern_meta()
             }
         }))
         .await;
@@ -172,12 +170,12 @@ async fn compatibility_daemon_restart_case() {
         daemon.owner(),
         workspace_hint,
     ));
+    second.initialize().await;
     second
         .send(json!({
             "jsonrpc":"2.0", "id":4, "method":"tools/call",
             "params":{
                 "name":"unica.task.get", "arguments":{"taskId":task_id.to_string()},
-                "_meta":modern_meta()
             }
         }))
         .await;
@@ -191,7 +189,6 @@ async fn compatibility_daemon_restart_case() {
             "jsonrpc":"2.0", "id":5, "method":"tools/call",
             "params":{
                 "name":"unica.task.result", "arguments":{"taskId":task_id.to_string()},
-                "_meta":modern_meta()
             }
         }))
         .await;
@@ -301,7 +298,7 @@ async fn protected_create_cancel_case(manual: bool) {
             client
                     .send(json!({
                         "jsonrpc":"2.0", "id":request_id, "method":"tools/call",
-                        "params":{"name":"unica.task.result", "arguments":{"taskId":task_id,"waitMs":1000}, "_meta":modern_meta()}
+                        "params":{"name":"unica.task.result", "arguments":{"taskId":task_id,"waitMs":1000}}
                     }))
                     .await;
             let result = client.receive().await;
@@ -339,10 +336,11 @@ async fn protected_create_cancel_case(manual: bool) {
     } else {
         spawn_unica_server(server)
     };
+    client.initialize().await;
     client
             .send(json!({
                 "jsonrpc":"2.0", "id":1, "method":"tools/call",
-                "params":{"name":"unica.run", "arguments":{"op":"infobase.create","args":{},"dryRun":true}, "_meta":modern_meta()}
+                "params":{"name":"unica.run", "arguments":{"op":"infobase.create","args":{},"dryRun":true}}
             }))
             .await;
     let preview = client.receive().await;
@@ -372,7 +370,7 @@ async fn protected_create_cancel_case(manual: bool) {
     client
             .send(json!({
                 "jsonrpc":"2.0", "id":3, "method":"tools/call",
-                "params":{"name":"unica.run", "arguments":{"op":"infobase.create","args":{},"dryRun":false}, "_meta":modern_meta()}
+                "params":{"name":"unica.run", "arguments":{"op":"infobase.create","args":{},"dryRun":false}}
             }))
             .await;
     let apply = client.receive().await;
@@ -410,7 +408,7 @@ async fn protected_create_cancel_case(manual: bool) {
         }
         flush.release();
     } else {
-        client.send(json!({"jsonrpc":"2.0", "id":4, "method":"tools/call", "params":{"name":"unica.task.cancel", "arguments":{"taskId":task_id}, "_meta":modern_meta()}})).await;
+        client.send(json!({"jsonrpc":"2.0", "id":4, "method":"tools/call", "params":{"name":"unica.task.cancel", "arguments":{"taskId":task_id}}})).await;
         let cancelled = client.receive().await;
         assert_eq!(
             cancelled["result"]["structuredContent"]["data"]["task"]["status"], "working",
@@ -520,11 +518,11 @@ async fn public_native_cancel_waits_for_slow_job_attach_before_answering() {
     client
             .send(json!({
                 "jsonrpc":"2.0", "id":3, "method":"tools/call",
-                "params":{"name":"unica.run", "arguments":{"op":"infobase.create","args":{},"dryRun":false}, "_meta":modern_meta()}
+                "params":{"name":"unica.run", "arguments":{"op":"infobase.create","args":{},"dryRun":false}, "_meta":modern_tasks_meta()}
             }))
             .await;
     let apply = client.receive().await;
-    let task_id = apply["result"]["structuredContent"]["data"]["task"]["taskId"]
+    let task_id = apply["result"]["taskId"]
         .as_str()
         .unwrap_or_else(|| panic!("apply did not return a task: {apply}"))
         .to_owned();
@@ -578,32 +576,10 @@ async fn public_native_cancel_waits_for_slow_job_attach_before_answering() {
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
     std::fs::write(workspace.join("release.marker"), "finish mutation").unwrap();
-    let result_deadline = Instant::now() + Duration::from_secs(20);
-    loop {
-        assert!(Instant::now() < result_deadline, "task did not settle");
-        client
-                .send(json!({
-                    "jsonrpc":"2.0", "id":6, "method":"tools/call",
-                    "params":{"name":"unica.task.result", "arguments":{"taskId":task_id,"waitMs":1000}, "_meta":modern_meta()}
-                }))
-                .await;
-        let result = client.receive().await;
-        if matches!(
-            result["result"]["structuredContent"]["data"]["task"]["status"].as_str(),
-            Some("queued" | "working")
-        ) {
-            continue;
-        }
-        assert_eq!(
-            result["result"]["structuredContent"]["ok"], true,
-            "{result}"
-        );
-        assert_eq!(
-            result["result"]["structuredContent"]["data"]["state"], "created",
-            "{result}"
-        );
-        break;
-    }
+    let done = settled_task(&mut client, &task_id, 6).await;
+    let result = &done["result"]["result"]["structuredContent"];
+    assert_eq!(result["ok"], true, "{done}");
+    assert_eq!(result["data"]["state"], "created", "{done}");
     assert!(workspace.join("created.marker").exists());
     client.shutdown().await;
     daemon.finish(owner);
@@ -2472,7 +2448,7 @@ fn main() {
     let digest = format!("{:x}", Sha256::digest(&bytes));
     let mut core_targets = serde_json::Map::new();
     let mut runner_targets = serde_json::Map::new();
-    let runner_version = "0.18.0"; // Fixture pin must match the production runner contract.
+    let runner_version = "0.18.1"; // Fixture pin must match the production runner contract.
     for host in HostTarget::ALL {
         let target = host.as_str();
         let suffix = if target == "win-x64" { ".exe" } else { "" };
@@ -2764,13 +2740,14 @@ async fn compatibility_long_producer_survives_7000_and_100_ms_observations_once(
             daemon.owner(),
             daemon.workspace_hint.clone(),
         ));
-        client.send(json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"unica.run","arguments":{"op":"test.long-work","args":{}},"_meta":modern_meta()}})).await;
+        client.initialize().await;
+        client.send(json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"unica.run","arguments":{"op":"test.long-work","args":{}}}})).await;
         let initial = client.receive().await;
         let id = initial["result"]["structuredContent"]["data"]["task"]["taskId"]
             .as_str()
             .unwrap()
             .to_owned();
-        client.send(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"unica.task.result","arguments":{"taskId":id,"waitMs":wait_ms},"_meta":modern_meta()}})).await;
+        client.send(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"unica.task.result","arguments":{"taskId":id,"waitMs":wait_ms}}})).await;
         let working = client.receive().await;
         assert_eq!(
             working["result"]["structuredContent"]["data"]["task"]["taskId"], id,
@@ -2782,7 +2759,7 @@ async fn compatibility_long_producer_survives_7000_and_100_ms_observations_once(
         );
         let mut recovered = false;
         for observation_id in 3..=5 {
-            client.send(json!({"jsonrpc":"2.0","id":observation_id,"method":"tools/call","params":{"name":"unica.task.result","arguments":{"taskId":id,"waitMs":7000},"_meta":modern_meta()}})).await;
+            client.send(json!({"jsonrpc":"2.0","id":observation_id,"method":"tools/call","params":{"name":"unica.task.result","arguments":{"taskId":id,"waitMs":7000}}})).await;
             let terminal = client.receive().await;
             let value = &terminal["result"]["structuredContent"];
             assert_eq!(value["ok"], true, "{terminal}");
@@ -2876,9 +2853,17 @@ async fn a_model_cannot_confirm_a_destructive_call_and_the_doors_confirmation_re
     assert!(admitted["error"].is_null(), "{admitted}");
     assert!(!text.contains("unknown argument"), "{admitted}");
     assert!(!text.contains("\"cancelled\""), "{admitted}");
+    // The confirmed push becomes a Task; a 2026-07-28 call without Tasks
+    // waits for it and answers with the operation's own result (#3220).
+    assert_eq!(
+        admitted["result"]["structuredContent"]["at"], "push",
+        "the confirmed push is admitted and reaches the operation: {admitted}"
+    );
     assert!(
-        admitted["result"]["structuredContent"]["data"]["task"]["taskId"].is_string(),
-        "the confirmed push is admitted and runs as a task: {admitted}"
+        admitted["result"]["structuredContent"]["data"]
+            .get("task")
+            .is_none(),
+        "{admitted}"
     );
     client.shutdown().await;
 }

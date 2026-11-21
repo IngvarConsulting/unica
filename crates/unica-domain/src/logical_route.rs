@@ -59,17 +59,24 @@ pub fn classify_route(address: &QualifiedAddress, profile: PlatformProfile) -> O
     {
         return Some(RouteClass::Form);
     }
-    let dcs_body = segments.iter().any(|segment| {
-        matches!(
-            segment.kind(),
-            NodeKind::DataSet
-                | NodeKind::Field
-                | NodeKind::Query
-                | NodeKind::DataSource
-                | NodeKind::CalculatedField
-                | NodeKind::Total
-                | NodeKind::Setting
-        )
+    // Поле таблицы внешнего источника — член вложенного объекта со своим
+    // описанием, а не поле схемы компоновки.
+    let declared_member = |index: usize| {
+        index > 0
+            && unica_address::kinds::is_described_nested_kind(segments[index - 1].kind().as_str())
+    };
+    let dcs_body = segments.iter().enumerate().any(|(index, segment)| {
+        !(segment.kind() == NodeKind::Field && declared_member(index))
+            && matches!(
+                segment.kind(),
+                NodeKind::DataSet
+                    | NodeKind::Field
+                    | NodeKind::Query
+                    | NodeKind::DataSource
+                    | NodeKind::CalculatedField
+                    | NodeKind::Total
+                    | NodeKind::Setting
+            )
     });
     let dcs_template_member = (any_named(NodeKind::Template)
         || any_named(NodeKind::CommonTemplate))
@@ -149,6 +156,20 @@ mod tests {
                 RouteClass::Module,
             ),
             ("main:Report.Sales.Template.Print", RouteClass::Metadata),
+            // Поле таблицы внешнего источника — член объекта со своим
+            // описанием, поле набора данных схемы — член схемы.
+            (
+                "main:ExternalDataSource.Shop.Table.Items.Field.Code",
+                RouteClass::Metadata,
+            ),
+            (
+                "main:ExternalDataSource.Shop.Cube.Sales.DimensionTable.Products.Field",
+                RouteClass::Metadata,
+            ),
+            (
+                "main:Report.Sales.Template.Schema.DataSet.Main.Field.Code",
+                RouteClass::Dcs,
+            ),
             (
                 "main:Report.Sales.Template.Print.Area.Header",
                 RouteClass::Mxl,

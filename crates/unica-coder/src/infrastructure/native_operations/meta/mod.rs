@@ -114,10 +114,32 @@ pub(crate) fn logical_metadata_reader_target(
     if !owner.kind().is_metadata_kind() || owner.name().is_none() {
         return None;
     }
-    crate::infrastructure::native_operations::logical_selector::typed_reader_metadata_target(
-        address,
-        &[owner.kind().as_str()],
-    )
+    let root =
+        crate::infrastructure::native_operations::logical_selector::typed_reader_metadata_target(
+            address,
+            &[owner.kind().as_str()],
+        )?;
+    // Вложенный объект со своим описанием (таблица внешнего источника, куб,
+    // таблица измерения куба) читается своим описанием: цель — самая
+    // длинная объявленная цепочка именованных звеньев.
+    let segments = address.segments();
+    let mut parts = vec![owner.kind().as_str(), owner.name()?];
+    for index in 1..segments.len() {
+        let (parent, child) = (&segments[index - 1], &segments[index]);
+        let Some(name) = child.name() else {
+            break;
+        };
+        if !unica_address::kinds::nested_place(parent.kind().as_str(), child.kind().as_str())
+            .is_some_and(|place| place.directory.is_some())
+        {
+            break;
+        }
+        parts.extend([child.kind().as_str(), name]);
+    }
+    if parts.len() == 2 {
+        return Some(root);
+    }
+    unica_address::source_target::MetadataAddress::parse_logical(&parts.join(".")).ok()
 }
 
 pub(crate) fn accepts_logical_metadata_address(

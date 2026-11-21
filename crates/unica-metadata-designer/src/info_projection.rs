@@ -7,8 +7,8 @@ use unica_metadata::{
     DateFractions, MetaCalculationSchedule, MetaCharacteristic, MetaCharacteristicTypes,
     MetaCharacteristicValues, MetaDiagnostic, MetaDiagnosticCode, MetaExpandedName, MetaHttpMethod,
     MetaHttpUrlTemplate, MetaInfoDeclarations, MetaInfoDetails, MetaInfoPropertyValueKind,
-    MetaLocalizedText, MetaObservedProperty, MetaObservedPropertyValue, MetaScheduledMethod,
-    MetaStandardAttribute, MetaStandardTabularSection, MetaTransferDirection,
+    MetaLocalizedText, MetaObservedProperty, MetaObservedPropertyValue, MetaPicture,
+    MetaScheduledMethod, MetaStandardAttribute, MetaStandardTabularSection, MetaTransferDirection,
     MetaWebServiceOperation, MetaWebServiceParameter, MetaXdtoPackage, MetadataKind, NumberSign,
     ObservedMetadataType, ObservedMetadataTypeVariant, StringLengthMode,
     META_INFO_PROPERTY_PROFILE,
@@ -456,7 +456,15 @@ pub fn observed_type_is_strict_but_unmodelled(properties: roxmltree::Node<'_, '_
     let [container] = containers.as_slice() else {
         return false;
     };
-    if container.attributes().len() != 0 || !node_has_only_whitespace_text(*container) {
+    observed_type_container_is_strict_but_unmodelled(*container)
+}
+
+/// Тот же признак для контейнера типа с другим именем свойства,
+/// например `CommandParameterType` общей команды.
+pub fn observed_type_container_is_strict_but_unmodelled(
+    container: roxmltree::Node<'_, '_>,
+) -> bool {
+    if container.attributes().len() != 0 || !node_has_only_whitespace_text(container) {
         return false;
     }
     let allowed_children = [
@@ -954,6 +962,30 @@ pub fn project_meta_info_details(
                 xdto_packages,
                 operations,
             }
+        }
+        MetadataKind::CommandGroup => {
+            let picture = properties
+                .map(|node| direct_meta_info_property(node, kind.as_str(), "Picture"))
+                .transpose()
+                .map(Option::flatten)
+                .map_err(|error| error.message)
+                .and_then(|node| {
+                    node.map(parse_picture_node)
+                        .transpose()
+                        .map(Option::flatten)
+                });
+            let picture = match picture {
+                Ok(picture) => picture,
+                Err(message) => {
+                    diagnostics.push(
+                        MetaDiagnostic::error(MetaDiagnosticCode::ValidationFailed, message)
+                            .with_metadata_path(target.clone())
+                            .with_field("details.picture"),
+                    );
+                    None
+                }
+            };
+            MetaInfoDetails::CommandGroup { picture }
         }
         _ => MetaInfoDetails::empty(kind),
     }
@@ -1875,6 +1907,11 @@ static META_INFO_PROPERTY_ROUTES: &[MetaInfoPropertyRouteSpec] = &[
         ],
     },
     MetaInfoPropertyRouteSpec {
+        name: "Picture",
+        route: MetaInfoPropertyRoute::Details,
+        kinds: &[MetadataKind::CommandGroup],
+    },
+    MetaInfoPropertyRouteSpec {
         name: "XDTOPackages",
         route: MetaInfoPropertyRoute::Details,
         kinds: &[MetadataKind::WebService],
@@ -2129,6 +2166,54 @@ pub fn observed_meta_info_semantic_routes(
         }
     }
     routes
+}
+
+/// Свойство-картинка (`Picture` группы команд и общей команды). Пустой
+/// элемент значения не даёт. Ссылка обязательна; признак прозрачности
+/// возвращается, только если записан, и не подставляется.
+pub fn parse_picture_node(node: roxmltree::Node<'_, '_>) -> Result<Option<MetaPicture>, String> {
+    if node_is_empty_placeholder(node) {
+        return Ok(None);
+    }
+    let malformed = || "malformed Picture".to_string();
+    if node.attributes().len() != 0
+        || node
+            .children()
+            .any(|child| child.is_text() && !child.text().unwrap_or_default().trim().is_empty())
+    {
+        return Err(malformed());
+    }
+    let mut reference = None;
+    let mut load_transparent = None;
+    for child in node.children().filter(roxmltree::Node::is_element) {
+        if child.tag_name().namespace() != Some(READABLE_NAMESPACE)
+            || child.attributes().len() != 0
+            || child.children().any(|nested| nested.is_element())
+        {
+            return Err(malformed());
+        }
+        let text = direct_text_content(child);
+        match child.tag_name().name() {
+            "Ref"
+                if reference.is_none()
+                    && !text.is_empty()
+                    && !text.contains(char::is_whitespace) =>
+            {
+                reference = Some(text);
+            }
+            "LoadTransparent"
+                if load_transparent.is_none() && (text == "true" || text == "false") =>
+            {
+                load_transparent = Some(text == "true");
+            }
+            _ => return Err(malformed()),
+        }
+    }
+    let reference = reference.ok_or_else(malformed)?;
+    Ok(Some(MetaPicture {
+        reference,
+        load_transparent,
+    }))
 }
 
 pub fn node_is_empty_placeholder(node: roxmltree::Node<'_, '_>) -> bool {

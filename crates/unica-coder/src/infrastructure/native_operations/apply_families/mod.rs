@@ -1251,9 +1251,31 @@ fn parse_apply_operation(
     if crate::application::v13::apply::dispatch_family(operation.name()).is_none() {
         return Err(hidden_apply_family_unimplemented(op_index));
     }
+    refuse_kind_outside_line(op_index, operation, binding)?;
     refuse_misplaced_operation(op_index, operation, binding)?;
     refuse_inherited_content(op_index, operation, binding)?;
     parse_family_operation(op_index, operation, binding)
+}
+
+/// An operation whose address names a top-level kind the set's platform line
+/// does not have is refused with the kind's line and the set's, not as
+/// a missing object (INV.SOURCE.PROFILE-CAPABILITIES).
+fn refuse_kind_outside_line(
+    op_index: usize,
+    operation: &crate::domain::apply::ApplyOp,
+    binding: &ProviderRootBinding,
+) -> Result<(), ApplyPlanError> {
+    let Some(kind) = operation.at().segments().first() else {
+        return Ok(());
+    };
+    match unica_metadata::kind_line_refusal(
+        kind.kind().as_str(),
+        binding.source_profile().semantic_line(),
+    ) {
+        Some(reason) => Err(ApplyPlanError::new(ApplyPlanErrorKind::BadValue, reason)
+            .at_path(format!("ops[{op_index}].args.at"))),
+        None => Ok(()),
+    }
 }
 
 /// Содержимое заимствованного объекта, которого расширение не несёт

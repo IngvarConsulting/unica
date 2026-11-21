@@ -156,7 +156,8 @@ pub fn metadata_kind_collections(kind: super::MetadataKind) -> &'static [MetaCol
         | MetadataKind::EventSubscription
         | MetadataKind::HTTPService
         | MetadataKind::WebService
-        | MetadataKind::DefinedType => &[],
+        | MetadataKind::DefinedType
+        | MetadataKind::CommandGroup => &[],
     }
 }
 
@@ -770,8 +771,14 @@ pub fn metadata_fill_value_contexts(kind: MetadataKind) -> &'static [MetaFillVal
         | MetadataKind::EventSubscription
         | MetadataKind::HTTPService
         | MetadataKind::WebService
-        | MetadataKind::DefinedType => &[],
+        | MetadataKind::DefinedType
+        | MetadataKind::CommandGroup => &[],
     }
+}
+
+/// Есть ли у объекта вида справка `Ext/Help`. У группы команд справки нет.
+pub const fn metadata_kind_has_help(kind: MetadataKind) -> bool {
+    !matches!(kind, MetadataKind::CommandGroup)
 }
 
 pub fn metadata_fill_value_is_allowed(
@@ -1265,7 +1272,8 @@ pub fn metadata_relation_specs(kind: MetadataKind) -> &'static [MetaRelationSpec
         | MetadataKind::ScheduledJob
         | MetadataKind::HTTPService
         | MetadataKind::WebService
-        | MetadataKind::DefinedType => &[],
+        | MetadataKind::DefinedType
+        | MetadataKind::CommandGroup => &[],
     }
 }
 
@@ -1784,7 +1792,6 @@ fn validate_relation_edit_shape(
     Ok(())
 }
 
-/// Validate every owner-dependent part of one already parsed typed operation.
 /// The bilingual platform name belongs to every tabular section's standard
 /// row attribute. Header attributes have a different namespace (#2057).
 fn validate_tabular_attribute_name(
@@ -1832,6 +1839,7 @@ fn validate_added_element_names(
     Ok(())
 }
 
+/// Validate every owner-dependent part of one already parsed typed operation.
 /// This is the shared bridge for the public parser, schema and provider: it
 /// rejects the complete operation before the provider mutates its private
 /// working image.

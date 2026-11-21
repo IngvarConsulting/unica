@@ -264,6 +264,11 @@ pub struct RegistrationCache {
     /// Top-level object synonyms (with the limits of a damaged one) by
     /// descriptor path, each under the stamp it had before it was read.
     object_synonyms: Mutex<RetainedByDescriptor<ObjectSynonym>>,
+    /// Child resource diagnostics of an object by its descriptor path, under
+    /// the revision of its form, template and command directories. Unlike
+    /// the other records, the revision walks those directories: their files
+    /// are stamped, not read.
+    child_resources: Mutex<RetainedChildResources>,
     /// The background proof of all top-level descriptors has been started.
     /// Test builds start it marked, so tests that watch which files a call
     /// opens see only that call; the test of the warm-up clears the mark.
@@ -273,6 +278,16 @@ pub struct RegistrationCache {
     #[cfg(any(test, feature = "test-support"))]
     after_parse: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
+
+/// Child resource diagnostics by descriptor path, each under the revision
+/// of the object's child directories.
+type RetainedChildResources = std::collections::HashMap<
+    std::path::PathBuf,
+    (
+        crate::infrastructure::v13_read_port::ChildResourceRevision,
+        Arc<Vec<unica_metadata::MetaDiagnostic>>,
+    ),
+>;
 
 /// Records retained per descriptor path, each under the stamp the
 /// descriptor had before it was read.
@@ -306,6 +321,7 @@ impl Default for RegistrationCache {
             settle_window: SETTLE_WINDOW,
             owner_evidence: Mutex::new(std::collections::HashMap::new()),
             object_synonyms: Mutex::new(std::collections::HashMap::new()),
+            child_resources: Mutex::new(std::collections::HashMap::new()),
             owner_warmup: std::sync::atomic::AtomicBool::new(cfg!(any(
                 test,
                 feature = "test-support"
@@ -474,6 +490,32 @@ impl RegistrationCache {
         if self.retains(&stamp) {
             if let Ok(mut owners) = self.owner_evidence.lock() {
                 owners.insert(relative, (stamp, evidence));
+            }
+        }
+    }
+
+    pub(crate) fn retained_child_resources(
+        &self,
+        descriptor: &std::path::Path,
+        revision: &crate::infrastructure::v13_read_port::ChildResourceRevision,
+    ) -> Option<Arc<Vec<unica_metadata::MetaDiagnostic>>> {
+        let retained = self.child_resources.lock().ok()?;
+        retained
+            .get(descriptor)
+            .filter(|(cached, _)| cached == revision)
+            .map(|(_, diagnostics)| Arc::clone(diagnostics))
+    }
+
+    /// Kept only when every file of the revision has a settled stamp.
+    pub(crate) fn retain_child_resources(
+        &self,
+        descriptor: std::path::PathBuf,
+        revision: crate::infrastructure::v13_read_port::ChildResourceRevision,
+        diagnostics: Arc<Vec<unica_metadata::MetaDiagnostic>>,
+    ) {
+        if revision.file_stamps().all(|stamp| self.retains(stamp)) {
+            if let Ok(mut retained) = self.child_resources.lock() {
+                retained.insert(descriptor, (revision, diagnostics));
             }
         }
     }

@@ -1460,110 +1460,30 @@ pub fn normalize_subsystem_content_ref(raw: &str) -> String {
     format!("{normalized}.{name_part}")
 }
 
+/// The canonical kind a subsystem content reference names: the kind's
+/// collection or its Russian spelling, as `unica_address::kinds` declares
+/// them for every root metadata kind. Two old synonyms of the upstream
+/// subsystem-edit script stay: `Каталог` and `ПараметрФункциональныхОпций`,
+/// which the kind declarations do not spell.
 pub fn subsystem_content_type(type_part: &str) -> Option<&'static str> {
     match type_part {
-        "Catalogs" | "Справочник" | "Каталог" | "Справочники" => {
-            Some("Catalog")
+        "Каталог" => return Some("Catalog"),
+        "ПараметрФункциональныхОпций" => {
+            return Some("FunctionalOptionsParameter")
         }
-        "Documents" | "Документ" | "Документы" => Some("Document"),
-        "Enums" | "Перечисление" | "Перечисления" => Some("Enum"),
-        "Constants" | "Константа" | "Константы" => Some("Constant"),
-        "Reports" | "Отчёт" | "Отчет" | "Отчёты" | "Отчеты" => Some("Report"),
-        "DataProcessors" | "Обработка" | "Обработки" => Some("DataProcessor"),
-        "InformationRegisters" | "РегистрСведений" | "РегистрыСведений" => {
-            Some("InformationRegister")
-        }
-        "AccumulationRegisters" | "РегистрНакопления" | "РегистрыНакопления" => {
-            Some("AccumulationRegister")
-        }
-        "AccountingRegisters" | "РегистрБухгалтерии" | "РегистрыБухгалтерии" => {
-            Some("AccountingRegister")
-        }
-        "CalculationRegisters"
-        | "РегистрРасчёта"
-        | "РегистрРасчета"
-        | "РегистрыРасчёта"
-        | "РегистрыРасчета" => Some("CalculationRegister"),
-        "ChartsOfAccounts" | "ПланСчетов" | "ПланыСчетов" => {
-            Some("ChartOfAccounts")
-        }
-        "ChartsOfCharacteristicTypes" | "ПланВидовХарактеристик" | "ПланыВидовХарактеристик" => {
-            Some("ChartOfCharacteristicTypes")
-        }
-        "ChartsOfCalculationTypes"
-        | "ПланВидовРасчёта"
-        | "ПланВидовРасчета"
-        | "ПланыВидовРасчёта"
-        | "ПланыВидовРасчета" => Some("ChartOfCalculationTypes"),
-        "BusinessProcesses" | "БизнесПроцесс" | "БизнесПроцессы" => {
-            Some("BusinessProcess")
-        }
-        "Tasks" | "Задача" | "Задачи" => Some("Task"),
-        "ExchangePlans" | "ПланОбмена" | "ПланыОбмена" => Some("ExchangePlan"),
-        "DocumentJournals" | "ЖурналДокументов" | "ЖурналыДокументов" => {
-            Some("DocumentJournal")
-        }
-        "CommonModules" | "ОбщийМодуль" | "ОбщиеМодули" => {
-            Some("CommonModule")
-        }
-        "CommonCommands" | "ОбщаяКоманда" | "ОбщиеКоманды" => {
-            Some("CommonCommand")
-        }
-        "CommonForms" | "ОбщаяФорма" | "ОбщиеФормы" => Some("CommonForm"),
-        "CommonPictures" | "ОбщаяКартинка" | "ОбщиеКартинки" => {
-            Some("CommonPicture")
-        }
-        "CommonTemplates" | "ОбщийМакет" | "ОбщиеМакеты" => {
-            Some("CommonTemplate")
-        }
-        "CommonAttributes" | "ОбщийРеквизит" | "ОбщиеРеквизиты" => {
-            Some("CommonAttribute")
-        }
-        "CommandGroups" | "ГруппаКоманд" | "ГруппыКоманд" => {
-            Some("CommandGroup")
-        }
-        "Roles" | "Роль" | "Роли" => Some("Role"),
-        "SessionParameters" | "ПараметрСеанса" | "ПараметрыСеанса" => {
-            Some("SessionParameter")
-        }
-        "FilterCriteria" | "КритерийОтбора" | "КритерииОтбора" => {
-            Some("FilterCriterion")
-        }
-        "XDTOPackages" | "ПакетXDTO" | "ПакетыXDTO" => Some("XDTOPackage"),
-        "WebServices" | "ВебСервис" | "ВебСервисы" => Some("WebService"),
-        "HTTPServices" | "HTTPСервис" | "HTTPСервисы" => Some("HTTPService"),
-        "WSReferences" | "WSСсылка" | "WSСсылки" => Some("WSReference"),
-        "EventSubscriptions" | "ПодпискаНаСобытие" | "ПодпискиНаСобытия" => {
-            Some("EventSubscription")
-        }
-        "ScheduledJobs" | "РегламентноеЗадание" | "РегламентныеЗадания" => {
-            Some("ScheduledJob")
-        }
-        "SettingsStorages" | "ХранилищеНастроек" | "ХранилищаНастроек" => {
-            Some("SettingsStorage")
-        }
-        "FunctionalOptions" | "ФункциональнаяОпция" | "ФункциональныеОпции" => {
-            Some("FunctionalOption")
-        }
-        "FunctionalOptionsParameters" | "ПараметрФункциональныхОпций" => {
-            Some("FunctionalOptionsParameter")
-        }
-        "DefinedTypes" | "ОпределяемыйТип" | "ОпределяемыеТипы" => {
-            Some("DefinedType")
-        }
-        "DocumentNumerators" | "НумераторДокументов" => {
-            Some("DocumentNumerator")
-        }
-        "Sequences" | "Последовательность" => Some("Sequence"),
-        "Subsystems" | "Подсистема" | "Подсистемы" => Some("Subsystem"),
-        "StyleItems" | "ЭлементСтиля" | "ЭлементыСтиля" => {
-            Some("StyleItem")
-        }
-        "IntegrationServices" | "СервисИнтеграции" | "СервисыИнтеграции" => {
-            Some("IntegrationService")
-        }
-        _ => None,
+        _ => {}
     }
+    unica_address::address::NodeKind::metadata_kinds()
+        .iter()
+        .map(|kind| kind.declaration())
+        .filter(|declaration| declaration.root.is_some())
+        .find(|declaration| {
+            declaration.russian.contains(&type_part)
+                || declaration
+                    .metadata
+                    .is_some_and(|metadata| metadata.collections.contains(&type_part))
+        })
+        .map(|declaration| declaration.tag)
 }
 
 pub fn resolve_subsystem_edit_xml(
@@ -2524,5 +2444,61 @@ mod export_format_tests {
             let written = super::emit_subsystem_edit_model(&model);
             assert_eq!(declarations(&written), declarations(corpus));
         }
+    }
+}
+
+#[cfg(test)]
+mod content_type_tests {
+    use super::{normalize_subsystem_content_ref, subsystem_content_type};
+
+    #[test]
+    fn content_references_name_their_kind_by_collection_or_russian_spelling() {
+        for (raw, kind) in [
+            ("Catalogs", "Catalog"),
+            ("Справочник", "Catalog"),
+            ("Справочники", "Catalog"),
+            ("Каталог", "Catalog"),
+            ("ПараметрФункциональныхОпций", "FunctionalOptionsParameter"),
+            ("Отчёт", "Report"),
+            ("Отчеты", "Report"),
+            ("РегистрыРасчёта", "CalculationRegister"),
+            ("XDTOPackages", "XDTOPackage"),
+            ("ПакетXDTO", "XDTOPackage"),
+            ("IntegrationServices", "IntegrationService"),
+        ] {
+            assert_eq!(subsystem_content_type(raw), Some(kind), "{raw}");
+        }
+        assert_eq!(
+            normalize_subsystem_content_ref("Справочники.Валюты"),
+            "Catalog.Валюты"
+        );
+    }
+
+    /// Taking the table from the kind declarations normalizes kinds and
+    /// plurals the hand-written table lacked; before #2964 they passed through
+    /// unchanged.
+    #[test]
+    fn declared_kinds_the_old_table_lacked_are_normalized_too() {
+        for (raw, kind) in [
+            ("Языки", "Language"),
+            ("Стили", "Style"),
+            ("Боты", "Bot"),
+            ("ЦветаПалитры", "PaletteColor"),
+            ("Очереди", "Queue"),
+            ("ПараметрыФункциональныхОпций", "FunctionalOptionsParameter"),
+            ("НумераторыДокументов", "DocumentNumerator"),
+            ("Последовательности", "Sequence"),
+        ] {
+            assert_eq!(subsystem_content_type(raw), Some(kind), "{raw}");
+        }
+    }
+
+    #[test]
+    fn unknown_and_nested_kinds_pass_through() {
+        for raw in ["Формы", "Forms", "ВнешниеОбработки", "Нечто", "catalogs"]
+        {
+            assert_eq!(subsystem_content_type(raw), None, "{raw}");
+        }
+        assert_eq!(normalize_subsystem_content_ref("Нечто.Имя"), "Нечто.Имя");
     }
 }

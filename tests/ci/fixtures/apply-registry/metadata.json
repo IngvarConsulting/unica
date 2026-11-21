@@ -46,7 +46,7 @@
     {
       "variant": "HelpCreate",
       "operation": "help.create",
-      "applicability": "Metadata",
+      "applicability": "MetadataWithHelp",
       "skeleton": "Values"
     },
     {

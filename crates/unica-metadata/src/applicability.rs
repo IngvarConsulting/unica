@@ -16,6 +16,8 @@ pub enum OperationApplicability {
     Interface,
     InterfaceGroup,
     Metadata,
+    /// A typed metadata object whose descriptor may carry `Ext/Help`.
+    MetadataWithHelp,
     MetadataRelations,
     MetadataOrCommonTemplate,
     MetadataAttribute,
@@ -91,6 +93,7 @@ impl OperationApplicability {
             Self::ExtensionRoot => "`Configuration` of an extension",
             Self::Metadata => "`Kind.Name`",
             Self::MetadataRelations => "`Kind.Name` of a kind with supported relations",
+            Self::MetadataWithHelp => "`Kind.Name` of a kind with a help page",
             Self::MetadataOrCommonTemplate => "`Kind.Name` or `CommonTemplate.Name`",
             Self::SupportRule => {
                 "`Configuration` of a configuration, `Kind.Name` or its node with an own support record: `.Form.F`, `.Template.T`, `.Command.C`, `.Attribute.A`, `.TabularSection.T[.Attribute.A]`, `.Dimension.D`, `.Resource.R`; `Subsystem.A[.Subsystem.B…]`"
@@ -145,6 +148,9 @@ impl OperationApplicability {
                     && site.source().kind() == SourceSetKind::Extension
             }
             Self::Metadata => site.metadata_object().is_some(),
+            Self::MetadataWithHelp => site
+                .metadata_object()
+                .is_some_and(crate::metadata_kind_has_help),
             Self::MetadataRelations => site
                 .metadata_object()
                 .is_some_and(|kind| !crate::metadata_relation_specs(kind).is_empty()),
