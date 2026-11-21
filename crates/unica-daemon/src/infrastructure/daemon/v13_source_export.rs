@@ -414,9 +414,12 @@ impl PreparedSourceExport {
 
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
         if let Some(id) = &self.drop {
-            return fetch::drop_snapshot(self, id);
+            return fetch::drop_snapshot(self, id, cancellation);
         }
         if self.fetch {
+            if let Err(result) = fetch::validate_snapshot_storage(&self.context.workspace_root) {
+                return result;
+            }
             return super::runner::with_bundled_runner(
                 &self.context.workspace_root,
                 &self.context.cwd,

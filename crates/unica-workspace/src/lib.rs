@@ -92,6 +92,9 @@ pub mod test_support {
 
     pub use crate::platform::test_support as native;
 
+    #[cfg(windows)]
+    pub use crate::platform::testing::create_directory_junction_for_test;
+
     pub mod retained_read_probe {
         pub use crate::platform::filesystem::retained_read_probe::{
             RetainedRead, RetainedReadProbe,

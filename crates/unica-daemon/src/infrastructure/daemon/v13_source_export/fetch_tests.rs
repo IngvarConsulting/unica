@@ -12,9 +12,10 @@ enum Script {
     DumpInfoIsDirectory,
     OnlyDumpInfo,
     CancelsAfterReady,
+    ChecksSnapshotLock,
     /// Раннер отказал до выгрузки.
     RefusesBeforeReady,
-    RefusesAndLeavesNonDirectoryStage,
+    RefusesAndBlocksStageCleanup,
     /// Итог утверждает публикацию, хотя её отклонили.
     ClaimsPublication,
 }
@@ -26,6 +27,8 @@ struct ProtocolRunner {
     replies: Mutex<Vec<Value>>,
     args: Mutex<Vec<String>>,
     preview: Option<Value>,
+    #[cfg(windows)]
+    held_stage_file: Mutex<Option<fs::File>>,
 }
 
 impl ProtocolRunner {
@@ -35,6 +38,8 @@ impl ProtocolRunner {
             replies: Mutex::new(Vec::new()),
             args: Mutex::new(Vec::new()),
             preview: None,
+            #[cfg(windows)]
+            held_stage_file: Mutex::new(None),
         }
     }
 
@@ -116,13 +121,28 @@ impl ProcessRunner for ProtocolRunner {
             "executor": {"kind": "local", "executable": "1cv8", "endpoint": null},
         })));
         let continued = selected.is_some_and(|reply| reply["decision"] == "continue");
-        if self.script == Script::RefusesAndLeavesNonDirectoryStage {
-            fs::remove_dir(&stage).unwrap();
-            fs::write(&stage, "unexpected file in place of the stage").unwrap();
+        if self.script == Script::RefusesAndBlocksStageCleanup {
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::OpenOptionsExt;
+                *self.held_stage_file.lock().unwrap() = Some(
+                    fs::OpenOptions::new()
+                        .create_new(true)
+                        .write(true)
+                        .share_mode(0)
+                        .open(stage.join("held.xml"))
+                        .unwrap(),
+                );
+            }
+            #[cfg(not(windows))]
+            {
+                fs::remove_dir(&stage).unwrap();
+                fs::write(&stage, "unexpected file in place of the stage").unwrap();
+            }
         }
         let refused_before_ready = matches!(
             self.script,
-            Script::RefusesBeforeReady | Script::RefusesAndLeavesNonDirectoryStage
+            Script::RefusesBeforeReady | Script::RefusesAndBlocksStageCleanup
         );
         let (publication, result) = if refused_before_ready || !continued {
             ("not_published", refused("the platform refused"))
@@ -150,6 +170,9 @@ impl ProcessRunner for ProtocolRunner {
                 "target_path": target, "stage_path": stage, "snapshot": "prepared",
                 "snapshot_warning": null,
             })));
+            if self.script == Script::ChecksSnapshotLock {
+                verify_ready_snapshot_cannot_be_dropped(&command.cwd, &stage);
+            }
             let publication = if self.script == Script::ClaimsPublication {
                 "published"
             } else {
@@ -225,7 +248,9 @@ fn snapshots(root: &Path) -> Vec<String> {
     let mut names = fs::read_dir(root.join(".build/unica/fetch"))
         .map(|entries| {
             entries
-                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .map(Result::unwrap)
+                .filter(|entry| entry.file_type().unwrap().is_dir())
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
@@ -338,7 +363,7 @@ fn fetch_names_the_stage_when_refusal_cleanup_fails() {
     let workspace = workspace();
     let root = workspace.path();
     let before = tree(&root.join("main"));
-    let runner = ProtocolRunner::new(Script::RefusesAndLeavesNonDirectoryStage);
+    let runner = ProtocolRunner::new(Script::RefusesAndBlocksStageCleanup);
 
     let result = run(root, &prepared(root, false), &runner);
 
@@ -351,7 +376,7 @@ fn fetch_names_the_stage_when_refusal_cleanup_fails() {
         .expect("the refusal names the stage it could not clean");
     let path = warning["path"].as_str().unwrap();
     assert!(path.starts_with(".build/unica/fetch/"), "{warning:?}");
-    assert!(root.join(path).is_file(), "{warning:?}");
+    assert!(root.join(path).exists(), "{warning:?}");
     assert_eq!(tree(&root.join("main")), before);
 }
 
@@ -439,8 +464,16 @@ fn fetch_rejects_a_stage_without_a_clean_export() {
 fn a_fetch_keeps_the_newest_snapshots_only() {
     let workspace = workspace();
     let root = workspace.path();
-    for name in ["a", "b", "c", "d", "e"] {
-        fs::create_dir_all(root.join(".build/unica/fetch").join(name)).unwrap();
+    let storage = SnapshotStorage::open(root, true).unwrap().unwrap();
+    let unrelated_id = "00000000000000000000000000000000";
+    let unrelated = root.join(".build/unica/fetch").join(unrelated_id);
+    fs::create_dir(&unrelated).unwrap();
+    fs::write(unrelated.join("keep.txt"), "outside fetch ownership").unwrap();
+    let original_ids: Vec<_> = ["a", "b", "c", "d", "e"]
+        .map(|letter| letter.repeat(32))
+        .into();
+    for id in &original_ids {
+        store_snapshot_fixture(&storage, id);
         std::thread::sleep(std::time::Duration::from_millis(30));
     }
 
@@ -455,8 +488,24 @@ fn a_fetch_keeps_the_newest_snapshots_only() {
         .as_str()
         .unwrap()
         .to_string();
-    let mut expected = vec!["c".to_string(), "d".to_string(), "e".to_string(), id];
+    let mut expected = original_ids[2..].to_vec();
+    expected.extend([unrelated_id.to_string(), id]);
     expected.sort();
+    assert_eq!(snapshots(root), expected);
+    assert_eq!(
+        fs::read(unrelated.join("keep.txt")).unwrap(),
+        b"outside fetch ownership"
+    );
+
+    let drop = PreparedSourceExport::parse_fetch_drop(&drop_request(
+        root,
+        json!({"snapshotId": unrelated_id}),
+        false,
+    ))
+    .unwrap();
+    let result = drop.execute(CancellationToken::new());
+    assert!(result.ok, "{result:?}");
+    assert_eq!(result.data.unwrap()["removed"], false);
     assert_eq!(snapshots(root), expected);
 }
 
@@ -549,10 +598,9 @@ fn fetch_drop_deletes_one_snapshot_and_treats_an_absent_one_as_deleted() {
     let root = workspace.path();
     let id = "0123456789abcdef0123456789abcdef";
     let other = "fedcba9876543210fedcba9876543210";
+    let storage = SnapshotStorage::open(root, true).unwrap().unwrap();
     for name in [id, other] {
-        let snapshot = root.join(".build/unica/fetch").join(name);
-        fs::create_dir_all(&snapshot).unwrap();
-        fs::write(snapshot.join("Configuration.xml"), "<base/>").unwrap();
+        store_snapshot_fixture(&storage, name);
     }
 
     let preview = PreparedSourceExport::parse_fetch_drop(&drop_request(
@@ -583,6 +631,106 @@ fn fetch_drop_deletes_one_snapshot_and_treats_an_absent_one_as_deleted() {
     assert!(again.ok, "{again:?}");
     assert_eq!(again.data.unwrap()["removed"], false);
     assert_eq!(snapshots(root), [other]);
+}
+
+fn store_snapshot_fixture(storage: &SnapshotStorage, id: &str) {
+    let snapshot = storage.create_stage(id).unwrap();
+    fs::write(snapshot.path().join("Configuration.xml"), "<base/>").unwrap();
+    storage.remember(id, &snapshot).unwrap();
+}
+
+fn verify_ready_snapshot_cannot_be_dropped(root: &Path, stage: &Path) {
+    let storage = SnapshotStorage::open(root, false).unwrap().unwrap();
+    let lock = storage.open_lock().unwrap();
+    let contended = lock
+        .try_lock_exclusive()
+        .expect_err("fetch still holds the snapshot lock");
+    assert!(unica_workspace::state_fs::is_file_lock_contended(
+        &contended
+    ));
+
+    let id = stage.file_name().unwrap().to_str().unwrap();
+    let args = json!({"snapshotId": id});
+    let preview =
+        PreparedSourceExport::parse_fetch_drop(&drop_request(root, args.clone(), true)).unwrap();
+    let planned = preview.execute(CancellationToken::new());
+    assert!(planned.ok, "{planned:?}");
+    assert_eq!(planned.data.unwrap()["plan"]["exists"], false);
+
+    let drop = PreparedSourceExport::parse_fetch_drop(&drop_request(root, args, false)).unwrap();
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+    let stopped = drop.execute(cancellation);
+    assert!(!stopped.ok, "{stopped:?}");
+    assert!(
+        stopped
+            .summary
+            .contains("cancelled while waiting for the snapshot directory"),
+        "{stopped:?}"
+    );
+    assert_eq!(
+        fs::read(stage.join("Configuration.xml")).unwrap(),
+        b"<base/>"
+    );
+}
+
+/// rule: INV.RUNTIME.FETCH-LEAVES-THE-WORKING-COPY
+#[test]
+fn ready_stage_is_not_a_snapshot_and_keeps_its_lock_until_terminal() {
+    let workspace = workspace();
+    let root = workspace.path();
+    let runner = ProtocolRunner::new(Script::ChecksSnapshotLock);
+
+    let result = run(root, &prepared(root, false), &runner);
+
+    assert!(result.ok, "{result:?}");
+    assert_eq!(snapshots(root).len(), 1);
+}
+
+/// rule: INV.RUNTIME.FETCH-LEAVES-THE-WORKING-COPY
+#[cfg(any(unix, windows))]
+#[test]
+fn linked_snapshot_ancestor_refuses_fetch_and_drop() {
+    let workspace = workspace();
+    let root = workspace.path();
+    let external = tempfile::tempdir().unwrap();
+    let id = "0123456789abcdef0123456789abcdef";
+    let outside_snapshot = external.path().join("unica/fetch").join(id);
+    fs::create_dir_all(&outside_snapshot).unwrap();
+    fs::write(
+        outside_snapshot.join("keep.txt"),
+        "outside the working copy",
+    )
+    .unwrap();
+    let link = root.join(".build");
+    #[cfg(unix)]
+    unica_workspace::test_support::create_test_directory_link(external.path(), &link).unwrap();
+    #[cfg(windows)]
+    unica_workspace::test_support::create_directory_junction_for_test(external.path(), &link)
+        .unwrap();
+
+    let runner = ProtocolRunner::new(Script::Exports);
+    let export = run(root, &prepared(root, false), &runner);
+    assert!(!export.ok, "{export:?}");
+    assert!(runner.args.lock().unwrap().is_empty());
+    let drop = PreparedSourceExport::parse_fetch_drop(&drop_request(
+        root,
+        json!({"snapshotId": id}),
+        false,
+    ))
+    .unwrap();
+    let result = drop.execute(CancellationToken::new());
+    assert!(!result.ok, "{result:?}");
+    assert_eq!(
+        fs::read(outside_snapshot.join("keep.txt")).unwrap(),
+        b"outside the working copy"
+    );
+    assert_eq!(
+        fs::read_dir(outside_snapshot.parent().unwrap())
+            .unwrap()
+            .count(),
+        1
+    );
 }
 
 #[test]

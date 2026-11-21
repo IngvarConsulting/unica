@@ -10,9 +10,17 @@
 //! удаляется.
 use super::*;
 use serde::Deserialize;
-use std::time::SystemTime;
+use std::ffi::OsStr;
 use unica_process::ProcessLineReply;
 use unica_process::STREAM_LINE_TOO_LONG_ERROR;
+use unica_workspace::path_policy::WorkspacePathPolicy;
+use unica_workspace::paths::{metadata_is_link_or_reparse_point, GENERATED_DIR_NAME};
+use unica_workspace::runner_lock::RunnerLockFailure;
+use unica_workspace::state_fs::{DirectoryCursor, StateDirectory};
+
+#[path = "fetch_storage.rs"]
+mod storage;
+use storage::SnapshotStorage;
 
 /// Версия кадров внешней полной выгрузки раннера.
 const PROTOCOL_VERSION: u32 = 1;
@@ -30,7 +38,7 @@ const PROTOCOL_VERSION: u32 = 1;
 const SNAPSHOTS_KEPT: usize = 4;
 
 /// Каталог снимков относительно корня рабочего пространства.
-const SNAPSHOT_ROOT: [&str; 3] = [".build", "unica", "fetch"];
+const SNAPSHOT_ROOT: [&str; 3] = [GENERATED_DIR_NAME, "unica", "fetch"];
 
 /// Предупреждение: прежний снимок не удалось удалить.
 const SNAPSHOT_KEPT_WARNING: &str = "fetch_snapshot_kept";
@@ -224,7 +232,11 @@ fn valid_snapshot_id(id: &str) -> bool {
 
 /// Удаляет каталог одного снимка. Отсутствующий снимок уже удалён: ответ
 /// называет это `removed: false`.
-pub(super) fn drop_snapshot(prepared: &PreparedSourceExport, id: &str) -> DomainResult {
+pub(super) fn drop_snapshot(
+    prepared: &PreparedSourceExport,
+    id: &str,
+    cancellation: CancellationToken,
+) -> DomainResult {
     let Ok(root) = normalize_path_identity(&prepared.context.workspace_root) else {
         return reject_at(
             FETCH_DROP,
@@ -236,7 +248,26 @@ pub(super) fn drop_snapshot(prepared: &PreparedSourceExport, id: &str) -> Domain
         .join(SNAPSHOT_ROOT.iter().collect::<PathBuf>())
         .join(id);
     let snapshot = relative(&path, &root);
-    let exists = path.is_dir();
+    let storage = match open_storage(&root, false, FETCH_DROP) {
+        Ok(storage) => storage,
+        Err(result) => return result,
+    };
+    let _lock = match (&storage, prepared.dry_run) {
+        (Some(storage), false) => match storage.lock(&cancellation) {
+            Ok(lock) => Some(lock),
+            Err(error) => return lock_refusal(FETCH_DROP, error),
+        },
+        _ => None,
+    };
+    let owned = match storage
+        .as_ref()
+        .map(|storage| storage.owned_snapshot(id))
+        .transpose()
+    {
+        Ok(owned) => owned.flatten(),
+        Err(error) => return storage_refusal(FETCH_DROP, error),
+    };
+    let exists = owned.is_some();
     if prepared.dry_run {
         let mut result = DomainResult::success(if exists {
             format!("fetch.drop plans to delete the snapshot {snapshot}")
@@ -255,7 +286,7 @@ pub(super) fn drop_snapshot(prepared: &PreparedSourceExport, id: &str) -> Domain
         }));
         return result;
     }
-    if !exists {
+    let (Some(storage), Some(owned)) = (storage, owned) else {
         let mut result = DomainResult::success(format!(
             "fetch.drop found no snapshot {snapshot}; it is already deleted"
         ));
@@ -263,8 +294,8 @@ pub(super) fn drop_snapshot(prepared: &PreparedSourceExport, id: &str) -> Domain
             "op": FETCH_DROP, "dryRun": false, "snapshotId": id, "snapshot": snapshot, "removed": false,
         }));
         return result;
-    }
-    match remove_snapshot(&path) {
+    };
+    match storage.remove(&owned) {
         Ok(()) => {
             let mut result =
                 DomainResult::success(format!("fetch.drop deleted the snapshot {snapshot}"));
@@ -283,6 +314,45 @@ pub(super) fn drop_snapshot(prepared: &PreparedSourceExport, id: &str) -> Domain
                 "fetch.drop could not delete the snapshot {snapshot} ({error}); repeat when no program holds its files"
             ),
         ),
+    }
+}
+
+pub(super) fn validate_snapshot_storage(root: &Path) -> Result<(), DomainResult> {
+    let root = normalize_path_identity(root).map_err(|_| {
+        reject_fetch(
+            RefusalCode::InvalidState,
+            "fetch could not resolve the workspace root",
+        )
+    })?;
+    open_storage(&root, false, FETCH).map(|_| ())
+}
+
+fn open_storage(
+    root: &Path,
+    create: bool,
+    operation: &str,
+) -> Result<Option<SnapshotStorage>, DomainResult> {
+    SnapshotStorage::open(root, create).map_err(|error| storage_refusal(operation, error))
+}
+
+fn storage_refusal(operation: &str, error: std::io::Error) -> DomainResult {
+    reject_at(
+        operation,
+        RefusalCode::InvalidState,
+        format!("{operation} could not access its snapshot directory: {error}"),
+    )
+}
+
+fn lock_refusal(operation: &str, error: RunnerLockFailure) -> DomainResult {
+    match error {
+        RunnerLockFailure::Cancelled => reject_at(
+            operation,
+            RefusalCode::Cancelled,
+            format!("{operation} cancelled while waiting for the snapshot directory"),
+        ),
+        RunnerLockFailure::InvalidState(message) => {
+            reject_at(operation, RefusalCode::InvalidState, message)
+        }
     }
 }
 
@@ -323,19 +393,41 @@ pub(super) fn execute_with_tool(
             format!("{CONFIG_NAME} declares no directory of the selected source set"),
         );
     };
+    let directory = match WorkspacePathPolicy::new(&prepared.context).resolve_write(directory) {
+        Ok(directory) => directory,
+        Err(_) => {
+            return reject_fetch(
+                RefusalCode::InvalidState,
+                "fetch requires a source set inside the workspace",
+            )
+        }
+    };
     if prepared.dry_run {
         return preview(prepared, &inputs, &root, runner, &cancellation, tool);
     }
-    let snapshots = root.join(SNAPSHOT_ROOT.iter().collect::<PathBuf>());
-    let mut warnings = prune_snapshots(&root, &snapshots, SNAPSHOTS_KEPT - 1);
+    let storage = match open_storage(&root, true, FETCH) {
+        Ok(Some(storage)) => storage,
+        Ok(None) => {
+            return reject_fetch(
+                RefusalCode::InvalidState,
+                "fetch found no snapshot directory",
+            )
+        }
+        Err(result) => return result,
+    };
+    let _lock = match storage.lock(&cancellation) {
+        Ok(lock) => lock,
+        Err(error) => return lock_refusal(FETCH, error),
+    };
+    let mut warnings = match prune_snapshots(&root, &storage, SNAPSHOTS_KEPT - 1) {
+        Ok(warnings) => warnings,
+        Err(error) => return storage_refusal(FETCH, error),
+    };
     let id = uuid::Uuid::new_v4().simple().to_string();
-    let stage = snapshots.join(&id);
-    if let Err(error) = std::fs::create_dir_all(&stage) {
-        return reject_fetch(
-            RefusalCode::InvalidState,
-            format!("fetch could not create its snapshot directory: {error}"),
-        );
-    }
+    let stage = match storage.create_stage(&id) {
+        Ok(stage) => stage,
+        Err(error) => return storage_refusal(FETCH, error),
+    };
     // Отпечаток снимается до выгрузки: правка набора во время неё — уже
     // расхождение с тем, что видел снимок.
     let outcome = source_fingerprint(&root, &directory, &cancellation).and_then(|fingerprint| {
@@ -349,26 +441,31 @@ pub(super) fn execute_with_tool(
             &cancellation,
             tool,
         )
-        .map(|envelope| (fingerprint, envelope))
+        .and_then(|envelope| {
+            storage
+                .remember(&id, &stage)
+                .map_err(|error| storage_refusal(FETCH, error))?;
+            Ok((fingerprint, envelope))
+        })
     });
     let (fingerprint, envelope) = match outcome {
         Ok(snapshot) => snapshot,
         Err(mut result) => {
             // Отказ, отмена или неподтверждённый итог: снимка нет.
-            if let Err(error) = remove_snapshot(&stage) {
+            if let Err(error) = storage.remove_stage(&id, &stage) {
                 result.warnings.push(json!({
                     "code": SNAPSHOT_KEPT_WARNING,
                     "message": format!(
                         "fetch could not remove its unfinished snapshot {} ({error}); delete the directory when no 1C process holds it",
-                        relative(&stage, &root)
+                        relative(stage.path(), &root)
                     ),
-                    "path": relative(&stage, &root),
+                    "path": relative(stage.path(), &root),
                 }));
             }
             return result;
         }
     };
-    let snapshot = relative(&stage, &root);
+    let snapshot = relative(stage.path(), &root);
     let mut result = DomainResult::success(format!(
         "fetch exported source set `{source_set}` of the infobase into {snapshot}; the sources, the runner's memory and the infobase are unchanged"
     ));
@@ -447,11 +544,14 @@ fn exchange(
     root: &Path,
     source_set: &str,
     directory: &Path,
-    stage: &Path,
+    stage: &StateDirectory,
     runner: &dyn ProcessRunner,
     cancellation: &CancellationToken,
     tool: &BundledTool,
 ) -> Result<Value, DomainResult> {
+    stage
+        .validate_named_identity()
+        .map_err(|error| storage_refusal(FETCH, error))?;
     let mut args = vec![
         "--config".to_string(),
         root.join(CONFIG_NAME).display().to_string(),
@@ -459,7 +559,7 @@ fn exchange(
         source_set.to_string(),
         "--force".to_string(),
         "--publication-stdio".to_string(),
-        stage.display().to_string(),
+        stage.path().display().to_string(),
     ];
     if let Some(extension) = &prepared.arguments.extension {
         args.extend(["--extension".to_string(), extension.clone()]);
@@ -529,7 +629,7 @@ fn exchange(
                         || extension != prepared.arguments.extension
                         || reported_set != source_set
                         || !same_path(&target_path, directory)
-                        || !same_path(&stage_path, stage)
+                        || !same_path(&stage_path, stage.path())
                     {
                         problem = Some(invalid(
                             "v8-runner prepared a different operation, mode, extension, source set, target or stage",
@@ -625,28 +725,34 @@ fn exchange(
             &envelope,
         ));
     }
+    stage
+        .validate_named_identity()
+        .map_err(|error| storage_refusal(FETCH, error))?;
     remove_legacy_dump_info(stage)?;
-    if !stage_holds_an_export(stage) {
+    let mut entries =
+        DirectoryCursor::open(stage).map_err(|error| storage_refusal(FETCH, error))?;
+    if entries
+        .next_name()
+        .map_err(|error| storage_refusal(FETCH, error))?
+        .is_none()
+    {
         return Err(invalid("v8-runner prepared an empty fetch snapshot"));
     }
     Ok(envelope)
 }
 
 /// Раннер может перенести старую опись из исходников в стадию.
-fn remove_legacy_dump_info(stage: &Path) -> Result<(), DomainResult> {
-    match std::fs::remove_file(stage.join("ConfigDumpInfo.xml")) {
+fn remove_legacy_dump_info(stage: &StateDirectory) -> Result<(), DomainResult> {
+    let remove = stage
+        .retain_regular_child(OsStr::new("ConfigDumpInfo.xml"))
+        .and_then(|file| file.remove_named_identity_relative());
+    match remove {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(invalid(&format!(
             "fetch could not remove ConfigDumpInfo.xml from its snapshot: {error}"
         ))),
     }
-}
-
-/// Пустая стадия готовым снимком не становится.
-fn stage_holds_an_export(stage: &Path) -> bool {
-    std::fs::read_dir(stage)
-        .is_ok_and(|mut entries| entries.next().is_some_and(|entry| entry.is_ok()))
 }
 
 /// Отпечаток набора: sha256 строк «путь от каталога набора через `/`, NUL,
@@ -659,7 +765,7 @@ pub(super) fn source_fingerprint(
     directory: &Path,
     cancellation: &CancellationToken,
 ) -> Result<String, DomainResult> {
-    let cache = root.join(".build");
+    let cache = root.join(GENERATED_DIR_NAME);
     let mut files = Vec::new();
     let mut pending = vec![directory.to_path_buf()];
     while let Some(current) = pending.pop() {
@@ -679,14 +785,17 @@ pub(super) fn source_fingerprint(
         for entry in entries {
             let entry = entry.map_err(|error| unreadable(&current, root, &error))?;
             let path = entry.path();
-            let kind = entry
-                .file_type()
+            let metadata = entry
+                .metadata()
                 .map_err(|error| unreadable(&path, root, &error))?;
-            if kind.is_dir() {
+            if metadata_is_link_or_reparse_point(&metadata) {
+                continue;
+            }
+            if metadata.is_dir() {
                 if entry.file_name() != ".git" && path != cache {
                     pending.push(path);
                 }
-            } else if kind.is_file() {
+            } else if metadata.is_file() {
                 files.push(path);
             }
         }
@@ -722,27 +831,29 @@ fn file_hash(path: &Path) -> std::io::Result<String> {
 }
 
 /// Удаляет самые старые снимки, оставляя `keep` самых новых.
-fn prune_snapshots(root: &Path, snapshots: &Path, keep: usize) -> Vec<Value> {
-    let Ok(entries) = std::fs::read_dir(snapshots) else {
-        return Vec::new();
-    };
-    let mut existing = entries
-        .filter_map(Result::ok)
-        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
-        .map(|entry| {
-            let modified = entry
-                .metadata()
-                .and_then(|metadata| metadata.modified())
-                .unwrap_or(SystemTime::UNIX_EPOCH);
-            (modified, entry.path())
-        })
-        .collect::<Vec<_>>();
-    existing.sort_by(|left, right| right.0.cmp(&left.0));
-    existing
+fn prune_snapshots(
+    root: &Path,
+    storage: &SnapshotStorage,
+    keep: usize,
+) -> std::io::Result<Vec<Value>> {
+    let mut existing: Vec<_> = storage
+        .owned_snapshots()?
+        .into_iter()
+        .map(|snapshot| (snapshot.modified(), snapshot))
+        .collect();
+    existing.sort_by(|left, right| {
+        right
+            .0
+            .cmp(&left.0)
+            .then_with(|| left.1.id.cmp(&right.1.id))
+    });
+    let snapshots = root.join(SNAPSHOT_ROOT.iter().collect::<PathBuf>());
+    Ok(existing
         .into_iter()
         .skip(keep)
-        .filter_map(|(_, path)| {
-            remove_snapshot(&path).err().map(|error| {
+        .filter_map(|(_, snapshot)| {
+            storage.remove(&snapshot).err().map(|error| {
+                let path = snapshots.join(snapshot.id);
                 json!({
                     "code": SNAPSHOT_KEPT_WARNING,
                     "message": format!(
@@ -753,13 +864,7 @@ fn prune_snapshots(root: &Path, snapshots: &Path, keep: usize) -> Vec<Value> {
                 })
             })
         })
-        .collect()
-}
-
-/// Платформа может ещё держать файлы стадии после ответа раннера: удаление
-/// повторяется несколько секунд, отсутствующий каталог уже удалён.
-fn remove_snapshot(path: &Path) -> std::io::Result<()> {
-    remove_reexport_directory(path)
+        .collect())
 }
 
 fn fetch_arguments(prepared: &PreparedSourceExport) -> Value {
