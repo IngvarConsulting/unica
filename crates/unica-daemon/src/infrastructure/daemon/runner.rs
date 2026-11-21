@@ -157,6 +157,18 @@ impl ProcessRunner for PinnedRunner {
         self.note(&output);
         Ok((output, handoff))
     }
+
+    /// The runner's line protocol (`--publication-stdio`) under the same lock
+    /// as its other commands; waiting for the lock is not a failed launch.
+    fn run_controlled_streaming_staged(
+        &self,
+        command: &ProcessCommand,
+        max_line_bytes: usize,
+        on_line: &mut dyn FnMut(usize, &[u8]) -> unica_process::ProcessLineReply,
+    ) -> Result<unica_process::runner::ProcessStreamOutput, ProcessStreamFailure> {
+        let _lock = lock_for(command).map_err(ProcessStreamFailure::Run)?;
+        BreakawayProcessRunner.run_controlled_streaming_staged(command, max_line_bytes, on_line)
+    }
 }
 
 /// `data.agent` from the runner's answer: whether the command took a live

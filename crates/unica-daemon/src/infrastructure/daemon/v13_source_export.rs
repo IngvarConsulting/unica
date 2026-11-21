@@ -16,6 +16,7 @@
 //! не идут.
 
 mod choice_warnings;
+mod fetch;
 
 use super::protocol::InvocationRequest;
 use super::v13_infobase_exports::{
@@ -49,6 +50,12 @@ pub(super) const OPERATION: &str = "pull";
 /// Перевыгрузка набора в записываемом формате через временную файловую базу
 /// (INV.SOURCE.WRITABLE-PROFILE).
 pub(super) const REEXPORT: &str = "source.reexport";
+/// Снимок рабочей конфигурации базы в отдельный каталог рабочего
+/// пространства: исходники, память раннера и база не меняются
+/// (INV.RUNTIME.FETCH-LEAVES-THE-WORKING-COPY).
+pub(super) const FETCH: &str = "fetch";
+/// Удаление одного снимка `fetch` по его идентификатору.
+pub(super) const FETCH_DROP: &str = "fetch.drop";
 /// Имя команды раннера и в командной строке, и в конверте: с 0.12 раннер
 /// называет её словом словаря.
 const RUNNER_COMMAND: &str = "pull";
@@ -98,6 +105,10 @@ pub(super) struct PreparedSourceExport {
     context: WorkspaceContext,
     /// The writable export format of a re-export; `None` for `pull`.
     reexport: Option<&'static str>,
+    /// `fetch`: the full export goes into a snapshot directory, not the set.
+    fetch: bool,
+    /// `fetch.drop`: the snapshot to delete; no runner is started.
+    drop: Option<String>,
     /// The call as made: the question about the infobase of another copy
     /// repeats it.
     call: Map<String, Value>,
@@ -116,6 +127,8 @@ pub(super) fn prepare(request: &InvocationRequest) -> Preparation {
     let parsed = match request.arguments().get("op").and_then(Value::as_str) {
         Some(OPERATION) => PreparedSourceExport::parse(request),
         Some(REEXPORT) => PreparedSourceExport::parse_reexport(request),
+        Some(FETCH) => PreparedSourceExport::parse_fetch(request),
+        Some(FETCH_DROP) => PreparedSourceExport::parse_fetch_drop(request),
         _ => return Preparation::NotApplicable,
     };
     match parsed {
@@ -270,6 +283,8 @@ impl PreparedSourceExport {
             dry_run,
             context,
             reexport: None,
+            fetch: false,
+            drop: None,
             call: request.arguments().clone(),
         })
     }
@@ -360,6 +375,8 @@ impl PreparedSourceExport {
             dry_run,
             context,
             reexport: Some(format),
+            fetch: false,
+            drop: None,
             call: request.arguments().clone(),
         })
     }
@@ -369,9 +386,24 @@ impl PreparedSourceExport {
         &self.context.workspace_root
     }
 
-    /// A preview neither writes nor loads sources, so it takes no lane.
-    pub(super) fn is_preview(&self) -> bool {
-        self.dry_run
+    /// Whether the execution excludes source edits of the workspace: a
+    /// preview writes nothing, and `fetch` writes only its snapshot
+    /// (INV.RUNTIME.SOURCE-SET-WRITE-EXCLUSION).
+    pub(super) fn holds_source_writes(&self) -> bool {
+        !self.dry_run && !self.fetch
+    }
+
+    /// The public name of the operation: refusals name it.
+    fn operation(&self) -> &'static str {
+        if self.drop.is_some() {
+            FETCH_DROP
+        } else if self.fetch {
+            FETCH
+        } else if self.reexport.is_some() {
+            REEXPORT
+        } else {
+            OPERATION
+        }
     }
     pub(super) fn workspace_identity_hash(&self) -> SafeIdentityHash {
         let mut hasher = Sha256::new();
@@ -381,6 +413,18 @@ impl PreparedSourceExport {
     }
 
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
+        if let Some(id) = &self.drop {
+            return fetch::drop_snapshot(self, id);
+        }
+        if self.fetch {
+            return super::runner::with_bundled_runner(
+                &self.context.workspace_root,
+                &self.context.cwd,
+                FETCH,
+                cancellation,
+                |runner, cancellation| fetch::execute(self, runner, cancellation),
+            );
+        }
         // A re-export runs on a config of its own: the working copy is not
         // prepared, its files stay as they are.
         if self.reexport.is_some() {
@@ -493,10 +537,12 @@ fn capture_inputs(prepared: &PreparedSourceExport) -> Result<StableInputs, Domai
     let declared = declared_source_sets(&root.join(CONFIG_NAME))?;
     if let Some(source_set) = &prepared.arguments.source_set {
         if !declared.contains(source_set) {
-            return Err(reject(
+            return Err(reject_at(
+                prepared.operation(),
                 RefusalCode::BadValue,
                 format!(
-                    "pull sourceSet `{source_set}` is not declared in v8project.yaml; declared source sets: {}",
+                    "{} sourceSet `{source_set}` is not declared in v8project.yaml; declared source sets: {}",
+                    prepared.operation(),
                     declared.join(", ")
                 ),
             ));
@@ -509,9 +555,13 @@ fn capture_inputs(prepared: &PreparedSourceExport) -> Result<StableInputs, Domai
         None => false,
     };
     if extension_set != prepared.arguments.extension.is_some() {
-        return Err(reject(
+        return Err(reject_at(
+            prepared.operation(),
             RefusalCode::BadValue,
-            "pull requires one Configuration source set or an Extension source set with an explicit extension argument",
+            format!(
+                "{} requires one Configuration source set or an Extension source set with an explicit extension argument",
+                prepared.operation()
+            ),
         ));
     }
     Ok(StableInputs {
@@ -1684,7 +1734,11 @@ fn path_text(path: &Path) -> String {
 }
 
 fn reject(code: RefusalCode, message: impl Into<String>) -> DomainResult {
-    DomainResult::canonical_rejection(Some(OPERATION.to_string()), code, message)
+    reject_at(OPERATION, code, message)
+}
+
+fn reject_at(operation: &str, code: RefusalCode, message: impl Into<String>) -> DomainResult {
+    DomainResult::canonical_rejection(Some(operation.to_string()), code, message)
 }
 
 /// Поставляемого раннера нет: маршрут один на все операции `run`, уточнение
@@ -1862,6 +1916,8 @@ mod medium_tests {
                 workspace_epoch: 1,
             },
             reexport: None,
+            fetch: false,
+            drop: None,
             call: super::super::v13_infobase_another_copy::with_consent(&Map::new()),
         }
     }
@@ -3178,7 +3234,7 @@ mod medium_tests {
         else {
             panic!("the offered re-export asks nothing more");
         };
-        assert!(!reexport.is_preview());
+        assert!(reexport.holds_source_writes());
         assert_eq!(edit.tool(), ToolIdentity::Apply);
         assert!(!edit.arguments().contains_key(HUMAN_REEXPORT_KEY));
         assert_eq!(edit.arguments()["at"], "main:Catalog.Products");

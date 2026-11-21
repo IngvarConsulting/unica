@@ -613,7 +613,7 @@ TOOL_POLICY: dict[str, str] = {
 # сервер возвращает предпросмотр без изменений. Новая операция словаря сюда
 # не попадает сама: её разбирают и добавляют явно.
 RUN_PREVIEW_OPS = frozenset({
-    "infobase.create", "push", "pull", "make", "download", "upload",
+    "infobase.create", "push", "pull", "fetch", "fetch.drop", "make", "download", "upload",
     "infobase.dump", "infobase.restore", "extensions.list", "extensions.set",
     "apply", "reset",
 })

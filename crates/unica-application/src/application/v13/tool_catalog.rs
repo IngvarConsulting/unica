@@ -45,6 +45,8 @@ pub enum RunIntent {
     SourceImport,
     SourceExport,
     SourceReexport,
+    SourceFetch,
+    SourceFetchDrop,
     ArtifactBuild,
     CfExport,
     CfImport,
@@ -76,6 +78,8 @@ impl RunOperation {
             RunIntent::SourceImport => "push",
             RunIntent::SourceExport => "pull",
             RunIntent::SourceReexport => "source.reexport",
+            RunIntent::SourceFetch => "fetch",
+            RunIntent::SourceFetchDrop => "fetch.drop",
             RunIntent::ArtifactBuild => "make",
             RunIntent::CfExport => "download",
             RunIntent::CfImport => "upload",
@@ -102,6 +106,12 @@ impl RunOperation {
             }
             RunIntent::SourceReexport => {
                 "Re-export a source set in a writable export format through a temporary file infobase: the set is loaded into it with the platform line of the format and exported back in full, replacing the files of the set. The project infobase and files stay unchanged."
+            }
+            RunIntent::SourceFetch => {
+                "Fetch the working configuration of the infobase into a new snapshot directory of the workspace without touching the sources, the runner's memory of exchanges or the infobase: the snapshot is the comparison base for incoming changes. The answer names the snapshot, its directory, the fingerprint of the source set at the moment of the fetch and the infobase generation when the runner confirms it."
+            }
+            RunIntent::SourceFetchDrop => {
+                "Delete one snapshot of fetch by its snapshotId. Only the snapshot directory under .build/unica/fetch is removed; an absent snapshot is already deleted."
             }
             RunIntent::ArtifactBuild => {
                 "Build a CF, CFE, EPF or ERF artifact from attached sources. External artifacts require a singleton Designer sourceSet and a declared main configuration."
@@ -133,6 +143,7 @@ impl RunOperation {
             }
             RunIntent::SourceImport => Some("source push applies the database configuration; the generation check covers only the sets the runner loads, force:true overwrites the infobase without it, and noApply:true is unavailable"),
             RunIntent::SourceExport => Some("pull exports one source set with the runner; without force the runner chooses a partial or full export by its memory of earlier exchanges, force:true exports in full and replaces uncommitted and untracked files; Unica keeps no copy of the previous sources, and a failed export may leave a partial target"),
+            RunIntent::SourceFetch => Some("fetch exports one source set in full into a snapshot directory under .build/unica/fetch; the pinned runner does not report the infobase generation of a snapshot, so generation is null"),
             RunIntent::InfobaseCreate => Some("creates an absent infobase; a file infobase gets the main configuration of the project from its sources, a cluster infobase is created empty; the answer names whether sources were loaded (initializesSources)"),
             _ => None,
         }
@@ -152,6 +163,8 @@ impl RunOperation {
                 &["infobaseRead", "workspaceFiles"]
             }
             RunIntent::SourceReexport => &["workspaceFiles"],
+            RunIntent::SourceFetch => &["infobaseRead", "workspaceFiles"],
+            RunIntent::SourceFetchDrop => &["workspaceFiles"],
             RunIntent::InfobaseCreate
             | RunIntent::SourceImport
             | RunIntent::CfImport
@@ -215,6 +228,12 @@ impl RunOperation {
             })),
             RunIntent::SourceReexport => Some(
                 json!({"type":"object","additionalProperties":false,"required":["sourceSet","format"],"properties":{"sourceSet":{"type":"string","description":"Declared source set to re-export."},"format":{"type":"string","description":"Writable export format: 2.20 is written by 1C 8.3.27, 2.21 by 8.5.1, 2.22 by 8.5.4; that platform line must be installed. Another value is refused with the list of writable formats."}}}),
+            ),
+            RunIntent::SourceFetch => Some(
+                json!({"type":"object","additionalProperties":false,"properties":{"sourceSet":{"type":"string","description":"Declared source set to fetch from the infobase; omit for the main configuration."},"extension":{"type":"string","description":"1C extension name; required for an extension source set and must match it."}}}),
+            ),
+            RunIntent::SourceFetchDrop => Some(
+                json!({"type":"object","additionalProperties":false,"required":["snapshotId"],"properties":{"snapshotId":{"type":"string","pattern":"^[0-9a-f]{32}$","description":"snapshotId from the answer of fetch."}}}),
             ),
             RunIntent::SourceExport => Some(
                 json!({"type":"object","additionalProperties":false,"properties":{"sourceSet":{"type":"string","description":"Declared source set to export from the infobase; omit for the main configuration."},"extension":{"type":"string","description":"1C extension name; required for an extension source set and must match it."},"force":{"type":"boolean","description":"true exports the whole set and replaces it, including uncommitted and untracked files. Omit to let the runner choose a partial or full export by its memory of earlier exchanges."}}}),
@@ -512,6 +531,8 @@ fn run_dictionary() -> Vec<RunOperation> {
         RunIntent::SourceImport,
         RunIntent::SourceExport,
         RunIntent::SourceReexport,
+        RunIntent::SourceFetch,
+        RunIntent::SourceFetchDrop,
         RunIntent::ArtifactBuild,
         RunIntent::CfExport,
         RunIntent::CfImport,
@@ -618,6 +639,8 @@ mod tests {
                 "push",
                 "pull",
                 "source.reexport",
+                "fetch",
+                "fetch.drop",
                 "make",
                 "download",
                 "upload",
@@ -1048,6 +1071,8 @@ mod tests {
                 RunIntent::SourceImport,
                 RunIntent::SourceExport,
                 RunIntent::SourceReexport,
+                RunIntent::SourceFetch,
+                RunIntent::SourceFetchDrop,
                 RunIntent::ArtifactBuild,
                 RunIntent::CfExport,
                 RunIntent::CfImport,
@@ -1083,6 +1108,8 @@ mod tests {
                 "push",
                 "pull",
                 "source.reexport",
+                "fetch",
+                "fetch.drop",
                 "make",
                 "download",
                 "infobase.dump",
@@ -1203,6 +1230,8 @@ mod tests {
                 "push",
                 "pull",
                 "source.reexport",
+                "fetch",
+                "fetch.drop",
                 "make",
                 "download",
                 "upload",
@@ -1242,6 +1271,8 @@ mod tests {
                 "push",
                 "pull",
                 "source.reexport",
+                "fetch",
+                "fetch.drop",
                 "make",
                 "download",
                 "infobase.dump",
@@ -1275,9 +1306,36 @@ mod tests {
                 .iter()
                 .filter(|operation| operation.implemented)
                 .count()
-                == 11,
+                == 13,
             "only the proven runner 0.14 subset is implemented"
         );
+    }
+
+    /// rule: INV.RUNTIME.FETCH-LEAVES-THE-WORKING-COPY
+    #[test]
+    fn v13_fetch_takes_a_set_and_an_extension_and_reads_the_infobase_into_the_workspace() {
+        let catalog = catalog_for(SurfaceRelease::V13).unwrap();
+        let op = catalog
+            .run_dictionary
+            .iter()
+            .find(|op| op.name() == "fetch")
+            .unwrap();
+        assert!(op.implemented);
+        assert_eq!(op.execution(), "previewApply");
+        assert_eq!(op.effects(), &["infobaseRead", "workspaceFiles"]);
+        let schema = op.args_schema().unwrap();
+        assert_eq!(schema["additionalProperties"], false);
+        assert!(schema.get("required").is_none());
+        assert_eq!(
+            schema["properties"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect::<std::collections::BTreeSet<_>>(),
+            ["extension", "sourceSet"].into_iter().collect()
+        );
+        assert!(op.support_reason().unwrap().contains("generation is null"));
     }
 
     #[test]

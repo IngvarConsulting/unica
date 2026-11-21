@@ -38,7 +38,7 @@ fn bound_source_writes(bound: V5ActorBoundCanonicalInvocation) -> (SourceWriteLa
             source_writes,
             export,
             ..
-        } => (source_writes, export.is_preview()),
+        } => (source_writes, !export.holds_source_writes()),
         ActorBoundCanonicalInvocationState::ArtifactBuild {
             source_writes,
             build,

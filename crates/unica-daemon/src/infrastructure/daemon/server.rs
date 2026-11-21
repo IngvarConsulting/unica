@@ -1615,7 +1615,7 @@ impl V5PreparedCanonicalInvocation {
                 exclude_source_writes(
                     &source_writes,
                     "pull",
-                    export.is_preview(),
+                    !export.holds_source_writes(),
                     cancellation,
                     |cancellation| export.execute(cancellation),
                 )
