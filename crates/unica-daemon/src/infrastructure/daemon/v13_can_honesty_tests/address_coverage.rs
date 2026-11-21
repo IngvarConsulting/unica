@@ -6,6 +6,7 @@ use unica_source_contract::format_identity::export_format_line;
 const EVIDENCE_TEST_CASE: &str =
     "medium_published_document_and_bsl_branches_have_canonical_addresses";
 const MD_CLASSES_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
+const MXL_NS: &str = "http://v8.1c.ru/8.2/data/spreadsheet";
 
 enum Evidence<'a> {
     Read(&'a str),
@@ -518,7 +519,6 @@ fn check_mxl_xml(
     fixture: &Fixture,
     evidence: &mut EvidenceRows,
 ) {
-    const NS: &str = "http://v8.1c.ru/8.2/data/spreadsheet";
     const XSI: &str = "http://www.w3.org/2001/XMLSchema-instance";
     const ORIGIN: (&str, &str) = (
         "workspace-mxl",
@@ -529,20 +529,191 @@ fn check_mxl_xml(
     let raw = fixture_xml(fixture, owner, ORIGIN.1);
     let document = roxmltree::Document::parse(raw.trim_start_matches('\u{feff}')).unwrap();
     let root = document.root_element();
-    assert!(root.has_tag_name((NS, "document")));
+    assert!(root.has_tag_name((MXL_NS, "document")));
     let names: Vec<_> = root
         .children()
         .filter(|node| {
-            node.has_tag_name((NS, "namedItem"))
+            node.has_tag_name((MXL_NS, "namedItem"))
                 && node.attribute((XSI, "type")) == Some("NamedItemCells")
         })
-        .map(|node| child_name(node, NS))
+        .map(|node| child_name(node, MXL_NS))
         .collect();
     assert!(!names.is_empty());
     let (view, _) = read_view(runtime, &fixture.workspace, owner);
     check_fixture_branches(&view, [(branch, FixtureBranch::Present(names.len()))]);
     check_fixture_members(runtime, fixture, branch, names);
     evidence.record(fixture, ORIGIN, branch);
+}
+
+fn check_native_mxl_rows(
+    runtime: &V5CanonicalInvocationRuntime,
+    fixture: &Fixture,
+    evidence: &mut EvidenceRows,
+) {
+    const OWNER: &str = "cf:Report.F06Report.Template.PlatformExport";
+    const AREA_BRANCH: &str = "cf:Report.F06Report.Template.PlatformExport.Area";
+    const ORIGIN: (&str, &str) = (
+        "workspace-mxl",
+        "Reports/F06Report/Templates/PlatformExport/Ext/Template.xml",
+    );
+    let raw = fixture_xml(fixture, OWNER, ORIGIN.1);
+    let document = roxmltree::Document::parse(raw.trim_start_matches('\u{feff}')).unwrap();
+    let root = document.root_element();
+    assert!(root.has_tag_name((MXL_NS, "document")));
+    let mut areas = BTreeMap::new();
+    for node in root
+        .children()
+        .filter(|node| node.has_tag_name((MXL_NS, "namedItem")))
+    {
+        assert_eq!(
+            node.attribute(("http://www.w3.org/2001/XMLSchema-instance", "type")),
+            Some("NamedItemCells")
+        );
+        let name = child_name(node, MXL_NS);
+        let area = mxl_child(node, "area").unwrap();
+        assert!(areas.insert(name, area).is_none(), "duplicate area {name}");
+    }
+    assert_eq!(
+        areas.keys().copied().collect::<BTreeSet<_>>(),
+        BTreeSet::from(["Колонки", "Подвал", "Строка", "Угол", "Шапка"])
+    );
+    let (view, _) = read_view(runtime, &fixture.workspace, OWNER);
+    check_fixture_branches(&view, [(AREA_BRANCH, FixtureBranch::Present(areas.len()))]);
+    let area_views = check_fixture_members(runtime, fixture, AREA_BRANCH, areas.keys().copied());
+    evidence.record(fixture, ORIGIN, AREA_BRANCH);
+
+    // Only row areas supply body and parameter evidence. Columns and rectangles
+    // are checked above for address identity without assuming clipping semantics.
+    for (name, body_count, parameter_count) in [("Шапка", 5, 1), ("Строка", 2, 3), ("Подвал", 2, 1)]
+    {
+        let area = areas[name];
+        let value = |tag| mxl_child(area, tag).and_then(|node| node.text()).unwrap();
+        assert_eq!(value("type"), "Rows");
+        let begin = value("beginRow").parse::<usize>().unwrap();
+        let end = value("endRow").parse::<usize>().unwrap();
+        assert!(begin <= end, "{name}: invalid row range");
+        let owner = parsed(AREA_BRANCH).member(name).unwrap();
+        let body_branch = format!("{owner}.Body");
+        let parameter_branch = format!("{owner}.Parameter");
+        let parameter_address = parsed(&parameter_branch);
+        let (body, parameters) = native_mxl_row_items(root, begin..=end, &parameter_address);
+        assert_eq!(body.len(), body_count, "{name}: raw body count");
+        assert_eq!(
+            parameters.len(),
+            parameter_count,
+            "{name}: raw parameter count"
+        );
+        check_fixture_branches(
+            &area_views[name],
+            [
+                (&body_branch, FixtureBranch::Present(body_count)),
+                (&parameter_branch, FixtureBranch::Present(parameter_count)),
+            ],
+        );
+        let (body_view, body_items) = read_view(runtime, &fixture.workspace, &body_branch);
+        assert_eq!(body_view["kind"], "Body", "{body_branch}");
+        assert_eq!(body_items, body, "{body_branch}");
+        let (parameter_view, parameter_items) =
+            read_view(runtime, &fixture.workspace, &parameter_branch);
+        assert_eq!(parameter_view["kind"], "Parameter", "{parameter_branch}");
+        assert_eq!(parameter_items, parameters, "{parameter_branch}");
+        for item in &parameters {
+            if let Some(at) = item["at"].as_str() {
+                let (view, _) = read_view(runtime, &fixture.workspace, at);
+                assert_eq!(view["kind"], "Parameter", "{at}");
+                assert_eq!(view["title"], item["title"], "{at}");
+            }
+        }
+        if name == "Строка" {
+            let anonymous = parameters.last().unwrap();
+            assert_eq!(anonymous["title"], "Сумма [tpl]");
+            assert_eq!(anonymous["addressable"], false);
+            assert!(anonymous.get("at").is_none());
+        }
+        evidence.record(fixture, ORIGIN, &body_branch);
+        evidence.record(fixture, ORIGIN, &parameter_branch);
+    }
+}
+
+fn mxl_child<'a, 'input>(
+    parent: roxmltree::Node<'a, 'input>,
+    tag: &str,
+) -> Option<roxmltree::Node<'a, 'input>> {
+    parent
+        .children()
+        .find(|node| node.has_tag_name((MXL_NS, tag)))
+}
+
+fn native_mxl_row_items(
+    root: roxmltree::Node<'_, '_>,
+    range: std::ops::RangeInclusive<usize>,
+    parameter_address: &QualifiedAddress,
+) -> (Vec<Value>, Vec<Value>) {
+    const CORE_NS: &str = "http://v8.1c.ru/8.1/data/core";
+    let mut rows = BTreeMap::new();
+    for node in root
+        .children()
+        .filter(|node| node.has_tag_name((MXL_NS, "rowsItem")))
+    {
+        let index = mxl_child(node, "index")
+            .and_then(|node| node.text())
+            .unwrap()
+            .parse::<usize>()
+            .unwrap();
+        let row = mxl_child(node, "row").unwrap();
+        assert!(rows.insert(index, row).is_none(), "duplicate row {index}");
+    }
+    let mut body = Vec::new();
+    let mut parameters = Vec::new();
+    for (_, row) in rows.range(range) {
+        for group in row
+            .children()
+            .filter(|node| node.has_tag_name((MXL_NS, "c")))
+        {
+            let cell = mxl_child(group, "c").unwrap();
+            if let Some(name) = mxl_child(cell, "parameter").and_then(|node| node.text()) {
+                parameters.push(json!({
+                    "at": parameter_address.member(name).unwrap().to_string(),
+                    "kind": "Parameter",
+                    "title": name,
+                }));
+            }
+            let Some(text) = mxl_child(cell, "tl")
+                .and_then(|label| {
+                    label
+                        .children()
+                        .find(|node| node.has_tag_name((CORE_NS, "item")))
+                })
+                .and_then(|item| {
+                    item.children()
+                        .find(|node| node.has_tag_name((CORE_NS, "content")))
+                })
+                .and_then(|node| node.text())
+                .filter(|text| !text.is_empty())
+            else {
+                continue;
+            };
+            let mut template = false;
+            for (name, _) in text
+                .split('[')
+                .skip(1)
+                .filter_map(|tail| tail.split_once(']'))
+            {
+                assert!(
+                    !name.is_empty() && !name.chars().all(|ch| ch.is_ascii_digit()),
+                    "{text}"
+                );
+                template = true;
+                parameters.push(json!({
+                    "kind": "Parameter",
+                    "title": format!("{name} [tpl]"),
+                    "addressable": false,
+                }));
+            }
+            body.push(json!({"index": body.len() + 1, "template": template, "text": text}));
+        }
+    }
+    (body, parameters)
 }
 
 fn check_resource(
@@ -829,7 +1000,10 @@ fn medium_published_document_and_bsl_branches_have_canonical_addresses() {
                 check_role_xml(&runtime, &fixture, &mut evidence)
             }
             "workspace-xdto-anonymous" => check_xdto_xml(&runtime, &fixture, &mut evidence),
-            "workspace-mxl" => check_mxl_xml(&runtime, &fixture, &mut evidence),
+            "workspace-mxl" => {
+                check_mxl_xml(&runtime, &fixture, &mut evidence);
+                check_native_mxl_rows(&runtime, &fixture, &mut evidence);
+            }
             "workspace-external-alias" => check_external_modules(&runtime, &fixture, &mut evidence),
             "workspace-code" => check_extension_common_module(&runtime, &fixture, &mut evidence),
             _ => {}

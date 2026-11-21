@@ -691,6 +691,16 @@ fn native_external_root_descriptors_match_published_addresses() {
             &origin,
             AddressEvidence::RoundTrip(&at_text),
         );
+        if format == "2.20" && source_kind == SourceSetKind::ExternalReport {
+            check_native_external_dcs_parameters(
+                &authority,
+                &at_text,
+                artifact,
+                &descriptor_path,
+                line,
+                &mut evidence,
+            );
+        }
     }
     evidence.finish();
 }
@@ -1186,7 +1196,6 @@ fn check_native_form_or_template(
         }
         "Managed Form"
     } else {
-        const DCS_NS: &str = "http://v8.1c.ru/8.1/data-composition-system/schema";
         const MXL_NS: &str = "http://v8.1c.ru/8.2/data/spreadsheet";
         let template = property("TemplateType")
             .unwrap_or_else(|| panic!("native fixture {descriptor:?}: missing TemplateType"));
@@ -1229,6 +1238,7 @@ fn check_native_form_or_template(
                         !data_sets.is_empty(),
                         "native fixture {payload:?}: missing DataSet witness"
                     );
+                    check_native_dcs_groups(authority, &at_text, root, &payload, evidence);
                 } else {
                     assert!(
                         root.has_tag_name((MXL_NS, "document")),
@@ -1275,6 +1285,253 @@ fn check_native_form_or_template(
 }
 
 const NATIVE_FORM_NS: &str = "http://v8.1c.ru/8.3/xcf/logform";
+const DCS_NS: &str = "http://v8.1c.ru/8.1/data-composition-system/schema";
+const DCS_SETTINGS_NS: &str = "http://v8.1c.ru/8.1/data-composition-system/settings";
+
+fn native_dcs_children<'a, 'input: 'a>(
+    owner: roxmltree::Node<'a, 'input>,
+    tag: &'a str,
+) -> impl Iterator<Item = roxmltree::Node<'a, 'input>> + 'a {
+    owner
+        .children()
+        .filter(move |node| node.has_tag_name((DCS_NS, tag)))
+}
+
+fn native_dcs_text<'a, 'input: 'a>(node: roxmltree::Node<'a, 'input>, tag: &str) -> &'a str {
+    node.children()
+        .find(|child| child.has_tag_name((DCS_NS, tag)))
+        .and_then(|child| child.text())
+        .unwrap_or_else(|| panic!("native DCS {} has no {tag}", node.tag_name().name()))
+}
+
+fn check_native_dcs_groups(
+    authority: &LogicalViewReadAuthority<'_>,
+    owner: &str,
+    root: roxmltree::Node<'_, '_>,
+    path: &Path,
+    evidence: &mut EvidenceRows,
+) {
+    let origin = fixture_origin(path);
+    let source = (
+        authority.platform_profile().line(),
+        SourceSetKind::Configuration,
+    );
+    let data_sources = native_dcs_children(root, "dataSource").map(|node| {
+        let kind = native_dcs_text(node, "dataSourceType");
+        assert_eq!(kind, "Local", "{path:?}");
+        (native_dcs_text(node, "name"), vec![("kind", kind)])
+    });
+    check_native_dcs_branch(
+        authority,
+        owner,
+        "DataSource",
+        data_sources,
+        &origin,
+        source,
+        evidence,
+    );
+
+    let settings = native_dcs_children(root, "settingsVariant").map(|node| {
+        let name = node
+            .children()
+            .find(|child| child.has_tag_name((DCS_SETTINGS_NS, "name")))
+            .and_then(|child| child.text())
+            .expect("native DCS settings name");
+        (name, Vec::new())
+    });
+    check_native_dcs_branch(
+        authority, owner, "Setting", settings, &origin, source, evidence,
+    );
+
+    let totals = native_dcs_children(root, "totalField").map(|node| {
+        let name = native_dcs_text(node, "dataPath");
+        let expression = native_dcs_text(node, "expression");
+        (name, vec![("dataPath", name), ("expression", expression)])
+    });
+    check_native_dcs_branch(authority, owner, "Total", totals, &origin, source, evidence);
+
+    let datasets = QualifiedAddress::parse(&format!("{owner}.DataSet")).unwrap();
+    for dataset in native_dcs_children(root, "dataSet") {
+        let at = datasets.member(native_dcs_text(dataset, "name")).unwrap();
+        let fields = native_dcs_children(dataset, "field").map(|node| {
+            let path = native_dcs_text(node, "dataPath");
+            (path, vec![("field", native_dcs_text(node, "field"))])
+        });
+        check_native_dcs_branch(
+            authority,
+            &at.to_string(),
+            "Field",
+            fields,
+            &origin,
+            source,
+            evidence,
+        );
+    }
+}
+
+fn check_native_dcs_branch<'a>(
+    authority: &LogicalViewReadAuthority<'_>,
+    owner: &str,
+    kind: &str,
+    rows: impl Iterator<Item = (&'a str, Vec<(&'a str, &'a str)>)>,
+    origin: &str,
+    source: (PlatformLine, SourceSetKind),
+    evidence: &mut EvidenceRows,
+) {
+    let branch = format!("{owner}.{kind}");
+    let address = QualifiedAddress::parse(&branch).unwrap();
+    let mut expected = BTreeMap::new();
+    for (name, props) in rows {
+        let at = address.member(name).unwrap().to_string();
+        assert!(
+            expected.insert(at, props).is_none(),
+            "duplicate native DCS member {name}"
+        );
+    }
+    let owner_view = read(authority, owner);
+    if expected.is_empty() {
+        // Typed DCS advertises branches only for nonempty collections.
+        assert!(
+            !addresses(&owner_view, "branches").contains(&branch),
+            "{branch}"
+        );
+        assert!(
+            addresses(&read(authority, &branch), "items").is_empty(),
+            "{branch}"
+        );
+        evidence.record_for_source(
+            source,
+            owner,
+            kind,
+            None,
+            origin,
+            AddressEvidence::Read(&branch),
+        );
+        return;
+    }
+    check_native_branch(
+        authority,
+        &owner_view,
+        &branch,
+        &expected.keys().cloned().collect(),
+    );
+    evidence.record_for_source(
+        source,
+        owner,
+        kind,
+        None,
+        origin,
+        AddressEvidence::Read(&branch),
+    );
+    for (at, props) in expected {
+        let view = read(authority, &at);
+        assert_eq!(view["kind"], kind, "{at}");
+        for (key, value) in props {
+            assert_eq!(view["props"][key], value, "{at}: {key}");
+        }
+        evidence.record_for_source(
+            source,
+            owner,
+            kind,
+            None,
+            origin,
+            AddressEvidence::Read(&at),
+        );
+    }
+}
+
+fn check_native_external_dcs_parameters(
+    authority: &LogicalViewReadAuthority<'_>,
+    report: &str,
+    artifact: roxmltree::Node<'_, '_>,
+    descriptor: &Path,
+    line: PlatformLine,
+    evidence: &mut EvidenceRows,
+) {
+    assert_eq!(
+        native_child_objects(artifact)
+            .filter(|node| {
+                node.has_tag_name((MD_CLASSES_NS, "Template")) && node.text() == Some("MainSchema")
+            })
+            .count(),
+        1,
+        "{report}: native MainSchema registration"
+    );
+    let template_descriptor = descriptor
+        .with_extension("")
+        .join("Templates/MainSchema.xml");
+    let raw = read_fixture_descriptor(&template_descriptor);
+    let template_doc = parse_fixture_descriptor(&raw, &template_descriptor);
+    let template_artifact = fixture_artifact(&template_doc, "Template", &template_descriptor);
+    assert_eq!(
+        fixture_properties_name(template_artifact),
+        Some("MainSchema")
+    );
+    let path = template_descriptor
+        .with_extension("")
+        .join("Ext/Template.xml");
+    let xml = read_fixture_descriptor(&path);
+    let schema = parse_fixture_descriptor(&xml, &path);
+    let root = schema.root_element();
+    assert!(root.has_tag_name((DCS_NS, "DataCompositionSchema")));
+    let datasets: Vec<_> = native_dcs_children(root, "dataSet").collect();
+    let [dataset] = datasets.as_slice() else {
+        panic!("expected native ERF dataset Main");
+    };
+    assert_eq!(native_dcs_text(*dataset, "name"), "Main");
+    assert!(native_dcs_children(*dataset, "parameter").next().is_none());
+
+    let mut parameters = BTreeMap::new();
+    for param in native_dcs_children(root, "parameter") {
+        let name = native_dcs_text(param, "name");
+        let declared_type = native_dcs_children(param, "valueType").next().unwrap();
+        let declared_type = declared_type
+            .children()
+            .find(|node| node.has_tag_name(("http://v8.1c.ru/8.1/data/core", "Type")))
+            .and_then(|node| node.text())
+            .unwrap();
+        let value = native_dcs_children(param, "value").next().unwrap();
+        assert_eq!(
+            value.attribute(("http://www.w3.org/2001/XMLSchema-instance", "type")),
+            Some(declared_type)
+        );
+        let default = value.text().unwrap();
+        assert!(parameters.insert(name, (declared_type, default)).is_none());
+    }
+    assert_eq!(
+        parameters,
+        BTreeMap::from([
+            ("Amount", ("xs:decimal", "10")),
+            ("Label", ("xs:string", "Sample"))
+        ])
+    );
+    let origin = fixture_origin(&path);
+    let source = (line, SourceSetKind::ExternalReport);
+    let template = format!("{report}.Template.MainSchema");
+    for owner in [&template, &format!("{template}.DataSet.Main")] {
+        let rows = parameters.iter().map(|(&name, &(xml_type, default))| {
+            let props = match xml_type {
+                "xs:string" => vec![
+                    ("type", "String"),
+                    ("valueType", xml_type),
+                    ("value", default),
+                ],
+                "xs:decimal" => vec![("type", "Number"), ("value", default)],
+                _ => unreachable!("fixture parameter type checked above"),
+            };
+            (name, props)
+        });
+        check_native_dcs_branch(
+            authority,
+            owner,
+            "Parameter",
+            rows,
+            &origin,
+            source,
+            evidence,
+        );
+    }
+}
 
 fn native_form_children<'a, 'input: 'a>(
     owner: roxmltree::Node<'a, 'input>,
