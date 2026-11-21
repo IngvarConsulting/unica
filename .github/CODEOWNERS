@@ -10,3 +10,6 @@
 /.config/** @zeegin
 /.agents/skills/** @zeegin
 /docs/release-runbook.md @zeegin
+# Changes to either file below require direct approval from @zeegin.
+/CLA.md @zeegin
+/CONTRIBUTORS.md @zeegin
