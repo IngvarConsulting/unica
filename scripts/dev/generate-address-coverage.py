@@ -25,7 +25,10 @@ NATIVE_SHARDS = frozenset({
 })
 DAEMON_SHARD = "medium_published_document_and_bsl_branches_have_canonical_addresses"
 NATIVE_SCOPE = "Configuration source sets in the native address_coverage tests of unica-coder."
-DAEMON_SCOPE = "Read witnesses from the selected document and BSL coverage test of unica-daemon."
+DAEMON_SCOPE = (
+    "Read witnesses from the selected document and BSL coverage test of unica-daemon, "
+    "including observed 8.3.27 examples for extensions, external processors and external reports."
+)
 SCOPE_BOUNDARY = "This slice is not the complete #484 map or the other #2958 evidence columns."
 
 
@@ -68,8 +71,11 @@ def validate_record(record: object, test_case: str) -> None:
     key = record["key"]
     exact_fields(key, {"line", "source_kind", "owner_shape", "branch", "role"}, "key")
     version = line_number(key["line"])
-    if key["source_kind"] != "configuration":
-        raise ValueError("this evidence slice expects the configuration source-set kind")
+    source_kind = key["source_kind"]
+    if source_kind != "configuration" and not (
+        test_case == DAEMON_SHARD and source_kind in ("extension", "external_processor", "external_report")
+    ):
+        raise ValueError(f"unexpected source-set kind {source_kind!r} in shard {test_case!r}")
     token(key["branch"], "branch kind")
     if key["role"] is not None:
         token(key["role"], "branch role")
@@ -97,6 +103,8 @@ def validate_record(record: object, test_case: str) -> None:
         if source_prefix(witness["at"], "address") != owner_prefix:
             raise ValueError("witness address and owner must belong to the same source set")
         return
+    if test_case not in NATIVE_SHARDS or source_kind != "configuration":
+        raise ValueError("absence reasons are only supported in native configuration shards")
     if witness["at"] is not None or witness["level"] is not None:
         raise ValueError("an absent address cannot have at or level")
     exact_fields(reason, {"kind", "line"}, "absence reason")

@@ -5,6 +5,12 @@ use unica_source_contract::format_identity::export_format_line;
 
 const EVIDENCE_TEST_CASE: &str =
     "medium_published_document_and_bsl_branches_have_canonical_addresses";
+const MD_CLASSES_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
+
+enum Evidence<'a> {
+    Read(&'a str),
+    ModuleRoundTrip { at: &'a str, descriptor: &'a str },
+}
 
 struct EvidenceRows {
     directory: Option<PathBuf>,
@@ -20,26 +26,56 @@ impl EvidenceRows {
     }
 
     fn record(&mut self, fixture: &Fixture, origin: (&str, &str), at: &str) {
+        self.record_evidence(fixture, origin, Evidence::Read(at));
+    }
+
+    fn record_evidence(&mut self, fixture: &Fixture, origin: (&str, &str), evidence: Evidence<'_>) {
         if self.directory.is_none() {
             return;
         }
+        let (at, level, descriptor) = match evidence {
+            Evidence::Read(at) => (at, "read", None),
+            Evidence::ModuleRoundTrip { at, descriptor } => (at, "roundtrip", Some(descriptor)),
+        };
         let address = parsed(at);
         let (branch, owner_segments) = address.segments().split_last().unwrap();
-        assert!(branch.name().is_none(), "{at}: expected a branch address");
-        let owner = address.prefix(owner_segments.len());
-        let (alias, source_kind, root) = source_sets(&fixture.workspace)
+        let role = branch.name();
+        if descriptor.is_some() {
+            assert_eq!(branch.kind(), NodeKind::Module, "{at}");
+            assert!(role.is_some(), "{at}: expected a named module role");
+        } else {
+            assert!(role.is_none(), "{at}: expected a branch address");
+        }
+        let owner = if owner_segments.is_empty() {
+            parsed(&format!("{}:Configuration", address.source_set()))
+        } else {
+            address.prefix(owner_segments.len())
+        };
+        let (_, source_kind, root) = source_sets(&fixture.workspace)
             .into_iter()
             .find(|(name, _, _)| name == owner.source_set())
             .expect("fixture source set for evidence");
-        assert_eq!(source_kind, SourceSetKind::Configuration, "{alias}");
-        let config = std::fs::read_to_string(root.join("Configuration.xml")).unwrap();
-        let config = roxmltree::Document::parse(config.trim_start_matches('\u{feff}')).unwrap();
-        let format = config.root_element().attribute("version").unwrap();
+        let descriptor = match source_kind {
+            SourceSetKind::Configuration | SourceSetKind::Extension => {
+                assert!(
+                    descriptor.is_none(),
+                    "{at}: expected a configuration descriptor"
+                );
+                "Configuration.xml"
+            }
+            SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport => {
+                descriptor.expect("external witness requires its owner descriptor")
+            }
+        };
+        let xml = fixture_xml(fixture, at, descriptor);
+        let descriptor = roxmltree::Document::parse(xml.trim_start_matches('\u{feff}')).unwrap();
+        let format = descriptor.root_element().attribute("version").unwrap();
         let line = export_format_line(format).expect("fixture export format");
         let source = root.strip_prefix(&fixture.workspace).unwrap();
         let origin_path = source.join(origin.1).to_string_lossy().replace('\\', "/");
         let origin = format!("tests/fixtures/acceptance/{}/{origin_path}", origin.0);
-        let owner_shape: Vec<_> = owner_segments
+        let owner_shape: Vec<_> = owner
+            .segments()
             .iter()
             .map(|segment| {
                 json!({
@@ -60,12 +96,12 @@ impl EvidenceRows {
                     "source_kind": source_kind,
                     "owner_shape": owner_shape,
                     "branch": branch.kind().as_str(),
-                    "role": null,
+                    "role": role,
                 },
                 "witness": {
                     "owner": owner.to_string(),
                     "at": at,
-                    "level": "read",
+                    "level": level,
                     "origin": origin,
                     "test_case": EVIDENCE_TEST_CASE,
                     "reason": null,
@@ -515,7 +551,9 @@ fn check_resource(
         json!({"at":at}),
     );
     assert!(by_address.ok, "{at}: {by_address:?}");
-    assert_eq!(by_address.data.unwrap()["path"].as_str(), Some(relative));
+    let data = by_address.data.unwrap();
+    assert_eq!(data["at"], at);
+    assert_eq!(data["path"], relative);
 
     let by_path = invoke_on(
         runtime,
@@ -524,7 +562,173 @@ fn check_resource(
         json!({"path":path.to_string_lossy()}),
     );
     assert!(by_path.ok, "{relative}: {by_path:?}");
-    assert_eq!(by_path.data.unwrap()["at"].as_str(), Some(at));
+    let data = by_path.data.unwrap();
+    assert_eq!(data["at"], at);
+    assert_eq!(data["path"], relative);
+}
+
+fn metadata_child<'a, 'input: 'a>(
+    parent: roxmltree::Node<'a, 'input>,
+    tag: &str,
+) -> roxmltree::Node<'a, 'input> {
+    parent
+        .children()
+        .find(|node| node.has_tag_name((MD_CLASSES_NS, tag)))
+        .unwrap_or_else(|| panic!("fixture has no {tag} under {}", parent.tag_name().name()))
+}
+
+fn check_metadata_identity<'a, 'input: 'a>(
+    root: roxmltree::Node<'a, 'input>,
+    kind: &str,
+    name: &str,
+) -> roxmltree::Node<'a, 'input> {
+    assert!(root.has_tag_name((MD_CLASSES_NS, "MetaDataObject")));
+    let node = metadata_child(root, kind);
+    assert_eq!(
+        metadata_child(metadata_child(node, "Properties"), "Name").text(),
+        Some(name)
+    );
+    node
+}
+
+fn check_external_modules(
+    runtime: &V5CanonicalInvocationRuntime,
+    fixture: &Fixture,
+    evidence: &mut EvidenceRows,
+) {
+    for (alias, kind, name, stem, source_kind) in [
+        (
+            "epf",
+            "ExternalDataProcessor",
+            "SyntheticProcessor",
+            "source",
+            SourceSetKind::ExternalProcessor,
+        ),
+        (
+            "erf",
+            "ExternalReport",
+            "SyntheticReport",
+            "report-source",
+            SourceSetKind::ExternalReport,
+        ),
+    ] {
+        assert!(fixture
+            .sets
+            .iter()
+            .any(|(set, kind, _)| set == alias && *kind == source_kind));
+        let owner = format!("{alias}:{kind}.{name}");
+        let descriptor = format!("{stem}.xml");
+        let xml = fixture_xml(fixture, &owner, &descriptor);
+        let document = roxmltree::Document::parse(xml.trim_start_matches('\u{feff}')).unwrap();
+        let root = document.root_element();
+        let object = check_metadata_identity(root, kind, name);
+        let main_forms = metadata_child(object, "ChildObjects")
+            .children()
+            .filter(|node| {
+                node.has_tag_name((MD_CLASSES_NS, "Form")) && node.text() == Some("Main")
+            })
+            .count();
+        assert_eq!(main_forms, 1, "{descriptor}: Form.Main registration");
+
+        let form_xml = fixture_xml(fixture, &owner, &format!("{stem}/Forms/Main.xml"));
+        let form_document =
+            roxmltree::Document::parse(form_xml.trim_start_matches('\u{feff}')).unwrap();
+        let form_root = form_document.root_element();
+        check_metadata_identity(form_root, "Form", "Main");
+        assert_eq!(form_root.attribute("version"), root.attribute("version"));
+
+        let form = format!("{owner}.Form.Main");
+        for (parent, role, file) in [
+            (owner.as_str(), "Object", "Ext/ObjectModule.bsl"),
+            (form.as_str(), "Form", "Forms/Main/Ext/Form/Module.bsl"),
+        ] {
+            let branch = format!("{parent}.Module");
+            let (view, _) = read_view(runtime, &fixture.workspace, parent);
+            let published: Vec<_> = published_branch_counts(&view, &branch).collect();
+            assert_eq!(published, vec![1], "{parent}: {branch}");
+            check_fixture_members(runtime, fixture, &branch, [role]);
+            let at = format!("{branch}.{role}");
+            let file = format!("{stem}/{file}");
+            check_resource(runtime, fixture, &at, &file);
+            evidence.record_evidence(
+                fixture,
+                ("workspace-external-alias", &file),
+                Evidence::ModuleRoundTrip {
+                    at: &at,
+                    descriptor: &descriptor,
+                },
+            );
+        }
+    }
+}
+
+fn published_branch_counts<'a>(view: &'a Value, at: &'a str) -> impl Iterator<Item = u64> + 'a {
+    view["branches"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(move |branch| branch["at"] == at)
+        .map(|branch| branch["count"].as_u64().expect("published branch count"))
+}
+
+fn check_extension_common_module(
+    runtime: &V5CanonicalInvocationRuntime,
+    fixture: &Fixture,
+    evidence: &mut EvidenceRows,
+) {
+    const KIND: &str = "CommonModule";
+    const COLL: &str = "ext:CommonModule";
+    const NAME: &str = "ПР_Пример";
+    assert!(fixture
+        .sets
+        .iter()
+        .any(|(set, kind, _)| set == "ext" && *kind == SourceSetKind::Extension));
+    let config_xml = fixture_xml(fixture, COLL, "Configuration.xml");
+    let config = roxmltree::Document::parse(config_xml.trim_start_matches('\u{feff}')).unwrap();
+    let root = config.root_element();
+    let extension = check_metadata_identity(root, "Configuration", "CodeExtension");
+    let registered: Vec<_> = metadata_child(extension, "ChildObjects")
+        .children()
+        .filter(|node| node.has_tag_name((MD_CLASSES_NS, KIND)))
+        .map(|node| node.text().expect("registered CommonModule name"))
+        .collect();
+    assert_eq!(registered, [NAME]);
+
+    let descriptor = fixture_xml(fixture, COLL, &format!("CommonModules/{NAME}.xml"));
+    let descriptor = roxmltree::Document::parse(descriptor.trim_start_matches('\u{feff}')).unwrap();
+    let descriptor_root = descriptor.root_element();
+    check_metadata_identity(descriptor_root, KIND, NAME);
+    assert_eq!(
+        descriptor_root.attribute("version"),
+        root.attribute("version")
+    );
+    let module = fixture_xml(
+        fixture,
+        COLL,
+        &format!("CommonModules/{NAME}/Ext/Module.bsl"),
+    );
+    let source = module.trim_start_matches('\u{feff}');
+    assert!(!source.is_empty());
+
+    let (view, _) = read_view(runtime, &fixture.workspace, "ext:Configuration");
+    let counts: Vec<_> = published_branch_counts(&view, COLL).collect();
+    assert_eq!(
+        counts,
+        [registered.len() as u64],
+        "ext:Configuration: {COLL}"
+    );
+    check_fixture_members(runtime, fixture, COLL, registered);
+    let body = format!("{COLL}.{NAME}.Body");
+    let response = invoke_on(
+        runtime,
+        &fixture.workspace,
+        ToolIdentity::View,
+        json!({"at":body}),
+    );
+    assert!(response.ok, "{body}: {response:?}");
+    assert_eq!(response.data.unwrap()["at"], body);
+    assert_eq!(response.source_text.as_deref(), Some(source), "{body}");
+    evidence.record(fixture, ("workspace-code", "Configuration.xml"), COLL);
 }
 
 /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
@@ -592,6 +796,7 @@ fn medium_published_document_and_bsl_branches_have_canonical_addresses() {
                 "erf:ExternalReport.SyntheticReport.Form.Main.Module",
             ][..],
         ),
+        ("workspace-code", &[][..]),
     ] {
         let fixture = fixture(name);
         let runtime = V5CanonicalInvocationRuntime::new(
@@ -607,6 +812,8 @@ fn medium_published_document_and_bsl_branches_have_canonical_addresses() {
             }
             "workspace-xdto-anonymous" => check_xdto_xml(&runtime, &fixture, &mut evidence),
             "workspace-mxl" => check_mxl_xml(&runtime, &fixture, &mut evidence),
+            "workspace-external-alias" => check_external_modules(&runtime, &fixture, &mut evidence),
+            "workspace-code" => check_extension_common_module(&runtime, &fixture, &mut evidence),
             _ => {}
         }
         if name == "workspace-command-groups" {
@@ -631,24 +838,6 @@ fn medium_published_document_and_bsl_branches_have_canonical_addresses() {
                 "main:Module.ManagedApplication",
                 "Ext/ManagedApplicationModule.bsl",
             );
-        }
-        if name == "workspace-external-alias" {
-            for (owner, stem) in [
-                ("epf:ExternalDataProcessor.SyntheticProcessor", "source"),
-                ("erf:ExternalReport.SyntheticReport", "report-source"),
-            ] {
-                for (suffix, file) in [
-                    (".Module.Object", "Ext/ObjectModule.bsl"),
-                    (".Form.Main.Module.Form", "Forms/Main/Ext/Form/Module.bsl"),
-                ] {
-                    check_resource(
-                        &runtime,
-                        &fixture,
-                        &format!("{owner}{suffix}"),
-                        &format!("{stem}/{file}"),
-                    );
-                }
-            }
         }
     }
     println!("| Kind | Branch | Canonical address | Evidence |");
