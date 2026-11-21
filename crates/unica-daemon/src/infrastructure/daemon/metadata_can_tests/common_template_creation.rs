@@ -15,9 +15,13 @@ fn create_an_empty_common_binary_template_and_remove_it() {
     assert!(jsonschema::validator_for(&can["argsSchema"])
         .unwrap()
         .is_valid(&args));
-    assert_eq!(
-        can["argsSchema"]["properties"]["values"]["properties"]["kind"]["description"],
-        "CommonTemplate creates an empty BinaryData template without a content file."
+    assert!(
+        can["argsSchema"]["properties"]["values"]["properties"]["kind"]["description"]
+            .as_str()
+            .unwrap()
+            .contains(
+                "CommonTemplate creates an empty BinaryData template without a content file."
+            )
     );
 
     let before = unica_workspace::test_support::tree_snapshot(&fixture.source);
