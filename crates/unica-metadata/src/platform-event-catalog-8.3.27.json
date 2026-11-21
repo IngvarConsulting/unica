@@ -2861,6 +2861,126 @@
       "exclusionReason": null
     },
     {
+      "ownerKind": "Sequence",
+      "moduleRole": "RecordSet",
+      "sourceOwner": "SequenceRecordSet.&lt;Sequence name&gt;",
+      "sourcePathPrefix": null,
+      "baseContexts": [
+        "server",
+        "externalConnection",
+        "thickClientOrdinary",
+        "mobileAppServer",
+        "mobileStandaloneServer"
+      ],
+      "events": [
+        {
+          "eventId": "BeforeWrite",
+          "handlerRu": "ПередЗаписью",
+          "handlerEn": "BeforeWrite",
+          "signatureRu": "Процедура ПередЗаписью(Отказ, Замещение)",
+          "signatureEn": "Procedure BeforeWrite(Cancel, Replacing)",
+          "methodKind": "procedure",
+          "contexts": [
+            "server",
+            "externalConnection",
+            "thickClientOrdinary",
+            "mobileAppServer",
+            "mobileStandaloneServer"
+          ],
+          "sourcePageId": "platform-syntax-help:syntax-context:objects/catalog125/catalog345/object349/events/BeforeWrite208.html"
+        },
+        {
+          "eventId": "FillCheckProcessing",
+          "handlerRu": "ОбработкаПроверкиЗаполнения",
+          "handlerEn": "FillCheckProcessing",
+          "signatureRu": "Процедура ОбработкаПроверкиЗаполнения(Отказ, ПроверяемыеРеквизиты)",
+          "signatureEn": "Procedure FillCheckProcessing(Cancel, CheckedAttributes)",
+          "methodKind": "procedure",
+          "contexts": [
+            "server",
+            "externalConnection",
+            "thickClientOrdinary",
+            "mobileAppServer",
+            "mobileStandaloneServer"
+          ],
+          "sourcePageId": "platform-syntax-help:syntax-context:objects/catalog125/catalog345/object349/events/FillCheckProcessing343.html"
+        },
+        {
+          "eventId": "OnWrite",
+          "handlerRu": "ПриЗаписи",
+          "handlerEn": "OnWrite",
+          "signatureRu": "Процедура ПриЗаписи(Отказ, Замещение)",
+          "signatureEn": "Procedure OnWrite(Cancel, Replacing)",
+          "methodKind": "procedure",
+          "contexts": [
+            "server",
+            "externalConnection",
+            "thickClientOrdinary",
+            "mobileAppServer",
+            "mobileStandaloneServer"
+          ],
+          "sourcePageId": "platform-syntax-help:syntax-context:objects/catalog125/catalog345/object349/events/OnWrite209.html"
+        }
+      ],
+      "exclusionReason": null
+    },
+    {
+      "ownerKind": "Recalculation",
+      "moduleRole": "RecordSet",
+      "sourceOwner": "RecalculationRecordSet.&lt;Recalculation name&gt;",
+      "sourcePathPrefix": null,
+      "baseContexts": [
+        "server",
+        "externalConnection",
+        "thickClientOrdinary"
+      ],
+      "events": [
+        {
+          "eventId": "BeforeWrite",
+          "handlerRu": "ПередЗаписью",
+          "handlerEn": "BeforeWrite",
+          "signatureRu": "Процедура ПередЗаписью(Отказ, Замещение)",
+          "signatureEn": "Procedure BeforeWrite(Cancel, Replacing)",
+          "methodKind": "procedure",
+          "contexts": [
+            "server",
+            "externalConnection",
+            "thickClientOrdinary"
+          ],
+          "sourcePageId": "platform-syntax-help:syntax-context:objects/catalog125/catalog486/catalog494/object498/events/BeforeWrite210.html"
+        },
+        {
+          "eventId": "FillCheckProcessing",
+          "handlerRu": "ОбработкаПроверкиЗаполнения",
+          "handlerEn": "FillCheckProcessing",
+          "signatureRu": "Процедура ОбработкаПроверкиЗаполнения(Отказ, ПроверяемыеРеквизиты)",
+          "signatureEn": "Procedure FillCheckProcessing(Cancel, CheckedAttributes)",
+          "methodKind": "procedure",
+          "contexts": [
+            "server",
+            "externalConnection",
+            "thickClientOrdinary"
+          ],
+          "sourcePageId": "platform-syntax-help:syntax-context:objects/catalog125/catalog486/catalog494/object498/events/FillCheckProcessing374.html"
+        },
+        {
+          "eventId": "OnWrite",
+          "handlerRu": "ПриЗаписи",
+          "handlerEn": "OnWrite",
+          "signatureRu": "Процедура ПриЗаписи(Отказ, Замещение)",
+          "signatureEn": "Procedure OnWrite(Cancel, Replacing)",
+          "methodKind": "procedure",
+          "contexts": [
+            "server",
+            "externalConnection",
+            "thickClientOrdinary"
+          ],
+          "sourcePageId": "platform-syntax-help:syntax-context:objects/catalog125/catalog486/catalog494/object498/events/OnWrite211.html"
+        }
+      ],
+      "exclusionReason": null
+    },
+    {
       "ownerKind": "Constant",
       "moduleRole": "ValueManager",
       "sourceOwner": "ConstantValueManager.&lt;Constant name&gt;",
@@ -7707,21 +7827,6 @@
       "reason": "out-of-profile/ordinary-form: ordinary-form runtime owners are outside the approved managed-form projection"
     },
     {
-      "pageId": "platform-syntax-help:syntax-context:objects/catalog125/catalog345/object349/events/BeforeWrite208.html",
-      "title": "ПоследовательностьНаборЗаписей.&lt;Имя последовательности&gt;.ПередЗаписью (SequenceRecordSet.&lt;Sequence name&gt;.BeforeWrite)",
-      "reason": "out-of-profile/non-module-owner: the platform event owner is not an approved module or managed-form owner"
-    },
-    {
-      "pageId": "platform-syntax-help:syntax-context:objects/catalog125/catalog345/object349/events/FillCheckProcessing343.html",
-      "title": "ПоследовательностьНаборЗаписей.&lt;Имя последовательности&gt;.ОбработкаПроверкиЗаполнения (SequenceRecordSet.&lt;Sequence name&gt;.FillCheckProcessing)",
-      "reason": "out-of-profile/non-module-owner: the platform event owner is not an approved module or managed-form owner"
-    },
-    {
-      "pageId": "platform-syntax-help:syntax-context:objects/catalog125/catalog345/object349/events/OnWrite209.html",
-      "title": "ПоследовательностьНаборЗаписей.&lt;Имя последовательности&gt;.ПриЗаписи (SequenceRecordSet.&lt;Sequence name&gt;.OnWrite)",
-      "reason": "out-of-profile/non-module-owner: the platform event owner is not an approved module or managed-form owner"
-    },
-    {
       "pageId": "platform-syntax-help:syntax-context:objects/catalog125/catalog433/Characteristic type item form extension/events/AfterWrite127.html",
       "title": "Расширение формы элемента вида характеристик.ПослеЗаписи (Characteristic type item form extension.AfterWrite)",
       "reason": "out-of-profile/ordinary-form: ordinary-form runtime owners are outside the approved managed-form projection"
@@ -7870,21 +7975,6 @@
       "pageId": "platform-syntax-help:syntax-context:objects/catalog125/catalog486/Calculation register record set form extension/events/OnWrite109.html",
       "title": "Расширение формы набора записей регистра расчета.ПриЗаписи (Calculation register record set form extension.OnWrite)",
       "reason": "out-of-profile/ordinary-form: ordinary-form runtime owners are outside the approved managed-form projection"
-    },
-    {
-      "pageId": "platform-syntax-help:syntax-context:objects/catalog125/catalog486/catalog494/object498/events/BeforeWrite210.html",
-      "title": "ПерерасчетНаборЗаписей.&lt;Имя перерасчета&gt;.ПередЗаписью (RecalculationRecordSet.&lt;Recalculation name&gt;.BeforeWrite)",
-      "reason": "out-of-profile/non-module-owner: the platform event owner is not an approved module or managed-form owner"
-    },
-    {
-      "pageId": "platform-syntax-help:syntax-context:objects/catalog125/catalog486/catalog494/object498/events/FillCheckProcessing374.html",
-      "title": "ПерерасчетНаборЗаписей.&lt;Имя перерасчета&gt;.ОбработкаПроверкиЗаполнения (RecalculationRecordSet.&lt;Recalculation name&gt;.FillCheckProcessing)",
-      "reason": "out-of-profile/non-module-owner: the platform event owner is not an approved module or managed-form owner"
-    },
-    {
-      "pageId": "platform-syntax-help:syntax-context:objects/catalog125/catalog486/catalog494/object498/events/OnWrite211.html",
-      "title": "ПерерасчетНаборЗаписей.&lt;Имя перерасчета&gt;.ПриЗаписи (RecalculationRecordSet.&lt;Recalculation name&gt;.OnWrite)",
-      "reason": "out-of-profile/non-module-owner: the platform event owner is not an approved module or managed-form owner"
     },
     {
       "pageId": "platform-syntax-help:syntax-context:objects/catalog125/catalog676/Node form extension/events/AfterWrite219.html",
