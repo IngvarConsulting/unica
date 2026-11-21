@@ -199,6 +199,101 @@ fn resolve_bot_module_round_trips_its_native_platform_path() {
     mcp.finish();
 }
 
+/// rule: INV.SOURCE.RESOLVED-RESOURCE-IDENTITY
+/// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
+#[test]
+fn resolve_service_modules_round_trip_only_for_registered_owners() {
+    let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let integration_path = "IntegrationServices/Probe/Ext/Module.bsl";
+    let no_descriptor = "HTTPServices/NoDescriptor/Ext/Module.bsl";
+    let unregistered = "IntegrationServices/Unregistered/Ext/Module.bsl";
+    for (fixture, modules) in [
+        (
+            "../../tests/fixtures/formats/platform_xml/2.20/all_kinds",
+            &[
+                (
+                    "HTTPServices/ПроверкаСвязи/Ext/Module.bsl",
+                    "main:HTTPService.ПроверкаСвязи.Module.HTTPService",
+                ),
+                (
+                    "WebServices/ОбменДанными/Ext/Module.bsl",
+                    "main:WebService.ОбменДанными.Module.WebService",
+                ),
+                (
+                    integration_path,
+                    "main:IntegrationService.Probe.Module.IntegrationService",
+                ),
+            ][..],
+        ),
+        (
+            "../../tests/fixtures/acceptance/workspace-http-handler",
+            &[(
+                "HTTPServices/ExternalAPI/Ext/Module.bsl",
+                "main:HTTPService.ExternalAPI.Module.HTTPService",
+            )][..],
+        ),
+        (
+            "../../tests/fixtures/acceptance/workspace-soap-handler",
+            &[(
+                "WebServices/Exchange/Ext/Module.bsl",
+                "main:WebService.Exchange.Module.WebService",
+            )][..],
+        ),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        copy_tree(&fixtures.join(fixture), root.path());
+        let source = root.path().join("src");
+        let has_integration_fixture = modules.iter().any(|(path, _)| *path == integration_path);
+        if has_integration_fixture {
+            // The native export has the registered Probe descriptor but omits its BSL.
+            // The test supplies a synthetic BSL file for that registered owner.
+            let descriptor =
+                std::fs::read_to_string(source.join("IntegrationServices/Probe.xml")).unwrap();
+            std::fs::write(
+                source.join("IntegrationServices/Unregistered.xml"),
+                descriptor.replace("<Name>Probe</Name>", "<Name>Unregistered</Name>"),
+            )
+            .unwrap();
+            for relative in [integration_path, no_descriptor, unregistered] {
+                let path = source.join(relative);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, "// Synthetic module for source path resolution.").unwrap();
+            }
+        }
+
+        let mut mcp = resource_resolve_mcp(root.path());
+        let mut id = 2;
+        for (path, address) in modules {
+            let absolute = std::fs::canonicalize(source.join(path)).unwrap();
+            for args in [
+                json!({"at": address}),
+                json!({"path": format!("src/{path}")}),
+                json!({"path": absolute.to_str().unwrap()}),
+            ] {
+                let result = mcp.completed_tool_call(call_tool(id, "unica.resolve", args));
+                id += 1;
+                assert_eq!(result["ok"], true, "{fixture} {path}: {result:#}");
+                assert_eq!(result["data"]["at"], *address);
+                assert_eq!(result["data"]["path"], *path);
+                assert_eq!(result["data"]["kind"], "Module");
+            }
+        }
+        if has_integration_fixture {
+            for path in [no_descriptor, unregistered] {
+                let result = mcp.completed_tool_call(call_tool(
+                    id,
+                    "unica.resolve",
+                    json!({"path": format!("src/{path}")}),
+                ));
+                id += 1;
+                assert_eq!(result["ok"], false, "{path}: {result:#}");
+                assert_eq!(result["diagnostics"][0]["code"], "not_found", "{result:#}");
+            }
+        }
+        mcp.finish();
+    }
+}
+
 const SEQUENCE_RECORD_SET: &str = "main:Sequence.Probe.Module.RecordSet";
 const SEQUENCE_RECORD_SET_PATH: &str = "Sequences/Probe/Ext/RecordSetModule.bsl";
 const SEQUENCE_PROBE_METHOD: &str = "UnicaSequenceRoundTripProbe";
