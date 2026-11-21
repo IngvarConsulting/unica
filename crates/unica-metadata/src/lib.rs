@@ -46,6 +46,7 @@ pub mod descriptor_operations;
 pub mod document_numerator;
 pub mod event;
 pub mod event_contract;
+pub mod external_data_source;
 pub mod support;
 
 pub mod subsystem_operations;

@@ -22,6 +22,7 @@ enum Fact {
     UnsignedInteger,
     /// Непустое слово без вложенных элементов.
     Text,
+    ExactText,
     /// Одно из значений перечисления платформы.
     Enum(&'static [&'static str]),
     /// Описание типа в форме, которую читает и `Type` константы; контейнер
@@ -89,9 +90,30 @@ const PROFILE: &[(&str, &[(&str, Fact)])] = &[
     ("IntegrationService", &[("Synonym", Fact::Localized)]),
     ("WSReference", &[("Synonym", Fact::Localized)]),
     ("ExternalDataSource", &[("Synonym", Fact::Localized)]),
-    ("Table", &[("Synonym", Fact::Localized)]),
-    ("Cube", &[("Synonym", Fact::Localized)]),
-    ("DimensionTable", &[("Synonym", Fact::Localized)]),
+    (
+        "Table",
+        &[
+            ("Synonym", Fact::Localized),
+            ("TableType", Fact::Enum(&["Table", "Expression"])),
+            ("NameInDataSource", Fact::ExactText),
+            ("ExpressionInDataSource", Fact::ExactText),
+            ("ReadOnly", Fact::Boolean),
+        ],
+    ),
+    (
+        "Cube",
+        &[
+            ("Synonym", Fact::Localized),
+            ("NameInDataSource", Fact::ExactText),
+        ],
+    ),
+    (
+        "DimensionTable",
+        &[
+            ("Synonym", Fact::Localized),
+            ("NameInDataSource", Fact::ExactText),
+        ],
+    ),
 ];
 
 /// Виды, у которых профиль читает базовые факты корня.
@@ -137,10 +159,10 @@ fn observe(
                 value
             })))
         }
-        Fact::Text => {
+        Fact::Text | Fact::ExactText => {
             let value = direct_text_content(node);
             if !meta_info_property_value_is_valid(node, MetaInfoPropertyValueKind::String)
-                || value.trim() != value
+                || (fact == Fact::Text && value.trim() != value)
             {
                 return Err(malformed());
             }

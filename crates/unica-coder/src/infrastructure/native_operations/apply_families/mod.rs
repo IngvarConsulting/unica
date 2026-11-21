@@ -796,6 +796,19 @@ pub(crate) fn support_gate_facts<E>(
             return Ok(facts);
         }
     }
+    if let Some(reason) = path.unreadable {
+        return Ok(SupportGateFacts {
+            marker,
+            owner_rule: support_rule,
+            owner_uuid_missing,
+            node_rule: path.node_rule,
+            lock: None,
+            unreadable: Some(SupportUnreadable {
+                reason,
+                marker: false,
+            }),
+        });
+    }
     let mut facts = free(marker, support_rule);
     facts.node_rule = path.node_rule;
     Ok(facts)
@@ -811,6 +824,8 @@ struct PathRecords {
     /// `at` itself when the walk reaches it below the owner: where the nodes
     /// under it are described.
     reached: Option<ReachedNode>,
+    /// A registered descendant exists but its exact UUID cannot be proved.
+    unreadable: Option<String>,
 }
 
 /// A node below the owner that the walk reached, and the descriptor that
@@ -852,12 +867,33 @@ fn support_records_on_path<E>(
         locked: None,
         node_rule: None,
         reached: None,
+        unreadable: None,
     };
     let segments = at.segments();
     let Some(first) = segments.first() else {
         return Ok(records);
     };
     if first.kind() == NodeKind::Configuration || !first.kind().is_metadata_kind() {
+        return Ok(records);
+    }
+    if first.kind() == NodeKind::ExternalDataSource {
+        let path = unica_metadata_designer::external_data_source_support::walk(
+            at,
+            owner_relative,
+            owner_bytes,
+            read,
+        )?;
+        let logical = at.logical_path();
+        for node in path.nodes.into_iter().skip(1) {
+            let rule = state.object_rule(&node.uuid);
+            if node.logical == logical {
+                records.node_rule = rule;
+            }
+            if rule == Some(0) && records.locked.is_none() {
+                records.locked = Some((node.logical, vec![node.descriptor]));
+            }
+        }
+        records.unreadable = path.unreadable;
         return Ok(records);
     }
     let mut node = owner.to_string();

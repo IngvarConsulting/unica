@@ -53,6 +53,7 @@ pub enum PropertiesSite {
         source_kind: SourceSetKind,
     },
     CommentOnly(NodeKind),
+    ExternalDataSource(NodeKind),
     CatalogOwner,
     DocumentNumerator,
     FunctionalOption,
@@ -214,7 +215,7 @@ macro_rules! descriptor_properties {
                     PropertiesSite::Configuration { extension, line } => {
                         self.on_root(extension) && !line_lacks(line, self.names()[0], None)
                     }
-                    PropertiesSite::Metadata { .. } | PropertiesSite::CatalogOwner => false,
+                    PropertiesSite::Metadata { .. } | PropertiesSite::CatalogOwner | PropertiesSite::ExternalDataSource(_) => false,
                     PropertiesSite::FormDescriptor { common, extension, line } => {
                         if extension {
                             self == Self::Comment
@@ -500,6 +501,10 @@ impl PropertiesSite {
     /// the owner's write profile; a nested subsystem owns a descriptor of its
     /// own and the subsystem profile with it.
     pub fn from_address(at: &QualifiedAddress, source_kind: SourceSetKind) -> Option<Self> {
+        if let Some(kind) = crate::external_data_source::kind(at.segments()) {
+            return (source_kind == SourceSetKind::Configuration)
+                .then_some(Self::ExternalDataSource(kind));
+        }
         if let Some(owner) = at.form_metadata_owner() {
             // The workspace plans no metadata write in an external processor
             // or report, so their forms offer no property edit.
@@ -612,6 +617,9 @@ impl PropertiesSite {
             );
         }
         match self {
+            Self::ExternalDataSource(kind) => {
+                return crate::external_data_source::values_schema(kind)
+            }
             Self::DocumentNumerator => {
                 // The numerator's closed scalar profile plus the descriptor
                 // Comment that the Designer property palette also edits.
@@ -852,6 +860,7 @@ impl PropertiesOperation {
                     PropertiesSite::FormDescriptor { common: true, .. } => "The existing common form descriptor at `<set>:CommonForm.Name.Metadata`.",
                     PropertiesSite::FormDescriptor { .. } => "The existing descriptor of a form of a metadata object at `<set>:Kind.Name.Form.Name.Metadata`.",
                     PropertiesSite::CatalogOwner => "The standard Owner attribute at `<set>:Catalog.Name.StandardAttribute.Owner` in a configuration source.",
+                    PropertiesSite::ExternalDataSource(_) => "The registered external data source object or member at its full logical address in an ordinary configuration.",
                     PropertiesSite::CommentOnly(_) => "The existing named root metadata descriptor at `<set>:Kind.Name`. This profile changes only Comment.",
                     _ => "The existing named top-level metadata object, role or subsystem, or a nested subsystem, at its full address. The address selects the property profile.",
                 },
@@ -880,7 +889,7 @@ impl PropertiesOperation {
                     _ => json!({"values":{"Comment":"Updated comment"}}),
                 },
                 help: match site {
-                    PropertiesSite::WSReference | PropertiesSite::Metadata { .. } | PropertiesSite::DocumentNumerator | PropertiesSite::CommentOnly(_) | PropertiesSite::FormDescriptor { .. } | PropertiesSite::FunctionalOption | PropertiesSite::StyleItem | PropertiesSite::PaletteColor | PropertiesSite::Queue | PropertiesSite::Language | PropertiesSite::CatalogOwner => "skills/meta-edit/SKILL.md",
+                    PropertiesSite::ExternalDataSource(_) | PropertiesSite::WSReference | PropertiesSite::Metadata { .. } | PropertiesSite::DocumentNumerator | PropertiesSite::CommentOnly(_) | PropertiesSite::FormDescriptor { .. } | PropertiesSite::FunctionalOption | PropertiesSite::StyleItem | PropertiesSite::PaletteColor | PropertiesSite::Queue | PropertiesSite::Language | PropertiesSite::CatalogOwner => "skills/meta-edit/SKILL.md",
                     PropertiesSite::Role => "skills/role-edit/SKILL.md",
                     PropertiesSite::Subsystem => "skills/subsystem-edit/SKILL.md",
                     PropertiesSite::Configuration { .. } => "skills/cf-edit/SKILL.md",
@@ -1639,7 +1648,6 @@ mod tests {
             }
         }
         for at in [
-            "main:ExternalDataSource.Probe",
             "main:Interface.Probe",
             "main:CommonForm.Probe",
             "main:CommonForm.Probe.Metadata.Body",
