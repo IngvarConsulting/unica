@@ -13,6 +13,7 @@ pub struct SupportNode {
     pub logical: String,
     pub uuid: String,
     pub descriptor: PathBuf,
+    pub directory: Option<PathBuf>,
 }
 
 #[derive(Debug, Default)]
@@ -83,6 +84,7 @@ pub fn walk<E>(
             path.nodes.push(SupportNode {
                 logical: logical.clone(),
                 uuid: owner_uuid,
+                directory: Some(descriptor.with_extension("")),
                 descriptor: descriptor.clone(),
             });
             let Some((index, child)) = scope.peek().copied() else {
@@ -140,6 +142,7 @@ pub fn walk<E>(
                 logical,
                 uuid,
                 descriptor,
+                directory: None,
             });
             return Ok(path);
         }

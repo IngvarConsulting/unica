@@ -635,7 +635,23 @@ pub(crate) fn support_gate_facts<E>(
     let Some(bytes) = read(&owner_relative)? else {
         return Ok(free(marker, None));
     };
-    let owner_uuid = if owner == "Configuration" && source_kind == SourceSetKind::Configuration {
+    let external_path = if at.segments().first().is_some_and(|segment| {
+        segment.kind() == unica_address::address::NodeKind::ExternalDataSource
+    }) {
+        Some(support_records_on_path(
+            at,
+            &owner,
+            &owner_relative,
+            &bytes,
+            &state,
+            read,
+        )?)
+    } else {
+        None
+    };
+    let owner_uuid = if let Some(path) = &external_path {
+        path.owner_uuid.clone()
+    } else if owner == "Configuration" && source_kind == SourceSetKind::Configuration {
         configuration_support_uuid(&bytes)
     } else {
         support_root_uuid_from_bytes(&bytes)
@@ -651,7 +667,9 @@ pub(crate) fn support_gate_facts<E>(
             node_rule: None,
             lock: None,
             unreadable: Some(SupportUnreadable {
-                reason: format!("the descriptor of `{source_set}:{owner}` names no uuid, so its vendor support rule cannot be read"),
+                reason: external_path.and_then(|path| path.unreadable).unwrap_or_else(|| {
+                    format!("the descriptor of `{source_set}:{owner}` names no uuid, so its vendor support rule cannot be read")
+                }),
                 marker: false,
             }),
         });
@@ -720,7 +738,10 @@ pub(crate) fn support_gate_facts<E>(
     }
     // A node under the owner with its own record answers for itself too:
     // the first `locked` record on the path closes the target.
-    let path = support_records_on_path(at, &owner, &owner_relative, &bytes, &state, read)?;
+    let path = match external_path {
+        Some(path) => path,
+        None => support_records_on_path(at, &owner, &owner_relative, &bytes, &state, read)?,
+    };
     if support_rule == Some(0) {
         let subject = if owner == "Configuration" {
             "has its own vendor support rule `locked`"
@@ -816,6 +837,8 @@ pub(crate) fn support_gate_facts<E>(
 
 /// The own support records on the path from the owner to `at`.
 struct PathRecords {
+    /// The strictly identified owner, when the path has an external source root.
+    owner_uuid: Option<String>,
     /// The first node (owner excluded) whose own record is `locked`, with
     /// the source paths that hold it.
     locked: Option<(String, Vec<std::path::PathBuf>)>,
@@ -864,6 +887,7 @@ fn support_records_on_path<E>(
     use unica_metadata_designer::support::support_root_uuid_from_bytes;
 
     let mut records = PathRecords {
+        owner_uuid: None,
         locked: None,
         node_rule: None,
         reached: None,
@@ -883,14 +907,22 @@ fn support_records_on_path<E>(
             owner_bytes,
             read,
         )?;
+        records.owner_uuid = path.nodes.first().map(|root| root.uuid.clone());
         let logical = at.logical_path();
+        // Scope the warning to the checked target's physical files. A locked
+        // cube covers a dimension table, without covering a sibling target.
+        let mut scope = path.nodes.last().map(|target| {
+            std::iter::once(target.descriptor.clone())
+                .chain(target.directory.clone())
+                .collect::<Vec<_>>()
+        });
         for node in path.nodes.into_iter().skip(1) {
             let rule = state.object_rule(&node.uuid);
             if node.logical == logical {
                 records.node_rule = rule;
             }
             if rule == Some(0) && records.locked.is_none() {
-                records.locked = Some((node.logical, vec![node.descriptor]));
+                records.locked = scope.take().map(|scope| (node.logical, scope));
             }
         }
         records.unreadable = path.unreadable;
