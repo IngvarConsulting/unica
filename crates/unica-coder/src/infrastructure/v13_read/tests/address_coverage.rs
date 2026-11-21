@@ -386,3 +386,34 @@ fn check_metadata_child_branches(
         }
     }
 }
+
+/// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
+#[test]
+fn native_websocket_modules_have_a_readable_address_and_forward_layout() {
+    for (xml, line) in [
+        ("2.20", PlatformLine::new(8, 3, 27)),
+        ("2.21", PlatformLine::new(8, 5, 1)),
+        ("2.22", PlatformLine::new(8, 5, 4)),
+    ] {
+        let source = fixture_path(&format!("formats/platform_xml/{xml}/all_kinds/src"));
+        let profile = PlatformProfile::for_line(line).unwrap();
+        let cancellation = CancellationToken::new();
+        let authority = native_authority(&cancellation, &source, profile);
+        let owner = "main:WebSocketClient.AllKindsWebSocketClient";
+        let branch = format!("{owner}.Module");
+        assert!(addresses(&read(&authority, owner), "branches").contains(&branch));
+        let items = addresses(&read(&authority, &branch), "items");
+        let at = format!("{branch}.WebSocketClient");
+        assert!(items.contains(&at));
+        read(&authority, &at);
+        let path = authority
+            .existing_export_path(&QualifiedAddress::parse(&at).unwrap(), None)
+            .unwrap();
+        assert_eq!(
+            path,
+            "WebSocketClients/AllKindsWebSocketClient/Ext/Module.bsl"
+        );
+        assert!(source.join(&path).is_file());
+        println!("| {line} | WebSocketClient | Module.WebSocketClient | {at} | native file / forward layout |");
+    }
+}

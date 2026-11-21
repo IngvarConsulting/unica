@@ -13,6 +13,8 @@
 //! - файлы, которые меняет план принятой операции: они принадлежат узлу
 //!   `at` и его ресурсам, а не другому узлу.
 
+mod address_coverage;
+
 use super::server::V5CanonicalInvocationRuntime;
 use super::v13_service::{preflight_apply_operations, CanonicalV13ReadService};
 use crate::domain::apply::ApplyRequest;
