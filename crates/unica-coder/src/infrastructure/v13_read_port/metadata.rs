@@ -50,6 +50,16 @@ impl ProviderReadAuthority {
                     .unwrap_or_else(|_| "metadata reader failed".to_string());
                 ViewError::detailed(RefusalDetail::SourceUnreadable, message)
             })?;
+        // Форма, макет или команда, которые не удалось проверить, не скрывают
+        // прочитанного из описания владельца (INV.APP.META-OBSERVATION).
+        let child_resources = self.child_resource_diagnostics(
+            target,
+            info.kind.as_str(),
+            &info.name,
+            &descriptor,
+            checkpoint,
+        )?;
+        info.diagnostics.extend(child_resources);
         if info.kind == MetadataKind::ExchangePlan {
             let relative = Path::new("ExchangePlans")
                 .join(&info.name)
@@ -162,6 +172,26 @@ impl ProviderReadAuthority {
         result
             .map(Some)
             .map_err(|message| ViewError::detailed(RefusalDetail::SourceUnreadable, message))
+    }
+
+    pub(crate) fn ordinary_interface_synonym(
+        &self,
+        name: &str,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+    ) -> Result<Option<String>, ViewError> {
+        use unica_source_designer::layout::ORDINARY_INTERFACE_DIRECTORY;
+        let relative = Path::new(ORDINARY_INTERFACE_DIRECTORY).join(format!("{name}.xml"));
+        let descriptor = self
+            .read_optional_relative_with_checkpoint(&relative, checkpoint)?
+            .ok_or_else(|| {
+                ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
+                    format!("registered interface `{name}` has no descriptor"),
+                )
+            })?;
+        crate::infrastructure::family_codecs::metadata_read_codec()
+            .ordinary_interface_synonym(&descriptor, name)
+            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))
     }
 
     pub(crate) fn identity_metadata_payload(

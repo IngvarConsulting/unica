@@ -144,6 +144,9 @@ pub fn run_stdio(connect: fn() -> Result<V5DaemonClient, String>) {
         Ok(runtime) => runtime,
         Err(error) => {
             eprintln!("failed to start unica mcp runtime: {error}");
+            unica_error_reporting::capture_internal(
+                unica_error_reporting::InternalError::McpRuntimeStart,
+            );
             return;
         }
     };
@@ -570,11 +573,14 @@ fn await_task_result(
         {
             Ok(next) if next.task_id() == task_id => next,
             Ok(_) => {
+                unica_error_reporting::capture_internal(
+                    unica_error_reporting::InternalError::TaskProtocolInvariant,
+                );
                 return Ok(SurfaceToolOutcome::Canonical(
                     crate::application::v13::task_tools::task_tool_error_result(
                         TaskToolError::TaskProtocolFailed,
                     ),
-                ))
+                ));
             }
             Err(error) => {
                 if let V5TaskExchangeError::Transport(observation) = &error {

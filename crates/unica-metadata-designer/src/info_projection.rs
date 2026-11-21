@@ -393,6 +393,9 @@ pub fn parse_observed_metadata_type_contents_node(
                     }
                 }
                 (DATA_CORE_NAMESPACE, "ValueStorage") => ObservedMetadataTypeVariant::ValueStorage,
+                (DATA_CORE_NAMESPACE, "FixedStructure") => {
+                    ObservedMetadataTypeVariant::FixedStructure
+                }
                 (DATA_CORE_NAMESPACE, "UUID") => ObservedMetadataTypeVariant::Uuid,
                 (CURRENT_CONFIG_NAMESPACE, raw) => parse_generated_observed_type(raw)?,
                 _ => {

@@ -3,7 +3,7 @@
   "issue": 1568,
   "area": "Метаданные",
   "workspace": "tests/fixtures/acceptance/workspace-identity-bot",
-  "task": "Пройти коллекцию Bot → возвращённый адрес → деталь и сверить с XML синоним в форме НСтр и явный Predefined=false. Синтетический пример на дескрипторе выгрузки платформы; исходники не меняются.",
+  "task": "Прочитать бота и параметр сеанса по адресам из коллекций. Сверить с XML синонимы в форме НСтр, явный Predefined=false и наблюдаемый тип FixedStructure. Исходники не меняются.",
   "wire": [
     {
       "tool": "unica.view",
@@ -24,6 +24,10 @@
         },
         "unchanged2": {
           "file": "src/Bots/Notifications.xml",
+          "kind": "sha256"
+        },
+        "unchanged3": {
+          "file": "src/SessionParameters/БуферОбмена.xml",
           "kind": "sha256"
         }
       }
@@ -69,6 +73,52 @@
           "pointer": "/data/props/Predefined",
           "eq": false
         }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:SessionParameter"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:SessionParameter.БуферОбмена"
+        }
+      ],
+      "captures": {
+        "sessionParameter": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.sessionParameter"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": "ru = 'Буфер обмена'"
+        },
+        {
+          "pointer": "/data/props/Type",
+          "eq": {
+            "variants": [
+              {
+                "kind": "fixedStructure"
+              }
+            ],
+            "mutationCapability": "readOnly"
+          }
+        }
       ],
       "fileAssertions": [
         {
@@ -80,6 +130,11 @@
           "path": "src/Bots/Notifications.xml",
           "kind": "sha256",
           "eq": "$capture.unchanged2"
+        },
+        {
+          "path": "src/SessionParameters/БуферОбмена.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged3"
         }
       ]
     }
