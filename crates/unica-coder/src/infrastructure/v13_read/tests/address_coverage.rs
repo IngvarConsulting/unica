@@ -7,7 +7,7 @@ use crate::infrastructure::v13_read_projection::metadata_address_coverage::{
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use unica_address::address::NodeKind;
-use unica_address::kinds::DECLARED_ROOT_KINDS;
+use unica_address::kinds::{nested_place, DECLARED_ROOT_KINDS};
 use unica_source_contract::format_identity::{
     export_format_line, metadata_kind_exists, metadata_kind_since, PlatformLine,
     DESCRIBED_PLATFORM_LINES,
@@ -270,39 +270,18 @@ fn native_recalculation_module_address_table_matches_registered_owner() {
     let authority = native_authority(&cancellation, &source, profile);
     let register = "main:CalculationRegister.Начисления";
     let parent_branch = format!("{register}.Recalculation");
-    let xml = fs::read_to_string(source.join("CalculationRegisters/Начисления.xml")).unwrap();
-    let document = roxmltree::Document::parse(xml.trim_start_matches('\u{feff}')).unwrap();
-    let registrations = document
-        .root_element()
-        .children()
-        .find(|node| node.has_tag_name((MD_CLASSES_NS, "CalculationRegister")))
-        .unwrap()
-        .children()
-        .find(|node| node.has_tag_name((MD_CLASSES_NS, "ChildObjects")))
-        .unwrap();
-    let native_owners: BTreeSet<_> = registrations
-        .children()
-        .filter(|node| node.has_tag_name((MD_CLASSES_NS, "Recalculation")))
-        .map(|node| format!("{parent_branch}.{}", node.text().unwrap()))
-        .collect();
-    assert!(!native_owners.is_empty());
+    let descriptor = source.join("CalculationRegisters/Начисления.xml");
+    let xml = read_fixture_descriptor(&descriptor);
+    let document = parse_fixture_descriptor(&xml, &descriptor);
+    let artifact = fixture_artifact(&document, "CalculationRegister", &descriptor);
+    let mut branches = native_described_branches(register, &descriptor, artifact);
+    let native_owners = branches
+        .remove(&parent_branch)
+        .expect("native fixture must register a Recalculation");
 
     let parent = read(&authority, register);
-    let mut published = parent["branches"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|row| row["at"] == parent_branch);
-    let registration_branch = published
-        .next()
-        .expect("the register must publish Recalculation");
-    assert!(published.next().is_none(), "duplicate {parent_branch}");
-    assert_eq!(
-        registration_branch["count"].as_u64(),
-        Some(native_owners.len() as u64)
-    );
-    let owners = addresses(&read(&authority, &parent_branch), "items");
-    assert_eq!(owners, native_owners);
+    check_described_branch(&authority, &parent, &parent_branch, &native_owners);
+    let owners = native_owners;
     println!(
         "| {} | CalculationRegister | Recalculation | {parent_branch} |",
         profile.line()
@@ -355,13 +334,20 @@ fn native_metadata_address_table_matches_declared_and_observed_child_branches() 
         let profile = PlatformProfile::for_line(line).unwrap();
         let cancellation = CancellationToken::new();
         let authority = native_authority(&cancellation, &source, profile);
+        let mut described = BTreeSet::new();
         for (kind, name) in root_registrations(&source, xml) {
             let at = QualifiedAddress::parse(&format!("main:{kind}.{name}")).unwrap();
             let route = route_logical_address(&at, profile).unwrap();
             if route.reader() == LogicalReader::Metadata {
-                check_metadata_owner(&authority, &at);
+                check_metadata_owner(&authority, &source, &at, &mut described);
             }
         }
+        assert!(
+            described.contains(
+                "main:ExternalDataSource.AllKindsExternalSource.Cube.Sales.DimensionTable"
+            ),
+            "XML {xml}: native fixture must witness a registered DimensionTable under Cube.Sales"
+        );
         check_eds_module_rows(&authority, &source, &cancellation);
     }
 }
@@ -429,18 +415,40 @@ fn check_eds_module_rows(
     }
 }
 
-fn check_metadata_owner(authority: &LogicalViewReadAuthority<'_>, owner: &QualifiedAddress) {
+fn check_metadata_owner(
+    authority: &LogicalViewReadAuthority<'_>,
+    source: &Path,
+    owner: &QualifiedAddress,
+    described: &mut BTreeSet<String>,
+) {
     let profile = authority.platform_profile();
     let route = route_logical_address(owner, profile).unwrap();
+    let kind = owner.segments().last().unwrap().kind().as_str();
+    let descriptor = source.join(authority.existing_export_path(owner, None).unwrap());
+    let xml = read_fixture_descriptor(&descriptor);
+    let document = parse_fixture_descriptor(&xml, &descriptor);
+    let artifact = fixture_artifact(&document, kind, &descriptor);
+    let native_branches = native_described_branches(&owner.to_string(), &descriptor, artifact);
     let admitted = authority.snapshot(owner).unwrap();
     let payload = authority
         .typed_payload_for(&route, &admitted)
         .unwrap_or_else(|error| panic!("{owner}: {error:?}"));
     let published = read(authority, &owner.to_string());
     let (facts, addressing_issue) = owner_facts(owner, &payload);
-    let target = route.reader_metadata_path().unwrap();
-    let descriptor = authority.read.metadata_descriptor(target).unwrap();
-    check_native_child_registrations(owner, &descriptor, &facts);
+    for (branch, expected) in native_branches {
+        check_described_branch(authority, &published, &branch, &expected);
+        let child_kind = branch.rsplit('.').next().unwrap();
+        for item in &expected {
+            assert_eq!(read(authority, item)["kind"], child_kind, "{item}");
+        }
+        println!(
+            "| {} | {owner} | {child_kind} | {branch} | {} native registration(s) with matching descriptors |",
+            profile.id(),
+            expected.len()
+        );
+        described.insert(branch);
+    }
+    check_native_child_registrations(owner, artifact, &facts);
     if let Some(reason) = addressing_issue {
         let limits = published["limits"].as_array().unwrap();
         assert!(limits
@@ -451,36 +459,159 @@ fn check_metadata_owner(authority: &LogicalViewReadAuthority<'_>, owner: &Qualif
             profile.id()
         );
     }
-    check_metadata_child_branches(authority, owner, &published, &facts);
+    check_metadata_child_branches(authority, source, owner, &published, &facts, described);
+}
+
+fn read_fixture_descriptor(path: &Path) -> String {
+    fs::read_to_string(path)
+        .unwrap_or_else(|error| panic!("native fixture descriptor {}: {error}", path.display()))
+}
+
+fn parse_fixture_descriptor<'a>(xml: &'a str, path: &Path) -> roxmltree::Document<'a> {
+    roxmltree::Document::parse(xml.trim_start_matches('\u{feff}'))
+        .unwrap_or_else(|error| panic!("invalid native fixture XML {}: {error}", path.display()))
+}
+
+fn fixture_artifact<'a, 'input: 'a>(
+    document: &'a roxmltree::Document<'input>,
+    kind: &str,
+    path: &Path,
+) -> roxmltree::Node<'a, 'input> {
+    let root = document.root_element();
+    assert!(
+        root.has_tag_name((MD_CLASSES_NS, "MetaDataObject")),
+        "native fixture {} has no MetaDataObject root",
+        path.display()
+    );
+    root.children()
+        .find(|node| node.has_tag_name((MD_CLASSES_NS, kind)))
+        .unwrap_or_else(|| panic!("native fixture {} has no {kind} descriptor", path.display()))
+}
+
+fn native_child_objects<'a, 'input: 'a>(
+    artifact: roxmltree::Node<'a, 'input>,
+) -> impl Iterator<Item = roxmltree::Node<'a, 'input>> {
+    artifact
+        .children()
+        .filter(|node| node.has_tag_name((MD_CLASSES_NS, "ChildObjects")))
+        .flat_map(|node| node.children().filter(roxmltree::Node::is_element))
+}
+
+fn native_described_branches(
+    owner: &str,
+    owner_descriptor: &Path,
+    artifact: roxmltree::Node<'_, '_>,
+) -> BTreeMap<String, BTreeSet<String>> {
+    let mut branches = BTreeMap::<_, BTreeSet<_>>::new();
+    for child in native_child_objects(artifact) {
+        let kind = child.tag_name().name();
+        let Some(directory) =
+            nested_place(artifact.tag_name().name(), kind).and_then(|place| place.directory)
+        else {
+            continue;
+        };
+        assert_eq!(
+            child.tag_name().namespace(),
+            Some(MD_CLASSES_NS),
+            "native fixture {owner}: foreign namespace for {kind}"
+        );
+        let name = child
+            .text()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| {
+                panic!("native fixture {owner}: {kind} registration must name its descriptor")
+            });
+        let branch = format!("{owner}.{kind}");
+        let at = format!("{branch}.{name}");
+        let parsed = QualifiedAddress::parse(&at).unwrap_or_else(|error| {
+            panic!("native fixture {owner}: invalid {kind} registration {name}: {error}")
+        });
+        assert_eq!(
+            parsed.to_string(),
+            at,
+            "native fixture {owner}: noncanonical registration"
+        );
+        let descriptor = owner_descriptor
+            .with_extension("")
+            .join(directory)
+            .join(format!("{name}.xml"));
+        let xml = read_fixture_descriptor(&descriptor);
+        let document = parse_fixture_descriptor(&xml, &descriptor);
+        let resource = fixture_artifact(&document, kind, &descriptor);
+        assert!(
+            resource
+                .attribute("uuid")
+                .is_some_and(|uuid| uuid::Uuid::parse_str(uuid).is_ok()),
+            "native fixture {} has no valid UUID",
+            descriptor.display()
+        );
+        let descriptor_name = resource
+            .children()
+            .find(|node| node.has_tag_name((MD_CLASSES_NS, "Properties")))
+            .and_then(|node| {
+                node.children()
+                    .find(|node| node.has_tag_name((MD_CLASSES_NS, "Name")))
+            })
+            .and_then(|node| node.text());
+        assert_eq!(
+            descriptor_name,
+            Some(name),
+            "native fixture {} disagrees with its registration",
+            descriptor.display()
+        );
+        assert_eq!(
+            document.root_element().attribute("version"),
+            artifact.document().root_element().attribute("version"),
+            "native fixture {} differs from owner format",
+            descriptor.display()
+        );
+        assert!(
+            branches.entry(branch).or_default().insert(at),
+            "native fixture {owner}: duplicate {kind}.{name}"
+        );
+    }
+    branches
+}
+
+fn check_described_branch(
+    authority: &LogicalViewReadAuthority<'_>,
+    owner_view: &Value,
+    branch: &str,
+    expected: &BTreeSet<String>,
+) {
+    let mut published = owner_view["branches"]
+        .as_array()
+        .expect("owner must publish its branches")
+        .iter()
+        .filter(|row| row["at"] == branch);
+    let row = published
+        .next()
+        .unwrap_or_else(|| panic!("missing published branch {branch} for {expected:?}"));
+    assert!(
+        published.next().is_none(),
+        "duplicate published branch {branch}"
+    );
+    assert_eq!(
+        row["count"].as_u64(),
+        Some(expected.len() as u64),
+        "published branch count for {branch}"
+    );
+    let actual = addresses(&read(authority, branch), "items");
+    assert_eq!(&actual, expected, "published child addresses for {branch}");
 }
 
 fn check_native_child_registrations(
     owner: &QualifiedAddress,
-    descriptor: &[u8],
+    artifact: roxmltree::Node<'_, '_>,
     facts: &[BranchFact<'_>],
 ) {
-    let xml = std::str::from_utf8(descriptor)
-        .unwrap()
-        .trim_start_matches('\u{feff}');
-    let doc = roxmltree::Document::parse(xml).unwrap();
-    let kind = owner.segments().last().unwrap().kind().as_str();
-    let artifact = doc
-        .root_element()
-        .children()
-        .find(|node| node.has_tag_name((MD_CLASSES_NS, kind)))
-        .unwrap_or_else(|| panic!("{owner}: native artifact is missing"));
-
     // A registered child in the native XML is an independent witness that a
     // typed reader must generate its branch even if that reader drops a fact.
     let mut counts = BTreeMap::new();
-    for children in artifact
-        .children()
-        .filter(|node| node.has_tag_name((MD_CLASSES_NS, "ChildObjects")))
-    {
-        for child in children.children().filter(roxmltree::Node::is_element) {
-            assert_eq!(child.tag_name().namespace(), Some(MD_CLASSES_NS));
-            *counts.entry(child.tag_name().name()).or_insert(0) += 1;
-        }
+    for child in native_child_objects(artifact) {
+        assert_eq!(child.tag_name().namespace(), Some(MD_CLASSES_NS));
+        *counts.entry(child.tag_name().name()).or_insert(0) += 1;
     }
     for (kind, count) in counts {
         let expected = facts
@@ -519,9 +650,11 @@ fn published_metadata_branches(
 
 fn check_metadata_child_branches(
     authority: &LogicalViewReadAuthority<'_>,
+    source: &Path,
     owner: &QualifiedAddress,
     published: &Value,
     facts: &[BranchFact<'_>],
+    described: &mut BTreeSet<String>,
 ) {
     let profile = authority.platform_profile();
     let actual = published_metadata_branches(owner, published, profile);
@@ -571,7 +704,7 @@ fn check_metadata_child_branches(
             {
                 // EDS tables, cubes and dimension tables own descriptors and
                 // their own typed collection facts.
-                check_metadata_owner(authority, &item);
+                check_metadata_owner(authority, source, &item, described);
                 continue;
             }
             let branches = item_facts(member);
@@ -581,7 +714,7 @@ fn check_metadata_child_branches(
                 published_metadata_branches(&item, &view, profile),
                 "{item}: collection row and direct view disagree"
             );
-            check_metadata_child_branches(authority, &item, &view, &branches);
+            check_metadata_child_branches(authority, source, &item, &view, &branches, described);
         }
     }
 }
