@@ -86,6 +86,8 @@ fn xdto_package_creation_has_a_closed_namespace_contract() {
     for (namespace, expected) in [
         ("https://[", false),
         ("https://[broken]", false),
+        ("https://[v1.alpha]/xdto", true),
+        ("https:///xdto", true),
         ("https://[2001:0DB8::1]:8042/xdto", true),
         ("urn:unica:empty", true),
     ] {
