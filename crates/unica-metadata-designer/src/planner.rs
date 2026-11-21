@@ -2054,6 +2054,68 @@ fn stage_descriptor_properties(
             };
             (NodeKind::FunctionalOption, text)
         }
+        DescriptorPropertyChanges::CommonCommand { group, comment } => {
+            use unica_source_designer::owner::{
+                prove_already_read_metadata_owner, prove_already_read_source_set_owner,
+            };
+            let invalid = |message: String| {
+                ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                    .at_path(at_path.clone())
+            };
+            let root_path = Path::new("Configuration.xml");
+            let root = staged
+                .read(root_path)
+                .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
+                .ok_or_else(|| invalid("configuration descriptor was not found".to_string()))?;
+            let root = prove_already_read_source_set_owner(root_path, &root, source_kind)
+                .map_err(|error| invalid(error.message))?;
+            if !root.registers("CommonCommand", name) {
+                return Err(invalid("CommonCommand is not registered".to_string()));
+            }
+            if let Some(group_name) = group.strip_prefix("CommandGroup.") {
+                let group_path = format!("ops[{op_index}].args.values.Group");
+                let unavailable = || {
+                    ApplyPlanError::new(
+                        ApplyPlanErrorKind::BadValue,
+                        format!("Group {group} must name a registered CommandGroup in this configuration"),
+                    )
+                    .at_path(group_path.clone())
+                };
+                if !root.registers("CommandGroup", group_name) {
+                    return Err(unavailable());
+                }
+                let address = MetadataAddress::parse_logical(group).map_err(|_| unavailable())?;
+                let descriptor = unica_source_designer::layout::metadata_descriptor_relative(
+                    &address,
+                    source_kind,
+                )
+                .map_err(|_| unavailable())?;
+                let bytes = staged
+                    .read(&descriptor)
+                    .map_err(|error| ApplyPlanError::staging(error, group_path.clone()))?
+                    .ok_or_else(unavailable)?;
+                let owner = prove_already_read_metadata_owner(&descriptor, &bytes)
+                    .map_err(|error| invalid(error.message))?;
+                if owner.artifact_kind() != "CommandGroup"
+                    || owner.artifact_name() != Some(group_name)
+                {
+                    return Err(unavailable());
+                }
+            }
+            let text = crate::common_command_group::patch(&source, name, group).map_err(invalid)?;
+            let text = if let Some(comment) = comment {
+                crate::descriptor_comment::set_comment(
+                    &text,
+                    NodeKind::CommonCommand,
+                    name,
+                    comment,
+                )
+                .map_err(invalid)?
+            } else {
+                text
+            };
+            (NodeKind::CommonCommand, text)
+        }
         DescriptorPropertyChanges::Role(unica_metadata::property_input::RolePropertyChanges {
             synonym,
             comment,
@@ -2182,6 +2244,7 @@ fn stage_descriptor_properties(
     let postimage = if matches!(
         changes,
         DescriptorPropertyChanges::CommentOnly { .. }
+            | DescriptorPropertyChanges::CommonCommand { .. }
             | DescriptorPropertyChanges::FormDescriptor(_)
             | DescriptorPropertyChanges::StyleItem(_)
             | DescriptorPropertyChanges::PaletteColor(_)

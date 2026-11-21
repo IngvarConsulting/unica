@@ -104,6 +104,10 @@ pub enum DescriptorPropertyChanges {
     PaletteColor(unica_metadata::property_input::PaletteColorPropertyChanges),
     Queue(unica_metadata::property_input::QueuePropertyChanges),
     FunctionalOption(unica_metadata::property_input::FunctionalOptionPropertyChanges),
+    CommonCommand {
+        group: String,
+        comment: Option<String>,
+    },
     Role(unica_metadata::property_input::RolePropertyChanges),
     WSReference(unica_metadata::property_input::WsReferencePropertyChanges),
     Subsystem(unica_metadata::property_input::SubsystemPropertyChanges),
@@ -1218,6 +1222,10 @@ pub fn parse_properties(
         unica_metadata::property_input::PropertiesIntent::FunctionalOption(values) => (
             "FunctionalOptions",
             DescriptorPropertyChanges::FunctionalOption(values),
+        ),
+        unica_metadata::property_input::PropertiesIntent::CommonCommand { group, comment } => (
+            "CommonCommands",
+            DescriptorPropertyChanges::CommonCommand { group, comment },
         ),
         unica_metadata::property_input::PropertiesIntent::Metadata(values) => {
             let (target, _) = metadata_owner(&target, op_index)?;

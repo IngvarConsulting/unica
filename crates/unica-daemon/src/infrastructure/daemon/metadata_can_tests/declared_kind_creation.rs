@@ -203,6 +203,65 @@ fn a_common_command_is_refused_under_an_unknown_script_variant() {
     );
 }
 
+#[test]
+fn a_batch_creates_a_common_command_and_sets_its_group() {
+    let fixture = Fixture::blank();
+    let runtime = runtime();
+    publish(
+        &runtime,
+        &fixture,
+        json!({"at":"main:Configuration","ops":[
+            {"op":"object.create","args":{"values":{"kind":"CommandGroup","name":"Placement"}}},
+            {"op":"object.create","args":{"values":{"kind":"CommonCommand","name":"Standard"}}},
+            {"op":"props.set","args":{"at":"main:CommonCommand.Standard","values":{"Group":"NavigationPanelOrdinary"}}},
+            {"op":"object.create","args":{"values":{"kind":"CommonCommand","name":"Custom"}}},
+            {"op":"props.set","args":{"at":"main:CommonCommand.Custom","values":{"Group":"CommandGroup.Placement"}}}
+        ]}),
+    );
+    for (name, group) in [
+        ("Standard", "NavigationPanelOrdinary"),
+        ("Custom", "CommandGroup.Placement"),
+    ] {
+        let descriptor =
+            std::fs::read_to_string(fixture.source.join(format!("CommonCommands/{name}.xml")))
+                .unwrap();
+        assert!(
+            descriptor.contains(&format!("<Group>{group}</Group>")),
+            "{descriptor}"
+        );
+    }
+    let can = contract(&runtime, &fixture, "main:CommonCommand.Custom", "props.set");
+    assert_eq!(
+        can["argsSchema"]["properties"]["values"]["properties"]["Group"]["type"],
+        "string"
+    );
+}
+
+#[test]
+fn a_missing_common_command_group_refuses_the_entire_batch() {
+    let fixture = Fixture::blank();
+    let runtime = runtime();
+    let before = unica_workspace::test_support::tree_snapshot(&fixture.workspace);
+    let refused = call(
+        &runtime,
+        &fixture,
+        ToolIdentity::Apply,
+        json!({"at":"main:Configuration","ops":[
+            {"op":"object.create","args":{"values":{"kind":"CommonCommand","name":"Probe"}}},
+            {"op":"props.set","args":{"at":"main:CommonCommand.Probe","values":{"Group":"CommandGroup.Missing"}}}
+        ]}),
+    );
+    assert!(!refused.ok, "{refused:?}");
+    assert!(
+        format!("{refused:?}").contains("CommandGroup.Missing"),
+        "{refused:?}"
+    );
+    assert_eq!(
+        unica_workspace::test_support::tree_snapshot(&fixture.workspace),
+        before
+    );
+}
+
 /// A palette color of the 8.5.4 line is created as the platform exports one
 /// imported without its color.
 /// rule: INV.SOURCE.PROFILE-CAPABILITIES

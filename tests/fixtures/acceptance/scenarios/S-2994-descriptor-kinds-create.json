@@ -2,7 +2,7 @@
   "id": "S-2994-descriptor-kinds-create",
   "issue": 2994,
   "area": "Создание и удаление объектов",
-  "task": "Создать стиль, бота, WebSocket-клиент и общую команду одним вызовом: каждый объект пишется так, как его создаёт Конфигуратор, регистрируется в конфигурации и читается.",
+  "task": "Одним вызовом создать стиль, бота, WebSocket-клиент и общую команду, назначить команде группу. Прочитать созданные объекты и проверить группу команды.",
   "workspace": "tests/fixtures/acceptance/workspace-all-kinds",
   "formats": [
     "2.20",
@@ -48,6 +48,15 @@
               "values": {
                 "kind": "CommonCommand",
                 "name": "Probe2994"
+              }
+            }
+          },
+          {
+            "op": "props.set",
+            "args": {
+              "at": "main:CommonCommand.Probe2994",
+              "values": {
+                "Group": "NavigationPanelOrdinary"
               }
             }
           }
@@ -128,6 +137,10 @@
         {
           "pointer": "/data/kind",
           "eq": "CommonCommand"
+        },
+        {
+          "pointer": "/data/props/Group",
+          "eq": "NavigationPanelOrdinary"
         }
       ]
     }
