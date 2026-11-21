@@ -1,0 +1,244 @@
+{
+  "id": "S-3231-mobile-share-properties",
+  "issue": 3231,
+  "area": "Метаданные",
+  "task": "Назначить и очистить мобильные URL и входящие типы «Поделиться», проверить оба режима обработки и отказ без записи.",
+  "workspace": "tests/fixtures/acceptance/workspace-all-kinds",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/properties/mobileApplicationURLs",
+          "eq": []
+        },
+        {
+          "pointer": "/data/props/properties/allowedIncomingShareRequestTypes",
+          "eq": []
+        }
+      ],
+      "captures": {
+        "before": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "comment": {
+          "pointer": "/data/props/properties/comment"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "allowedIncomingShareRequestTypes": [
+                  {
+                    "mime": "text/plain",
+                    "uti": "public.text",
+                    "ext": ".txt",
+                    "processingVariant": 2,
+                    "isCustom": false
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ],
+      "refusal": "bad_value: expected 0 or 1"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "mobileApplicationURLs": ["invalid\u0001url"]
+              }
+            }
+          }
+        ]
+      },
+      "expect": ["refused"],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ],
+      "refusal": "bad_value: text contains a character not allowed in XML 1.0"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "mobileApplicationURLs": [
+                  "https://example.org/тест?a=1&b=2",
+                  "https://example.org/second"
+                ],
+                "allowedIncomingShareRequestTypes": [
+                  {
+                    "mime": "text/plain",
+                    "uti": "public.text",
+                    "ext": ".txt",
+                    "processingVariant": 0,
+                    "isCustom": false
+                  },
+                  {
+                    "mime": "image/jpeg",
+                    "uti": "public.jpeg",
+                    "ext": ".jpg",
+                    "processingVariant": 1,
+                    "isCustom": true
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/properties/mobileApplicationURLs",
+          "eq": [
+            "https://example.org/тест?a=1&b=2",
+            "https://example.org/second"
+          ]
+        },
+        {
+          "pointer": "/data/props/properties/allowedIncomingShareRequestTypes",
+          "eq": [
+            {
+              "mime": "text/plain",
+              "uti": "public.text",
+              "ext": ".txt",
+              "processingVariant": 0,
+              "isCustom": false
+            },
+            {
+              "mime": "image/jpeg",
+              "uti": "public.jpeg",
+              "ext": ".jpg",
+              "processingVariant": 1,
+              "isCustom": true
+            }
+          ]
+        },
+        {
+          "pointer": "/data/props/properties/comment",
+          "eq": "$capture.comment"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "mobileApplicationURLs": [],
+                "allowedIncomingShareRequestTypes": []
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/properties/mobileApplicationURLs",
+          "eq": []
+        },
+        {
+          "pointer": "/data/props/properties/allowedIncomingShareRequestTypes",
+          "eq": []
+        },
+        {
+          "pointer": "/data/props/properties/comment",
+          "eq": "$capture.comment"
+        }
+      ]
+    }
+  ]
+}

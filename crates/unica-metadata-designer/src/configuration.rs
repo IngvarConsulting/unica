@@ -201,6 +201,7 @@ pub fn parse_cf_info_xml(
             .filter_map(|(tag, key)| localized(tag).map(|value| (key.to_string(), value.into())))
             .collect();
     let purpose = read_cf_purpose_properties(props)?;
+    property_limits.extend(purpose.mobile_list_limits.iter().cloned());
     property_limits.extend(purpose.reference_list_limits.iter().cloned());
     let data = CfInfoData {
         format: version.to_string(),
@@ -448,26 +449,47 @@ fn read_cf_purpose_properties(
                 .collect::<Result<Vec<_>, String>>()
         })
         .transpose()?;
+    use unica_metadata::configuration::ConfigurationMobileList;
     use unica_metadata::descriptor_operations::DescriptorProperty;
-    let mut reference_list_limits = Vec::new();
-    let mut read_list = |property| match crate::configuration_reference_lists::read(props, property)
-    {
+    let mut mobile_list_limits = Vec::new();
+    let mut read_list = |property| match crate::configuration_mobile_lists::read(props, property) {
         Ok(value) => value,
         Err(error) => {
-            reference_list_limits.push(format!("source_unreadable: {error}"));
+            mobile_list_limits.push(format!("source_unreadable: {error}"));
             None
         }
     };
+    let mobile_application_urls = match read_list(DescriptorProperty::MobileApplicationUrls) {
+        Some(ConfigurationMobileList::Urls(items)) => Some(items),
+        _ => None,
+    };
+    let allowed_incoming_share_request_types =
+        match read_list(DescriptorProperty::AllowedIncomingShareRequestTypes) {
+            Some(ConfigurationMobileList::ShareTypes(items)) => Some(items),
+            _ => None,
+        };
+    let mut reference_list_limits = Vec::new();
+    let mut read_reference_list =
+        |property| match crate::configuration_reference_lists::read(props, property) {
+            Ok(value) => value,
+            Err(error) => {
+                reference_list_limits.push(format!("source_unreadable: {error}"));
+                None
+            }
+        };
     let additional_full_text_search_dictionaries =
-        read_list(DescriptorProperty::AdditionalFullTextSearchDictionaries);
+        read_reference_list(DescriptorProperty::AdditionalFullTextSearchDictionaries);
     let standalone_configuration_restriction_roles =
-        read_list(DescriptorProperty::StandaloneConfigurationRestrictionRoles);
+        read_reference_list(DescriptorProperty::StandaloneConfigurationRestrictionRoles);
     Ok(CfPurposeProperties {
         use_purposes,
         default_roles,
         additional_full_text_search_dictionaries,
         standalone_configuration_restriction_roles,
         reference_list_limits,
+        mobile_application_urls,
+        allowed_incoming_share_request_types,
+        mobile_list_limits,
         used_mobile_application_functionalities,
         include_help_in_contents: section("IncludeHelpInContents")?.map(boolean).transpose()?,
     })
