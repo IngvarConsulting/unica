@@ -28,9 +28,7 @@ pub use schema::*;
 pub use types::*;
 
 pub mod subsystem;
-pub use subsystem::{
-    EffectiveSubsystemRole, SubsystemAddress, SubsystemAddressError, SUBSYSTEM_ADDRESS_MAX_DEPTH,
-};
+pub use subsystem::{EffectiveSubsystemRole, SubsystemAddress, SubsystemAddressError};
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
