@@ -41,10 +41,20 @@ impl SnapshotStorage {
                 Ok(child) => child,
                 Err(error) if error.kind() == io::ErrorKind::NotFound && create => {
                     match directory.create_directory_child(name) {
+                        Ok(created) => {
+                            // На Windows дескриптор создания не даёт читать список имён.
+                            let child = directory.retain_directory_child(name)?;
+                            if child.identity() != created.identity() {
+                                return Err(io::Error::other(
+                                    "the new fetch directory changed before it could be opened",
+                                ));
+                            }
+                            child
+                        }
                         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
                             directory.retain_directory_child(name)?
                         }
-                        child => child?,
+                        Err(error) => return Err(error),
                     }
                 }
                 Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
