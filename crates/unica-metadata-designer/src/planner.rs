@@ -901,10 +901,11 @@ pub fn stage_object_create<R: MetadataPlanningRead>(
                 op_index,
             )?;
         }
-        // The new descriptor's synonym is written in the source set's default
-        // language, read from the staged image like every other edit (#909).
-        let language =
-            unica_source_designer::language::staged_text_language(staged, source_kind, op_index)?;
+        let language = unica_source_designer::language::staged_object_creation_language(
+            staged,
+            source_kind,
+            op_index,
+        )?;
         // A new language skips the codes of the staged image, which holds
         // the languages an earlier operation of this batch created.
         let language_codes = match kind
