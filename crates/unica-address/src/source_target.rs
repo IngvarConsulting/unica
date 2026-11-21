@@ -179,11 +179,6 @@ fn parse_address(raw: &str) -> Result<MetadataAddress, SourceTargetError> {
                 "unsupported metadata address terminal `{terminal}`"
             )));
         }
-        if owner == "Recalculation" {
-            return Err(SourceTargetError::invalid(
-                "nested Recalculation metadata has no module terminal",
-            ));
-        }
         canonical.push(terminal);
     }
     Ok(MetadataAddress(canonical.join(".")))
@@ -263,7 +258,7 @@ fn parse_prefix(raw: &str) -> Result<MetadataAddressPrefix, SourceTargetError> {
 
 /// The module roles a nested object owns: a form its form module, a command
 /// its command module, a declared nested kind the roles it declares.
-/// A template and a recalculation own none.
+/// A template owns none.
 fn module_terminal_after(kind: &'static str) -> impl Iterator<Item = &'static str> {
     let roles: &'static [&'static str] = match kind {
         "Form" => &["FormModule"],

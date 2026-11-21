@@ -519,6 +519,13 @@ def build(out: Path) -> List[str]:
     for source in SOURCES:
         name = add(out, source)
         report.append(f"{source.kind}.{name}: {source.path}")
+    sequence_ext = out / "Sequences" / "Probe" / "Ext"
+    sequence_ext.mkdir(parents=True, exist_ok=True)
+    (sequence_ext / "RecordSetModule.bsl").write_text(
+        "Procedure UnicaSequenceRoundTripProbe() Export\r\nEndProcedure\r\n",
+        encoding="utf-8-sig",
+        newline="",
+    )
     for kind, folder, name in HAND_WRITTEN_KINDS:
         write_hand_written(out, kind, folder, name)
         report.append(f"{kind}.{name}: hand-written")
