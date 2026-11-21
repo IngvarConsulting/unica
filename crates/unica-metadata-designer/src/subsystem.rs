@@ -1462,16 +1462,11 @@ pub fn normalize_subsystem_content_ref(raw: &str) -> String {
 
 /// The canonical kind a subsystem content reference names: the kind's
 /// collection or its Russian spelling, as `unica_address::kinds` declares
-/// them for every root metadata kind. Two old synonyms of the upstream
-/// subsystem-edit script stay: `Каталог` and `ПараметрФункциональныхОпций`,
-/// which the kind declarations do not spell.
+/// them for every root metadata kind. The upstream subsystem-edit alias
+/// `Каталог` also remains available in subsystem content.
 pub fn subsystem_content_type(type_part: &str) -> Option<&'static str> {
-    match type_part {
-        "Каталог" => return Some("Catalog"),
-        "ПараметрФункциональныхОпций" => {
-            return Some("FunctionalOptionsParameter")
-        }
-        _ => {}
+    if type_part == "Каталог" {
+        return Some("Catalog");
     }
     unica_address::address::NodeKind::metadata_kinds()
         .iter()
@@ -2459,6 +2454,7 @@ mod content_type_tests {
             ("Справочники", "Catalog"),
             ("Каталог", "Catalog"),
             ("ПараметрФункциональныхОпций", "FunctionalOptionsParameter"),
+            ("ПараметрФункциональнойОпции", "FunctionalOptionsParameter"),
             ("Отчёт", "Report"),
             ("Отчеты", "Report"),
             ("РегистрыРасчёта", "CalculationRegister"),
