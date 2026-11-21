@@ -8,6 +8,8 @@ use serde_json::{Map, Value};
 use unica_address::address::{AddressSegment, NodeKind, QualifiedAddress};
 use unica_refusal::{RefusalCode, RefusalDetail};
 
+#[cfg(test)]
+pub(crate) mod address_coverage;
 mod collections;
 mod items;
 mod limits;

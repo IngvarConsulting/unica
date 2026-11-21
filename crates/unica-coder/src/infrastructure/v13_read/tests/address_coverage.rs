@@ -1,6 +1,10 @@
 use super::*;
+use crate::infrastructure::logical_tree::LogicalReader;
+use crate::infrastructure::v13_read_projection::metadata_address_coverage::{
+    item_facts, owner_facts, BranchFact,
+};
 use serde_json::Value;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use unica_address::address::NodeKind;
 use unica_source_contract::format_identity::PlatformLine;
 use unica_source_designer::owner::MD_CLASSES_NS;
@@ -20,6 +24,7 @@ fn read(authority: &LogicalViewReadAuthority<'_>, address: &str) -> Value {
     let view = authority
         .read_exact(&at, &admitted)
         .unwrap_or_else(|error| panic!("{address}: {error:?}"));
+    assert_eq!(view.at(), address);
     serde_json::to_value(view).unwrap()
 }
 
@@ -37,7 +42,7 @@ fn addresses(value: &Value, field: &str) -> BTreeSet<String> {
     addresses
 }
 
-fn registration_rows(source: &Path) -> BTreeSet<String> {
+fn root_registrations(source: &Path) -> Vec<(String, String)> {
     let xml = fs::read_to_string(source.join("Configuration.xml")).unwrap();
     let document = roxmltree::Document::parse(xml.trim_start_matches('\u{feff}')).unwrap();
     let root = document.root_element();
@@ -54,9 +59,18 @@ fn registration_rows(source: &Path) -> BTreeSet<String> {
         .filter(|node| node.is_element())
         .map(|node| {
             assert_eq!(node.tag_name().namespace(), Some(MD_CLASSES_NS));
-            let kind = node.tag_name().name();
-            format!("main:{kind}")
+            let kind = node.tag_name().name().to_string();
+            let name = unica_source_designer::owner::registered_child_name(node)
+                .expect("a native registration names its object");
+            (kind, name)
         })
+        .collect()
+}
+
+fn registration_rows(source: &Path) -> BTreeSet<String> {
+    root_registrations(source)
+        .into_iter()
+        .map(|(kind, _)| format!("main:{kind}"))
         .collect()
 }
 
@@ -189,5 +203,186 @@ fn pending_recalculation_module_has_no_address_in_the_profile() {
         println!(
             "| {line} | Recalculation | Module.RecordSet | No canonical route. The XML generated type RecalculationRecordSet does not prove a BSL module. A native export of a registered recalculation with nonempty BSL is required. |"
         );
+    }
+}
+
+/// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
+#[test]
+fn native_metadata_address_table_matches_declared_and_observed_child_branches() {
+    println!("| Profile | Owner | Branch | Canonical address | Evidence |");
+    println!("| --- | --- | --- | --- | --- |");
+    for (xml, line) in [
+        ("2.20", PlatformLine::new(8, 3, 27)),
+        ("2.21", PlatformLine::new(8, 5, 1)),
+        ("2.22", PlatformLine::new(8, 5, 4)),
+    ] {
+        let source = fixture_path(&format!("formats/platform_xml/{xml}/all_kinds/src"));
+        let profile = PlatformProfile::for_line(line).unwrap();
+        let cancellation = CancellationToken::new();
+        let authority = native_authority(&cancellation, &source, profile);
+        for (kind, name) in root_registrations(&source) {
+            let at = QualifiedAddress::parse(&format!("main:{kind}.{name}")).unwrap();
+            let route = route_logical_address(&at, profile).unwrap();
+            if route.reader() == LogicalReader::Metadata {
+                check_metadata_owner(&authority, &at);
+            }
+        }
+    }
+}
+
+fn check_metadata_owner(authority: &LogicalViewReadAuthority<'_>, owner: &QualifiedAddress) {
+    let profile = authority.platform_profile();
+    let route = route_logical_address(owner, profile).unwrap();
+    let admitted = authority.snapshot(owner).unwrap();
+    let payload = authority
+        .typed_payload_for(&route, &admitted)
+        .unwrap_or_else(|error| panic!("{owner}: {error:?}"));
+    let published = read(authority, &owner.to_string());
+    let (facts, addressing_issue) = owner_facts(owner, &payload);
+    let target = route.reader_metadata_path().unwrap();
+    let descriptor = authority.read.metadata_descriptor(target).unwrap();
+    check_native_child_registrations(owner, &descriptor, &facts);
+    if let Some(reason) = addressing_issue {
+        let limits = published["limits"].as_array().unwrap();
+        assert!(limits
+            .iter()
+            .any(|limit| limit.as_str() == Some(reason.as_str())));
+        println!(
+            "| {} | {owner} | AddressingAttribute | — | {reason} |",
+            profile.id()
+        );
+    }
+    check_metadata_child_branches(authority, owner, &published, &facts);
+}
+
+fn check_native_child_registrations(
+    owner: &QualifiedAddress,
+    descriptor: &[u8],
+    facts: &[BranchFact<'_>],
+) {
+    let xml = std::str::from_utf8(descriptor)
+        .unwrap()
+        .trim_start_matches('\u{feff}');
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let kind = owner.segments().last().unwrap().kind().as_str();
+    let artifact = doc
+        .root_element()
+        .children()
+        .find(|node| node.has_tag_name((MD_CLASSES_NS, kind)))
+        .unwrap_or_else(|| panic!("{owner}: native artifact is missing"));
+
+    // A registered child in the native XML is an independent witness that a
+    // typed reader must generate its branch even if that reader drops a fact.
+    let mut counts = BTreeMap::new();
+    for children in artifact
+        .children()
+        .filter(|node| node.has_tag_name((MD_CLASSES_NS, "ChildObjects")))
+    {
+        for child in children.children().filter(roxmltree::Node::is_element) {
+            assert_eq!(child.tag_name().namespace(), Some(MD_CLASSES_NS));
+            *counts.entry(child.tag_name().name()).or_insert(0) += 1;
+        }
+    }
+    for (kind, count) in counts {
+        let expected = facts
+            .iter()
+            .find(|fact| fact.kind.as_str() == kind)
+            .unwrap_or_else(|| panic!("{owner}: native {kind} has no typed branch row"));
+        assert_eq!(expected.count, count, "{owner}: native {kind} count");
+    }
+}
+
+fn published_metadata_branches(
+    owner: &QualifiedAddress,
+    published: &Value,
+    profile: PlatformProfile,
+) -> Vec<(String, u64)> {
+    published["branches"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|row| {
+            let at = row["at"].as_str().unwrap();
+            let parsed = QualifiedAddress::parse(at).unwrap();
+            assert_eq!(parsed.to_string(), at);
+            let route = route_logical_address(&parsed, profile).unwrap_or_else(|error| {
+                panic!("{owner} published unreachable branch {at}: {error}")
+            });
+            match route.reader() {
+                // BSL and the interior of a template have their own branch maps.
+                LogicalReader::Module | LogicalReader::Dcs | LogicalReader::Mxl => None,
+                LogicalReader::Metadata => Some((at.to_string(), row["count"].as_u64().unwrap())),
+                other => panic!("{owner} published {at} through unexpected reader {other:?}"),
+            }
+        })
+        .collect()
+}
+
+fn check_metadata_child_branches(
+    authority: &LogicalViewReadAuthority<'_>,
+    owner: &QualifiedAddress,
+    published: &Value,
+    facts: &[BranchFact<'_>],
+) {
+    let profile = authority.platform_profile();
+    let actual = published_metadata_branches(owner, published, profile);
+    let expected: Vec<_> = facts
+        .iter()
+        .map(|fact| (format!("{owner}.{}", fact.kind.as_str()), fact.count as u64))
+        .collect();
+    assert_eq!(actual, expected, "{} {owner}", profile.id());
+
+    for ((at, _), fact) in expected.iter().zip(facts) {
+        let collection = read(authority, at);
+        let evidence =
+            if fact.kind == NodeKind::Schedule && collection["props"]["state"] == "absent" {
+                "declared; native Schedule.xml absent"
+            } else if fact.count == 0 {
+                "declared; no member in this export"
+            } else {
+                "observed"
+            };
+        println!(
+            "| {} | {owner} | {} | {at} | {evidence} |",
+            profile.id(),
+            fact.kind.as_str()
+        );
+        let branch = QualifiedAddress::parse(at).unwrap();
+        for member in fact.members {
+            let Some(name) = member["name"].as_str() else {
+                // Characteristic facts are rows of data, not named descendants.
+                assert_eq!(fact.kind, NodeKind::Characteristic, "{at}: {member}");
+                continue;
+            };
+            let item = branch.member(name).unwrap();
+            let item_at = item.to_string();
+            let row = collection["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["at"].as_str() == Some(item_at.as_str()))
+                .unwrap_or_else(|| panic!("{at}: typed member {name} has no address row"));
+            let route = route_logical_address(&item, profile).unwrap();
+            if route.reader() != LogicalReader::Metadata {
+                continue;
+            }
+            if route
+                .reader_metadata_path()
+                .is_some_and(|target| target.as_str() == item.logical_path())
+            {
+                // EDS tables, cubes and dimension tables own descriptors and
+                // their own typed collection facts.
+                check_metadata_owner(authority, &item);
+                continue;
+            }
+            let branches = item_facts(member);
+            let view = read(authority, &item_at);
+            assert_eq!(
+                published_metadata_branches(&item, row, profile),
+                published_metadata_branches(&item, &view, profile),
+                "{item}: collection row and direct view disagree"
+            );
+            check_metadata_child_branches(authority, &item, &view, &branches);
+        }
     }
 }
