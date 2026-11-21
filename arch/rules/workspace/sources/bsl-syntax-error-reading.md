@@ -1,6 +1,5 @@
 ---
 id: INV.SOURCE.BSL-SYNTAX-ERROR-READING
-gap: https://github.com/IngvarConsulting/unica/issues/944
 ---
 
 # Синтаксическая ошибка не скрывает текст BSL-модуля

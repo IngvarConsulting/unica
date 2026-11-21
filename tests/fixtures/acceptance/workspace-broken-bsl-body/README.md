@@ -1,0 +1,1 @@
+Synthetic BSL read fixture: Probe has a syntax error and Healthy has a valid exported method. Body remains readable with diagnostics; structural reads and dependent edits refuse without changing files.

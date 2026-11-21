@@ -66,6 +66,7 @@ fn notification_bindings_read_registered_candidates_in_the_selected_source_set()
 }
 
 #[test]
+// rule: INV.SOURCE.BSL-SYNTAX-ERROR-READING
 fn notification_bindings_refuse_a_form_with_parse_errors() {
     let fixture = RealReaderFixture::new();
     let module = fixture
@@ -84,8 +85,14 @@ fn notification_bindings_refuse_a_form_with_parse_errors() {
     let answer = service.view(ViewRequest::new(binding).unwrap());
     assert!(!answer.ok);
     assert_eq!(answer.diagnostics[0]["code"], "provider_unavailable");
-    assert!(answer.diagnostics[0]["message"]
-        .as_str()
-        .unwrap()
-        .contains("parser reported"));
+    assert_eq!(answer.diagnostics[0]["detailCode"], "source_unreadable");
+    assert!(answer.data.is_none());
+    let body = "main:Report.ParityReport.Form.MainForm.Module.Form.Body";
+    assert!(answer.next.iter().any(|next| next["args"]["at"] == body));
+    let text = fs::read_to_string(&module).unwrap();
+    let result = service.view(ViewRequest::new(body).unwrap());
+    assert!(result.ok, "{result:?}");
+    assert_eq!(result.source_text.as_deref(), Some(text.as_str()));
+    assert_eq!(result.diagnostics[0]["code"], "bsl-parse-error");
+    assert_eq!(fs::read_to_string(&module).unwrap(), text);
 }
