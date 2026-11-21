@@ -200,6 +200,8 @@ pub fn parse_cf_info_xml(
             .filter(|(_, key)| !matches!(*key, "synonym" | "caption" | "shortCaption"))
             .filter_map(|(tag, key)| localized(tag).map(|value| (key.to_string(), value.into())))
             .collect();
+    let purpose = read_cf_purpose_properties(props)?;
+    property_limits.extend(purpose.reference_list_limits.iter().cloned());
     let data = CfInfoData {
         format: version.to_string(),
         name: cf_prop_text(props, "Name"),
@@ -213,7 +215,7 @@ pub fn parse_cf_info_xml(
         extension_purpose,
         properties: CfInfoProperties {
             localized_properties,
-            purpose: read_cf_purpose_properties(props)?,
+            purpose,
             compatibility_mode: optional(cf_prop_text(props, "CompatibilityMode")),
             default_run_mode: optional(cf_prop_text(props, "DefaultRunMode")),
             script_variant: optional(cf_prop_text(props, "ScriptVariant")),
@@ -446,9 +448,26 @@ fn read_cf_purpose_properties(
                 .collect::<Result<Vec<_>, String>>()
         })
         .transpose()?;
+    use unica_metadata::descriptor_operations::DescriptorProperty;
+    let mut reference_list_limits = Vec::new();
+    let mut read_list = |property| match crate::configuration_reference_lists::read(props, property)
+    {
+        Ok(value) => value,
+        Err(error) => {
+            reference_list_limits.push(format!("source_unreadable: {error}"));
+            None
+        }
+    };
+    let additional_full_text_search_dictionaries =
+        read_list(DescriptorProperty::AdditionalFullTextSearchDictionaries);
+    let standalone_configuration_restriction_roles =
+        read_list(DescriptorProperty::StandaloneConfigurationRestrictionRoles);
     Ok(CfPurposeProperties {
         use_purposes,
         default_roles,
+        additional_full_text_search_dictionaries,
+        standalone_configuration_restriction_roles,
+        reference_list_limits,
         used_mobile_application_functionalities,
         include_help_in_contents: section("IncludeHelpInContents")?.map(boolean).transpose()?,
     })

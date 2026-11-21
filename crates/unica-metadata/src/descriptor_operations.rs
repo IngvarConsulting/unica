@@ -171,6 +171,8 @@ pub enum DescriptorPropertyKind {
     Parts,
     /// A set of distinct values of the property's closed enumeration.
     List,
+    /// Ordered references to registered objects of the property's target kinds.
+    ReferenceList,
 }
 
 macro_rules! descriptor_properties {
@@ -279,10 +281,17 @@ descriptor_properties!(
     DefaultExtensionPropertyCheckAction => ("DefaultExtensionPropertyCheckAction", "defaultExtensionPropertyCheckAction", Enum, false, false, false, true),
     TypeReductionByConfigurationExtensionMode => ("TypeReductionByConfigurationExtensionMode", "typeReductionByConfigurationExtensionMode", Enum, false, false, false, true),
     ActionOnExtendedConfigurationObjectsMissing => ("ActionOnExtendedConfigurationObjectsMissing", "actionOnExtendedConfigurationObjectsMissing", Parts, false, false, false, true),
+    AdditionalFullTextSearchDictionaries => ("AdditionalFullTextSearchDictionaries", "additionalFullTextSearchDictionaries", ReferenceList, false, false, true, false),
+    StandaloneConfigurationRestrictionRoles => ("StandaloneConfigurationRestrictionRoles", "standaloneConfigurationRestrictionRoles", ReferenceList, false, false, true, false),
     // Form descriptor properties (`PropertiesSite::FormDescriptor`).
     UsePurposes => ("UsePurposes", "usePurposes", List, false, false, false, false),
     UseInInterfaceCompatibilityMode => ("UseInInterfaceCompatibilityMode", "useInInterfaceCompatibilityMode", Enum, false, false, false, false),
 );
+
+pub const CONFIGURATION_REFERENCE_LISTS: &[DescriptorProperty] = &[
+    DescriptorProperty::AdditionalFullTextSearchDictionaries,
+    DescriptorProperty::StandaloneConfigurationRestrictionRoles,
+];
 
 /// The member kind of a form descriptor in the line tables.
 const fn form_member(common: bool) -> &'static str {
@@ -309,6 +318,16 @@ pub const CONFIGURATION_LOCALIZED_PROPERTIES: &[(&str, &str)] = &[
 ];
 
 impl DescriptorProperty {
+    pub const fn reference_kinds(self) -> &'static [NodeKind] {
+        match self {
+            Self::AdditionalFullTextSearchDictionaries => {
+                &[NodeKind::CommonTemplate, NodeKind::Constant]
+            }
+            Self::StandaloneConfigurationRestrictionRoles => &[NodeKind::Role],
+            _ => &[],
+        }
+    }
+
     /// Localized properties keep one value per language; the others are
     /// plain element text.
     pub const fn localized(self) -> bool {
@@ -667,6 +686,19 @@ impl PropertiesSite {
                         }
                         DescriptorPropertyKind::List => json!({"type":"array", "uniqueItems":true,
                             "items":{"type":"string", "enum":self.enum_values(field)}}),
+                        DescriptorPropertyKind::ReferenceList => {
+                            let kinds = field
+                                .reference_kinds()
+                                .iter()
+                                .map(|kind| kind.as_str())
+                                .collect::<Vec<_>>();
+                            json!({
+                                "type":"array",
+                                "uniqueItems":true,
+                                "items":{"type":"string", "minLength":1},
+                                "description": format!("Ordered addresses in this source set. Allowed kinds: {}. An empty array clears the list.", kinds.join(", ")),
+                            })
+                        }
                     };
                     let schema = if field == DescriptorProperty::Location {
                         let mut schema = schema;
