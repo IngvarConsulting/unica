@@ -260,7 +260,8 @@ fn verify(
             }),
             DescriptorPropertyValue::Parts(_)
             | DescriptorPropertyValue::Languages(_)
-            | DescriptorPropertyValue::References(_) => false,
+            | DescriptorPropertyValue::References(_)
+            | DescriptorPropertyValue::Reference(_) => false,
         };
         if !matches {
             return Err(format!(

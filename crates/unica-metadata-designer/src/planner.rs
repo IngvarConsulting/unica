@@ -1157,8 +1157,12 @@ fn stage_object_remove<R: MetadataPlanningRead>(
     let qualified = format!("{}.{name}", kind);
     let mut metadata_references = Vec::new();
     if let Ok(node_kind) = NodeKind::parse(kind) {
-        let properties = unica_metadata::descriptor_operations::CONFIGURATION_REFERENCE_LISTS
+        use unica_metadata::descriptor_operations::{
+            DescriptorPropertyKind, CONFIGURATION_REFERENCES, CONFIGURATION_REFERENCE_LISTS,
+        };
+        let properties = CONFIGURATION_REFERENCE_LISTS
             .iter()
+            .chain(CONFIGURATION_REFERENCES)
             .copied()
             .filter(|property| property.reference_kinds().contains(&node_kind))
             .collect::<Vec<_>>();
@@ -1178,12 +1182,24 @@ fn stage_object_remove<R: MetadataPlanningRead>(
                             .at_path(&at_path)
                     })?;
                 for property in properties {
-                    let refs = crate::configuration_reference_lists::read(configuration, property)
-                        .map_err(|message| {
-                            ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
-                                .at_path(&at_path)
-                        })?;
-                    if refs.is_some_and(|references| references.contains(&qualified)) {
+                    let referenced = if property.kind() == DescriptorPropertyKind::Reference {
+                        crate::configuration_references::read(configuration, property)
+                            .map_err(|error| {
+                                format!(
+                                    "{} is an invalid metadata reference: {error:?}",
+                                    property.names()[0]
+                                )
+                            })
+                            .map(|reference| reference.as_deref() == Some(qualified.as_str()))
+                    } else {
+                        crate::configuration_reference_lists::read(configuration, property)
+                            .map(|refs| refs.is_some_and(|refs| refs.contains(&qualified)))
+                    }
+                    .map_err(|message| {
+                        ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                            .at_path(&at_path)
+                    })?;
+                    if referenced {
                         metadata_references.push(format!(
                             "`{source_set}:Configuration` → {}",
                             property.names()[0]
@@ -1685,34 +1701,60 @@ fn plan_configuration_references(
         };
         let address = crate::configuration_reference_lists::target(property, raw, source_set)
             .map_err(invalid)?;
-        let owner = &address.segments()[0];
-        let kind = owner.kind().as_str();
-        let name = owner.name().expect("a root reference names an object");
         let logical = address.logical_path();
         if !seen.insert(logical.clone()) {
             return Err(invalid(format!("`{address}` is listed twice")));
         }
-        if !registered.registers(kind, name) {
-            return Err(ApplyPlanError::new(
+        prove_configuration_reference_target(staged, &registered, &address, &item_path)?;
+        references.push(logical);
+    }
+    Ok(references)
+}
+
+fn prove_configuration_reference_target(
+    staged: &mut ApplyProposal<'_>,
+    registered: &unica_source_designer::owner::PlatformXmlSourceSetOwnerEvidence,
+    address: &unica_address::address::QualifiedAddress,
+    path: &str,
+) -> Result<(), ApplyPlanError> {
+    let owner = &address.segments()[0];
+    let kind = crate::configuration_references::xml_kind(owner.kind());
+    let name = owner.name().expect("a root reference names an object");
+    let invalid_source =
+        |message| ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message).at_path(path);
+    if !registered.registers(kind, name) {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::NotFound,
+            format!("`{address}` is not registered in Configuration.xml"),
+        )
+        .at_path(path));
+    }
+    let relative = if owner.kind() == NodeKind::OrdinaryInterface {
+        Path::new(unica_source_designer::layout::ORDINARY_INTERFACE_DIRECTORY)
+            .join(format!("{name}.xml"))
+    } else {
+        let target = MetadataAddress::parse_logical(&address.logical_path()).map_err(|error| {
+            ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.to_string()).at_path(path)
+        })?;
+        metadata_descriptor_relative(&target, SourceSetKind::Configuration)
+            .map_err(invalid_source)?
+    };
+    let bytes = staged
+        .read_guarded_bounded(&relative, usize::MAX)
+        .map_err(|error| ApplyPlanError::staging(error, path.to_string()))?
+        .ok_or_else(|| {
+            ApplyPlanError::new(
                 ApplyPlanErrorKind::NotFound,
-                format!("`{address}` is not registered in Configuration.xml"),
+                format!("descriptor for `{address}` was not found"),
             )
-            .at_path(&item_path));
-        }
-        let target =
-            MetadataAddress::parse_logical(&logical).map_err(|error| invalid(error.to_string()))?;
-        let relative = metadata_descriptor_relative(&target, SourceSetKind::Configuration)
+            .at_path(path)
+        })?;
+    if owner.kind() == NodeKind::OrdinaryInterface {
+        use unica_metadata::read_codec::MetadataReadCodec;
+        crate::read_codec::DesignerMetadataReadCodec
+            .ordinary_interface_synonym(&bytes, name)
             .map_err(invalid_source)?;
-        let bytes = staged
-            .read(&relative)
-            .map_err(|error| ApplyPlanError::staging(error, item_path.clone()))?
-            .ok_or_else(|| {
-                ApplyPlanError::new(
-                    ApplyPlanErrorKind::NotFound,
-                    format!("descriptor for `{address}` was not found"),
-                )
-                .at_path(&item_path)
-            })?;
+    } else {
         let descriptor =
             unica_source_designer::owner::prove_already_read_metadata_owner(&relative, &bytes)
                 .map_err(|error| invalid_source(error.message))?;
@@ -1721,9 +1763,8 @@ fn plan_configuration_references(
                 "descriptor does not identify `{address}`"
             )));
         }
-        references.push(logical);
     }
-    Ok(references)
+    Ok(())
 }
 
 fn stage_descriptor_properties(
@@ -2277,6 +2318,55 @@ fn stage_descriptor_properties(
                     }
                     DescriptorPropertyValue::Parts(parts) => set_property_parts(&text, tag, parts),
                     DescriptorPropertyValue::List(_) => return Err(missing(tag)),
+                    DescriptorPropertyValue::Reference(target) => {
+                        let path = format!("ops[{op_index}].args.values.{tag}");
+                        let target = target
+                            .as_deref()
+                            .map(|raw| {
+                                crate::configuration_reference_lists::target(
+                                    *property,
+                                    raw,
+                                    authority.source_set_name(),
+                                )
+                                .map_err(|message| {
+                                    ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message)
+                                        .at_path(&path)
+                                })
+                            })
+                            .transpose()?;
+                        if let Some(target) = &target {
+                            let registered =
+                                unica_source_designer::owner::prove_already_read_source_set_owner(
+                                    Path::new("Configuration.xml"),
+                                    &preimage,
+                                    SourceSetKind::Configuration,
+                                )
+                                .map_err(|error| {
+                                    ApplyPlanError::new(
+                                        ApplyPlanErrorKind::InvalidSource,
+                                        error.message,
+                                    )
+                                    .at_path(&path)
+                                })?;
+                            prove_configuration_reference_target(
+                                staged,
+                                &registered,
+                                target,
+                                &path,
+                            )?;
+                        }
+                        Some(
+                            crate::configuration_references::replace(
+                                &text,
+                                *property,
+                                target.as_ref(),
+                            )
+                            .map_err(|message| {
+                                ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                                    .at_path(&path)
+                            })?,
+                        )
+                    }
                     DescriptorPropertyValue::References(references) => {
                         let path = format!("ops[{op_index}].args.values.{tag}");
                         let references = plan_configuration_references(
@@ -2315,7 +2405,7 @@ fn stage_descriptor_properties(
             | DescriptorPropertyChanges::WSReference(_)
     ) || matches!(changes, DescriptorPropertyChanges::FunctionalOption(values) if values.comment.is_some())
         || matches!(changes, DescriptorPropertyChanges::Configuration(configuration)
-            if configuration.changes.iter().all(|(_, value)| matches!(value, DescriptorPropertyValue::References(_))))
+            if configuration.changes.iter().all(|(_, value)| matches!(value, DescriptorPropertyValue::References(_) | DescriptorPropertyValue::Reference(_))))
     {
         let mut image = preimage[..preimage.len() - source.len()].to_vec();
         image.extend_from_slice(postimage_text.as_bytes());
