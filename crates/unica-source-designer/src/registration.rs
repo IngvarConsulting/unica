@@ -311,69 +311,10 @@ pub fn empty_child_objects_after_removal(
 /// (`ibcmd infobase create --import`, then `config export`) and by the
 /// reference configuration dumps. The kinds differ per owner: a document puts
 /// its forms before its tabular sections, an accounting register starts with
-/// its dimensions. `None` leaves the placement to the caller.
+/// its dimensions; each owner's declaration in `unica_address::kinds` holds
+/// its order. `None` leaves the placement to the caller.
 pub fn platform_child_object_order(owner_kind: &str) -> Option<&'static [&'static str]> {
-    const OBJECT: &[&str] = &["Attribute", "TabularSection", "Form", "Template", "Command"];
-    Some(match owner_kind {
-        "Catalog"
-        | "ChartOfCharacteristicTypes"
-        | "ChartOfCalculationTypes"
-        | "ExchangePlan"
-        | "BusinessProcess"
-        | "Report"
-        | "DataProcessor"
-        | "ExternalReport"
-        | "ExternalDataProcessor" => OBJECT,
-        "Document" => &["Attribute", "Form", "TabularSection", "Template", "Command"],
-        "ChartOfAccounts" => &[
-            "Attribute",
-            "TabularSection",
-            "AccountingFlag",
-            "ExtDimensionAccountingFlag",
-            "Form",
-            "Template",
-            "Command",
-        ],
-        "Task" => &[
-            "Attribute",
-            "TabularSection",
-            "Form",
-            "Template",
-            "AddressingAttribute",
-            "Command",
-        ],
-        "InformationRegister" | "AccumulationRegister" => &[
-            "Resource",
-            "Attribute",
-            "Dimension",
-            "Form",
-            "Template",
-            "Command",
-        ],
-        "CalculationRegister" => &[
-            "Resource",
-            "Attribute",
-            "Dimension",
-            "Recalculation",
-            "Form",
-            "Template",
-            "Command",
-        ],
-        "AccountingRegister" => &[
-            "Dimension",
-            "Resource",
-            "Attribute",
-            "Form",
-            "Template",
-            "Command",
-        ],
-        // Очередь пишет измерения перед реквизитами: выгрузка 8.5.4
-        // собирает их в этом порядке даже из источника с обратным.
-        "Queue" => &["Dimension", "Attribute"],
-        "Enum" => &["EnumValue", "Form", "Template", "Command"],
-        "DocumentJournal" => &["Column", "Form", "Template", "Command"],
-        _ => return None,
-    })
+    unica_address::kinds::declared(owner_kind).and_then(|(_, declaration)| declaration.child_order)
 }
 /// The first top-level entry of `child_objects` whose kind the export writes
 /// after `tag`: a new `tag` entry goes right before it. `None` means the new

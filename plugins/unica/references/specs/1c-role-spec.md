@@ -590,7 +590,24 @@ Subsystem.Администрирование.Subsystem.Пользователи
 - `CommonPicture`
 - `CommonTemplate`
 - `SettingsStorage`
-- `ExternalDataSource`
+
+#### Внешний источник данных
+
+Права проверены загрузкой и выгрузкой роли на 8.3.27: платформа молча
+отбрасывает неприменимое право.
+
+| Объект | Права |
+|--------|-------|
+| `ExternalDataSource.<Источник>` | Use, Administration, StandardAuthenticationChange, SessionStandardAuthenticationChange, SessionOSAuthenticationChange |
+| `ExternalDataSource.<Источник>.Table.<Таблица>` | Read, Insert, Update, Delete, View, InteractiveInsert, Edit, InteractiveDelete, InputByString |
+| `ExternalDataSource.<Источник>.Cube.<Куб>` | Read, View |
+| `ExternalDataSource.<Источник>.Cube.<Куб>.DimensionTable.<Таблица>` | Read, View |
+| `ExternalDataSource.<Источник>.Function.<Функция>` | Use, View |
+| `….Table.<Таблица>.Field.<Поле>`, `….DimensionTable.<Таблица>.Field.<Поле>` | View, Edit |
+| `….Cube.<Куб>.Dimension.<Имя>`, `….Cube.<Куб>.Resource.<Имя>` | View |
+
+Права полей, измерений и ресурсов со значением, равным умолчанию
+(`setForAttributesByDefault`), платформа не пишет.
 
 ---
 

@@ -2,6 +2,16 @@ use super::{MetadataKind, ObservedMetadataType};
 use serde::{Deserialize, Serialize};
 use unica_address::source_target::MetadataAddress;
 
+/// Картинка свойства: ссылка `xr:Ref` и, если записан, признак
+/// `xr:LoadTransparent`. Ключи — имена платформы.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MetaPicture {
+    #[serde(rename = "Ref")]
+    pub reference: String,
+    #[serde(rename = "LoadTransparent", skip_serializing_if = "Option::is_none")]
+    pub load_transparent: Option<bool>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MetaScheduledMethod {
@@ -234,6 +244,9 @@ pub enum MetaInfoDetails {
     DefinedType {
         r#type: Option<ObservedMetadataType>,
     },
+    CommandGroup {
+        picture: Option<MetaPicture>,
+    },
 }
 
 impl MetaInfoDetails {
@@ -273,6 +286,7 @@ impl MetaInfoDetails {
                 operations: None,
             },
             MetadataKind::DefinedType => Self::DefinedType { r#type: None },
+            MetadataKind::CommandGroup => Self::CommandGroup { picture: None },
         }
     }
 }

@@ -177,7 +177,7 @@ def edge_errors(owner: str, dependency: str, kind: str) -> list[str]:
         # names the fake daemon's workspace in its test support.
         allowed = ABSTRACTIONS | frozenset({
             "application", "bootstrap", "daemon-protocol", "execution",
-            "code-intelligence", "diagnostics", "workspace",
+            "code-intelligence", "diagnostics", "workspace", "error-reporting",
         })
         if kind == "dev-dependencies":
             allowed |= frozenset({"metadata"})

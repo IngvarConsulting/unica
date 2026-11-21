@@ -80,6 +80,8 @@ CI_CONTRACT_PATHS = {
     "tests/ci/test_version_literals.py",
     "scripts/ci/check-discovered-modules-format.py",
     "tests/ci/test_discovered_modules_format.py",
+    "scripts/ci/check-kind-lists.py",
+    "tests/ci/test_kind_lists.py",
     "scripts/ci/workflow_routing.py",
     "scripts/dev/install-local-unica.sh",
     "scripts/ci/classify-workflow-changes.py",

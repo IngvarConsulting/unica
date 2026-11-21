@@ -1,11 +1,11 @@
 use super::{ProviderReadAuthority, ViewError};
 use crate::infrastructure::v13_large_configuration::{
-    read_configuration_root, RegistrationIndex, StreamedConfigurationRoot,
+    configuration_registration_kind, read_configuration_root, RegistrationIndex,
+    StreamedConfigurationRoot,
 };
 use serde_json::{json, Value};
 use std::path::Path;
 use std::sync::Arc;
-use unica_address::address::NodeKind;
 use unica_metadata::configuration::{CfHomePageData, CfInterfaceData};
 use unica_refusal::{RefusalCode, RefusalDetail};
 use unica_source_contract::SourceSetKind;
@@ -90,8 +90,10 @@ impl ProviderReadAuthority {
             Value::Array(
                 owner
                     .registrations()
-                    .filter(|(kind, _)| NodeKind::parse(kind).is_ok_and(NodeKind::is_metadata_kind))
-                    .map(|(kind, name)| json!({"kind": kind, "name": name}))
+                    .filter_map(|(tag, name)| {
+                        let kind = configuration_registration_kind(tag)?;
+                        Some(json!({"kind": kind.as_str(), "name": name}))
+                    })
                     .collect(),
             ),
         );

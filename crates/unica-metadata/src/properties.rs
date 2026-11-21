@@ -7,6 +7,14 @@ use std::collections::HashSet;
 // public name, so a new property does not edit a shared list here.
 include!(concat!(env!("OUT_DIR"), "/properties_modules.rs"));
 
+impl MetaPropertyKey {
+    /// Многоязычное свойство: принимается строкой НСтр или списком переводов
+    /// и пишется по языкам, как синоним.
+    pub const fn is_localized(self) -> bool {
+        matches!(self, Self::Synonym | Self::ToolTip)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MetaPropertyValueKind {
     Type,
@@ -61,7 +69,7 @@ pub const NSTR_PATTERN: &str = r"^\s*(?:[A-Za-z0-9_-]+\s*=\s*'(?:[^']|'')*'\s*(?
 pub const LOCALIZED_VALUE_FORM: &str =
     "a multilingual value is a string in NStr form: ru = 'Валюты'; en = 'Currencies'";
 
-fn is_xml_text_character(ch: char) -> bool {
+pub(crate) fn is_xml_text_character(ch: char) -> bool {
     matches!(ch, '\t' | '\n' | '\r' | '\u{20}'..='\u{D7FF}' | '\u{E000}'..='\u{FFFD}' | '\u{10000}'..='\u{10FFFF}')
 }
 

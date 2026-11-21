@@ -422,7 +422,7 @@ impl PreparedExtensions {
                 for item in items {
                     let name = item["name"]
                         .as_str()
-                        .filter(|v| valid_1c_identifier(v))
+                        .filter(|v| valid_inventory_name(v))
                         .ok_or_else(|| invalid("extension record has no valid name"))?;
                     if !names.insert(name) || !valid_inventory_record(item) {
                         return Err(invalid(
@@ -564,6 +564,27 @@ fn validate_arguments(op: Operation, args: &Map<String, Value>) -> Result<(), &'
     }
     Ok(())
 }
+/// Имя установленного расширения передаётся таким, каким его вернула
+/// платформа: оно не обязано быть идентификатором 1С и может содержать точку
+/// (#3238). Ответ раннера отклоняется только при пустом имени, имени длиннее
+/// текстового поля записи или с управляющими символами.
+fn valid_inventory_name(name: &str) -> bool {
+    !name.trim().is_empty()
+        && name.len() <= EXTENSION_FIELD_BYTES
+        && !name.chars().any(char::is_control)
+}
+
+// resource-limit: extensions.field-bytes
+// class: format
+// unit: bytes
+// scope: record
+// value: 4096
+// resource: Байты одного текстового поля записи расширения (имя, синоним, префикс и др.) в ответе раннера.
+// status: unproven
+// origin: неизвестно
+// problem: неизвестно
+// on-reach: запись с длинным полем считается некорректным ответом раннера
+const EXTENSION_FIELD_BYTES: usize = 4096;
 fn valid_inventory_record(item: &Value) -> bool {
     // Пакетный Конфигуратор называет только имя расширения (раннер 0.17,
     // `ExtensionInventoryEntry::NameOnly`).
@@ -578,27 +599,22 @@ fn valid_inventory_record(item: &Value) -> bool {
     ]
     .iter()
     .all(|k| item[k].is_boolean())
-        && ["purpose", "scope", "hash_sum"]
-            .iter()
-            // resource-limit: extensions.field-bytes
-            // class: format
-            // unit: bytes
-            // scope: record
-            // value: 4096
-            // literal: len() <= 4096
-            // count: 3
-            // expr: 4096
-            // resource: Байты одного текстового поля записи расширения (имя, синоним, префикс и др.) в ответе раннера.
-            // status: unproven
-            // origin: неизвестно
-            // problem: неизвестно
-            // on-reach: запись с длинным полем считается некорректным ответом раннера
-            .all(|k| item[k].as_str().is_some_and(|v| v.len() <= 4096))
-        && ["version", "security_profile_name"]
-            .iter()
-            .all(|k| item[k].is_null() || item[k].as_str().is_some_and(|v| v.len() <= 4096))
+        && ["purpose", "scope", "hash_sum"].iter().all(|k| {
+            item[k]
+                .as_str()
+                .is_some_and(|v| v.len() <= EXTENSION_FIELD_BYTES)
+        })
+        && ["version", "security_profile_name"].iter().all(|k| {
+            item[k].is_null()
+                || item[k]
+                    .as_str()
+                    .is_some_and(|v| v.len() <= EXTENSION_FIELD_BYTES)
+        })
         && item.get("name_prefix").is_some_and(|prefix| {
-            prefix.is_null() || prefix.as_str().is_some_and(|value| value.len() <= 4096)
+            prefix.is_null()
+                || prefix
+                    .as_str()
+                    .is_some_and(|value| value.len() <= EXTENSION_FIELD_BYTES)
         })
 }
 /// A record of batch Designer: the name and nothing else.
@@ -895,6 +911,64 @@ mod tests {
         wrong = envelope(&p, false);
         wrong["data"]["extensions"][0]["name_prefix"] = json!(42);
         assert!(p.validate(&wrong, false).is_err());
+    }
+    /// rule: INV.RUNTIME.EXTENSION-RESULT
+    #[test]
+    fn inventory_keeps_platform_names_with_dots_and_rejects_missing_names() {
+        let root = tempfile::tempdir().unwrap();
+        let mut prepared = fixture(root.path(), Operation::List);
+        let preview = envelope(&prepared, true);
+        let mut applied = envelope(&prepared, false);
+        let mut plain = record();
+        plain["name"] = json!("ДемоДокумент");
+        let mut dotted = record();
+        dotted["name"] = json!("Демо.Документ");
+        applied["data"]["extensions"] = json!([plain, dotted]);
+        let tool = tool(root.path());
+        prepared.dry_run = false;
+        let result = prepared.execute_with(
+            &SequenceRunner::new(vec![preview, applied]),
+            &tool,
+            super::super::runner::VERSION,
+            CancellationToken::new(),
+        );
+        assert!(result.ok, "{result:?}");
+        let data = result.data.unwrap();
+        let names: Vec<_> = data["extensions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["name"].clone())
+            .collect();
+        assert_eq!(names, [json!("ДемоДокумент"), json!("Демо.Документ")]);
+
+        let p = fixture(root.path(), Operation::List);
+        for name in [
+            None,
+            Some(json!("")),
+            Some(json!("  ")),
+            Some(json!(42)),
+            Some(json!(
+                "A
+B"
+            )),
+        ] {
+            let mut wrong = envelope(&p, false);
+            let item = wrong["data"]["extensions"][0].as_object_mut().unwrap();
+            match name {
+                Some(name) => {
+                    item.insert("name".into(), name);
+                }
+                None => {
+                    item.remove("name");
+                }
+            }
+            let refusal = p.validate(&wrong, false).unwrap_err();
+            assert_eq!(
+                refusal.diagnostics[0]["code"], "invalid_result",
+                "{refusal:?}"
+            );
+        }
     }
     /// rule: INV.RUNTIME.EXTENSION-RESULT
     #[test]

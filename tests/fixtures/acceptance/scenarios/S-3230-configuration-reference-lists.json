@@ -1,0 +1,179 @@
+{
+  "id": "S-3230-configuration-reference-lists",
+  "issue": 3230,
+  "area": "Метаданные",
+  "task": "Назначить и очистить списки словарей и ролей. Сверить порядок типизированных ссылок после записи и сохранность исходников при предпросмотре.",
+  "workspace": "tests/fixtures/acceptance/workspace-all-kinds",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/properties/additionalFullTextSearchDictionaries",
+          "eq": []
+        },
+        {
+          "pointer": "/data/props/properties/standaloneConfigurationRestrictionRoles",
+          "eq": []
+        }
+      ],
+      "captures": {
+        "before": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "comment": {
+          "pointer": "/data/props/properties/comment"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "additionalFullTextSearchDictionaries": [
+                  "main:Constant.Enabled",
+                  "main:CommonTemplate.Probe"
+                ],
+                "standaloneConfigurationRestrictionRoles": [
+                  "main:Role.SalesReader"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/properties/additionalFullTextSearchDictionaries",
+          "eq": [
+            "main:Constant.Enabled",
+            "main:CommonTemplate.Probe"
+          ]
+        },
+        {
+          "pointer": "/data/props/properties/standaloneConfigurationRestrictionRoles",
+          "eq": [
+            "main:Role.SalesReader"
+          ]
+        },
+        {
+          "pointer": "/data/props/properties/comment",
+          "eq": "$capture.comment"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Constant.Enabled",
+        "ops": [
+          {
+            "op": "object.remove"
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_state: `main:Constant.Enabled` is referenced by other metadata: `main:Configuration` → AdditionalFullTextSearchDictionaries, `main:FunctionalOption.ByConstant` → Locat",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "invalid_state"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "additionalFullTextSearchDictionaries": [],
+                "standaloneConfigurationRestrictionRoles": []
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/properties/additionalFullTextSearchDictionaries",
+          "eq": []
+        },
+        {
+          "pointer": "/data/props/properties/standaloneConfigurationRestrictionRoles",
+          "eq": []
+        },
+        {
+          "pointer": "/data/props/properties/comment",
+          "eq": "$capture.comment"
+        }
+      ]
+    }
+  ]
+}

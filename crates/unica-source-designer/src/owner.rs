@@ -445,6 +445,16 @@ pub fn is_supported_metadata_artifact(tag: &str) -> bool {
                 | "Template"
                 | "Command"
         )
+        || has_nested_descriptor(tag)
+}
+
+/// A nested kind that declares a descriptor file of its own in its owner's
+/// directory, such as a table or cube of an external data source.
+fn has_nested_descriptor(tag: &str) -> bool {
+    unica_address::address::NodeKind::parse(tag)
+        .ok()
+        .and_then(|kind| kind.declaration().nested)
+        .is_some_and(|place| place.directory.is_some())
 }
 
 /// Returns whether the qualified root is supported as a standalone Platform XML

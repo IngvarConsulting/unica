@@ -3,7 +3,7 @@
   "name": "document-numerator-read-profile",
   "issue": 1621,
   "area": "Навигация по исходникам",
-  "task": "Прочитать четыре настройки DocumentNumerator по адресам из коллекции; сохранить false, отсутствие и локальные ограничения без записи и публикации NumberLength",
+  "task": "Прочитать четыре настройки DocumentNumerator по адресам из коллекции; сохранить false, отсутствие и локальные ограничения без записи; NumberLength читается числом по #1568",
   "workspace": "tests/fixtures/acceptance/workspace-numerator-read-profile",
   "wire": [
     {
@@ -102,7 +102,7 @@
         },
         {
           "pointer": "/data/props/NumberLength",
-          "absent": true
+          "eq": 11
         }
       ]
     },
@@ -137,7 +137,7 @@
         },
         {
           "pointer": "/data/props/NumberLength",
-          "absent": true
+          "eq": 11
         }
       ]
     },
@@ -156,7 +156,7 @@
         },
         {
           "pointer": "/data/props/NumberLength",
-          "absent": true
+          "eq": 11
         },
         {
           "pointer": "/data/props/NumberType",
@@ -207,7 +207,7 @@
         },
         {
           "pointer": "/data/props/NumberLength",
-          "absent": true
+          "eq": 11
         },
         {
           "pointer": "/data/props/NumberType",

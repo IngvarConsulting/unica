@@ -14,6 +14,7 @@ name = "unica_bootstrap"
 path = "src/lib.rs"
 
 [dependencies]
+unica-error-reporting = { path = "../unica-error-reporting" }
 unica-artifact-delivery = { path = "../unica-artifact-delivery" }
 serde.workspace = true
 serde_json.workspace = true

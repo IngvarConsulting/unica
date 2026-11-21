@@ -1,0 +1,112 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">
+	<Cube uuid="4c078d32-b02e-5ced-b1e9-92bb77d916d4">
+		<InternalInfo>
+			<xr:GeneratedType name="ExternalDataSourceCubeManager.AllKindsExternalSource.Sales" category="Manager">
+				<xr:TypeId>5d253515-b41e-5ecd-b05b-5037f348fea7</xr:TypeId>
+				<xr:ValueId>b28b57e6-ae6b-5d99-a73c-171fa5eb2662</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="ExternalDataSourceCubeList.AllKindsExternalSource.Sales" category="List">
+				<xr:TypeId>73736c9e-dace-5a4d-b5bd-5cf9f6b58e46</xr:TypeId>
+				<xr:ValueId>bdca1efb-180d-5763-bf5f-a1c29ff70468</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="ExternalDataSourceCubeRecordSet.AllKindsExternalSource.Sales" category="RecordSet">
+				<xr:TypeId>b65d1829-0eb9-576f-afdf-73dc06b5f881</xr:TypeId>
+				<xr:ValueId>7d83c7d7-0d6c-58c4-9e59-ae15879394aa</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="ExternalDataSourceCubeRecord.AllKindsExternalSource.Sales" category="Record">
+				<xr:TypeId>560b71bb-3eb1-5efe-8ea9-e5f4e8d4ec66</xr:TypeId>
+				<xr:ValueId>a86c5984-c858-5849-9231-5468476daa73</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="ExternalDataSourceCubeRecordKey.AllKindsExternalSource.Sales" category="RecordKey">
+				<xr:TypeId>900e42a8-edd5-5f06-959a-084681190866</xr:TypeId>
+				<xr:ValueId>f4f56a72-b124-5dcd-8df0-c2d28399e7b1</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="ExternalDataSourceCubeRecordManager.AllKindsExternalSource.Sales" category="RecordManager">
+				<xr:TypeId>c12b2a1f-7a5a-57dd-8e49-16640130fb9e</xr:TypeId>
+				<xr:ValueId>f1113db6-4f7e-5670-b6dd-078698a2e73f</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="ExternalDataSourceCubeDimensionsTablesManager.AllKindsExternalSource.Sales" category="DimensionTables">
+				<xr:TypeId>6437bd80-a0cf-5fc1-baff-13baf688b626</xr:TypeId>
+				<xr:ValueId>dda60e1c-3adc-548c-8762-85420c492a55</xr:ValueId>
+			</xr:GeneratedType>
+		</InternalInfo>
+		<Properties>
+			<Name>Sales</Name>
+			<Synonym/>
+			<Comment/>
+			<NameInDataSource>sales</NameInDataSource>
+			<Characteristics/>
+			<UseStandardCommands>false</UseStandardCommands>
+			<DefaultRecordForm/>
+			<DefaultListForm/>
+			<RecordPresentation/>
+			<ExtendedRecordPresentation/>
+			<ListPresentation/>
+			<ExtendedListPresentation/>
+			<Explanation/>
+			<IncludeHelpInContents>false</IncludeHelpInContents>
+		</Properties>
+		<ChildObjects>
+			<DimensionTable>Products</DimensionTable>
+			<Dimension uuid="9f0b72eb-c76d-5b3c-a0da-2d37bd831bae">
+				<Properties>
+					<Name>Product</Name>
+					<Synonym/>
+					<Comment/>
+					<Type>
+						<v8:Type>cfg:ExternalDataSourceCubeDimensionTableRef.AllKindsExternalSource.Sales.Products</v8:Type>
+					</Type>
+					<PasswordMode>false</PasswordMode>
+					<Format/>
+					<EditFormat/>
+					<ToolTip/>
+					<MarkNegatives>false</MarkNegatives>
+					<Mask/>
+					<MultiLine>false</MultiLine>
+					<ExtendedEdit>false</ExtendedEdit>
+					<MinValue xsi:nil="true"/>
+					<MaxValue xsi:nil="true"/>
+					<FillFromFillingValue>false</FillFromFillingValue>
+					<FillValue xsi:nil="true"/>
+					<FillChecking>DontCheck</FillChecking>
+					<ChoiceFoldersAndItems>Items</ChoiceFoldersAndItems>
+					<ChoiceParameterLinks/>
+					<ChoiceParameters/>
+					<QuickChoice>Auto</QuickChoice>
+					<CreateOnInput>Auto</CreateOnInput>
+					<ChoiceForm/>
+					<LinkByType/>
+					<ChoiceHistoryOnInput>Auto</ChoiceHistoryOnInput>
+				</Properties>
+			</Dimension>
+			<Resource uuid="fde9c147-087b-5370-be24-f28425893d84">
+				<Properties>
+					<Name>Amount</Name>
+					<Synonym/>
+					<Comment/>
+					<Type>
+						<v8:Type>xs:string</v8:Type>
+						<v8:StringQualifiers>
+							<v8:Length>10</v8:Length>
+							<v8:AllowedLength>Variable</v8:AllowedLength>
+						</v8:StringQualifiers>
+					</Type>
+					<PasswordMode>false</PasswordMode>
+					<Format/>
+					<EditFormat/>
+					<ToolTip/>
+					<MarkNegatives>false</MarkNegatives>
+					<Mask/>
+					<MultiLine>false</MultiLine>
+					<ChoiceParameterLinks/>
+					<ChoiceParameters/>
+					<QuickChoice>Auto</QuickChoice>
+					<ChoiceForm/>
+					<ExtendedEdit>false</ExtendedEdit>
+					<NameInDataSource>amount</NameInDataSource>
+				</Properties>
+			</Resource>
+		</ChildObjects>
+	</Cube>
+</MetaDataObject>

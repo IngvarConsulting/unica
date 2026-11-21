@@ -307,10 +307,6 @@ fn pure_event_source_resolver_fails_closed_for_unproved_event_layouts() {
         ),
         (
             SourceSetKind::Configuration,
-            "main:WebSocketClient.Телефония.Module.WebSocketClient.Event.OnMessage",
-        ),
-        (
-            SourceSetKind::Configuration,
             "main:CommonModule.ЗаказыСервер.Event.BeforeStart",
         ),
         (

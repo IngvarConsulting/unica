@@ -5,7 +5,7 @@ pub use predefined_code_type_plan::PredefinedCodeTypePlan;
 use crate::decode::*;
 use crate::dialect::root_version;
 use crate::edit::apply_typed_operations_to_image_with_seed;
-use crate::layout::metadata_layout;
+use crate::layout::creatable_layout;
 use crate::template_catalog::MetadataTemplateSource;
 use serde_json::{json, Map, Value};
 use sha2::Digest;
@@ -45,6 +45,38 @@ pub trait MetadataPlanningRead {
         crate::remove::RemoveObservationHooks::NONE
     }
 }
+/// The `LanguageCode` of every language the staged configuration registers.
+fn staged_language_codes(
+    staged: &mut ApplyProposal<'_>,
+    owner_relative: &Path,
+    op_index: usize,
+) -> Result<Vec<String>, ApplyPlanError> {
+    let at_path = format!("ops[{op_index}].args.values.kind");
+    let owner = staged
+        .read(owner_relative)
+        .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
+        .unwrap_or_default();
+    let mut codes = Vec::new();
+    for language in crate::template_catalog::registered_names(&owner, "Language") {
+        let relative = Path::new("Languages").join(format!("{language}.xml"));
+        let Some(bytes) = staged
+            .read(&relative)
+            .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
+        else {
+            continue;
+        };
+        let code = crate::language_code::read_code(&bytes).map_err(|message| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::InvalidSource,
+                format!("language `{language}` has no readable LanguageCode: {message}"),
+            )
+            .at_path(at_path.clone())
+        })?;
+        codes.push(code);
+    }
+    Ok(codes)
+}
+
 /// Local composition belongs to the final descriptor, after every operation
 /// family has contributed its image. A borrowed descriptor contains only the
 /// extension's contribution and cannot establish the parent's composition.
@@ -357,6 +389,20 @@ pub fn plan_metadata_batch<R: MetadataPlanningRead>(
                 )?;
                 continue;
             }
+            MetadataPlanKind::ExternalDataSourceAdd { at, items } => {
+                provisional.extend(crate::external_data_source_plan::add_items(
+                    staged, at, items, op_index,
+                )?);
+                continue;
+            }
+            MetadataPlanKind::ExternalDataSourceProperties { at, changes } => {
+                if let Some(effect) =
+                    crate::external_data_source_plan::set(staged, at, changes, op_index)?
+                {
+                    provisional.push(effect);
+                }
+                continue;
+            }
             MetadataPlanKind::TemplateAdd { owner, items } => {
                 stage_template_add(
                     template_seed,
@@ -396,7 +442,7 @@ pub fn plan_metadata_batch<R: MetadataPlanningRead>(
             } => {
                 stage_descriptor_properties(
                     staged,
-                    authority.source_kind(),
+                    authority,
                     name,
                     relative,
                     changes,
@@ -800,16 +846,16 @@ pub fn stage_object_create<R: MetadataPlanningRead>(
     source_kind: SourceSetKind,
     source_set_name: &str,
     root: &std::path::Path,
-    kind: MetadataKind,
+    kind: unica_metadata::CreatableKind,
     name: &str,
     op_index: usize,
     provisional: &mut Vec<ProvisionalApplyEffect>,
 ) -> Result<(), ApplyPlanError> {
-    let own = match kind {
-        MetadataKind::Catalog => {
+    let own = match kind.typed() {
+        Some(MetadataKind::Catalog) => {
             Some(unica_source_contract::compatibility::ExtensionOperation::AddOwnCatalog)
         }
-        MetadataKind::InformationRegister => Some(
+        Some(MetadataKind::InformationRegister) => Some(
             unica_source_contract::compatibility::ExtensionOperation::AddOwnInformationRegister,
         ),
         _ => None,
@@ -822,12 +868,35 @@ pub fn stage_object_create<R: MetadataPlanningRead>(
             &format!("ops[{op_index}]"),
         )?;
     }
+    if source_kind == SourceSetKind::Extension && !kind.created_in_extension() {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            format!(
+                "an extension borrows `{}` from the main configuration instead of creating it",
+                kind.as_str()
+            ),
+        )
+        .at_path(format!("ops[{op_index}].args.values.kind")));
+    }
     reader.with_creation_source(op_index, &mut |source| {
         let language = unica_source_designer::language::staged_object_creation_language(
             staged,
             source_kind,
             op_index,
         )?;
+        // A new language skips the codes of the staged image, which holds
+        // the languages an earlier operation of this batch created.
+        let language_codes = match kind
+            .template()
+            .and_then(|template| template.numbered_language_code)
+        {
+            Some(_) => Some(staged_language_codes(
+                staged,
+                &staged_relative(root, source.owner_path, op_index)?,
+                op_index,
+            )?),
+            None => None,
+        };
         let post_image = crate::template_catalog::minimal_object(
             source,
             kind,
@@ -835,6 +904,7 @@ pub fn stage_object_create<R: MetadataPlanningRead>(
             crate::template_catalog::MetadataTemplateOperationOverrides {
                 source: false,
                 handler: false,
+                language_codes,
             },
             source_set_name,
             &language,
@@ -842,7 +912,7 @@ pub fn stage_object_create<R: MetadataPlanningRead>(
         .map_err(|failure| meta_failure_to_plan_error(failure, op_index))?;
         let owner_relative = staged_relative(root, source.owner_path, op_index)?;
         let descriptor_relative =
-            PathBuf::from(metadata_layout(kind).directory).join(format!("{name}.xml"));
+            PathBuf::from(creatable_layout(kind).directory).join(format!("{name}.xml"));
         let existing = staged.read(&descriptor_relative).map_err(|error| {
             ApplyPlanError::staging(error, format!("ops[{op_index}].args.values.name"))
         })?;
@@ -1021,9 +1091,10 @@ fn stage_object_remove<R: MetadataPlanningRead>(
     provisional: &mut Vec<ProvisionalApplyEffect>,
 ) -> Result<(), ApplyPlanError> {
     use crate::remove::{
-        meta_remove_composition, meta_remove_composition_image, meta_remove_references,
-        meta_remove_referrer, meta_remove_search_patterns, meta_remove_should_skip_file,
-        plan_meta_remove_subsystem_replacements, remove_composition_entries, MetaRemoveReference,
+        meta_remove_composition, meta_remove_composition_image, meta_remove_is_form,
+        meta_remove_references, meta_remove_referrer, meta_remove_search_patterns,
+        meta_remove_should_skip_file, plan_meta_remove_subsystem_replacements,
+        remove_composition_entries, remove_form_command_group_entries, MetaRemoveReference,
         MetaRemoveSearch,
     };
     let at_path = format!("ops[{op_index}].args.at");
@@ -1100,6 +1171,43 @@ fn stage_object_remove<R: MetadataPlanningRead>(
     let removed = format!("{source_set}:{}", target.as_str());
     let qualified = format!("{}.{name}", kind);
     let mut metadata_references = Vec::new();
+    if let Ok(node_kind) = NodeKind::parse(kind) {
+        let properties = unica_metadata::descriptor_operations::CONFIGURATION_REFERENCE_LISTS
+            .iter()
+            .copied()
+            .filter(|property| property.reference_kinds().contains(&node_kind))
+            .collect::<Vec<_>>();
+        if !properties.is_empty() {
+            let root = staged
+                .read(Path::new("Configuration.xml"))
+                .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
+            if let Some(bytes) = root {
+                let (_, document) =
+                    unica_xml_format::read::parse_metadata_image(&bytes).map_err(|message| {
+                        ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                            .at_path(&at_path)
+                    })?;
+                let configuration = crate::configuration_reference_lists::properties(&document)
+                    .map_err(|message| {
+                        ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                            .at_path(&at_path)
+                    })?;
+                for property in properties {
+                    let refs = crate::configuration_reference_lists::read(configuration, property)
+                        .map_err(|message| {
+                            ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                                .at_path(&at_path)
+                        })?;
+                    if refs.is_some_and(|references| references.contains(&qualified)) {
+                        metadata_references.push(format!(
+                            "`{source_set}:Configuration` → {}",
+                            property.names()[0]
+                        ));
+                    }
+                }
+            }
+        }
+    }
     let mut code_references = Vec::new();
     // Compositions that list the object — role rights, command interfaces,
     // exchange plan and functional option content — lose its entries with it.
@@ -1128,7 +1236,9 @@ fn stage_object_remove<R: MetadataPlanningRead>(
         );
         let composition =
             meta_remove_composition(relative).filter(|_| !absolute.starts_with(&object_dir));
-        if skipped && composition.is_none() {
+        // A form's command interface places commands into command groups.
+        let form_groups = kind == "CommandGroup" && meta_remove_is_form(relative);
+        if skipped && composition.is_none() && !form_groups {
             continue;
         }
         let bytes = staged
@@ -1158,6 +1268,23 @@ fn stage_object_remove<R: MetadataPlanningRead>(
             if removed_entries > 0 {
                 let (referrer, _) = meta_remove_referrer(relative);
                 cleaned.push((format!("{source_set}:{referrer}"), property));
+                cleaned_files.push((
+                    relative.clone(),
+                    bytes.clone(),
+                    meta_remove_composition_image(&bytes, updated.clone()),
+                ));
+                text = updated;
+            }
+        }
+        if form_groups {
+            let (updated, removed_entries) = remove_form_command_group_entries(&text, &qualified)
+                .map_err(|error| {
+                ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, error)
+                    .at_path(at_path.clone())
+            })?;
+            if removed_entries > 0 {
+                let (referrer, _) = meta_remove_referrer(relative);
+                cleaned.push((format!("{source_set}:{referrer}"), "CommandInterface"));
                 cleaned_files.push((
                     relative.clone(),
                     bytes.clone(),
@@ -1357,7 +1484,13 @@ fn stage_object_remove<R: MetadataPlanningRead>(
                 .take(20)
                 .map(|(at, property)| serde_json::json!({"at": at, "property": property}))
                 .collect::<Vec<_>>(),
-            "message": format!("the removal also takes `{removed}` out of {shown}"),
+            "message": if kind == "CommandGroup" {
+                format!(
+                    "the removal also takes `{removed}` out of {shown}; the commands placed in it return to their default groups"
+                )
+            } else {
+                format!("the removal also takes `{removed}` out of {shown}")
+            },
         }));
     }
     provisional.push(effect);
@@ -1542,15 +1675,82 @@ fn replace_default_property_block(text: &str, tag: &str, replacement: &str) -> O
 }
 
 #[allow(clippy::too_many_arguments)]
+fn plan_configuration_references(
+    staged: &mut ApplyProposal<'_>,
+    root: &[u8],
+    source_set: &str,
+    property: unica_metadata::descriptor_operations::DescriptorProperty,
+    values: &[String],
+    path: &str,
+) -> Result<Vec<String>, ApplyPlanError> {
+    let invalid_source =
+        |message| ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message).at_path(path);
+    let registered = unica_source_designer::owner::prove_already_read_source_set_owner(
+        Path::new("Configuration.xml"),
+        root,
+        SourceSetKind::Configuration,
+    )
+    .map_err(|error| invalid_source(error.message))?;
+    let mut references = Vec::with_capacity(values.len());
+    let mut seen = std::collections::HashSet::with_capacity(values.len());
+    for (index, raw) in values.iter().enumerate() {
+        let item_path = format!("{path}[{index}]");
+        let invalid = |message| {
+            ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(&item_path)
+        };
+        let address = crate::configuration_reference_lists::target(property, raw, source_set)
+            .map_err(invalid)?;
+        let owner = &address.segments()[0];
+        let kind = owner.kind().as_str();
+        let name = owner.name().expect("a root reference names an object");
+        let logical = address.logical_path();
+        if !seen.insert(logical.clone()) {
+            return Err(invalid(format!("`{address}` is listed twice")));
+        }
+        if !registered.registers(kind, name) {
+            return Err(ApplyPlanError::new(
+                ApplyPlanErrorKind::NotFound,
+                format!("`{address}` is not registered in Configuration.xml"),
+            )
+            .at_path(&item_path));
+        }
+        let target =
+            MetadataAddress::parse_logical(&logical).map_err(|error| invalid(error.to_string()))?;
+        let relative = metadata_descriptor_relative(&target, SourceSetKind::Configuration)
+            .map_err(invalid_source)?;
+        let bytes = staged
+            .read(&relative)
+            .map_err(|error| ApplyPlanError::staging(error, item_path.clone()))?
+            .ok_or_else(|| {
+                ApplyPlanError::new(
+                    ApplyPlanErrorKind::NotFound,
+                    format!("descriptor for `{address}` was not found"),
+                )
+                .at_path(&item_path)
+            })?;
+        let descriptor =
+            unica_source_designer::owner::prove_already_read_metadata_owner(&relative, &bytes)
+                .map_err(|error| invalid_source(error.message))?;
+        if descriptor.artifact_kind() != kind || descriptor.artifact_name() != Some(name) {
+            return Err(invalid_source(format!(
+                "descriptor does not identify `{address}`"
+            )));
+        }
+        references.push(logical);
+    }
+    Ok(references)
+}
+
 fn stage_descriptor_properties(
     staged: &mut ApplyProposal<'_>,
-    source_kind: SourceSetKind,
+    authority: &dyn ApplySourceAuthority,
     name: &str,
     relative: &std::path::Path,
     changes: &DescriptorPropertyChanges,
     op_index: usize,
     provisional: &mut Vec<ProvisionalApplyEffect>,
 ) -> Result<(), ApplyPlanError> {
+    let source_kind = authority.source_kind();
     let at_path = format!("ops[{op_index}].args.at");
     let preimage = staged
         .read(relative)
@@ -2092,6 +2292,28 @@ fn stage_descriptor_properties(
                     }
                     DescriptorPropertyValue::Parts(parts) => set_property_parts(&text, tag, parts),
                     DescriptorPropertyValue::List(_) => return Err(missing(tag)),
+                    DescriptorPropertyValue::References(references) => {
+                        let path = format!("ops[{op_index}].args.values.{tag}");
+                        let references = plan_configuration_references(
+                            staged,
+                            &preimage,
+                            authority.source_set_name(),
+                            *property,
+                            references,
+                            &path,
+                        )?;
+                        Some(
+                            crate::configuration_reference_lists::replace(
+                                &text,
+                                *property,
+                                &references,
+                            )
+                            .map_err(|message| {
+                                ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                                    .at_path(&path)
+                            })?,
+                        )
+                    }
                 }
                 .ok_or_else(|| missing(tag))?;
             }
@@ -2107,6 +2329,8 @@ fn stage_descriptor_properties(
             | DescriptorPropertyChanges::Queue(_)
             | DescriptorPropertyChanges::WSReference(_)
     ) || matches!(changes, DescriptorPropertyChanges::FunctionalOption(values) if values.comment.is_some())
+        || matches!(changes, DescriptorPropertyChanges::Configuration(configuration)
+            if configuration.changes.iter().all(|(_, value)| matches!(value, DescriptorPropertyValue::References(_))))
     {
         let mut image = preimage[..preimage.len() - source.len()].to_vec();
         image.extend_from_slice(postimage_text.as_bytes());

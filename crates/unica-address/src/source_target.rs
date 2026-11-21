@@ -1,6 +1,8 @@
 use serde::Serialize;
 use std::fmt;
 
+use crate::address::NodeKind;
+
 #[cfg(test)]
 use unica_xml_format::names::xml_ncname_is_valid;
 
@@ -158,36 +160,31 @@ fn parse_address(raw: &str) -> Result<MetadataAddress, SourceTargetError> {
         };
     }
 
-    if matches!(parts.len(), 3 | 5)
-        && !is_module_terminal(parts.last().copied().unwrap_or_default())
-    {
-        return Err(SourceTargetError::invalid(format!(
-            "unsupported metadata address terminal `{}`",
-            parts.last().copied().unwrap_or_default()
-        )));
-    }
-    if !matches!(parts.len(), 2..=5) {
-        return Err(SourceTargetError::invalid(
-            "metadata address has an unsupported segment count",
-        ));
-    }
-
+    // `Вид.Имя` pairs alternate at any depth; the depth is bounded by the
+    // nested kinds each owner admits, not by a segment count.
+    let terminal = (parts.len() % 2 == 1).then(|| parts[parts.len() - 1]);
+    let pairs = &parts[..parts.len() - usize::from(terminal.is_some())];
     let mut canonical = Vec::with_capacity(parts.len());
-    let owner_kind = canonical_kind(parts[0])?;
-    canonical.push(owner_kind);
-    canonical.push(parts[1]);
-    if parts.len() >= 4 {
-        let child_kind = canonical_nested_kind_for_owner(owner_kind, parts[2])?;
-        if child_kind == "Recalculation" && parts.len() != 4 {
+    let mut owner = canonical_kind(pairs[0])?;
+    canonical.push(owner);
+    canonical.push(pairs[1]);
+    for (depth, pair) in pairs[2..].chunks(2).enumerate() {
+        owner = nested_kind(owner, depth + 1, pair[0])?;
+        canonical.push(owner);
+        canonical.push(pair[1]);
+    }
+    if let Some(terminal) = terminal {
+        if !is_module_terminal(terminal) {
+            return Err(SourceTargetError::invalid(format!(
+                "unsupported metadata address terminal `{terminal}`"
+            )));
+        }
+        if owner == "Recalculation" {
             return Err(SourceTargetError::invalid(
                 "nested Recalculation metadata has no module terminal",
             ));
         }
-        canonical.push(child_kind);
-        canonical.push(parts[3]);
-    }
-    if parts.len() % 2 == 1 {
-        canonical.push(parts.last().copied().unwrap_or_default());
+        canonical.push(terminal);
     }
     Ok(MetadataAddress(canonical.join(".")))
 }
@@ -197,11 +194,6 @@ fn parse_prefix(raw: &str) -> Result<MetadataAddressPrefix, SourceTargetError> {
     if parts.is_empty() || parts.iter().any(|part| part.is_empty()) {
         return Err(SourceTargetError::invalid(
             "metadata address prefix contains an empty segment",
-        ));
-    }
-    if parts.len() > 5 {
-        return Err(SourceTargetError::invalid(
-            "metadata address prefix has an unsupported segment count",
         ));
     }
 
@@ -228,60 +220,60 @@ fn parse_prefix(raw: &str) -> Result<MetadataAddressPrefix, SourceTargetError> {
     }
 
     let mut canonical = Vec::with_capacity(parts.len());
-    let owner_kind = canonical_kind_or_collection(parts[0])?;
-    canonical.push(owner_kind);
+    let mut owner = canonical_kind_or_collection(parts[0])?;
+    canonical.push(owner);
     canonical.push(parts[1]);
-    match parts.len() {
-        2 => {}
-        3 => {
-            if let Ok(child_kind) = canonical_nested_kind_for_owner(owner_kind, parts[2]) {
-                canonical.push(child_kind);
-            } else if MODULE_TERMINALS
-                .iter()
-                .any(|terminal| terminal.starts_with(parts[2]))
-            {
-                canonical.push(parts[2]);
-            } else {
-                return Err(SourceTargetError::invalid(format!(
-                    "unknown metadata address prefix transition `{}`",
-                    parts[2]
-                )));
-            }
-        }
-        4 => {
-            canonical.push(canonical_nested_kind_for_owner(owner_kind, parts[2])?);
-            canonical.push(parts[3]);
-        }
-        5 => {
-            let child_kind = canonical_nested_kind_for_owner(owner_kind, parts[2])?;
-            if child_kind == "Recalculation" {
-                return Err(SourceTargetError::invalid(
-                    "nested Recalculation metadata has no module terminal",
-                ));
-            }
-            canonical.push(child_kind);
-            canonical.push(parts[3]);
-            let terminal = match child_kind {
-                "Form" => "FormModule",
-                "Command" => "CommandModule",
-                "Template" => {
-                    return Err(SourceTargetError::invalid(
-                        "nested Template metadata has no module terminal",
-                    ))
+    let mut index = 2;
+    while index < parts.len() {
+        let depth = index / 2;
+        let last = index + 1 == parts.len();
+        match nested_kind(owner, depth, parts[index]) {
+            Ok(child) => {
+                owner = child;
+                canonical.push(child);
+                if !last {
+                    canonical.push(parts[index + 1]);
                 }
-                _ => unreachable!("nested kind parser is closed"),
-            };
-            if !terminal.starts_with(parts[4]) {
-                return Err(SourceTargetError::invalid(format!(
-                    "metadata address prefix terminal `{}` is invalid after `{child_kind}`",
-                    parts[4]
-                )));
             }
-            canonical.push(parts[4]);
+            Err(error) if !last => return Err(error),
+            Err(_) => {
+                let terminal = parts[index];
+                let mut terminals = if depth == 1 {
+                    Box::new(MODULE_TERMINALS.iter().copied())
+                        as Box<dyn Iterator<Item = &'static str>>
+                } else {
+                    Box::new(module_terminal_after(owner))
+                };
+                if !terminals.any(|role| role.starts_with(terminal)) {
+                    return Err(SourceTargetError::invalid(if depth == 1 {
+                        format!("unknown metadata address prefix transition `{terminal}`")
+                    } else {
+                        format!(
+                            "metadata address prefix terminal `{terminal}` is invalid after `{owner}`"
+                        )
+                    }));
+                }
+                canonical.push(terminal);
+            }
         }
-        _ => unreachable!("prefix segment count was bounded"),
+        index += 2;
     }
     Ok(MetadataAddressPrefix(canonical.join(".")))
+}
+
+/// The module roles a nested object owns: a form its form module, a command
+/// its command module, a declared nested kind the roles it declares.
+/// A template and a recalculation own none.
+fn module_terminal_after(kind: &'static str) -> impl Iterator<Item = &'static str> {
+    let roles: &'static [&'static str] = match kind {
+        "Form" => &["FormModule"],
+        "Command" => &["CommandModule"],
+        _ => NodeKind::parse(kind)
+            .ok()
+            .and_then(|kind| kind.declaration().nested.as_ref())
+            .map_or(&[], |place| place.modules),
+    };
+    roles.iter().copied()
 }
 
 #[derive(Clone, Copy)]
@@ -295,282 +287,27 @@ struct AddressKind {
     object: bool,
 }
 
-impl AddressKind {
-    const fn manager(self) -> Self {
-        Self {
-            manager: true,
-            ..self
-        }
-    }
-
-    const fn object(self) -> Self {
-        Self {
-            object: true,
-            ..self
-        }
-    }
-}
-
-const ADDRESS_KINDS: &[AddressKind] = &[
-    kind("Language", &["Язык"], &["Languages", "Языки"]),
-    kind("Subsystem", &["Подсистема"], &["Subsystems", "Подсистемы"]),
-    kind(
-        "PaletteColor",
-        &["ЦветПалитры"],
-        &["PaletteColors", "ЦветаПалитры"],
-    ),
-    kind(
-        "StyleItem",
-        &["ЭлементСтиля"],
-        &["StyleItems", "ЭлементыСтиля"],
-    ),
-    kind("Style", &["Стиль"], &["Styles", "Стили"]),
-    kind(
-        "CommonPicture",
-        &["ОбщаяКартинка"],
-        &["CommonPictures", "ОбщиеКартинки"],
-    ),
-    kind(
-        "SessionParameter",
-        &["ПараметрСеанса"],
-        &["SessionParameters", "ПараметрыСеанса"],
-    )
-    .manager(),
-    kind("Role", &["Роль"], &["Roles", "Роли"]),
-    kind(
-        "CommonTemplate",
-        &["ОбщийМакет"],
-        &["CommonTemplates", "ОбщиеМакеты"],
-    ),
-    kind(
-        "FilterCriterion",
-        &["КритерийОтбора"],
-        &["FilterCriteria", "КритерииОтбора"],
-    )
-    .manager(),
-    kind(
-        "CommonModule",
-        &["ОбщийМодуль"],
-        &["CommonModules", "ОбщиеМодули"],
-    ),
-    kind("Bot", &["Бот"], &["Bots", "Боты"]),
-    kind(
-        "CommonAttribute",
-        &["ОбщийРеквизит"],
-        &["CommonAttributes", "ОбщиеРеквизиты"],
-    ),
-    kind(
-        "ExchangePlan",
-        &["ПланОбмена"],
-        &["ExchangePlans", "ПланыОбмена"],
-    )
-    .manager()
-    .object(),
-    kind(
-        "XDTOPackage",
-        &["ПакетXDTO"],
-        &["XDTOPackages", "ПакетыXDTO"],
-    ),
-    kind("WebService", &["ВебСервис"], &["WebServices", "ВебСервисы"]),
-    kind(
-        "HTTPService",
-        &["HTTPСервис"],
-        &["HTTPServices", "HTTPСервисы"],
-    ),
-    kind("WSReference", &["WSСсылка"], &["WSReferences", "WSСсылки"]).manager(),
-    kind(
-        "EventSubscription",
-        &["ПодпискаНаСобытие"],
-        &["EventSubscriptions", "ПодпискиНаСобытия"],
-    ),
-    kind(
-        "ScheduledJob",
-        &["РегламентноеЗадание"],
-        &["ScheduledJobs", "РегламентныеЗадания"],
-    ),
-    kind("Queue", &["Очередь"], &["Queues", "Очереди"]),
-    kind(
-        "SettingsStorage",
-        &["ХранилищеНастроек"],
-        &["SettingsStorages", "ХранилищаНастроек"],
-    )
-    .manager(),
-    kind(
-        "FunctionalOption",
-        &["ФункциональнаяОпция"],
-        &["FunctionalOptions", "ФункциональныеОпции"],
-    ),
-    kind(
-        "FunctionalOptionsParameter",
-        &["ПараметрФункциональнойОпции"],
-        &[
-            "FunctionalOptionsParameters",
-            "ПараметрыФункциональныхОпций",
-        ],
-    ),
-    kind(
-        "DefinedType",
-        &["ОпределяемыйТип"],
-        &["DefinedTypes", "ОпределяемыеТипы"],
-    ),
-    kind(
-        "CommonCommand",
-        &["ОбщаяКоманда"],
-        &["CommonCommands", "ОбщиеКоманды"],
-    ),
-    kind(
-        "CommandGroup",
-        &["ГруппаКоманд"],
-        &["CommandGroups", "ГруппыКоманд"],
-    ),
-    kind("Constant", &["Константа"], &["Constants", "Константы"]).manager(),
-    kind(
-        "CommonForm",
-        &["ОбщаяФорма"],
-        &["CommonForms", "ОбщиеФормы"],
-    ),
-    kind("Catalog", &["Справочник"], &["Catalogs", "Справочники"])
-        .manager()
-        .object(),
-    kind("Document", &["Документ"], &["Documents", "Документы"])
-        .manager()
-        .object(),
-    kind(
-        "DocumentNumerator",
-        &["НумераторДокументов"],
-        &["DocumentNumerators", "НумераторыДокументов"],
-    ),
-    kind(
-        "Sequence",
-        &["Последовательность"],
-        &["Sequences", "Последовательности"],
-    )
-    .manager(),
-    kind(
-        "DocumentJournal",
-        &["ЖурналДокументов"],
-        &["DocumentJournals", "ЖурналыДокументов"],
-    )
-    .manager(),
-    kind("Enum", &["Перечисление"], &["Enums", "Перечисления"]).manager(),
-    kind(
-        "Report",
-        &["Отчет", "Отчёт"],
-        &["Reports", "Отчеты", "Отчёты"],
-    )
-    .manager()
-    .object(),
-    kind(
-        "DataProcessor",
-        &["Обработка"],
-        &["DataProcessors", "Обработки"],
-    )
-    .manager()
-    .object(),
-    kind(
-        "InformationRegister",
-        &["РегистрСведений"],
-        &["InformationRegisters", "РегистрыСведений"],
-    )
-    .manager(),
-    kind(
-        "AccumulationRegister",
-        &["РегистрНакопления"],
-        &["AccumulationRegisters", "РегистрыНакопления"],
-    )
-    .manager(),
-    kind(
-        "ChartOfCharacteristicTypes",
-        &["ПланВидовХарактеристик"],
-        &["ChartsOfCharacteristicTypes", "ПланыВидовХарактеристик"],
-    )
-    .manager()
-    .object(),
-    kind(
-        "ChartOfAccounts",
-        &["ПланСчетов"],
-        &["ChartsOfAccounts", "ПланыСчетов"],
-    )
-    .manager()
-    .object(),
-    kind(
-        "AccountingRegister",
-        &["РегистрБухгалтерии"],
-        &["AccountingRegisters", "РегистрыБухгалтерии"],
-    )
-    .manager(),
-    kind(
-        "ChartOfCalculationTypes",
-        &["ПланВидовРасчета", "ПланВидовРасчёта"],
-        &[
-            "ChartsOfCalculationTypes",
-            "ПланыВидовРасчета",
-            "ПланыВидовРасчёта",
-        ],
-    )
-    .manager()
-    .object(),
-    kind(
-        "CalculationRegister",
-        &["РегистрРасчета", "РегистрРасчёта"],
-        &["CalculationRegisters", "РегистрыРасчета", "РегистрыРасчёта"],
-    )
-    .manager(),
-    kind(
-        "BusinessProcess",
-        &["БизнесПроцесс"],
-        &["BusinessProcesses", "БизнесПроцессы"],
-    )
-    .manager()
-    .object(),
-    kind("Task", &["Задача"], &["Tasks", "Задачи"])
-        .manager()
-        .object(),
-    kind(
-        "IntegrationService",
-        &["СервисИнтеграции"],
-        &["IntegrationServices", "СервисыИнтеграции"],
-    ),
-    kind("Form", &["Форма"], &["Forms", "Формы"]),
-    kind("Template", &["Макет"], &["Templates", "Макеты"]),
-    kind("Command", &["Команда"], &["Commands", "Команды"]),
-    kind(
-        "ExternalDataProcessor",
-        &["ВнешняяОбработка"],
-        &["ExternalDataProcessors", "ВнешниеОбработки"],
-    ),
-    kind(
-        "ExternalReport",
-        &["ВнешнийОтчет", "ВнешнийОтчёт"],
-        &["ExternalReports", "ВнешниеОтчеты", "ВнешниеОтчёты"],
-    ),
-];
-
-const fn kind(
-    canonical: &'static str,
-    russian_aliases: &'static [&'static str],
-    collection_aliases: &'static [&'static str],
-) -> AddressKind {
-    AddressKind {
-        canonical,
-        russian_aliases,
-        collection_aliases,
-        manager: false,
-        object: false,
-    }
+/// The metadata kinds of `crate::kinds` with their address spellings.
+fn address_kinds() -> impl Iterator<Item = AddressKind> {
+    NodeKind::metadata_kinds().iter().filter_map(|kind| {
+        let declaration = kind.declaration();
+        declaration.metadata.map(|metadata| AddressKind {
+            canonical: declaration.tag,
+            russian_aliases: declaration.russian,
+            collection_aliases: metadata.collections,
+            manager: metadata.manager,
+            object: metadata.object,
+        })
+    })
 }
 
 fn canonical_kind(raw: &str) -> Result<&'static str, SourceTargetError> {
-    if let Some(kind) = ADDRESS_KINDS
-        .iter()
-        .find(|kind| kind.canonical == raw || kind.russian_aliases.contains(&raw))
+    if let Some(kind) =
+        address_kinds().find(|kind| kind.canonical == raw || kind.russian_aliases.contains(&raw))
     {
         return Ok(kind.canonical);
     }
-    if ADDRESS_KINDS
-        .iter()
-        .any(|kind| kind.collection_aliases.contains(&raw))
-    {
+    if address_kinds().any(|kind| kind.collection_aliases.contains(&raw)) {
         return Err(SourceTargetError::invalid(format!(
             "metadata collection `{raw}` is not an addressable kind"
         )));
@@ -584,16 +321,14 @@ fn canonical_kind(raw: &str) -> Result<&'static str, SourceTargetError> {
 /// address-parsing path: it answers whether `raw` is the canonical spelling
 /// or a Russian alias of `canonical`.
 pub fn metadata_address_kind_matches(canonical: &str, raw: &str) -> bool {
-    ADDRESS_KINDS
-        .iter()
+    address_kinds()
         .find(|kind| kind.canonical == canonical)
         .is_some_and(|kind| kind.canonical == raw || kind.russian_aliases.contains(&raw))
 }
 
 /// The collection names of a canonical kind: English first, then Russian.
 pub fn metadata_collection_names(canonical: &str) -> Option<&'static [&'static str]> {
-    ADDRESS_KINDS
-        .iter()
+    address_kinds()
         .find(|kind| kind.canonical == canonical)
         .map(|kind| kind.collection_aliases)
 }
@@ -601,22 +336,18 @@ pub fn metadata_collection_names(canonical: &str) -> Option<&'static [&'static s
 /// Kinds whose managers are properties of the global context, as code names
 /// them: `Справочники`, `Документы`.
 pub fn metadata_manager_kinds() -> impl Iterator<Item = &'static str> {
-    ADDRESS_KINDS
-        .iter()
+    address_kinds()
         .filter(|kind| kind.manager)
         .map(|kind| kind.canonical)
 }
 
 /// Whether objects of a canonical kind carry attributes and tabular sections.
 pub fn metadata_kind_has_objects(canonical: &str) -> bool {
-    ADDRESS_KINDS
-        .iter()
-        .any(|kind| kind.canonical == canonical && kind.object)
+    address_kinds().any(|kind| kind.canonical == canonical && kind.object)
 }
 
 pub fn metadata_address_kind_spellings(canonical: &str) -> Option<Vec<&'static str>> {
-    ADDRESS_KINDS
-        .iter()
+    address_kinds()
         .find(|kind| kind.canonical == canonical)
         .map(|kind| {
             std::iter::once(kind.canonical)
@@ -630,8 +361,7 @@ pub fn metadata_address_kind_spellings(canonical: &str) -> Option<Vec<&'static s
 /// `справочники` matches too.
 pub fn metadata_collection_kind(raw: &str) -> Option<&'static str> {
     let raw = raw.to_lowercase();
-    ADDRESS_KINDS
-        .iter()
+    address_kinds()
         .find(|kind| {
             kind.collection_aliases
                 .iter()
@@ -641,8 +371,7 @@ pub fn metadata_collection_kind(raw: &str) -> Option<&'static str> {
 }
 
 fn canonical_kind_or_collection(raw: &str) -> Result<&'static str, SourceTargetError> {
-    ADDRESS_KINDS
-        .iter()
+    address_kinds()
         .find(|kind| {
             kind.canonical == raw
                 || kind.russian_aliases.contains(&raw)
@@ -656,16 +385,14 @@ fn canonical_kind_or_collection(raw: &str) -> Result<&'static str, SourceTargetE
 /// A partial alias has no single canonical form to expand into, so it is
 /// reported instead of being silently passed through unnormalized.
 fn is_canonical_token_prefix(raw: &str) -> bool {
-    ADDRESS_KINDS
-        .iter()
-        .any(|kind| kind.canonical.starts_with(raw))
+    address_kinds().any(|kind| kind.canonical.starts_with(raw))
         || ROOT_MODULE_TERMINALS
             .iter()
             .any(|terminal| terminal.starts_with(raw))
 }
 
 fn is_alias_prefix(raw: &str) -> bool {
-    ADDRESS_KINDS.iter().any(|kind| {
+    address_kinds().any(|kind| {
         kind.russian_aliases
             .iter()
             .chain(kind.collection_aliases.iter())
@@ -673,25 +400,22 @@ fn is_alias_prefix(raw: &str) -> bool {
     })
 }
 
-fn canonical_nested_kind(raw: &str) -> Result<&'static str, SourceTargetError> {
-    let canonical = canonical_kind_or_collection(raw)?;
-    if matches!(canonical, "Form" | "Template" | "Command") {
-        Ok(canonical)
-    } else {
-        Err(SourceTargetError::invalid(format!(
-            "unsupported nested metadata kind `{raw}`"
-        )))
-    }
-}
-
-fn canonical_nested_kind_for_owner(
-    owner_kind: &str,
-    raw: &str,
-) -> Result<&'static str, SourceTargetError> {
-    if owner_kind == "CalculationRegister" && RECALCULATION_KIND_SPELLINGS.contains(&raw) {
+/// The kind of a nested pair under `owner`. A form, template or command
+/// belongs to a top-level object, a recalculation to a calculation register;
+/// any other nested kind declares its owners in its own declaration.
+fn nested_kind(owner: &str, depth: usize, raw: &str) -> Result<&'static str, SourceTargetError> {
+    if depth == 1 && owner == "CalculationRegister" && RECALCULATION_KIND_SPELLINGS.contains(&raw) {
         return Ok("Recalculation");
     }
-    canonical_nested_kind(raw)
+    let unsupported =
+        || SourceTargetError::invalid(format!("unsupported nested metadata kind `{raw}`"));
+    let canonical = canonical_kind_or_collection(raw).map_err(|_| unsupported())?;
+    let typical = depth == 1 && matches!(canonical, "Form" | "Template" | "Command");
+    if typical || crate::kinds::nested_place(owner, canonical).is_some() {
+        Ok(canonical)
+    } else {
+        Err(unsupported())
+    }
 }
 
 pub const RECALCULATION_KIND_SPELLINGS: &[&str] = &[
@@ -755,6 +479,7 @@ mod tests {
                 "DocumentJournal",
                 "Enum",
                 "ExchangePlan",
+                "ExternalDataSource",
                 "FilterCriterion",
                 "InformationRegister",
                 "Report",
@@ -767,8 +492,7 @@ mod tests {
             .into_iter()
             .collect()
         );
-        let objects = ADDRESS_KINDS
-            .iter()
+        let objects = address_kinds()
             .map(|kind| kind.canonical)
             .filter(|kind| metadata_kind_has_objects(kind))
             .collect::<std::collections::BTreeSet<_>>();
@@ -807,8 +531,8 @@ mod tests {
     }
 
     use super::{
-        metadata_kind_has_objects, metadata_manager_kinds, xml_ncname_is_valid, MetadataAddress,
-        MetadataAddressPrefix, SourceTargetErrorCode, TargetKind, ADDRESS_KINDS,
+        address_kinds, metadata_kind_has_objects, metadata_manager_kinds, xml_ncname_is_valid,
+        MetadataAddress, MetadataAddressPrefix, SourceTargetErrorCode, TargetKind,
     };
 
     /// rule: INV.SOURCE.LOGICAL-IDENTITY
@@ -1011,6 +735,61 @@ mod tests {
                 "targetKind": "metadataObject"
             })
         );
+    }
+
+    /// Пары `Вид.Имя` чередуются на любой глубине: таблица измерения куба
+    /// внешнего источника адресуется семью сегментами.
+    #[test]
+    fn nested_kinds_declared_by_their_owner_extend_the_address_at_any_depth() {
+        for (raw, canonical, kind) in [
+            (
+                "ВнешнийИсточникДанных.S.Таблица.T",
+                "ExternalDataSource.S.Table.T",
+                TargetKind::MetadataObject,
+            ),
+            (
+                "ExternalDataSource.S.Table.T.RecordSetModule",
+                "ExternalDataSource.S.Table.T.RecordSetModule",
+                TargetKind::Module,
+            ),
+            (
+                "ExternalDataSource.S.Function.F",
+                "ExternalDataSource.S.Function.F",
+                TargetKind::MetadataObject,
+            ),
+            (
+                "ExternalDataSource.S.Куб.C.ТаблицаИзмерения.D.ObjectModule",
+                "ExternalDataSource.S.Cube.C.DimensionTable.D.ObjectModule",
+                TargetKind::Module,
+            ),
+        ] {
+            let address = MetadataAddress::parse_logical(raw).unwrap();
+            assert_eq!(address.as_str(), canonical, "{raw}");
+            assert_eq!(address.target_kind(), kind, "{raw}");
+        }
+        for raw in [
+            "Catalog.X.Table.T",
+            "ExternalDataSource.S.DimensionTable.D",
+            "ExternalDataSource.S.Cube.C.Table.T",
+            "ExternalDataSource.S.Table.T.Form.F",
+            "ExternalDataSource.S.Cube.C.DimensionTable.D.Unknown",
+        ] {
+            assert!(MetadataAddress::parse_logical(raw).is_err(), "{raw}");
+        }
+        assert_eq!(
+            MetadataAddressPrefix::parse_logical(
+                "ExternalDataSource.S.Cube.C.DimensionTable.D.Obj"
+            )
+            .unwrap()
+            .0,
+            "ExternalDataSource.S.Cube.C.DimensionTable.D.Obj"
+        );
+        for raw in [
+            "ExternalDataSource.S.Cube.C.Obj",
+            "ExternalDataSource.S.Function.F.Man",
+        ] {
+            assert!(MetadataAddressPrefix::parse_logical(raw).is_err(), "{raw}");
+        }
     }
 
     #[test]
