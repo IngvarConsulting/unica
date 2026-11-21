@@ -4,7 +4,9 @@ mod tests {
     use unica_metadata::subsystem::*;
     use unica_metadata::subsystem_topology::*;
     use unica_metadata_designer::subsystem_topology::*;
-    use unica_source_contract::read::SecureTreeCaptureLimits;
+    use unica_source_contract::read::{
+        RetainedSourceRead, SecureTreeCaptureLimits, SOURCE_TREE_TRAVERSAL_MAX_DEPTH,
+    };
     use unica_workspace::read::RetainedRootSecureRead;
     const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 
@@ -799,6 +801,72 @@ mod tests {
             error.to_string().contains("traversal-depth limit"),
             "{error}"
         );
+    }
+
+    /// rule: INV.SOURCE.SUBSYSTEM-REGISTRATION
+    #[test]
+    fn topology_checks_directory_depth_even_with_a_reader_without_its_own_limit() {
+        struct RegisteredChain {
+            levels: usize,
+            descriptors_read: Rc<Cell<usize>>,
+        }
+
+        impl RetainedSourceRead for RegisteredChain {
+            fn read_regular_file(
+                &mut self,
+                relative: &Path,
+                checkpoint: &mut dyn FnMut() -> io::Result<()>,
+            ) -> io::Result<Vec<u8>> {
+                checkpoint()?;
+                if relative == Path::new("Configuration.xml") {
+                    return Ok(format!(
+                        r#"<MetaDataObject xmlns="{MD_NS}"><Configuration><ChildObjects><Subsystem>A</Subsystem></ChildObjects></Configuration></MetaDataObject>"#
+                    )
+                    .into_bytes());
+                }
+                let level = self.descriptors_read.get() + 1;
+                self.descriptors_read.set(level);
+                let child = if level < self.levels {
+                    "<Subsystem>A</Subsystem>"
+                } else {
+                    ""
+                };
+                Ok(format!(
+                    r#"<MetaDataObject xmlns="{MD_NS}"><Subsystem><Properties><Name>A</Name><IncludeInCommandInterface>true</IncludeInCommandInterface><Content/></Properties><ChildObjects>{child}</ChildObjects></Subsystem></MetaDataObject>"#
+                )
+                .into_bytes())
+            }
+
+            fn complete(
+                self: Box<Self>,
+                checkpoint: &mut dyn FnMut() -> io::Result<()>,
+            ) -> io::Result<()> {
+                checkpoint()
+            }
+        }
+
+        // A level-n descriptor has 2n - 1 parent directories under the source root.
+        let supported_levels = SOURCE_TREE_TRAVERSAL_MAX_DEPTH.div_ceil(2);
+        let descriptors_read = Rc::new(Cell::new(0));
+        let reader = |levels| {
+            Box::new(RegisteredChain {
+                levels,
+                descriptors_read: Rc::clone(&descriptors_read),
+            })
+        };
+        let topology = read_registered_subsystem_topology(reader(supported_levels), checkpoint)
+            .expect("the deepest registered level within the budget is readable");
+        assert_eq!(topology.interface_addresses().len(), supported_levels);
+        assert_eq!(descriptors_read.get(), supported_levels);
+
+        descriptors_read.set(0);
+        let error = read_registered_subsystem_topology(reader(supported_levels + 1), checkpoint)
+            .expect_err("the walker must refuse the first descriptor above the directory budget");
+        assert!(
+            error.to_string().contains("traversal-depth limit"),
+            "{error}"
+        );
+        assert_eq!(descriptors_read.get(), supported_levels);
     }
 
     /// rule: INV.SOURCE.SUBSYSTEM-REGISTRATION

@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use unica_address::source_target::MetadataAddress;
 use unica_metadata::subsystem::{EffectiveSubsystemRole, SubsystemAddress};
 use unica_metadata::subsystem_topology::*;
+use unica_source_contract::read::SOURCE_TREE_TRAVERSAL_MAX_DEPTH;
 use uuid::Uuid;
 const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 const READABLE_NS: &str = "http://v8.1c.ru/8.3/xcf/readable";
@@ -246,8 +247,19 @@ fn build_registered_nodes(
         let address = SubsystemAddress::from_names(address_names.iter().map(String::as_str))
             .map_err(|error| SubsystemTopologyError::new(error.to_string()))?;
         let logical_path = descriptor_logical_path(&address_names);
+        let descriptor = Path::new(&logical_path);
+        // The stamped reader has no tree budget. Apply the common bound
+        // before any reader opens the descriptor, excluding its file name.
+        let directory_depth = descriptor.components().count() - 1;
+        if directory_depth > SOURCE_TREE_TRAVERSAL_MAX_DEPTH {
+            return Err(io::Error::new(
+                io::ErrorKind::FileTooLarge,
+                "registered subsystem topology exceeds the traversal-depth limit",
+            )
+            .into());
+        }
         let bytes = reader
-            .read_regular_file(Path::new(&logical_path), &mut *checkpoint)
+            .read_regular_file(descriptor, &mut *checkpoint)
             .map_err(|error| {
                 if error.kind() == io::ErrorKind::NotFound {
                     SubsystemTopologyError::new(format!(
