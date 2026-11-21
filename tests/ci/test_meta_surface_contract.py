@@ -253,7 +253,13 @@ class MetaSurfaceContractTests(unittest.TestCase):
             evidence.index("crate::subsystem_topology::read_registered_subsystem_topology"),
         )
         # Only the depth bounds the registered walk; its size does not.
-        self.assertIn("maximum_depth: SUBSYSTEM_ADDRESS_MAX_DEPTH * 2", evidence)
+        self.assertIn("maximum_depth: SOURCE_TREE_TRAVERSAL_MAX_DEPTH", evidence)
+        build = rust_function(topology, "fn build_registered_nodes")
+        self.assertIn("descriptor.components().count() - 1", build)
+        self.assertLess(
+            build.index("directory_depth > SOURCE_TREE_TRAVERSAL_MAX_DEPTH"),
+            build.index(".read_regular_file("),
+        )
         for retired in ("maximum_entries", "maximum_files", "maximum_bytes"):
             self.assertNotIn(retired, evidence)
         self.assertIn("reader.complete(&mut checkpoint)?", topology_read)

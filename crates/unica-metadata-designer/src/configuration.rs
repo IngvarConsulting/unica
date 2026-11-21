@@ -2094,6 +2094,12 @@ const CF_VALIDATE_REQUIRED_PROPERTIES: &[CfValidateRequiredProperty] = &[
         property: "Documents",
         platform: "Не один документ не участвует в последовательности",
     },
+    CfValidateRequiredProperty {
+        kind: "CommonCommand",
+        directory: "CommonCommands",
+        property: "Group",
+        platform: "Не указана группа, в которую входит команда по умолчанию",
+    },
 ];
 
 pub fn validate_cf_source(

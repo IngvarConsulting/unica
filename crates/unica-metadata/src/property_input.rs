@@ -81,6 +81,10 @@ pub enum PropertiesIntent {
         comment: String,
     },
     FunctionalOption(FunctionalOptionPropertyChanges),
+    CommonCommand {
+        group: String,
+        comment: Option<String>,
+    },
     Role(RolePropertyChanges),
     WSReference(WsReferencePropertyChanges),
     Subsystem(SubsystemPropertyChanges),
@@ -774,6 +778,32 @@ fn decode_with_contract(
                         }
                     } else {
                         PropertiesIntent::FunctionalOption(changes)
+                    }
+                }
+                PropertiesSite::CommonCommand => {
+                    let comment = values_reader.string(DescriptorProperty::Comment)?;
+                    match values_reader.field("Group", false)? {
+                        Some(value) => {
+                            let group = value
+                                .as_str()
+                                .filter(|value| crate::member_read_profile::command_group(value))
+                                .ok_or_else(|| {
+                                    invalid(
+                                        format!("{values_path}.Group"),
+                                        "Group must be a standard group or CommandGroup.Name",
+                                    )
+                                })?;
+                            PropertiesIntent::CommonCommand {
+                                group: group.to_string(),
+                                comment,
+                            }
+                        }
+                        None => PropertiesIntent::CommentOnly {
+                            kind: unica_address::address::NodeKind::CommonCommand,
+                            comment: comment.ok_or_else(|| {
+                                invalid(&values_path, "Group or Comment is required")
+                            })?,
+                        },
                     }
                 }
                 PropertiesSite::Role => PropertiesIntent::Role(RolePropertyChanges {

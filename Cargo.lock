@@ -3500,6 +3500,7 @@ dependencies = [
 name = "unica-metadata"
 version = "0.17.0"
 dependencies = [
+ "fluent-uri",
  "jsonschema",
  "serde",
  "serde_json",
