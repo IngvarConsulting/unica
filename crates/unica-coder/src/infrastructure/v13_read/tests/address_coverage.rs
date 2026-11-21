@@ -13,6 +13,7 @@ use unica_source_contract::format_identity::{
     DESCRIBED_PLATFORM_LINES,
 };
 use unica_source_designer::owner::MD_CLASSES_NS;
+use unica_source_designer::registration::platform_child_object_order;
 use unica_work_control::provider_deadline::ProviderDeadline;
 
 // One sorted JSONL file per successful test, when explicitly requested. Use
@@ -778,6 +779,7 @@ fn native_recalculation_module_address_table_matches_registered_owner() {
 }
 
 /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
+/// rule: CTR.SOURCE.EMPTY-BRANCHES
 #[test]
 fn native_metadata_address_table_matches_declared_and_observed_child_branches() {
     let mut evidence = EvidenceRows::new(
@@ -792,7 +794,13 @@ fn native_metadata_address_table_matches_declared_and_observed_child_branches() 
         ("2.22", PlatformLine::new(8, 5, 4)),
     ] {
         let source = fixture_path(&format!("formats/platform_xml/{xml}/all_kinds/src"));
-        let profile = PlatformProfile::for_line(line).unwrap();
+        let source_profile = unica_workspace::source_profile::platform_xml_source_profile(
+            SourceSetKind::Configuration,
+            &source.canonicalize().unwrap(),
+        );
+        assert_eq!(source_profile.serialization_format(), Some(xml));
+        assert_eq!(source_profile.semantic_line(), Some(line));
+        let profile = PlatformProfile::for_line_or_base(source_profile.semantic_line());
         let cancellation = CancellationToken::new();
         let authority = native_authority(&cancellation, &source, profile);
         let mut verified = BTreeSet::new();
@@ -1382,6 +1390,11 @@ fn check_metadata_owner(
         }
     }
     check_native_child_registrations(owner, artifact, &facts);
+    if owner.segments().len() == 1 {
+        check_native_empty_metadata_branches(
+            authority, owner, artifact, &published, &origin, verified, evidence,
+        );
+    }
     if let Some(reason) = addressing_issue {
         let limits = published["limits"].as_array().unwrap();
         assert!(limits
@@ -1635,6 +1648,84 @@ fn check_native_branch(
     );
     let actual = addresses(&read(authority, branch), "items");
     assert_eq!(&actual, expected, "published child addresses for {branch}");
+}
+
+fn check_native_empty_metadata_branches(
+    authority: &LogicalViewReadAuthority<'_>,
+    owner: &QualifiedAddress,
+    artifact: roxmltree::Node<'_, '_>,
+    published: &Value,
+    origin: &str,
+    verified: &mut BTreeSet<String>,
+    evidence: &mut EvidenceRows,
+) {
+    let profile = authority.platform_profile();
+    let owner_at = owner.to_string();
+    let owner_kind = artifact.tag_name().name();
+    let declared = platform_child_object_order(owner_kind).unwrap_or_default();
+    let raw_kinds: BTreeSet<_> = native_child_objects(artifact)
+        .map(|child| {
+            assert_eq!(child.tag_name().namespace(), Some(MD_CLASSES_NS));
+            child.tag_name().name()
+        })
+        .collect();
+
+    // Keep missing declarations visible until their empty contracts are settled.
+    let pending_empty: &[&str] = match owner_kind {
+        "FilterCriterion" => &["Form", "Command"],
+        "SettingsStorage" => &["Form", "Template"],
+        "HTTPService" => &["URLTemplate"],
+        "WebService" => &["Operation"],
+        _ => &[],
+    };
+    for kind in pending_empty.iter().filter(|kind| !declared.contains(kind)) {
+        println!(
+            "| {} | {owner} | {kind} | — | empty branch outside declared order (#2224); native member present: {} |",
+            profile.id(),
+            raw_kinds.contains(kind),
+        );
+    }
+
+    for &kind in declared {
+        if raw_kinds.contains(kind) {
+            continue;
+        }
+        if kind == "AddressingAttribute" {
+            // Task requires a readable native container to distinguish empty from unknown.
+            let containers = artifact
+                .children()
+                .filter(|node| node.has_tag_name((MD_CLASSES_NS, "ChildObjects")))
+                .count();
+            assert_eq!(owner_kind, "Task", "{owner}: addressing declaration");
+            assert_eq!(
+                containers, 1,
+                "{owner}: cannot prove an empty AddressingAttribute"
+            );
+        }
+        assert!(
+            metadata_kind_exists(Some(profile.line()), kind),
+            "{owner}: {kind} is declared but unavailable on {}",
+            profile.id(),
+        );
+        let branch = format!("{owner}.{kind}");
+        check_native_branch(authority, published, &branch, &BTreeSet::new());
+        assert!(
+            verified.insert(branch.clone()),
+            "duplicate witness for {branch}"
+        );
+        evidence.record(
+            profile.line(),
+            &owner_at,
+            kind,
+            None,
+            origin,
+            AddressEvidence::Read(&branch),
+        );
+        println!(
+            "| {} | {owner} | {kind} | {branch} | declared empty; no native registration |",
+            profile.id(),
+        );
+    }
 }
 
 fn check_native_child_registrations(
