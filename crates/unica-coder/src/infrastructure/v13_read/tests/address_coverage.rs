@@ -437,6 +437,104 @@ fn native_ordinary_interface_has_a_registration_only_root_branch() {
 
 /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
 /// rule: INV.SOURCE.LOGICAL-BRANCH-COUNT
+/// rule: INV.SOURCE.PROFILE-CAPABILITIES
+#[test]
+fn native_extension_root_language_matches_registration() {
+    use unica_workspace::source_profile::platform_xml_source_profile;
+
+    const OWNER: &str = "ext:Configuration";
+    const BRANCH: &str = "ext:Language";
+    const KIND: &str = "Language";
+    const NAME: &str = "Русский";
+    let mut evidence = EvidenceRows::new(
+        "native_extension_root_language_matches_registration",
+        SourceSetKind::Extension,
+    );
+    for (format, relative) in [
+        ("2.20", "formats/platform_xml/2.20/empty_extension/ext"),
+        ("2.21", "formats/platform_xml/2.21/empty_extension/ext"),
+        ("2.22", "formats/platform_xml/2.22/empty_extension/ext"),
+    ] {
+        let source = fixture_path(relative);
+        let config_path = source.join("Configuration.xml");
+        let config_xml = read_fixture_descriptor(&config_path);
+        let config = parse_fixture_descriptor(&config_xml, &config_path);
+        assert_eq!(config.root_element().attribute("version"), Some(format));
+        let extension = fixture_artifact(&config, "Configuration", &config_path);
+        assert_eq!(fixture_properties_name(extension), Some("CorpusExtension"));
+        let registered: Vec<_> = native_child_objects(extension).collect();
+        let [language] = registered.as_slice() else {
+            panic!("{format}: expected one native registration");
+        };
+        assert!(language.has_tag_name((MD_CLASSES_NS, KIND)));
+        let name = language.text().expect("native Language registration name");
+        assert_eq!(name, NAME, "{format}");
+        let descriptor_path = source.join("Languages").join(format!("{name}.xml"));
+        let descriptor_xml = read_fixture_descriptor(&descriptor_path);
+        let descriptor = parse_fixture_descriptor(&descriptor_xml, &descriptor_path);
+        assert_eq!(descriptor.root_element().attribute("version"), Some(format));
+        assert_eq!(
+            fixture_properties_name(fixture_artifact(&descriptor, KIND, &descriptor_path)),
+            Some(name)
+        );
+
+        let source = fs::canonicalize(source).unwrap();
+        let kind = SourceSetKind::Extension;
+        let selected = platform_xml_source_profile(kind, &source);
+        assert_eq!(
+            selected.serialization_format(),
+            Some(format),
+            "{format}: detected extension profile"
+        );
+        let line = selected.semantic_line().unwrap();
+        let cancellation = CancellationToken::new();
+        let authority = LogicalViewReadAuthority::new(
+            &cancellation,
+            "ext",
+            "address-coverage-native-extension",
+            kind,
+            Arc::new(unica_workspace::read::open_source_directory(&source).unwrap()),
+            PlatformProfile::for_line(line).unwrap(),
+        );
+        let root = read(&authority, OWNER);
+        assert_eq!(root["kind"], "Configuration");
+        assert_eq!(root["props"]["name"], "CorpusExtension");
+        let counts: Vec<_> = root["branches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["at"] == BRANCH)
+            .map(|row| row["count"].as_u64().unwrap())
+            .collect();
+        assert_eq!(counts, [1], "{format}: published {BRANCH}");
+
+        let branch = QualifiedAddress::parse(BRANCH).unwrap();
+        let at = branch.member(name).unwrap().to_string();
+        let view = read(&authority, BRANCH);
+        assert_eq!(addresses(&view, "items"), BTreeSet::from([at.clone()]));
+        assert_eq!(read(&authority, &at)["kind"], KIND);
+        evidence.record(
+            line,
+            OWNER,
+            KIND,
+            None,
+            &fixture_origin(&config_path),
+            AddressEvidence::Read(BRANCH),
+        );
+        evidence.record(
+            line,
+            OWNER,
+            KIND,
+            None,
+            &fixture_origin(&descriptor_path),
+            AddressEvidence::Read(&at),
+        );
+    }
+    evidence.finish();
+}
+
+/// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
+/// rule: INV.SOURCE.LOGICAL-BRANCH-COUNT
 /// rule: INV.SOURCE.PLATFORM-CAPABILITY-EXISTENCE
 #[test]
 fn native_recalculation_module_address_table_matches_registered_owner() {
@@ -1162,6 +1260,17 @@ fn fixture_artifact<'a, 'input: 'a>(
     root.children()
         .find(|node| node.has_tag_name((MD_CLASSES_NS, kind)))
         .unwrap_or_else(|| panic!("native fixture {} has no {kind} descriptor", path.display()))
+}
+
+fn fixture_properties_name<'a, 'input: 'a>(
+    artifact: roxmltree::Node<'a, 'input>,
+) -> Option<&'a str> {
+    artifact
+        .children()
+        .find(|child| child.has_tag_name((MD_CLASSES_NS, "Properties")))?
+        .children()
+        .find(|child| child.has_tag_name((MD_CLASSES_NS, "Name")))?
+        .text()
 }
 
 fn native_child_objects<'a, 'input: 'a>(

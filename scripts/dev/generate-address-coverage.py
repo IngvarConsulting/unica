@@ -16,15 +16,20 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 EMITTER_ENV = "UNICA_484_ADDRESS_JSONL_DIR"
 SCHEMA_VERSION = 1
+EXTENSION_LANGUAGE_SHARD = "native_extension_root_language_matches_registration"
 NATIVE_SHARDS = frozenset({
     "native_configuration_root_address_table_matches_published_branches",
     "native_ordinary_interface_has_a_registration_only_root_branch",
     "native_recalculation_module_address_table_matches_registered_owner",
     "native_metadata_address_table_matches_declared_and_observed_child_branches",
     "native_form_and_template_addresses_follow_text_registrations",
+    EXTENSION_LANGUAGE_SHARD,
 })
 DAEMON_SHARD = "medium_published_document_and_bsl_branches_have_canonical_addresses"
-NATIVE_SCOPE = "Configuration source sets in the native address_coverage tests of unica-coder."
+NATIVE_SCOPE = (
+    "Configuration source sets and native Language registrations in extension source sets "
+    "across three platform lines in the unica-coder address_coverage tests."
+)
 DAEMON_SCOPE = (
     "Read witnesses from the selected document and BSL coverage test of unica-daemon, "
     "including observed 8.3.27 examples for extensions, external processors and external reports."
@@ -72,9 +77,12 @@ def validate_record(record: object, test_case: str) -> None:
     exact_fields(key, {"line", "source_kind", "owner_shape", "branch", "role"}, "key")
     version = line_number(key["line"])
     source_kind = key["source_kind"]
-    if source_kind != "configuration" and not (
-        test_case == DAEMON_SHARD and source_kind in ("extension", "external_processor", "external_report")
-    ):
+    allowed_kinds = ("configuration",)
+    if test_case == EXTENSION_LANGUAGE_SHARD:
+        allowed_kinds = ("extension",)
+    elif test_case == DAEMON_SHARD:
+        allowed_kinds = ("configuration", "extension", "external_processor", "external_report")
+    if source_kind not in allowed_kinds:
         raise ValueError(f"unexpected source-set kind {source_kind!r} in shard {test_case!r}")
     token(key["branch"], "branch kind")
     if key["role"] is not None:
