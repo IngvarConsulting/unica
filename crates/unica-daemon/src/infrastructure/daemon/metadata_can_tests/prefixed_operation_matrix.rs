@@ -108,6 +108,42 @@ fn medium_every_metadata_write_keeps_the_owner_prefix() {
             ]}),
         ),
         (
+            "table.add",
+            json!({"at":"main:ExternalDataSource.Store","ops":[
+                {"op":"table.add","args":{"items":[
+                    {"name":"OtherItems","tableType":"Table","nameInDataSource":"other_items"}
+                ]}}
+            ]}),
+        ),
+        (
+            "cube.add",
+            json!({"at":"main:ExternalDataSource.Store","ops":[
+                {"op":"cube.add","args":{"items":[{"name":"Totals","nameInDataSource":"totals"}]}}
+            ]}),
+        ),
+        (
+            "dimensionTable.add",
+            json!({"at":"main:ExternalDataSource.Store.Cube.Sales","ops":[
+                {"op":"dimensionTable.add","args":{"items":[{"name":"Products","nameInDataSource":"products"}]}}
+            ]}),
+        ),
+        (
+            "field.add",
+            json!({"at":"main:ExternalDataSource.Store.Table.Items","ops":[
+                {"op":"field.add","args":{"items":[
+                    {"name":"Code","nameInDataSource":"code","type":{"variants":[{"kind":"boolean"}]}}
+                ]}}
+            ]}),
+        ),
+        (
+            "function.add",
+            json!({"at":"main:ExternalDataSource.Store","ops":[
+                {"op":"function.add","args":{"items":[
+                    {"name":"Total","returnValue":true,"expressionInDataSource":"dbo.Total(&1)", "type":{"variants":[{"kind":"boolean"}]}}
+                ]}}
+            ]}),
+        ),
+        (
             "attribute.add",
             json!({"at":"main:Catalog.A","ops":[{"op":"attribute.add","args":{"items":[
                 {"name":"Text","type":{"variants":[{"kind":"string","length":10,"allowedLength":"variable"}]}}
@@ -332,7 +368,14 @@ fn medium_every_metadata_write_keeps_the_owner_prefix() {
             {"op":"object.create","args":{"values":{"kind":"Enum","name":"E"}}},
             {"op":"object.create","args":{"values":{"kind":"ExchangePlan","name":"X"}}},
             {"op":"object.create","args":{"values":{"kind":"InformationRegister","name":"R"}}},
-            {"op":"dimension.add","args":{"at":"main:InformationRegister.R","items":[{"name":"Key"}]}}
+            {"op":"dimension.add","args":{"at":"main:InformationRegister.R","items":[{"name":"Key"}]}},
+            {"op":"object.create","args":{"values":{"kind":"ExternalDataSource","name":"Store"}}},
+            {"op":"table.add","args":{"at":"main:ExternalDataSource.Store","items":[
+                {"name":"Items","tableType":"Table","nameInDataSource":"items"}
+            ]}},
+            {"op":"cube.add","args":{"at":"main:ExternalDataSource.Store","items":[
+                {"name":"Sales","nameInDataSource":"sales"}
+            ]}}
         ]}),
     );
     // A journal requires an existing registered document.
