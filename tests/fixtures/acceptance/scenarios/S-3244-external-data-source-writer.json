@@ -968,6 +968,17 @@
       "expect": [
         "refused"
       ],
+      "refusal": "bad_value: apply operation `props.set` does not apply to Field `main:ExternalDataSource.WriterProbe.Function.Total.Field.Code`; it applies at `main:ExternalDataSource.Writ",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[1].at"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
       "fileAssertions": [
         {
           "path": "src/ExternalDataSources/WriterProbe/Tables/Items.xml",
@@ -1013,6 +1024,17 @@
       },
       "expect": [
         "refused"
+      ],
+      "refusal": "bad_value: apply operation `props.set` does not apply to Parameter `main:ExternalDataSource.WriterProbe.Function.Total.Parameter.Input`; it applies at `main:ExternalDataSo",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[1].at"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
       ],
       "fileAssertions": [
         {
@@ -1071,6 +1093,17 @@
       "expect": [
         "refused"
       ],
+      "refusal": "bad_value: external data source type must be one string, number or boolean",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[1].args.values.Type"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
       "fileAssertions": [
         {
           "path": "src/ExternalDataSources/WriterProbe/Tables/Items.xml",
@@ -1119,6 +1152,17 @@
       },
       "expect": [
         "refused"
+      ],
+      "refusal": "not_found: DimensionTable.Missing is not registered",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[1].args.items[0].type"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
       ],
       "fileAssertions": [
         {
