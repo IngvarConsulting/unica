@@ -7,7 +7,7 @@ use crate::infrastructure::v13_read_projection::metadata_address_coverage::{
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use unica_address::address::NodeKind;
-use unica_address::kinds::{nested_place, DECLARED_ROOT_KINDS};
+use unica_address::kinds::{nested_place, DECLARED_ROOT_KINDS, METADATA_LAYOUTS};
 use unica_source_contract::format_identity::{
     export_format_line, metadata_kind_exists, metadata_kind_since, PlatformLine,
     DESCRIBED_PLATFORM_LINES,
@@ -367,6 +367,318 @@ fn native_metadata_address_table_matches_declared_and_observed_child_branches() 
         }
         check_eds_module_rows(&authority, &source, &cancellation);
     }
+}
+
+/// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
+/// rule: INV.SOURCE.RESOLVED-RESOURCE-IDENTITY
+#[test]
+fn native_form_and_template_addresses_follow_text_registrations() {
+    for xml in ["2.20", "2.21", "2.22"] {
+        let source = fixture_path(&format!("formats/platform_xml/{xml}/all_kinds/src"));
+        let line = export_format_line(xml).unwrap();
+        let profile = PlatformProfile::for_line(line).unwrap();
+        let cancellation = CancellationToken::new();
+        let authority = native_authority(&cancellation, &source, profile);
+        let root =
+            unica_workspace::read::open_source_directory(&source.canonicalize().unwrap()).unwrap();
+        let layout = [LayoutFindSource::new(
+            "main",
+            SourceSetKind::Configuration,
+            &root,
+        )];
+        let finder = WorkspaceFindDirectoryBuilder::default();
+        let verify_path = |at: &QualifiedAddress, path: &Path| {
+            let relative = path
+                .strip_prefix(&source)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .replace('\\', "/");
+            if matches!(
+                at.segments().last().unwrap().kind(),
+                NodeKind::Template | NodeKind::CommonTemplate
+            ) {
+                // resolve(at) uses the descriptor layout for a template, while
+                // the typed view of a nested template reads through its owner.
+                let target = unica_address::source_target::MetadataAddress::parse_logical(
+                    &at.logical_path(),
+                )
+                .unwrap();
+                let forward = unica_source_designer::layout::metadata_descriptor_relative(
+                    &target,
+                    SourceSetKind::Configuration,
+                )
+                .unwrap();
+                assert_eq!(forward.to_str().unwrap().replace('\\', "/"), relative);
+            } else {
+                assert_eq!(authority.existing_export_path(at, None).unwrap(), relative);
+            }
+            let located = finder
+                .locate_path(
+                    &layout,
+                    &relative,
+                    ProviderDeadline::no_deadline(),
+                    &cancellation,
+                )
+                .unwrap()
+                .unwrap_or_else(|| panic!("missing source identity {relative} for {at}"));
+            assert_eq!(located.at(), at.to_string(), "{relative}");
+        };
+        let registrations = root_registrations(&source, xml);
+        let mut covered = BTreeSet::new();
+        let configuration = read(&authority, "main:Configuration");
+        for kind in ["CommonForm", "CommonTemplate"] {
+            let branch = QualifiedAddress::parse(&format!("main:{kind}")).unwrap();
+            let mut expected = BTreeSet::new();
+            for (_, name) in registrations.iter().filter(|(tag, _)| tag == kind) {
+                let at = branch.member(name).unwrap();
+                let descriptor = source.join(format!("{kind}s/{name}.xml"));
+                check_native_form_or_template(
+                    &authority,
+                    &at,
+                    kind,
+                    name,
+                    xml,
+                    &descriptor,
+                    &verify_path,
+                    &mut covered,
+                );
+                assert!(expected.insert(at.to_string()), "duplicate native {at}");
+            }
+            assert!(
+                !expected.is_empty(),
+                "XML {xml}: native fixture needs a {kind}"
+            );
+            check_native_branch(&authority, &configuration, &branch.to_string(), &expected);
+        }
+
+        for (kind, name) in registrations {
+            let directory = METADATA_LAYOUTS
+                .iter()
+                .find(|layout| layout.tag == kind)
+                .unwrap()
+                .directory;
+            let descriptor = source.join(directory).join(format!("{name}.xml"));
+            let raw = read_fixture_descriptor(&descriptor);
+            let document = parse_fixture_descriptor(&raw, &descriptor);
+            let artifact = fixture_artifact(&document, &kind, &descriptor);
+            for (child_kind, directory) in [("Form", "Forms"), ("Template", "Templates")] {
+                let mut names = native_child_objects(artifact)
+                    .filter(|child| child.has_tag_name((MD_CLASSES_NS, child_kind)))
+                    .peekable();
+                if names.peek().is_none() {
+                    continue;
+                }
+                let owner_at = format!("main:{kind}.{name}");
+                let branch = QualifiedAddress::parse(&format!("{owner_at}.{child_kind}")).unwrap();
+                let mut expected = BTreeSet::new();
+                for child in names {
+                    assert!(
+                        child.attribute("uuid").is_none()
+                            && !child.children().any(|node| node.is_element()),
+                        "native fixture {descriptor:?}: {child_kind} must be a text registration"
+                    );
+                    let child_name = child
+                        .text()
+                        .map(str::trim)
+                        .filter(|name| !name.is_empty())
+                        .unwrap_or_else(|| {
+                            panic!("native fixture {descriptor:?}: empty {child_kind} registration")
+                        });
+                    let at = branch.member(child_name).unwrap();
+                    let descriptor = descriptor
+                        .with_extension("")
+                        .join(directory)
+                        .join(format!("{child_name}.xml"));
+                    check_native_form_or_template(
+                        &authority,
+                        &at,
+                        child_kind,
+                        child_name,
+                        xml,
+                        &descriptor,
+                        &verify_path,
+                        &mut covered,
+                    );
+                    assert!(expected.insert(at.to_string()), "duplicate native {at}");
+                }
+                let owner = read(&authority, &owner_at);
+                check_native_branch(&authority, &owner, &branch.to_string(), &expected);
+                covered.insert(branch.to_string());
+            }
+        }
+        for witness in [
+            "main:Catalog.Валюты.Form",
+            "main:DataProcessor.Обработка.Form",
+            "main:DataProcessor.Обработка.Template",
+            "main:Report.АнализВерсийОбъектов.Template",
+            "main:CommonForm.MainA.Metadata",
+            "main:CommonForm.MainA.Module.Form",
+            "main:DataProcessor.Обработка.Template.СхемаКомпоновки.DataSet",
+            "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet",
+        ] {
+            assert!(
+                covered.contains(witness),
+                "XML {xml}: native fixture must witness {witness}"
+            );
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn check_native_form_or_template(
+    authority: &LogicalViewReadAuthority<'_>,
+    at: &QualifiedAddress,
+    kind: &str,
+    name: &str,
+    format: &str,
+    descriptor: &Path,
+    verify_path: &impl Fn(&QualifiedAddress, &Path),
+    covered: &mut BTreeSet<String>,
+) {
+    let raw = read_fixture_descriptor(descriptor);
+    let document = parse_fixture_descriptor(&raw, descriptor);
+    let artifact = fixture_artifact(&document, kind, descriptor);
+    assert_eq!(
+        document.root_element().attribute("version"),
+        Some(format),
+        "native fixture {descriptor:?}"
+    );
+    assert!(
+        artifact
+            .attribute("uuid")
+            .is_some_and(|value| uuid::Uuid::parse_str(value).is_ok()),
+        "native fixture {descriptor:?}: missing or invalid UUID"
+    );
+    let properties = artifact
+        .children()
+        .find(|node| node.has_tag_name((MD_CLASSES_NS, "Properties")))
+        .unwrap_or_else(|| panic!("native fixture {descriptor:?}: missing Properties"));
+    let property = |key| {
+        properties
+            .children()
+            .find(|node| node.has_tag_name((MD_CLASSES_NS, key)))
+            .and_then(|node| node.text())
+    };
+    assert_eq!(
+        property("Name"),
+        Some(name),
+        "native fixture {descriptor:?}: registration name"
+    );
+    let ext = descriptor.with_extension("").join("Ext");
+    let form = matches!(kind, "Form" | "CommonForm");
+    let at_text = at.to_string();
+    let status = if form {
+        assert_eq!(
+            property("FormType"),
+            Some("Managed"),
+            "native fixture {descriptor:?}"
+        );
+        let payload = ext.join("Form.xml");
+        let xml = read_fixture_descriptor(&payload);
+        let body = parse_fixture_descriptor(&xml, &payload);
+        assert!(
+            body.root_element()
+                .has_tag_name(("http://v8.1c.ru/8.3/xcf/logform", "Form")),
+            "native fixture {payload:?}"
+        );
+        assert_eq!(
+            body.root_element().attribute("version"),
+            Some(format),
+            "native fixture {payload:?}"
+        );
+        let owner_view = read(authority, &at_text);
+        assert_eq!(owner_view["kind"], "Form");
+        verify_path(at, &payload);
+        let metadata = format!("{at}.Metadata");
+        assert!(
+            addresses(&owner_view, "branches").contains(&metadata),
+            "{at}: missing Metadata"
+        );
+        assert_eq!(read(authority, &metadata)["kind"], "Metadata");
+        verify_path(&QualifiedAddress::parse(&metadata).unwrap(), descriptor);
+        covered.insert(metadata);
+        let module = ext.join("Form/Module.bsl");
+        if module.is_file() {
+            let module_at = format!("{at}.Module.Form");
+            assert!(
+                addresses(&read(authority, &format!("{at}.Module")), "items").contains(&module_at)
+            );
+            assert_eq!(read(authority, &module_at)["kind"], "Module");
+            verify_path(&QualifiedAddress::parse(&module_at).unwrap(), &module);
+            covered.insert(module_at);
+        }
+        "Managed Form"
+    } else {
+        const DCS_NS: &str = "http://v8.1c.ru/8.1/data-composition-system/schema";
+        const MXL_NS: &str = "http://v8.1c.ru/8.2/data/spreadsheet";
+        let template = property("TemplateType")
+            .unwrap_or_else(|| panic!("native fixture {descriptor:?}: missing TemplateType"));
+        let mut data_sets = BTreeSet::new();
+        match template {
+            "BinaryData" => {
+                let payload = ext.join("Template.bin");
+                assert!(!fs::read(&payload)
+                    .unwrap_or_else(|error| panic!("native fixture {payload:?}: {error}"))
+                    .is_empty());
+            }
+            "DataCompositionSchema" | "SpreadsheetDocument" => {
+                let payload = ext.join("Template.xml");
+                let xml = read_fixture_descriptor(&payload);
+                let body = parse_fixture_descriptor(&xml, &payload);
+                let root = body.root_element();
+                if template == "DataCompositionSchema" {
+                    assert!(
+                        root.has_tag_name((DCS_NS, "DataCompositionSchema")),
+                        "native fixture {payload:?}"
+                    );
+                    let branch = QualifiedAddress::parse(&format!("{at}.DataSet")).unwrap();
+                    for data_set in root
+                        .children()
+                        .filter(|node| node.has_tag_name((DCS_NS, "dataSet")))
+                    {
+                        let name = data_set
+                            .children()
+                            .find(|node| node.has_tag_name((DCS_NS, "name")))
+                            .and_then(|node| node.text())
+                            .unwrap_or_else(|| {
+                                panic!("native fixture {payload:?}: missing dataSet name")
+                            });
+                        assert!(
+                            data_sets.insert(branch.member(name).unwrap().to_string()),
+                            "native fixture {payload:?}: duplicate dataSet {name}"
+                        );
+                    }
+                    assert!(
+                        !data_sets.is_empty(),
+                        "native fixture {payload:?}: missing DataSet witness"
+                    );
+                } else {
+                    assert!(
+                        root.has_tag_name((MXL_NS, "document")),
+                        "native fixture {payload:?}"
+                    );
+                }
+            }
+            other => panic!("native fixture {descriptor:?}: unexpected TemplateType {other}"),
+        }
+        let owner_view = read(authority, &at_text);
+        assert_eq!(owner_view["kind"], kind);
+        verify_path(at, descriptor);
+        if template == "DataCompositionSchema" {
+            let branch = format!("{at}.DataSet");
+            check_native_branch(authority, &owner_view, &branch, &data_sets);
+            for item in &data_sets {
+                assert_eq!(read(authority, item)["kind"], "DataSet", "{item}");
+            }
+            covered.insert(branch);
+        }
+        template
+    };
+    println!(
+        "| {} | {kind} | {at} | {status}; native registration and descriptor |",
+        authority.platform_profile().id()
+    );
 }
 
 fn check_eds_module_rows(
