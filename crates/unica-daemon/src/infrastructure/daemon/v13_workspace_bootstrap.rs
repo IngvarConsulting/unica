@@ -968,15 +968,19 @@ fn workspace_origin_hint(origin: &unica_bootstrap::WorkspaceOrigin) -> Option<St
         return None;
     }
     let (taken_from, roots) = match origin {
-        WorkspaceOrigin::StartupEnvironment { variable, roots } => (
+        WorkspaceOrigin::StartupEnvironment {
+            variable, roots, ..
+        } => (
             format!("the project variable {variable} captured when the unica MCP server started"),
             roots,
         ),
-        WorkspaceOrigin::LaunchCwd { roots } => (
+        WorkspaceOrigin::LaunchCwd { roots, .. } => (
             "the directory the unica MCP server was started in".to_string(),
             roots,
         ),
-        WorkspaceOrigin::RequestMetadata { .. } | WorkspaceOrigin::ClientRoots {} => return None,
+        WorkspaceOrigin::RequestMetadata { .. } | WorkspaceOrigin::ClientRoots { .. } => {
+            return None
+        }
     };
     let roots = match roots {
         None => String::new(),
@@ -1836,6 +1840,8 @@ mod medium_tests {
             serde_json::json!({"workspaceRoot": "/root"}),
             WorkspaceOrigin::LaunchCwd {
                 roots: Some(RootsFallback::Closed),
+                selected: false,
+                available: None,
             },
         );
         let origin = &stale["workspaceRootOrigin"];
@@ -1846,16 +1852,24 @@ mod medium_tests {
 
         let current = annotated(
             serde_json::json!({"workspaceRoot": "/root"}),
-            WorkspaceOrigin::ClientRoots {},
+            WorkspaceOrigin::ClientRoots {
+                root: "/root".to_owned(),
+                selected: false,
+                available: None,
+            },
         );
         assert_eq!(
             current["workspaceRootOrigin"],
-            serde_json::json!({"channel": "clientRoots", "requestedDirectory": "/requested"})
+            serde_json::json!({"channel": "clientRoots", "root": "/root", "requestedDirectory": "/requested"})
         );
 
         let without_root = annotated(
             serde_json::json!({"ready": false}),
-            WorkspaceOrigin::ClientRoots {},
+            WorkspaceOrigin::ClientRoots {
+                root: "/root".to_owned(),
+                selected: false,
+                available: None,
+            },
         );
         assert!(without_root.get("workspaceRootOrigin").is_none());
     }

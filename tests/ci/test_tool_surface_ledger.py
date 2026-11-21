@@ -245,6 +245,11 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
             "unica.run": {"op", "args", "dryRun", "infobase"},
             "unica.docs": {"query", "source", "limit", "cursor"},
         }
+        # `workspace` выбирает пространство, которое Unica выдала для папок
+        # хоста, — как пространство адреса документа в двери LSP. Это имя,
+        # а не путь: папку вне множества хоста им не назвать.
+        for properties in expected_properties.values():
+            properties.add("workspace")
         for name, properties in expected_properties.items():
             with self.subTest(tool=name):
                 schema = tools[name]["inputSchema"]

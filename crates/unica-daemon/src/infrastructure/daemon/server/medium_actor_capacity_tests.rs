@@ -2733,10 +2733,13 @@ impl LiveV5Daemon {
             request.arguments().clone(),
             unica_bootstrap::ResolvedWorkspace {
                 directory: request.workspace_hint().to_owned(),
-                origin: request
-                    .workspace_origin()
-                    .cloned()
-                    .unwrap_or(unica_bootstrap::WorkspaceOrigin::LaunchCwd { roots: None }),
+                origin: request.workspace_origin().cloned().unwrap_or(
+                    unica_bootstrap::WorkspaceOrigin::LaunchCwd {
+                        roots: None,
+                        selected: false,
+                        available: None,
+                    },
+                ),
             },
             request.response_budget_ms(),
         )

@@ -2974,6 +2974,7 @@ dependencies = [
  "tar",
  "unica-artifact-delivery",
  "unica-error-reporting",
+ "unica-source-contract",
  "url",
  "uuid",
  "windows-sys 0.59.0",

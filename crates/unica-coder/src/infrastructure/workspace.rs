@@ -53,16 +53,10 @@ fn discover_workspace_with_current_dir(
     })
 }
 
+/// The walk is owned by the bootstrap: the MCP door bounds a selected
+/// workspace with the same rule (INV.WORKSPACE.HOST-CONTEXT).
 fn find_workspace_root(cwd: &Path) -> Option<PathBuf> {
-    for base in cwd.ancestors() {
-        if base.join("v8project.yaml").is_file() {
-            return Some(base.to_path_buf());
-        }
-        if base.join(".git").is_file() {
-            return Some(base.to_path_buf());
-        }
-    }
-    None
+    unica_bootstrap::find_workspace_root(cwd)
 }
 
 fn workspace_fingerprint(root: &Path) -> u64 {
