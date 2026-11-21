@@ -1076,7 +1076,7 @@ pub(crate) fn capture_registered_subsystem_topology(
     let reader = RetainedRootSecureRead::open(
         source_root,
         SecureTreeCaptureLimits {
-            maximum_depth: SUBSYSTEM_ADDRESS_MAX_DEPTH * 2,
+            maximum_depth: unica_source_contract::read::SOURCE_TREE_TRAVERSAL_MAX_DEPTH,
         },
         &mut checkpoint,
     )?;

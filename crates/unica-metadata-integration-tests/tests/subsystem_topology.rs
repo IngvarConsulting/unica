@@ -768,7 +768,7 @@ mod tests {
 
     /// rule: INV.SOURCE.SUBSYSTEM-REGISTRATION
     #[test]
-    fn ninth_registered_level_exceeds_the_shared_address_budget() {
+    fn ninth_registered_level_is_read_with_the_source_tree_budget() {
         let root = tempfile::tempdir().unwrap();
         write_configuration(root.path(), &["A"]);
         let names = ["A", "B", "C", "D", "E", "F", "G", "H", "I"];
@@ -782,10 +782,21 @@ mod tests {
         }
         let source_root = root.path().canonicalize().unwrap();
 
-        let error = capture_registered_subsystem_topology(&source_root, checkpoint).unwrap_err();
+        let topology = capture_registered_subsystem_topology(&source_root, checkpoint).unwrap();
+        assert_eq!(
+            topology.interface_addresses().last().unwrap().as_str(),
+            "A.B.C.D.E.F.G.H.I"
+        );
 
+        let reader = RetainedRootSecureRead::open(
+            &source_root,
+            SecureTreeCaptureLimits { maximum_depth: 16 },
+            &mut checkpoint,
+        )
+        .unwrap();
+        let error = read_registered_subsystem_topology(Box::new(reader), checkpoint).unwrap_err();
         assert!(
-            error.to_string().contains("depth") || error.to_string().contains("1 to 8"),
+            error.to_string().contains("traversal-depth limit"),
             "{error}"
         );
     }
@@ -860,7 +871,7 @@ mod tests {
         let reader = RetainedRootSecureRead::open(
             source_root,
             SecureTreeCaptureLimits {
-                maximum_depth: SUBSYSTEM_ADDRESS_MAX_DEPTH * 2,
+                maximum_depth: unica_source_contract::read::SOURCE_TREE_TRAVERSAL_MAX_DEPTH,
             },
             &mut checkpoint,
         )?;

@@ -514,6 +514,18 @@ pub trait SourceArtifactClassifier: Send + Sync {
     ) -> Result<Arc<dyn BoundSourceArtifactPolicy>, String>;
 }
 
+// resource-limit: apply.namespace-depth
+// class: format
+// unit: depth
+// scope: traversal
+// value: 256
+// resource: Бюджет глубины каталогов при перечислении пространства имён apply и при удержанном чтении зарегистрированной топологии.
+// status: unproven
+// origin: #1772
+// problem: неизвестно
+// on-reach: Отказ обхода с причиной превышения глубины.
+pub const SOURCE_TREE_TRAVERSAL_MAX_DEPTH: usize = 256;
+
 /// How deep a secure tree read may descend. The number of entries, files
 /// and bytes is not limited; file bytes are held one file at a time (#1119).
 #[derive(Debug, Clone, Copy)]

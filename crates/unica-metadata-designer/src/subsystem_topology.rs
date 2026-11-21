@@ -15,13 +15,19 @@ const XSI_NS: &str = "http://www.w3.org/2001/XMLSchema-instance";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubsystemTopologyError {
     message: String,
+    io_kind: Option<io::ErrorKind>,
 }
 
 impl SubsystemTopologyError {
     pub fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
+            io_kind: None,
         }
+    }
+
+    pub(crate) fn is_depth_limit(&self) -> bool {
+        self.io_kind == Some(io::ErrorKind::FileTooLarge)
     }
 }
 
@@ -42,7 +48,10 @@ impl From<io::Error> for SubsystemTopologyError {
         {
             return Self::new(error.to_string());
         }
-        Self::new(format!("subsystem topology snapshot failed: {error}"))
+        Self {
+            message: format!("subsystem topology snapshot failed: {error}"),
+            io_kind: Some(error.kind()),
+        }
     }
 }
 

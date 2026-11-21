@@ -12,7 +12,6 @@ use std::path::PathBuf;
 use unica_address::address::{NodeKind, QualifiedAddress};
 use unica_address::source_target::MetadataAddress;
 use unica_bsl::profile::{ModuleCapability, PlatformProfile};
-use unica_metadata::subsystem::SUBSYSTEM_ADDRESS_MAX_DEPTH;
 
 /// Читатель маршрута — общий класс маршрута: классификатор один,
 /// маршрутизатор лишь проверяет форму адреса и находит цель читателя.
@@ -107,9 +106,6 @@ pub fn route_logical_address(
                         .map(str::to_string)
                 })
                 .collect::<Vec<_>>();
-            if nested_subsystems.len() >= SUBSYSTEM_ADDRESS_MAX_DEPTH {
-                return Err(not_found(address));
-            }
             let mut route = route(address, class, Some(target), None);
             route.nested_subsystems = nested_subsystems;
             Ok(route)
