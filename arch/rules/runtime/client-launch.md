@@ -11,8 +11,14 @@ id: INV.WIRE.TERMINAL-RUN-HAS-NO-FENCE
 без запуска; ответ раннера, сообщающий о запуске во время preview,
 отклоняется.
 
-Закрытые аргументы — `clientMode`, `execute`, `applicationParameter`,
-`waitForExit`, `waitTimeoutMs`. `applicationParameter` — точная строка `/C`
+Закрытые аргументы — `clientMode`, `debugUrl`, `execute`, `applicationParameter`,
+`waitForExit`, `waitTimeoutMs`. Для `thin` аргумент `debugUrl` задаёт готовый
+локальный HTTP-адрес сервера отладки с явным портом. Раннер получает ровно
+этот адрес. При отказе запуска Unica не запускает клиента повторно без
+отладки. Квитанция с PID и `debugState: "requested"` подтверждает запуск
+с запросом отладки. Подключение клиента к серверу подтверждает DAP.
+
+`applicationParameter` — точная строка `/C`
 для enterprise-клиента: пустая строка отличается от отсутствия, NUL и
 `designer` отклоняются. Параметр может сопровождать `execute` и не отражается
 в публичном ответе. Ожидание завершения поддерживается для `thin` с
