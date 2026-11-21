@@ -925,10 +925,15 @@ fn native_metadata_address_table_matches_declared_and_observed_child_branches() 
             } else if route.reader() == LogicalReader::Role && name == "SalesReader" {
                 check_native_sales_role_rights(&authority, &source, &at, xml, &mut evidence);
                 assert!(verified.insert(format!("{at}.Right")), "duplicate {at}");
+            } else if route.reader() == LogicalReader::Subsystem && name == "СтандартныеПодсистемы"
+            {
+                check_native_subsystem(&authority, &source, &at, xml, &mut evidence);
+                assert!(verified.insert(format!("{at}.Subsystem")), "duplicate {at}");
             }
         }
         assert!(verified.contains("main:XDTOPackage.EnterpriseData_1_17_3.Type"));
         assert!(verified.contains("main:Role.SalesReader.Right"));
+        assert!(verified.contains("main:Subsystem.СтандартныеПодсистемы.Subsystem"));
         assert!(
             verified.contains(
                 "main:ExternalDataSource.AllKindsExternalSource.Cube.Sales.DimensionTable"
@@ -2388,6 +2393,143 @@ fn check_native_sales_role_rights(
             None,
             &origin,
             AddressEvidence::Read(&at),
+        );
+    }
+}
+
+fn check_native_subsystem(
+    authority: &LogicalViewReadAuthority<'_>,
+    source: &Path,
+    owner: &QualifiedAddress,
+    format: &str,
+    evidence: &mut EvidenceRows,
+) {
+    const PARENT: &str = "СтандартныеПодсистемы";
+    const CHILD: &str = "БазоваяФункциональность";
+    const CONTENT_ITEM_NS: &str = "http://v8.1c.ru/8.3/xcf/readable";
+    let parent_descriptor = source.join(format!("Subsystems/{PARENT}.xml"));
+    let child_descriptor = parent_descriptor
+        .with_extension("")
+        .join(format!("Subsystems/{CHILD}.xml"));
+    let parent = owner.to_string();
+    let branch = QualifiedAddress::parse(&format!("{parent}.Subsystem")).unwrap();
+    let child = branch.member(CHILD).unwrap().to_string();
+    let line = authority.platform_profile().line();
+    for (at, descriptor, name, uuid, children) in [
+        (
+            &parent,
+            &parent_descriptor,
+            PARENT,
+            "a463669b-6d24-58c2-8f3c-9a043a8abd57",
+            &[CHILD][..],
+        ),
+        (
+            &child,
+            &child_descriptor,
+            CHILD,
+            "019b1d43-0392-5735-bf96-57691a956f90",
+            &[][..],
+        ),
+    ] {
+        let xml = read_fixture_descriptor(descriptor);
+        let document = parse_fixture_descriptor(&xml, descriptor);
+        assert_eq!(document.root_element().attribute("version"), Some(format));
+        let artifact = fixture_artifact(&document, "Subsystem", descriptor);
+        assert_eq!(artifact.attribute("uuid"), Some(uuid));
+        assert_eq!(fixture_properties_name(artifact), Some(name));
+        assert_eq!(
+            artifact
+                .children()
+                .filter(|node| node.has_tag_name((MD_CLASSES_NS, "ChildObjects")))
+                .count(),
+            1,
+            "{at}: native ChildObjects container",
+        );
+        let registered: Vec<_> = native_child_objects(artifact)
+            .map(|node| {
+                assert!(node.has_tag_name((MD_CLASSES_NS, "Subsystem")));
+                node.text().expect("native Subsystem registration")
+            })
+            .collect();
+        assert_eq!(registered, children, "{at}: native children");
+        let content = artifact
+            .children()
+            .find(|node| node.has_tag_name((MD_CLASSES_NS, "Properties")))
+            .and_then(|props| {
+                props
+                    .children()
+                    .find(|node| node.has_tag_name((MD_CLASSES_NS, "Content")))
+            })
+            .expect("native Subsystem Content");
+        let refs: Vec<_> = content
+            .children()
+            .filter(|node| node.is_element())
+            .map(|node| {
+                assert!(node.has_tag_name((CONTENT_ITEM_NS, "Item")));
+                node.text().expect("native Subsystem content target")
+            })
+            .collect();
+        assert_eq!(refs, ["CommonModule.EventHandlers"], "{at}: native content");
+
+        let origin = fixture_origin(descriptor);
+        let view = read(authority, at);
+        assert_eq!(view["kind"], "Subsystem");
+        let relation = format!("{at}.Relation");
+        let target = format!("main:{}", refs[0]);
+        check_native_branch(
+            authority,
+            &view,
+            &relation,
+            &BTreeSet::from([target.clone()]),
+        );
+        assert_eq!(
+            read(authority, &relation)["items"],
+            serde_json::json!([{"relation": "content", "at": target, "kind": "CommonModule"}]),
+            "{at}: exact Relation content",
+        );
+        evidence.record(
+            line,
+            at,
+            "Relation",
+            None,
+            &origin,
+            AddressEvidence::Read(&relation),
+        );
+
+        let subsystem = format!("{at}.Subsystem");
+        if let [name] = registered.as_slice() {
+            let member = branch.member(name).unwrap().to_string();
+            check_native_branch(
+                authority,
+                &view,
+                &subsystem,
+                &BTreeSet::from([member.clone()]),
+            );
+            assert_eq!(member, child);
+            evidence.record(
+                line,
+                at,
+                "Subsystem",
+                None,
+                &origin,
+                AddressEvidence::Read(&member),
+            );
+        } else {
+            assert!(
+                !addresses(&view, "branches").contains(&subsystem),
+                "{at}: empty child list"
+            );
+            let empty = read(authority, &subsystem);
+            assert_eq!(empty["kind"], "Subsystem");
+            assert!(addresses(&empty, "items").is_empty(), "{subsystem}");
+        }
+        evidence.record(
+            line,
+            at,
+            "Subsystem",
+            None,
+            &origin,
+            AddressEvidence::Read(&subsystem),
         );
     }
 }

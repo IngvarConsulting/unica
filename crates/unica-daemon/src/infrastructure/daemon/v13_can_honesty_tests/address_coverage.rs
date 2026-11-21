@@ -7,6 +7,7 @@ const EVIDENCE_TEST_CASE: &str =
     "medium_published_document_and_bsl_branches_have_canonical_addresses";
 const MD_CLASSES_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 const MXL_NS: &str = "http://v8.1c.ru/8.2/data/spreadsheet";
+const COMMAND_INTERFACE_NS: &str = "http://v8.1c.ru/8.3/xcf/extrnprops";
 
 enum Evidence<'a> {
     Read(&'a str),
@@ -716,6 +717,171 @@ fn native_mxl_row_items(
     (body, parameters)
 }
 
+fn interface_value<'a>(parent: roxmltree::Node<'a, '_>, tag: &str) -> &'a str {
+    parent
+        .children()
+        .find(|node| node.has_tag_name((COMMAND_INTERFACE_NS, tag)))
+        .and_then(|node| node.text())
+        .unwrap_or_else(|| panic!("missing interface {tag}"))
+}
+
+fn check_native_subsystem_interface(
+    runtime: &V5CanonicalInvocationRuntime,
+    fixture: &Fixture,
+    evidence: &mut EvidenceRows,
+) {
+    const NS: &str = COMMAND_INTERFACE_NS;
+    const READABLE_NS: &str = "http://v8.1c.ru/8.3/xcf/readable";
+    const NAME: &str = "Подсистема1";
+    const OWNER: &str = "main:Subsystem.Подсистема1";
+    const ORIGIN: (&str, &str) = (
+        "workspace-command-groups",
+        "Subsystems/Подсистема1/Ext/CommandInterface.xml",
+    );
+    let configuration = fixture_xml(fixture, OWNER, "Configuration.xml");
+    let configuration =
+        roxmltree::Document::parse(configuration.trim_start_matches('\u{feff}')).unwrap();
+    let root = configuration.root_element();
+    let registered = metadata_child(metadata_child(root, "Configuration"), "ChildObjects");
+    assert_eq!(
+        registered
+            .children()
+            .filter(|node| node.has_tag_name((MD_CLASSES_NS, "Subsystem")))
+            .filter(|node| node.text() == Some(NAME))
+            .count(),
+        1,
+    );
+    let raw = fixture_xml(fixture, OWNER, "Subsystems/Подсистема1.xml");
+    let descriptor = roxmltree::Document::parse(raw.trim_start_matches('\u{feff}')).unwrap();
+    let subsystem = check_metadata_identity(descriptor.root_element(), "Subsystem", NAME);
+    assert!(subsystem
+        .attribute("uuid")
+        .is_some_and(unica_xml_format::names::is_valid_uuid));
+    let raw_content = metadata_child(metadata_child(subsystem, "Properties"), "Content");
+    let content_count = raw_content
+        .children()
+        .filter(|node| node.has_tag_name((READABLE_NS, "Item")))
+        .count();
+    assert_eq!(content_count, 3);
+    assert!(metadata_child(subsystem, "ChildObjects")
+        .first_element_child()
+        .is_none());
+
+    let raw = fixture_xml(fixture, OWNER, ORIGIN.1);
+    let interface = roxmltree::Document::parse(raw.trim_start_matches('\u{feff}')).unwrap();
+    let root = interface.root_element();
+    assert!(root.has_tag_name((NS, "CommandInterface")));
+    assert_eq!(root.attribute("version"), Some("2.20"));
+    assert_eq!(
+        descriptor.root_element().attribute("version"),
+        root.attribute("version")
+    );
+    assert_eq!(
+        configuration.root_element().attribute("version"),
+        root.attribute("version")
+    );
+    let sections: Vec<_> = root.children().filter(|node| node.is_element()).collect();
+    let [placement, order, groups] = sections.as_slice() else {
+        panic!("native interface should have placement, command order, and group order");
+    };
+    assert!(placement.has_tag_name((NS, "CommandsPlacement")));
+    assert!(order.has_tag_name((NS, "CommandsOrder")));
+    assert!(groups.has_tag_name((NS, "GroupsOrder")));
+    let group_names: Vec<_> = groups
+        .children()
+        .filter(|node| node.is_element())
+        .map(|node| {
+            assert!(node.has_tag_name((NS, "Group")));
+            node.text().unwrap()
+        })
+        .collect();
+    assert_eq!(group_names.len(), 4);
+    let commands: Vec<_> = placement
+        .children()
+        .filter(|node| node.is_element())
+        .collect();
+    let [command] = commands.as_slice() else {
+        panic!("native interface should have exactly one command placement");
+    };
+    assert!(command.has_tag_name((NS, "Command")));
+    let reference = command.attribute("name").unwrap();
+    let target = format!("main:{reference}");
+    let placement_value = interface_value(*command, "Placement");
+    let group_name = interface_value(*command, "CommandGroup");
+    assert!(group_names.contains(&group_name));
+    let mut orders = BTreeMap::<_, Vec<_>>::new();
+    for command in order.children().filter(|node| node.is_element()) {
+        assert!(command.has_tag_name((NS, "Command")));
+        let name = interface_value(command, "CommandGroup");
+        assert!(group_names.contains(&name));
+        orders
+            .entry(name)
+            .or_default()
+            .push(command.attribute("name").unwrap());
+    }
+    assert_eq!(
+        orders.get(group_name).map(Vec::as_slice),
+        Some(["Catalog.Справочник1.StandardCommand.Create", reference].as_slice())
+    );
+
+    let interface_at = format!("{OWNER}.Interface");
+    let relation_at = format!("{OWNER}.Relation");
+    let command_at = format!("{interface_at}.Command");
+    let group_at = format!("{interface_at}.Group");
+    let (subsystem, _) = read_view(runtime, &fixture.workspace, OWNER);
+    check_fixture_branches(
+        &subsystem,
+        [
+            (&relation_at, FixtureBranch::Present(content_count)),
+            (&interface_at, FixtureBranch::Present(1)),
+        ],
+    );
+    let (interface, _) = read_view(runtime, &fixture.workspace, &interface_at);
+    assert_eq!(interface["kind"], "Interface");
+    check_fixture_branches(
+        &interface,
+        [
+            (&command_at, FixtureBranch::Present(commands.len())),
+            (&group_at, FixtureBranch::Present(group_names.len())),
+        ],
+    );
+    let (_, command_items) = read_view(runtime, &fixture.workspace, &command_at);
+    let [item] = command_items.as_slice() else {
+        panic!("{command_at}: expected one canonical target");
+    };
+    assert_eq!(item["at"], target);
+    assert_eq!(item["props"]["group"], group_name);
+    assert_eq!(item["props"]["placement"], placement_value);
+    let (target_view, _) = read_view(runtime, &fixture.workspace, &target);
+    assert_eq!(target_view["kind"], "CommonCommand");
+
+    let (_, groups) = read_view(runtime, &fixture.workspace, &group_at);
+    assert_eq!(groups.len(), group_names.len());
+    let groups_at = parsed(&group_at);
+    for (index, (item, name)) in groups.iter().zip(group_names).enumerate() {
+        let at = groups_at.member(name).unwrap().to_string();
+        let commands = orders.get(name).map_or(&[][..], Vec::as_slice);
+        assert_eq!(
+            *item,
+            json!({
+                "at": at, "kind": "Group", "title": name,
+                "order": index + 1, "commands": commands.len(),
+            })
+        );
+        let (view, items) = read_view(runtime, &fixture.workspace, &at);
+        assert_eq!(view["kind"], "Group", "{at}");
+        let expected: Vec<_> = commands
+            .iter()
+            .enumerate()
+            .map(|(index, command)| json!({"order": index + 1, "command": command}))
+            .collect();
+        assert_eq!(items, expected, "{at}");
+    }
+    for at in [&interface_at, &command_at, &group_at] {
+        evidence.record(fixture, ORIGIN, at);
+    }
+}
+
 fn check_resource(
     runtime: &V5CanonicalInvocationRuntime,
     fixture: &Fixture,
@@ -1004,21 +1170,12 @@ fn medium_published_document_and_bsl_branches_have_canonical_addresses() {
                 check_mxl_xml(&runtime, &fixture, &mut evidence);
                 check_native_mxl_rows(&runtime, &fixture, &mut evidence);
             }
+            "workspace-command-groups" => {
+                check_native_subsystem_interface(&runtime, &fixture, &mut evidence)
+            }
             "workspace-external-alias" => check_external_modules(&runtime, &fixture, &mut evidence),
             "workspace-code" => check_extension_common_module(&runtime, &fixture, &mut evidence),
             _ => {}
-        }
-        if name == "workspace-command-groups" {
-            let interface = "main:Subsystem.Подсистема1.Interface";
-            let group = format!("{interface}.Group");
-            for at in [interface, &format!("{interface}.Command"), &group] {
-                assert!(table.iter().any(|(_, _, row, _)| row == at), "{at}");
-            }
-            let (_, groups) = read_view(&runtime, &fixture.workspace, &group);
-            assert!(groups.iter().any(|row| {
-                row["at"].as_str()
-                    == Some(r"main:Subsystem.Подсистема1.Interface.Group.CommandGroup\.ГруппаБ")
-            }));
         }
         if name == "workspace-configuration-support" {
             assert!(table
