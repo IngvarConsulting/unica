@@ -1346,7 +1346,7 @@ fn check_native_dcs_groups(
     let totals = native_dcs_children(root, "totalField").map(|node| {
         let name = native_dcs_text(node, "dataPath");
         let expression = native_dcs_text(node, "expression");
-        (name, vec![("dataPath", name), ("expression", expression)])
+        (name, vec![("expression", expression)])
     });
     check_native_dcs_branch(authority, owner, "Total", totals, &origin, source, evidence);
 
