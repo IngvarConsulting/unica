@@ -202,14 +202,25 @@ fn resolve_bot_module_round_trips_its_native_platform_path() {
 const SEQUENCE_RECORD_SET: &str = "main:Sequence.Probe.Module.RecordSet";
 const SEQUENCE_RECORD_SET_PATH: &str = "Sequences/Probe/Ext/RecordSetModule.bsl";
 const SEQUENCE_PROBE_METHOD: &str = "UnicaSequenceRoundTripProbe";
-const SEQUENCE_FORMATS: [&str; 3] = ["2.20", "2.21", "2.22"];
+const SEQUENCE_FIXTURES: [(&str, &str); 3] = [
+    (
+        "2.20",
+        "../../tests/fixtures/formats/platform_xml/2.20/all_kinds",
+    ),
+    (
+        "2.21",
+        "../../tests/fixtures/formats/platform_xml/2.21/all_kinds",
+    ),
+    (
+        "2.22",
+        "../../tests/fixtures/formats/platform_xml/2.22/all_kinds",
+    ),
+];
 
-fn sequence_module_workspace(format: &str) -> tempfile::TempDir {
+fn sequence_module_workspace(fixture: &str) -> tempfile::TempDir {
     let root = tempfile::tempdir().unwrap();
     copy_tree(
-        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
-            "../../tests/fixtures/formats/platform_xml/{format}/all_kinds"
-        )),
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(fixture),
         root.path(),
     );
     root
@@ -219,8 +230,8 @@ fn sequence_module_workspace(format: &str) -> tempfile::TempDir {
 /// rule: INV.SOURCE.RESOLVED-RESOURCE-IDENTITY
 #[test]
 fn sequence_record_set_module_is_reachable_and_resolves_its_native_path() {
-    for format in SEQUENCE_FORMATS {
-        let root = sequence_module_workspace(format);
+    for (format, fixture) in SEQUENCE_FIXTURES {
+        let root = sequence_module_workspace(fixture);
         let src = root.path().join("src");
         let native = src.join(SEQUENCE_RECORD_SET_PATH);
         let wrong_role = "Sequences/Probe/Ext/ObjectModule.bsl";
@@ -284,8 +295,8 @@ fn sequence_record_set_module_is_reachable_and_resolves_its_native_path() {
 /// rule: INV.SOURCE.TAIL-INSERT
 #[test]
 fn sequence_record_set_first_insert_and_blank_replacement_use_public_apply() {
-    for format in SEQUENCE_FORMATS {
-        let root = sequence_module_workspace(format);
+    for (format, fixture) in SEQUENCE_FIXTURES {
+        let root = sequence_module_workspace(fixture);
         let src = root.path().join("src");
         let path = src.join(SEQUENCE_RECORD_SET_PATH);
         let native = std::fs::read_to_string(&path).unwrap();
