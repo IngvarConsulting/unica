@@ -9,6 +9,8 @@ const NONCE: &str = "fb9824d8-6c77-4219-86b6-54f935a83c8e";
 enum Script {
     /// Выгрузка готова, отказ от публикации принят.
     Exports,
+    DumpInfoIsDirectory,
+    OnlyDumpInfo,
     /// Раннер отказал до выгрузки.
     RefusesBeforeReady,
     /// Итог утверждает публикацию, хотя её отклонили.
@@ -110,10 +112,17 @@ impl ProcessRunner for ProtocolRunner {
         let (publication, result) = if self.script == Script::RefusesBeforeReady || !continued {
             ("not_published", refused("the platform refused"))
         } else {
-            // Опись раннер забирает из стадии до `ready`; заготовка оставляет
-            // её, чтобы проверить, что снимок её не отдаёт и без этого.
-            fs::write(stage.join("Configuration.xml"), "<base/>").unwrap();
-            fs::write(stage.join("ConfigDumpInfo.xml"), "<versions/>").unwrap();
+            // Раннер забирает новую опись платформы до `ready`, но может
+            // сохранить старую опись из исходников.
+            if self.script != Script::OnlyDumpInfo {
+                fs::write(stage.join("Configuration.xml"), "<base/>").unwrap();
+            }
+            let dump_info = stage.join("ConfigDumpInfo.xml");
+            if self.script == Script::DumpInfoIsDirectory {
+                fs::create_dir(dump_info).unwrap();
+            } else {
+                fs::write(dump_info, "<versions/>").unwrap();
+            }
             answer(frame(json!({
                 "phase": "ready", "version": 1, "nonce": NONCE, "command": "pull",
                 "requested_mode": "FULL", "mode": "FULL", "extension": null,
@@ -278,6 +287,33 @@ fn a_refused_or_unconfirmed_fetch_leaves_no_snapshot() {
 
 /// rule: INV.RUNTIME.FETCH-LEAVES-THE-WORKING-COPY
 #[test]
+fn fetch_rejects_a_stage_without_a_clean_export() {
+    for (script, message) in [
+        (
+            Script::DumpInfoIsDirectory,
+            "could not remove ConfigDumpInfo.xml",
+        ),
+        (Script::OnlyDumpInfo, "prepared an empty fetch snapshot"),
+    ] {
+        let workspace = workspace();
+        let root = workspace.path();
+        fs::write(root.join("main/ConfigDumpInfo.xml"), "<local-versions/>").unwrap();
+        let before = tree(&root.join("main"));
+        let runner = ProtocolRunner::new(script);
+
+        let result = run(root, &prepared(root, false), &runner);
+
+        assert_eq!(runner.decisions(), ["selected:continue", "ready:rejected"]);
+        assert!(!result.ok, "{result:?}");
+        assert!(result.summary.contains(message), "{result:?}");
+        assert!(result.changed.is_empty(), "{result:?}");
+        assert!(snapshots(root).is_empty(), "{:?}", snapshots(root));
+        assert_eq!(tree(&root.join("main")), before);
+    }
+}
+
+/// rule: INV.RUNTIME.FETCH-LEAVES-THE-WORKING-COPY
+#[test]
 fn a_fetch_keeps_the_newest_snapshots_only() {
     let workspace = workspace();
     let root = workspace.path();
@@ -397,9 +433,12 @@ fn fetch_drop_deletes_one_snapshot_and_treats_an_absent_one_as_deleted() {
         fs::write(snapshot.join("Configuration.xml"), "<base/>").unwrap();
     }
 
-    let preview =
-        PreparedSourceExport::parse_fetch_drop(&drop_request(root, json!({"snapshotId": id}), true))
-            .unwrap();
+    let preview = PreparedSourceExport::parse_fetch_drop(&drop_request(
+        root,
+        json!({"snapshotId": id}),
+        true,
+    ))
+    .unwrap();
     assert!(!preview.holds_source_writes());
     let planned = preview.execute(CancellationToken::new());
     assert!(planned.ok, "{planned:?}");

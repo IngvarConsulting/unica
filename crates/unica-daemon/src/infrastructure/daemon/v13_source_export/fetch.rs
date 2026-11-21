@@ -216,7 +216,10 @@ impl PreparedSourceExport {
 /// Идентификатор снимка: 32 строчные шестнадцатеричные цифры. Другое имя не
 /// может указать за пределы каталога снимков.
 fn valid_snapshot_id(id: &str) -> bool {
-    id.len() == 32 && id.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    id.len() == 32
+        && id
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 /// Удаляет каталог одного снимка. Отсутствующий снимок уже удалён: ответ
@@ -229,7 +232,9 @@ pub(super) fn drop_snapshot(prepared: &PreparedSourceExport, id: &str) -> Domain
             "fetch.drop could not resolve the workspace root",
         );
     };
-    let path = root.join(SNAPSHOT_ROOT.iter().collect::<PathBuf>()).join(id);
+    let path = root
+        .join(SNAPSHOT_ROOT.iter().collect::<PathBuf>())
+        .join(id);
     let snapshot = relative(&path, &root);
     let exists = path.is_dir();
     if prepared.dry_run {
@@ -367,8 +372,6 @@ pub(super) fn execute_with_tool(
             return result;
         }
     };
-    // Опись версий принадлежит памяти раннера и в снимок не входит.
-    let _ = std::fs::remove_file(stage.join("ConfigDumpInfo.xml"));
     let snapshot = relative(&stage, &root);
     let mut result = DomainResult::success(format!(
         "fetch exported source set `{source_set}` of the infobase into {snapshot}; the sources, the runner's memory and the infobase are unchanged"
@@ -386,7 +389,9 @@ pub(super) fn execute_with_tool(
         "generation": Value::Null,
         "generationReason": "the pinned v8-runner does not report the infobase generation of a snapshot",
     }));
-    result.changed.push(json!({"path": snapshot, "kind": "created"}));
+    result
+        .changed
+        .push(json!({"path": snapshot, "kind": "created"}));
     note_runner_warnings(&mut result, &envelope);
     result.warnings.append(&mut warnings);
     result
@@ -561,7 +566,13 @@ fn exchange(
     }
     let output = match output {
         Ok(output) => output,
-        Err(error) => return Err(retag(runner_start_rejection(Some(FETCH.into()), &error, &tool.program))),
+        Err(error) => {
+            return Err(retag(runner_start_rejection(
+                Some(FETCH.into()),
+                &error,
+                &tool.program,
+            )))
+        }
     };
     if output.cancelled {
         return Err(reject_fetch(RefusalCode::Cancelled, "fetch was cancelled"));
@@ -582,7 +593,9 @@ fn exchange(
         )));
     }
     if output.line_error.is_some() || output.stopped_by_consumer {
-        return Err(invalid("v8-runner returned an unreadable publication stream"));
+        return Err(invalid(
+            "v8-runner returned an unreadable publication stream",
+        ));
     }
     let Some((publication, memory, envelope)) = terminal else {
         return Err(invalid("v8-runner ended without a publication outcome"));
@@ -597,7 +610,7 @@ fn exchange(
             "v8-runner returned a result for a different operation",
         ));
     }
-    if !ready || !stage_holds_an_export(stage) {
+    if !ready {
         // До `ready` раннер отказал сам: его отказ — ответ.
         let code = envelope["error"]["code"]
             .as_str()
@@ -616,12 +629,28 @@ fn exchange(
             &envelope,
         ));
     }
+    remove_legacy_dump_info(stage)?;
+    if !stage_holds_an_export(stage) {
+        return Err(invalid("v8-runner prepared an empty fetch snapshot"));
+    }
     Ok(envelope)
+}
+
+/// Раннер может перенести старую опись из исходников в стадию.
+fn remove_legacy_dump_info(stage: &Path) -> Result<(), DomainResult> {
+    match std::fs::remove_file(stage.join("ConfigDumpInfo.xml")) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(invalid(&format!(
+            "fetch could not remove ConfigDumpInfo.xml from its snapshot: {error}"
+        ))),
+    }
 }
 
 /// Пустая стадия готовым снимком не становится.
 fn stage_holds_an_export(stage: &Path) -> bool {
-    std::fs::read_dir(stage).is_ok_and(|mut entries| entries.next().is_some())
+    std::fs::read_dir(stage)
+        .is_ok_and(|mut entries| entries.next().is_some_and(|entry| entry.is_ok()))
 }
 
 /// Отпечаток набора: sha256 строк «путь от каталога набора через `/`, NUL,
