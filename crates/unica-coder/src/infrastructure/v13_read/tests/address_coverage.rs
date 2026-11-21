@@ -280,7 +280,7 @@ fn native_recalculation_module_address_table_matches_registered_owner() {
         .expect("native fixture must register a Recalculation");
 
     let parent = read(&authority, register);
-    check_described_branch(&authority, &parent, &parent_branch, &native_owners);
+    check_native_branch(&authority, &parent, &parent_branch, &native_owners);
     let owners = native_owners;
     println!(
         "| {} | CalculationRegister | Recalculation | {parent_branch} |",
@@ -334,20 +334,37 @@ fn native_metadata_address_table_matches_declared_and_observed_child_branches() 
         let profile = PlatformProfile::for_line(line).unwrap();
         let cancellation = CancellationToken::new();
         let authority = native_authority(&cancellation, &source, profile);
-        let mut described = BTreeSet::new();
+        let mut verified = BTreeSet::new();
         for (kind, name) in root_registrations(&source, xml) {
             let at = QualifiedAddress::parse(&format!("main:{kind}.{name}")).unwrap();
             let route = route_logical_address(&at, profile).unwrap();
             if route.reader() == LogicalReader::Metadata {
-                check_metadata_owner(&authority, &source, &at, &mut described);
+                check_metadata_owner(&authority, &source, &at, &mut verified);
             }
         }
         assert!(
-            described.contains(
+            verified.contains(
                 "main:ExternalDataSource.AllKindsExternalSource.Cube.Sales.DimensionTable"
             ),
             "XML {xml}: native fixture must witness a registered DimensionTable under Cube.Sales"
         );
+        for branch in [
+            "main:WebService.ОбменДанными.Operation.ПринятьПакет.Parameter",
+            "main:HTTPService.ПроверкаСвязи.URLTemplate.Пинг.Method",
+        ] {
+            assert!(
+                verified.contains(branch),
+                "XML {xml}: native fixture must witness inline {branch}"
+            );
+        }
+        if metadata_kind_exists(Some(line), NodeKind::Queue.as_str()) {
+            for branch in ["main:Queue.Probe.Attribute", "main:Queue.Probe.Dimension"] {
+                assert!(
+                    verified.contains(branch),
+                    "XML {xml}: native fixture must witness inline {branch}"
+                );
+            }
+        }
         check_eds_module_rows(&authority, &source, &cancellation);
     }
 }
@@ -419,7 +436,7 @@ fn check_metadata_owner(
     authority: &LogicalViewReadAuthority<'_>,
     source: &Path,
     owner: &QualifiedAddress,
-    described: &mut BTreeSet<String>,
+    verified: &mut BTreeSet<String>,
 ) {
     let profile = authority.platform_profile();
     let route = route_logical_address(owner, profile).unwrap();
@@ -428,15 +445,18 @@ fn check_metadata_owner(
     let xml = read_fixture_descriptor(&descriptor);
     let document = parse_fixture_descriptor(&xml, &descriptor);
     let artifact = fixture_artifact(&document, kind, &descriptor);
-    let native_branches = native_described_branches(&owner.to_string(), &descriptor, artifact);
+    let owner_at = owner.to_string();
+    let native_branches = native_described_branches(&owner_at, &descriptor, artifact);
+    let mut inline = BTreeMap::new();
+    collect_native_inline_branches(owner, artifact, &mut BTreeSet::new(), &mut inline);
     let admitted = authority.snapshot(owner).unwrap();
     let payload = authority
         .typed_payload_for(&route, &admitted)
         .unwrap_or_else(|error| panic!("{owner}: {error:?}"));
-    let published = read(authority, &owner.to_string());
+    let published = read(authority, &owner_at);
     let (facts, addressing_issue) = owner_facts(owner, &payload);
     for (branch, expected) in native_branches {
-        check_described_branch(authority, &published, &branch, &expected);
+        check_native_branch(authority, &published, &branch, &expected);
         let child_kind = branch.rsplit('.').next().unwrap();
         for item in &expected {
             assert_eq!(read(authority, item)["kind"], child_kind, "{item}");
@@ -446,7 +466,24 @@ fn check_metadata_owner(
             profile.id(),
             expected.len()
         );
-        described.insert(branch);
+        verified.insert(branch);
+    }
+    for (inline_owner, branches) in inline {
+        let nested_view = (inline_owner != owner_at).then(|| read(authority, &inline_owner));
+        let owner_view = nested_view.as_ref().unwrap_or(&published);
+        for (kind, expected) in branches {
+            let branch = format!("{inline_owner}.{kind}");
+            check_native_branch(authority, owner_view, &branch, &expected);
+            for item in &expected {
+                assert_eq!(read(authority, item)["kind"], kind, "{item}");
+            }
+            println!(
+                "| {} | {inline_owner} | {kind} | {branch} | {} native inline registration(s) |",
+                profile.id(),
+                expected.len()
+            );
+            verified.insert(branch);
+        }
     }
     check_native_child_registrations(owner, artifact, &facts);
     if let Some(reason) = addressing_issue {
@@ -459,7 +496,7 @@ fn check_metadata_owner(
             profile.id()
         );
     }
-    check_metadata_child_branches(authority, source, owner, &published, &facts, described);
+    check_metadata_child_branches(authority, source, owner, &published, &facts, verified);
 }
 
 fn read_fixture_descriptor(path: &Path) -> String {
@@ -574,7 +611,97 @@ fn native_described_branches(
     branches
 }
 
-fn check_described_branch(
+type NativeInlineBranches = BTreeMap<String, BTreeMap<&'static str, BTreeSet<String>>>;
+
+fn collect_native_inline_branches(
+    owner: &QualifiedAddress,
+    artifact: roxmltree::Node<'_, '_>,
+    uuids: &mut BTreeSet<uuid::Uuid>,
+    branches: &mut NativeInlineBranches,
+) {
+    let owner_kind = artifact.tag_name().name();
+    for node in native_child_objects(artifact) {
+        let kind = node.tag_name().name();
+        assert_eq!(
+            node.tag_name().namespace(),
+            Some(MD_CLASSES_NS),
+            "native fixture {owner}: foreign namespace for {kind}"
+        );
+        if nested_place(owner_kind, kind).is_some_and(|place| place.directory.is_some()) {
+            continue;
+        }
+        // These registrations can name a separate object without embedding one.
+        if matches!(kind, "Form" | "Template" | "Command" | "Subsystem")
+            && node.attribute("uuid").is_none()
+            && !node.children().any(|child| child.is_element())
+        {
+            assert!(
+                node.text().is_some_and(|name| !name.trim().is_empty()),
+                "native fixture {owner}: empty {kind} registration"
+            );
+            continue;
+        }
+        let uuid = node
+            .attribute("uuid")
+            .and_then(|value| uuid::Uuid::parse_str(value).ok())
+            .unwrap_or_else(|| {
+                panic!("native fixture {owner}: {kind} has missing or invalid UUID")
+            });
+        assert!(
+            uuids.insert(uuid),
+            "native fixture {owner}: duplicate {kind} UUID {uuid}"
+        );
+        let name = node
+            .children()
+            .find(|child| child.has_tag_name((MD_CLASSES_NS, "Properties")))
+            .and_then(|properties| {
+                properties
+                    .children()
+                    .find(|child| child.has_tag_name((MD_CLASSES_NS, "Name")))
+            })
+            .and_then(|name| name.text())
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| panic!("native fixture {owner}: {kind} has no Properties.Name"));
+        let kind = NodeKind::parse(kind)
+            .unwrap_or_else(|error| panic!("native fixture {owner}: {error}"))
+            .as_str();
+        let branch = QualifiedAddress::parse(&format!("{owner}.{kind}")).unwrap_or_else(|error| {
+            panic!("native fixture {owner}: invalid {kind} branch: {error}")
+        });
+        let item = branch.member(name).unwrap_or_else(|error| {
+            panic!("native fixture {owner}: invalid {kind} name {name}: {error}")
+        });
+        assert!(
+            branches
+                .entry(owner.to_string())
+                .or_default()
+                .entry(kind)
+                .or_default()
+                .insert(item.to_string()),
+            "native fixture {owner}: duplicate {kind}.{name}"
+        );
+        collect_native_inline_branches(&item, node, uuids, branches);
+    }
+}
+
+#[test]
+#[should_panic(expected = "Attribute has missing or invalid UUID")]
+fn native_inline_registration_does_not_skip_a_malformed_member() {
+    let xml = format!(
+        r#"<Catalog xmlns="{MD_CLASSES_NS}"><ChildObjects><Attribute uuid="00000000-0000-0000-0000-000000000001"><Properties><Name>Valid</Name></Properties></Attribute><Attribute><Properties><Name>MissingUuid</Name></Properties></Attribute></ChildObjects></Catalog>"#
+    );
+    let document = roxmltree::Document::parse(&xml).unwrap();
+    let owner = QualifiedAddress::parse("main:Catalog.Probe").unwrap();
+    collect_native_inline_branches(
+        &owner,
+        document.root_element(),
+        &mut BTreeSet::new(),
+        &mut BTreeMap::new(),
+    );
+}
+
+fn check_native_branch(
     authority: &LogicalViewReadAuthority<'_>,
     owner_view: &Value,
     branch: &str,
@@ -654,7 +781,7 @@ fn check_metadata_child_branches(
     owner: &QualifiedAddress,
     published: &Value,
     facts: &[BranchFact<'_>],
-    described: &mut BTreeSet<String>,
+    verified: &mut BTreeSet<String>,
 ) {
     let profile = authority.platform_profile();
     let actual = published_metadata_branches(owner, published, profile);
@@ -704,7 +831,7 @@ fn check_metadata_child_branches(
             {
                 // EDS tables, cubes and dimension tables own descriptors and
                 // their own typed collection facts.
-                check_metadata_owner(authority, source, &item, described);
+                check_metadata_owner(authority, source, &item, verified);
                 continue;
             }
             let branches = item_facts(member);
@@ -714,7 +841,7 @@ fn check_metadata_child_branches(
                 published_metadata_branches(&item, &view, profile),
                 "{item}: collection row and direct view disagree"
             );
-            check_metadata_child_branches(authority, source, &item, &view, &branches, described);
+            check_metadata_child_branches(authority, source, &item, &view, &branches, verified);
         }
     }
 }
