@@ -51,9 +51,29 @@ impl EvidenceRows {
         origin: &str,
         evidence: AddressEvidence<'_>,
     ) {
+        self.record_for_source(
+            (line, self.source_kind),
+            owner,
+            branch,
+            role,
+            origin,
+            evidence,
+        );
+    }
+
+    fn record_for_source(
+        &mut self,
+        source: (PlatformLine, SourceSetKind),
+        owner: &str,
+        branch: &str,
+        role: Option<&str>,
+        origin: &str,
+        evidence: AddressEvidence<'_>,
+    ) {
         if self.directory.is_none() {
             return;
         }
+        let (line, source_kind) = source;
         let owner_address = QualifiedAddress::parse(owner).expect("witness owner address");
         assert_eq!(owner_address.to_string(), owner);
         let owner_shape: Vec<_> = owner_address
@@ -82,7 +102,7 @@ impl EvidenceRows {
                 "record_type": "evidence",
                 "key": {
                     "line": line.to_string(),
-                    "source_kind": self.source_kind,
+                    "source_kind": source_kind,
                     "owner_shape": owner_shape,
                     "branch": branch,
                     "role": role,
@@ -528,6 +548,147 @@ fn native_extension_root_language_matches_registration() {
             None,
             &fixture_origin(&descriptor_path),
             AddressEvidence::Read(&at),
+        );
+    }
+    evidence.finish();
+}
+
+/// rule: INV.SOURCE.EXTERNAL-ARTIFACT-ROOTS
+/// rule: INV.SOURCE.LOGICAL-BRANCH-COUNT
+/// rule: INV.SOURCE.RESOLVED-RESOURCE-IDENTITY
+#[test]
+fn native_external_root_descriptors_match_published_addresses() {
+    use unica_workspace::source_profile::platform_xml_source_profile;
+
+    let mut evidence = EvidenceRows::new(
+        "native_external_root_descriptors_match_published_addresses",
+        SourceSetKind::ExternalProcessor,
+    );
+    for (expected_format, source_kind, relative) in [
+        (
+            "2.20",
+            SourceSetKind::ExternalProcessor,
+            "formats/platform_xml/2.20/external_artifacts/epf/SyntheticProcessor.xml",
+        ),
+        (
+            "2.20",
+            SourceSetKind::ExternalReport,
+            "formats/platform_xml/2.20/external_artifacts/erf/SyntheticReport.xml",
+        ),
+        (
+            "2.21",
+            SourceSetKind::ExternalProcessor,
+            "formats/platform_xml/2.21/empty_external_processor/epf/EmptyProcessor.xml",
+        ),
+        (
+            "2.21",
+            SourceSetKind::ExternalReport,
+            "formats/platform_xml/2.21/empty_external_report/erf/EmptyReport.xml",
+        ),
+        (
+            "2.22",
+            SourceSetKind::ExternalProcessor,
+            "formats/platform_xml/2.22/empty_external_processor/epf/EmptyProcessor.xml",
+        ),
+        (
+            "2.22",
+            SourceSetKind::ExternalReport,
+            "formats/platform_xml/2.22/empty_external_report/erf/EmptyReport.xml",
+        ),
+    ] {
+        let (alias, kind) = match source_kind {
+            SourceSetKind::ExternalProcessor => ("epf", "ExternalDataProcessor"),
+            SourceSetKind::ExternalReport => ("erf", "ExternalReport"),
+            _ => unreachable!("external fixtures use external source kinds"),
+        };
+        let descriptor_path = fixture_path(relative);
+        let file_name = descriptor_path.file_name().unwrap().to_str().unwrap();
+        let descriptor_xml = read_fixture_descriptor(&descriptor_path);
+        let descriptor = parse_fixture_descriptor(&descriptor_xml, &descriptor_path);
+        let format = descriptor.root_element().attribute("version").unwrap();
+        assert_eq!(format, expected_format, "{relative}");
+        let artifact = fixture_artifact(&descriptor, kind, &descriptor_path);
+        let name = fixture_properties_name(artifact).expect("external artifact Properties.Name");
+        assert_eq!(descriptor_path.file_stem().unwrap().to_str(), Some(name));
+        let line = export_format_line(format).unwrap();
+
+        let source = descriptor_path.parent().unwrap().canonicalize().unwrap();
+        let admitted = platform_xml_source_profile(source_kind, &source);
+        let profile = PlatformProfile::for_line_or_base(admitted.semantic_line());
+        println!(
+            "{relative}: export XML {format}, line {line}; admitted profile {}, route profile {}",
+            admitted.canonical_id(),
+            profile.id(),
+        );
+        let root = Arc::new(unica_workspace::read::open_source_directory(&source).unwrap());
+        let cancellation = CancellationToken::new();
+        let authority = LogicalViewReadAuthority::new(
+            &cancellation,
+            alias,
+            "address-coverage-native-external-root",
+            source_kind,
+            Arc::clone(&root),
+            profile,
+        );
+        let owner = format!("{alias}:Configuration");
+        let branch = format!("{alias}:{kind}");
+        let view = read(&authority, &owner);
+        assert_eq!(view["kind"], "Configuration", "{relative}");
+        assert_eq!(
+            addresses(&view, "branches"),
+            BTreeSet::from([branch.clone()])
+        );
+        assert_eq!(view["branches"][0]["count"], 1, "{relative}");
+        assert!(
+            !source.join("Configuration.xml").exists(),
+            "{relative}: virtual root"
+        );
+
+        let at = QualifiedAddress::parse(&branch)
+            .unwrap()
+            .member(name)
+            .unwrap();
+        let at_text = at.to_string();
+        let collection = read(&authority, &branch);
+        assert_eq!(
+            addresses(&collection, "items"),
+            BTreeSet::from([at_text.clone()])
+        );
+        assert_eq!(read(&authority, &at_text)["kind"], kind, "{relative}");
+        assert_eq!(
+            authority.existing_export_path(&at, None).unwrap(),
+            file_name,
+            "{relative}"
+        );
+        let layout = [LayoutFindSource::new(alias, source_kind, &root)];
+        let located = WorkspaceFindDirectoryBuilder::default()
+            .locate_path(
+                &layout,
+                file_name,
+                ProviderDeadline::no_deadline(),
+                &cancellation,
+            )
+            .unwrap()
+            .unwrap_or_else(|| panic!("missing source identity for {relative}"));
+        assert_eq!(located.at(), at_text, "{relative}");
+        assert_eq!(located.placed_path(), Some(file_name), "{relative}");
+
+        let origin = fixture_origin(&descriptor_path);
+        evidence.record_for_source(
+            (line, source_kind),
+            &owner,
+            kind,
+            None,
+            &origin,
+            AddressEvidence::Read(&branch),
+        );
+        evidence.record_for_source(
+            (line, source_kind),
+            &owner,
+            kind,
+            None,
+            &origin,
+            AddressEvidence::RoundTrip(&at_text),
         );
     }
     evidence.finish();

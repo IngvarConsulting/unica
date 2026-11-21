@@ -17,6 +17,7 @@ REPO = Path(__file__).resolve().parents[2]
 EMITTER_ENV = "UNICA_484_ADDRESS_JSONL_DIR"
 SCHEMA_VERSION = 1
 EXTENSION_LANGUAGE_SHARD = "native_extension_root_language_matches_registration"
+EXTERNAL_ROOT_SHARD = "native_external_root_descriptors_match_published_addresses"
 NATIVE_SHARDS = frozenset({
     "native_configuration_root_address_table_matches_published_branches",
     "native_ordinary_interface_has_a_registration_only_root_branch",
@@ -24,11 +25,15 @@ NATIVE_SHARDS = frozenset({
     "native_metadata_address_table_matches_declared_and_observed_child_branches",
     "native_form_and_template_addresses_follow_text_registrations",
     EXTENSION_LANGUAGE_SHARD,
+    EXTERNAL_ROOT_SHARD,
 })
 DAEMON_SHARD = "medium_published_document_and_bsl_branches_have_canonical_addresses"
 NATIVE_SCOPE = (
     "Configuration source sets and native Language registrations in extension source sets "
-    "across three platform lines in the unica-coder address_coverage tests."
+    "across three platform lines, plus native external processor and report root descriptors "
+    "in the unica-coder address_coverage tests. For these external root witnesses, key.line "
+    "records the native XML export line. Read checks use the actual workspace profile selector "
+    "and establish neither write support nor a match with the runtime profile."
 )
 DAEMON_SCOPE = (
     "Read witnesses from the selected document and BSL coverage test of unica-daemon, "
@@ -80,6 +85,8 @@ def validate_record(record: object, test_case: str) -> None:
     allowed_kinds = ("configuration",)
     if test_case == EXTENSION_LANGUAGE_SHARD:
         allowed_kinds = ("extension",)
+    elif test_case == EXTERNAL_ROOT_SHARD:
+        allowed_kinds = ("external_processor", "external_report")
     elif test_case == DAEMON_SHARD:
         allowed_kinds = ("configuration", "extension", "external_processor", "external_report")
     if source_kind not in allowed_kinds:
