@@ -448,3 +448,88 @@ fn filter_criterion_create_resolves_references_in_the_staged_source_set() {
         std::fs::read_to_string(fixture.source.join("FilterCriteria/ForProducts.xml")).unwrap();
     assert!(xml.contains("<v8:Type>cfg:CatalogRef.Products</v8:Type>"));
 }
+
+/// rule: INV.SOURCE.REVISION-PROJECTION-CAPTURE-EQUALITY
+/// rule: INV.SOURCE.RETAINED-APPLY-WRITE-FREE
+#[test]
+fn filter_criterion_create_refuses_missing_wrong_and_stale_reference_descriptors() {
+    for (fault, code) in [
+        ("missing", "not_found"),
+        ("identity", "invalid_source"),
+        ("format", "invalid_source"),
+        ("stale", "stale_revision"),
+    ] {
+        let fixture = Fixture::blank();
+        let runtime = runtime();
+        publish(
+            &runtime,
+            &fixture,
+            json!({"at":"main:Configuration","ops":[
+                {"op":"object.create","args":{"values":{"kind":"Catalog","name":"Products"}}}
+            ]}),
+        );
+        let request = json!({"at":"main:Configuration","ops":[
+            {"op":"object.create","args":{"values":{
+                "kind":"FilterCriterion","name":"ByProduct",
+                "type":{"variants":[{"kind":"reference","metadataPath":"Catalog.Products"}]}
+            }}}
+        ]});
+        let descriptor = fixture.source.join("Catalogs/Products.xml");
+        let original = std::fs::read_to_string(&descriptor).unwrap();
+        let execution = match fault {
+            "missing" => {
+                std::fs::remove_file(&descriptor).unwrap();
+                request
+            }
+            "identity" | "format" => {
+                let (old, new) = if fault == "identity" {
+                    ("<Name>Products</Name>", "<Name>Services</Name>")
+                } else {
+                    ("version=\"2.20\"", "version=\"2.21\"")
+                };
+                assert!(original.contains(old), "{fault}: {original}");
+                std::fs::write(&descriptor, original.replace(old, new)).unwrap();
+                request
+            }
+            _ => {
+                let before = unica_workspace::test_support::tree_snapshot(&fixture.source);
+                let planned = call(&runtime, &fixture, ToolIdentity::Apply, request);
+                assert!(planned.ok, "{planned:?}");
+                assert_eq!(
+                    unica_workspace::test_support::tree_snapshot(&fixture.source),
+                    before
+                );
+                assert!(original.contains("<Comment/>"));
+                std::fs::write(
+                    &descriptor,
+                    original.replace("<Comment/>", "<Comment>Independent change</Comment>"),
+                )
+                .unwrap();
+                json!({"executionToken":planned.data.unwrap()["executionToken"].as_str().unwrap()})
+            }
+        };
+
+        let before = unica_workspace::test_support::tree_snapshot(&fixture.source);
+        let refused = call(&runtime, &fixture, ToolIdentity::Apply, execution);
+        assert!(!refused.ok, "{fault}: {refused:?}");
+        assert!(
+            refused
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic["code"] == code),
+            "{fault}: {refused:?}"
+        );
+        if fault != "stale" {
+            assert_eq!(
+                refused.at.as_deref(),
+                Some("ops[0].args.values.type.variants[0].metadataPath"),
+                "{fault}: {refused:?}"
+            );
+        }
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&fixture.source),
+            before,
+            "{fault}"
+        );
+    }
+}
