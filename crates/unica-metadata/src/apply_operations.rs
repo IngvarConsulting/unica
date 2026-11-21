@@ -323,6 +323,11 @@ fn offer_creatable_kinds(
         .filter(|kind| !extension || kind.created_in_extension())
         .map(crate::CreatableKind::as_str)
         .partition(|kind| metadata_kind_exists(line, kind));
+    if offered.contains(&"CommonTemplate") {
+        values["properties"]["kind"]["description"] = serde_json::json!(
+            "CommonTemplate creates an empty BinaryData template without a content file."
+        );
+    }
     values["properties"]["kind"]["enum"] = serde_json::json!(offered);
     if later.is_empty() {
         return;
