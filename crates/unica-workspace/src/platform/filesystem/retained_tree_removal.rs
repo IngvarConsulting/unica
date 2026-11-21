@@ -64,56 +64,81 @@ pub(crate) fn remove(
 
     let quarantine =
         open_quarantine(parent).map_err(|error| StateTreeRemovalError::new(error, expected))?;
-    let payload_name = private_name();
-    let payload = match parent.move_directory_child_no_replace_observed(
-        name,
-        expected,
-        &quarantine,
-        &payload_name,
-    ) {
-        Ok(payload) => payload,
-        Err(failure) => {
-            let (error, artifact) = failure.into_parts();
-            if let Some((artifact, _, _)) = artifact {
-                if artifact.identity() == expected.identity() {
-                    return Err(StateTreeRemovalError::new(error, &artifact));
+    let payload =
+        match parent.move_directory_child_no_replace_observed(name, expected, &quarantine, name) {
+            Ok(payload) => payload,
+            Err(failure) => {
+                let (error, artifact) = failure.into_parts();
+                if let Some((artifact, _, _)) = artifact {
+                    if artifact.identity() == expected.identity() {
+                        return Err(StateTreeRemovalError::new(error, &artifact));
+                    }
+                    // An observed successor belongs to someone else. Leave its
+                    // containing quarantine alone when restoration was uncertain.
+                    return Err(StateTreeRemovalError::new(error, expected));
                 }
-                // An observed successor belongs to someone else. Leave its
-                // containing quarantine alone when restoration was uncertain.
                 return Err(StateTreeRemovalError::new(error, expected));
             }
-            return Err(StateTreeRemovalError::new(error, expected));
-        }
-    };
+        };
 
     // A stage's creation descriptor on Windows cannot enumerate its entries.
     // Reopening the already-moved directory does not confer new authority.
-    let result = quarantine
-        .retain_directory_child(&payload_name)
+    remove_payload(&quarantine, name, &payload)
+}
+
+fn remove_payload(
+    quarantine: &RetainedDirectoryCapability,
+    name: &OsStr,
+    expected: &RetainedDirectoryCapability,
+) -> Result<(), StateTreeRemovalError> {
+    quarantine
+        .retain_directory_child(name)
         .and_then(|reopened| {
-            if reopened.identity() != payload.identity() {
+            if reopened.identity() != expected.identity() {
                 return Err(io::Error::other(
                     "retained cleanup directory changed after moving",
                 ));
             }
             remove_quarantined_tree(reopened)
-        });
-    result.map_err(|error| StateTreeRemovalError::new(error, &payload))
+        })
+        .map_err(|error| StateTreeRemovalError::new(error, expected))
 }
 
-fn open_quarantine(
+pub(crate) fn resume(
+    parent: &RetainedDirectoryCapability,
+    name: &OsStr,
+    expected: &RetainedDirectoryCapability,
+) -> Result<(), StateTreeRemovalError> {
+    let quarantine =
+        retain_quarantine(parent).map_err(|error| StateTreeRemovalError::new(error, expected))?;
+    remove_payload(&quarantine, name, expected)
+}
+
+pub(crate) fn retain_quarantine(
+    parent: &RetainedDirectoryCapability,
+) -> io::Result<RetainedDirectoryCapability> {
+    let quarantine = parent.retain_directory_child(OsStr::new(QUARANTINE_NAME))?;
+    verify_quarantine(&quarantine)?;
+    Ok(quarantine)
+}
+
+pub(crate) fn open_quarantine(
     parent: &RetainedDirectoryCapability,
 ) -> io::Result<RetainedDirectoryCapability> {
     let name = OsStr::new(QUARANTINE_NAME);
     let quarantine = match create_quarantine(parent, name) {
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-            parent.retain_directory_child(name)?
+            return retain_quarantine(parent)
         }
         result => result?,
     };
-    quarantine.validate_named_identity()?;
-    super::verify_owner_only_acl(&quarantine.retained.directory)?;
+    verify_quarantine(&quarantine)?;
     Ok(quarantine)
+}
+
+fn verify_quarantine(quarantine: &RetainedDirectoryCapability) -> io::Result<()> {
+    quarantine.validate_named_identity()?;
+    super::verify_owner_only_acl(&quarantine.retained.directory)
 }
 
 fn create_quarantine(
@@ -171,10 +196,15 @@ fn remove_quarantined_tree(directory: RetainedDirectoryCapability) -> io::Result
     while let Some(parent) = parents.last_mut() {
         parent.directory.validate_named_identity()?;
         let Some((name, expected)) = parent.children.next() else {
-            parent
-                .directory
-                .remove_empty_named_identity_relative_for_retained_apply(&private_name())?;
-            parents.pop();
+            let finished = parents.pop().expect("cleanup has a current directory");
+            if parents.is_empty() {
+                // The payload name is already inside the owner-only directory.
+                finished.directory.remove_empty_named_identity_relative()?;
+            } else {
+                finished
+                    .directory
+                    .remove_empty_named_identity_relative_for_retained_apply(&private_name())?;
+            }
             continue;
         };
         match parent.directory.retain_immediate_child_nofollow(&name)? {

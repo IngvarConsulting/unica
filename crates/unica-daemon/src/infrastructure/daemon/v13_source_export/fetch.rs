@@ -16,11 +16,11 @@ use unica_process::STREAM_LINE_TOO_LONG_ERROR;
 use unica_workspace::path_policy::WorkspacePathPolicy;
 use unica_workspace::paths::{metadata_is_link_or_reparse_point, GENERATED_DIR_NAME};
 use unica_workspace::runner_lock::RunnerLockFailure;
-use unica_workspace::state_fs::{DirectoryCursor, StateDirectory, StateTreeRemovalError};
+use unica_workspace::state_fs::{DirectoryCursor, StateDirectory, StateFile};
 
 #[path = "fetch_storage.rs"]
 mod storage;
-use storage::SnapshotStorage;
+use storage::{CleanupFailure, DropTarget, RememberFailure, SnapshotStorage};
 
 /// Версия кадров внешней полной выгрузки раннера.
 const PROTOCOL_VERSION: u32 = 1;
@@ -261,7 +261,7 @@ pub(super) fn drop_snapshot(
     };
     let owned = match storage
         .as_ref()
-        .map(|storage| storage.owned_snapshot(id))
+        .map(|storage| storage.drop_target(id))
         .transpose()
     {
         Ok(owned) => owned.flatten(),
@@ -295,7 +295,11 @@ pub(super) fn drop_snapshot(
         }));
         return result;
     };
-    match storage.remove(&owned) {
+    let removal = match owned {
+        DropTarget::Ready(snapshot) => storage.remove(&snapshot),
+        DropTarget::Retiring(record) => storage.remove_retiring(id, &record),
+    };
+    match removal {
         Ok(()) => {
             let mut result =
                 DomainResult::success(format!("fetch.drop deleted the snapshot {snapshot}"));
@@ -310,11 +314,12 @@ pub(super) fn drop_snapshot(
         Err(error) => {
             let mut result = reject_at(
                 FETCH_DROP,
-                RefusalCode::InvalidState,
+                cleanup_refusal_code(&error),
                 format!("fetch.drop could not finish deleting the snapshot {snapshot} ({error})"),
             );
             result.warnings.push(snapshot_cleanup_warning(
                 &root,
+                id,
                 "fetch.drop could not clean up the snapshot",
                 &error,
             ));
@@ -432,7 +437,11 @@ pub(super) fn execute_with_tool(
     let id = uuid::Uuid::new_v4().simple().to_string();
     let stage = match storage.create_stage(&id) {
         Ok(stage) => stage,
-        Err(error) => return storage_refusal(FETCH, error),
+        Err(error) => {
+            let mut result = storage_refusal(FETCH, error);
+            result.warnings.append(&mut warnings);
+            return result;
+        }
     };
     // Отпечаток снимается до выгрузки: правка набора во время неё — уже
     // расхождение с тем, что видел снимок.
@@ -447,27 +456,43 @@ pub(super) fn execute_with_tool(
             &cancellation,
             tool,
         )
-        .and_then(|envelope| {
-            storage
-                .remember(&id, &stage)
-                .map_err(|error| storage_refusal(FETCH, error))?;
-            Ok((fingerprint, envelope))
-        })
+        .map(|envelope| (fingerprint, envelope))
     });
     let (fingerprint, envelope) = match outcome {
         Ok(snapshot) => snapshot,
-        Err(mut result) => {
-            // Отказ, отмена или неподтверждённый итог: снимка нет.
-            if let Err(error) = storage.remove_stage(&id, &stage) {
-                result.warnings.push(snapshot_cleanup_warning(
-                    &root,
-                    "fetch could not remove its unfinished snapshot",
-                    &error,
-                ));
-            }
-            return result;
+        Err(result) => {
+            return finish_failed_fetch(result, &storage, &id, &stage, None, warnings, &root);
         }
     };
+    match storage.remember(&id, &stage) {
+        Ok(()) => {}
+        Err(RememberFailure::Rejected(error, owner)) => {
+            let result = storage_refusal(FETCH, error);
+            return finish_failed_fetch(
+                result,
+                &storage,
+                &id,
+                &stage,
+                owner.as_ref(),
+                warnings,
+                &root,
+            );
+        }
+        Err(RememberFailure::Uncertain(error)) => {
+            let mut result = reject_fetch(
+                cleanup_refusal_code(&error),
+                format!("fetch could not confirm the registration of its snapshot ({error})"),
+            );
+            result.warnings.append(&mut warnings);
+            result.warnings.push(snapshot_cleanup_warning(
+                &root,
+                &id,
+                "fetch kept the snapshot because ownership could not be confirmed",
+                &error,
+            ));
+            return result;
+        }
+    }
     let snapshot = relative(stage.path(), &root);
     let mut result = DomainResult::success(format!(
         "fetch exported source set `{source_set}` of the infobase into {snapshot}; the sources, the runner's memory and the infobase are unchanged"
@@ -490,6 +515,34 @@ pub(super) fn execute_with_tool(
         .push(json!({"path": snapshot, "kind": "created"}));
     note_runner_warnings(&mut result, &envelope);
     result.warnings.append(&mut warnings);
+    result
+}
+
+fn finish_failed_fetch(
+    mut result: DomainResult,
+    storage: &SnapshotStorage,
+    id: &str,
+    stage: &StateDirectory,
+    owner: Option<&StateFile>,
+    mut warnings: Vec<Value>,
+    root: &Path,
+) -> DomainResult {
+    result.warnings.append(&mut warnings);
+    if let Err(error) = storage.remove_stage(id, stage, owner) {
+        if cleanup_refusal_code(&error) == RefusalCode::RollbackIncomplete {
+            let summary = format!("{} ({error})", result.summary);
+            let mut uncertain = reject_fetch(cleanup_refusal_code(&error), summary);
+            uncertain.diagnostics.append(&mut result.diagnostics);
+            result.diagnostics = uncertain.diagnostics;
+            result.summary = uncertain.summary;
+        }
+        result.warnings.push(snapshot_cleanup_warning(
+            root,
+            id,
+            "fetch could not remove its unfinished snapshot",
+            &error,
+        ));
+    }
     result
 }
 
@@ -855,24 +908,40 @@ fn prune_snapshots(
         .skip(keep)
         .filter_map(|(_, snapshot)| {
             storage.remove(&snapshot).err().map(|error| {
-                snapshot_cleanup_warning(root, "fetch could not remove the older snapshot", &error)
+                snapshot_cleanup_warning(
+                    root,
+                    &snapshot.id,
+                    "fetch could not remove the older snapshot",
+                    &error,
+                )
             })
         })
         .collect())
 }
 
-fn snapshot_cleanup_warning(root: &Path, context: &str, error: &StateTreeRemovalError) -> Value {
+fn cleanup_refusal_code(error: &CleanupFailure) -> RefusalCode {
+    match error {
+        CleanupFailure::Tree(error) if error.preserved_path().is_some() => {
+            RefusalCode::InvalidState
+        }
+        _ => RefusalCode::RollbackIncomplete,
+    }
+}
+
+fn snapshot_cleanup_warning(root: &Path, id: &str, context: &str, error: &CleanupFailure) -> Value {
     if let Some(path) = error.preserved_path() {
         let path = relative(path, root);
         json!({
             "code": SNAPSHOT_KEPT_WARNING,
-            "message": format!("{context} at {path} ({error}); delete the directory when no program holds it"),
+            "message": format!("{context} at {path} ({error})"),
+            "snapshotId": id,
             "path": path,
         })
     } else {
         json!({
             "code": SNAPSHOT_KEPT_WARNING,
             "message": format!("{context} ({error}); the remaining directory could not be located"),
+            "snapshotId": id,
         })
     }
 }

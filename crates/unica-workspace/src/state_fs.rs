@@ -67,6 +67,23 @@ impl StateDirectory {
         filesystem::retained_tree_removal::remove(&self.retained, name, &expected.retained)
     }
 
+    pub fn retain_cleanup_area(&self, create: bool) -> io::Result<Self> {
+        let retained = if create {
+            filesystem::retained_tree_removal::open_quarantine(&self.retained)?
+        } else {
+            filesystem::retained_tree_removal::retain_quarantine(&self.retained)?
+        };
+        Ok(Self { retained })
+    }
+
+    pub fn remove_quarantined_directory_child(
+        &self,
+        name: &OsStr,
+        expected: &Self,
+    ) -> Result<(), StateTreeRemovalError> {
+        filesystem::retained_tree_removal::resume(&self.retained, name, &expected.retained)
+    }
+
     pub fn retain_regular_child(&self, name: &OsStr) -> io::Result<StateFile> {
         self.retained
             .retain_regular_child(name)
@@ -430,6 +447,12 @@ pub struct RetainedPublicationFailure {
     error: filesystem::RetainedPublicationError,
 }
 
+pub enum RetainedPublicationObservation {
+    NoArtifact,
+    Expected(StateFile),
+    Unexpected,
+}
+
 impl RetainedPublicationFailure {
     pub fn into_parts(self) -> (io::Error, Option<StateFile>) {
         let (error, published) = self.error.into_parts();
@@ -438,6 +461,18 @@ impl RetainedPublicationFailure {
 
     pub fn io_error(&self) -> &io::Error {
         self.error.io_error()
+    }
+
+    pub fn into_observation(self) -> (io::Error, RetainedPublicationObservation) {
+        let (error, artifact, unexpected) = self.error.into_observation();
+        let observation = match (artifact, unexpected) {
+            (_, true) => RetainedPublicationObservation::Unexpected,
+            (Some(retained), false) => {
+                RetainedPublicationObservation::Expected(StateFile { retained })
+            }
+            (None, false) => RetainedPublicationObservation::NoArtifact,
+        };
+        (error, observation)
     }
 }
 

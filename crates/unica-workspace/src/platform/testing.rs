@@ -268,6 +268,25 @@ pub fn create_directory_link_fixture_for_test(
     classify_file_link_fixture_result(create_dir_symlink_for_test(source, target))
 }
 
+/// Creates a directory redirection fixture without requiring Windows symlink privileges.
+pub fn create_directory_link_or_junction_for_test(target: &Path, link: &Path) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        let target: PathBuf = target.components().collect();
+        let link: PathBuf = link.components().collect();
+        create_directory_junction_for_test(&target, &link)
+    }
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(target, link)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (target, link);
+        Err(io::ErrorKind::Unsupported.into())
+    }
+}
+
 pub fn file_identity_for_test(path: &Path) -> io::Result<Option<String>> {
     let file = std::fs::File::open(path)?;
     identity_for_open_path_for_test(&file)

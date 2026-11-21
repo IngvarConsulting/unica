@@ -565,6 +565,7 @@ pub(crate) struct RetainedRegularFileCapability {
 pub(crate) struct RetainedPublicationError {
     error: io::Error,
     published: Option<RetainedRegularFileCapability>,
+    unexpected_artifact: bool,
 }
 
 /// Directory publication mirrors regular-file publication: a reported error
@@ -629,6 +630,7 @@ impl RetainedPublicationError {
         Self {
             error,
             published: None,
+            unexpected_artifact: false,
         }
     }
 
@@ -636,7 +638,22 @@ impl RetainedPublicationError {
         Self {
             error,
             published: Some(published),
+            unexpected_artifact: false,
         }
+    }
+
+    fn with_unexpected_artifact(error: io::Error, artifact: RetainedRegularFileCapability) -> Self {
+        Self {
+            error,
+            published: Some(artifact),
+            unexpected_artifact: true,
+        }
+    }
+
+    pub(crate) fn into_observation(
+        self,
+    ) -> (io::Error, Option<RetainedRegularFileCapability>, bool) {
+        (self.error, self.published, self.unexpected_artifact)
     }
 
     pub(crate) fn into_parts(self) -> (io::Error, Option<RetainedRegularFileCapability>) {
@@ -1278,7 +1295,7 @@ impl RetainedDirectoryCapability {
                     Ok(()) => RetainedPublicationError::before_rename(io::Error::other(
                         "staged source identity changed at replacement boundary; moved child restored to its source name",
                     )),
-                    Err(restore) => RetainedPublicationError::after_rename(
+                    Err(restore) => RetainedPublicationError::with_unexpected_artifact(
                         io::Error::other(format!(
                             "staged source identity changed at replacement boundary; moved child could not be restored: {restore}"
                         )),
@@ -1352,7 +1369,7 @@ impl RetainedDirectoryCapability {
                     Ok(()) => RetainedPublicationError::before_rename(io::Error::other(
                         "staged source identity changed at create boundary; moved child restored to its source name",
                     )),
-                    Err(restore) => RetainedPublicationError::after_rename(
+                    Err(restore) => RetainedPublicationError::with_unexpected_artifact(
                         io::Error::other(format!(
                             "staged source identity changed at create boundary; moved child could not be restored: {restore}"
                         )),
