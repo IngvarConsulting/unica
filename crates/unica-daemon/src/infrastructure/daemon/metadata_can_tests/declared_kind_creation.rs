@@ -190,7 +190,20 @@ fn an_extension_does_not_create_a_language() {
 #[test]
 fn an_empty_integration_service_matches_the_platform_descriptor() {
     let relative = Path::new("IntegrationServices/Probe.xml");
-    for version in ["2.20", "2.21", "2.22"] {
+    for (version, platform_path) in [
+        (
+            "2.20",
+            "../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/IntegrationServices/Probe.xml",
+        ),
+        (
+            "2.21",
+            "../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/IntegrationServices/Probe.xml",
+        ),
+        (
+            "2.22",
+            "../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src/IntegrationServices/Probe.xml",
+        ),
+    ] {
         let fixture = Fixture::blank();
         for path in ["Configuration.xml", "Languages/Русский.xml"] {
             let path = fixture.source.join(path);
@@ -219,14 +232,9 @@ fn an_empty_integration_service_matches_the_platform_descriptor() {
         );
 
         let written = std::fs::read_to_string(fixture.source.join(relative)).unwrap();
-        let platform = std::fs::read_to_string(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join(format!(
-                    "../../tests/fixtures/formats/platform_xml/{version}/all_kinds/src"
-                ))
-                .join(relative),
-        )
-        .unwrap();
+        let platform =
+            std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(platform_path))
+                .unwrap();
         let normalize = |xml: &str| {
             without_uuids(&without_synonym(xml.trim_start_matches('\u{feff}')))
                 .lines()
