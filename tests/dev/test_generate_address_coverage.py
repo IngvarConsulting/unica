@@ -20,6 +20,7 @@ MODULE_SHARD = "native_registered_modules_match_profile_and_physical_paths"
 METADATA_SHARD = "native_metadata_address_table_matches_declared_and_observed_child_branches"
 ROOT_KEYS = GENERATOR.ROOT_KEYS_SHARD
 CHILD_KEYS = GENERATOR.METADATA_CHILD_KEYS_SHARD
+MODULE_KEYS = GENERATOR.MODULE_ROLE_KEYS_SHARD
 
 
 def root_witness(source: str, branch: str = "Catalog", *, introduced_in: str | None = None) -> dict:
@@ -54,6 +55,20 @@ def required_key(record: dict, *, introduced_in: str | None = None) -> dict:
             if introduced_in is not None else {"kind": "address"}
         ),
     }
+
+
+def manager_witness(test_case: str = GENERATOR.DAEMON_SHARD) -> dict:
+    record = root_witness("main", "Module")
+    record["key"].update(
+        owner_shape=[{"kind": "Document", "named": True, "role": None}], role="Manager",
+    )
+    record["witness"].update(
+        owner="main:Document.Invoice",
+        at="main:Document.Invoice.Module.Manager",
+        level="roundtrip",
+        test_case=test_case,
+    )
+    return record
 
 
 class AddressCoverageReportTests(unittest.TestCase):
@@ -149,6 +164,57 @@ class AddressCoverageReportTests(unittest.TestCase):
                 self.write_shard(ROOT_KEYS, first, second)
                 with self.assertRaisesRegex(ValueError, f"{diagnostic} requirement"):
                     GENERATOR.merge_shards(self.root, frozenset({ROOT_KEYS}))
+
+    def test_required_module_role_accepts_a_daemon_or_native_witness(self) -> None:
+        manager = manager_witness()
+        self.write_root_shard(root_witness("main"))
+        self.write_shard(MODULE_KEYS, required_key(manager))
+        with self.assertRaisesRegex(
+            ValueError, r'(?s)missing required configuration module roles: 1 address.*"role":"Manager"',
+        ):
+            GENERATOR.merge_shards(self.root, frozenset({ROOT_SHARD, MODULE_KEYS}))
+        for shard, level in [(GENERATOR.DAEMON_SHARD, "roundtrip"), (MODULE_SHARD, "read")]:
+            with self.subTest(shard=shard):
+                witness = manager_witness(shard)
+                witness["witness"]["level"] = level
+                self.write_shard(shard, witness)
+                rows = GENERATOR.merge_shards(self.root, frozenset({ROOT_SHARD, MODULE_KEYS, shard}))
+                self.assertIn({"key": witness["key"], "witnesses": [witness["witness"]]}, rows)
+                (self.root / f"{shard}.jsonl").unlink()
+
+    def test_native_only_requires_and_validates_module_file_without_requiring_witnesses(self) -> None:
+        catalog = root_witness("main")
+        self.write_root_shard(catalog)
+        self.write_shard(ROOT_KEYS, required_key(catalog))
+        shards = frozenset({ROOT_SHARD, ROOT_KEYS, MODULE_KEYS})
+        with self.assertRaisesRegex(ValueError, f"missing=.*{MODULE_KEYS}"):
+            GENERATOR.merge_shards(self.root, shards, native_only=True)
+
+        manager = manager_witness()
+        self.write_shard(MODULE_KEYS, required_key(manager))
+        self.assertEqual(
+            GENERATOR.merge_shards(self.root, shards, native_only=True),
+            [{"key": catalog["key"], "witnesses": [catalog["witness"]]}],
+        )
+        self.write_shard(ROOT_KEYS, required_key(root_witness("main", "Document")))
+        with self.assertRaisesRegex(ValueError, "missing required native coverage: 1 address"):
+            GENERATOR.merge_shards(self.root, shards, native_only=True)
+
+        manager["key"]["line"] = "8.5.1"
+        self.write_shard(MODULE_KEYS, required_key(manager))
+        with self.assertRaisesRegex(ValueError, "must name an 8.3.27 Module role"):
+            GENERATOR.merge_shards(self.root, shards, native_only=True)
+
+    def test_module_role_cannot_declare_or_witness_absence(self) -> None:
+        manager = manager_witness(MODULE_SHARD)
+        absence = required_key(manager, introduced_in="8.5.1")
+        self.write_shard(MODULE_KEYS, absence)
+        with self.assertRaisesRegex(ValueError, "module role requirement"):
+            GENERATOR.merge_shards(self.root, frozenset({MODULE_KEYS}), native_only=True)
+        manager["witness"].update(at=None, level=None, reason=absence["requirement"])
+        self.write_shard(MODULE_SHARD, manager)
+        with self.assertRaisesRegex(ValueError, "must verify a positive address"):
+            GENERATOR.merge_shards(self.root, frozenset({MODULE_KEYS, MODULE_SHARD}))
 
 
 if __name__ == "__main__":

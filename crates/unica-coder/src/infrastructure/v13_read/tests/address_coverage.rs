@@ -77,12 +77,13 @@ impl RequiredKeys {
         line: PlatformLine,
         owner: &QualifiedAddress,
         branch: &str,
+        role: Option<&str>,
         requirement: AddressRequirement,
     ) {
         if self.output.is_none() {
             return;
         }
-        let key = address_key((line, SourceSetKind::Configuration), owner, branch, None);
+        let key = address_key((line, SourceSetKind::Configuration), owner, branch, role);
         let requirement = match requirement {
             AddressRequirement::Address => serde_json::json!({"kind": "address"}),
             AddressRequirement::IntroducedIn(since) => {
@@ -318,6 +319,7 @@ fn native_authority<'a>(
 fn native_configuration_root_address_table_matches_published_branches() {
     let profile_fixture = module_capability_fixture();
     assert_eq!(profile_fixture.profile, PlatformProfile::v8_3_27().id());
+    record_required_configuration_module_roles(&profile_fixture);
     // These lines share the 8.3.27 configuration module roles. The frozen
     // fixture, independent of PlatformProfile::module_children, names each row.
     let mut expected_modules = BTreeMap::new();
@@ -344,7 +346,7 @@ fn native_configuration_root_address_table_matches_published_branches() {
                 AddressRequirement::Address,
                 AddressRequirement::IntroducedIn,
             );
-        required.record(line, &configuration, kind, requirement);
+        required.record(line, &configuration, kind, None, requirement);
     }
     required.finish();
     let mut rows = BTreeMap::new();
@@ -1014,9 +1016,54 @@ fn record_required_metadata_children(
                 metadata_kind_exists(Some(profile.line()), branch),
                 "{xml}: declared child {owner}.{branch} has no admitted platform kind"
             );
-            required.record(profile.line(), &owner, branch, AddressRequirement::Address);
+            required.record(
+                profile.line(),
+                &owner,
+                branch,
+                None,
+                AddressRequirement::Address,
+            );
         }
     }
+}
+
+fn record_required_configuration_module_roles(fixture: &ModuleCapabilityFixture) {
+    let mut required = RequiredKeys::new("required_configuration_module_role_keys.jsonl");
+    let line = PlatformLine::parse(&fixture.profile).expect("address profile platform line");
+    let configuration = QualifiedAddress::parse("main:Configuration").unwrap();
+    for case in &fixture.module_capabilities {
+        if !case.exists || !case.at.starts_with("main:") {
+            continue;
+        }
+        let at = QualifiedAddress::parse(&case.at).expect("profile module address");
+        assert_eq!(at.to_string(), case.at);
+        let role = case.role.as_deref().expect("profile module role");
+        let owner = match at.segments() {
+            [common] if common.kind() == NodeKind::CommonModule => {
+                assert!(common.name().is_some(), "{at}: expected named CommonModule");
+                assert_eq!(role, "Common", "{at}");
+                at.clone()
+            }
+            [owners @ .., module] if module.kind() == NodeKind::Module => {
+                assert_eq!(module.name(), Some(role), "{at}");
+                if owners.is_empty() {
+                    configuration.clone()
+                } else {
+                    assert!(owners.iter().all(|owner| owner.name().is_some()), "{at}");
+                    at.prefix(owners.len())
+                }
+            }
+            _ => panic!("{at}: unsupported positive module shape in profile"),
+        };
+        required.record(
+            line,
+            &owner,
+            "Module",
+            Some(role),
+            AddressRequirement::Address,
+        );
+    }
+    required.finish();
 }
 
 /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
