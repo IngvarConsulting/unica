@@ -11,7 +11,10 @@ const COMMAND_INTERFACE_NS: &str = "http://v8.1c.ru/8.3/xcf/extrnprops";
 
 enum Evidence<'a> {
     Read(&'a str),
-    ModuleRoundTrip { at: &'a str, descriptor: &'a str },
+    ModuleRoundTrip {
+        at: &'a str,
+        external_owner_descriptor: Option<&'a str>,
+    },
 }
 
 struct EvidenceRows {
@@ -37,12 +40,15 @@ impl EvidenceRows {
         }
         let (at, level, descriptor) = match evidence {
             Evidence::Read(at) => (at, "read", None),
-            Evidence::ModuleRoundTrip { at, descriptor } => (at, "roundtrip", Some(descriptor)),
+            Evidence::ModuleRoundTrip {
+                at,
+                external_owner_descriptor,
+            } => (at, "roundtrip", external_owner_descriptor),
         };
         let address = parsed(at);
         let (branch, owner_segments) = address.segments().split_last().unwrap();
         let role = branch.name();
-        if descriptor.is_some() {
+        if level == "roundtrip" {
             assert_eq!(branch.kind(), NodeKind::Module, "{at}");
             assert!(role.is_some(), "{at}: expected a named module role");
         } else {
@@ -891,7 +897,7 @@ fn check_resource(
     let owner = parsed(at);
     let source = source_root(&fixture.workspace, owner.source_set());
     let path = source.join(relative);
-    assert!(path.is_file(), "native witness is absent: {:?}", path);
+    assert!(path.is_file(), "fixture witness is absent: {:?}", path);
     let by_address = invoke_on(
         runtime,
         &fixture.workspace,
@@ -1003,11 +1009,150 @@ fn check_external_modules(
                 ("workspace-external-alias", &file),
                 Evidence::ModuleRoundTrip {
                     at: &at,
-                    descriptor: &descriptor,
+                    external_owner_descriptor: Some(&descriptor),
                 },
             );
         }
     }
+}
+
+fn check_configuration_module_roles(
+    runtime: &V5CanonicalInvocationRuntime,
+    fixture: &Fixture,
+    fixture_name: &str,
+    evidence: &mut EvidenceRows,
+) {
+    let owners: &[(&str, &str, &str, &str, &[&str])] = match fixture_name {
+        "workspace-resolve-resources" => &[(
+            "Document",
+            "Invoice",
+            "Documents",
+            "Manager",
+            &["Object", "Manager"],
+        )],
+        "workspace-data-history-settings" => &[
+            (
+                "Constant",
+                "Setting",
+                "Constants",
+                "ValueManager",
+                &["Manager", "ValueManager"],
+            ),
+            (
+                "InformationRegister",
+                "Цены",
+                "InformationRegisters",
+                "RecordSet",
+                &["Manager", "RecordSet"],
+            ),
+        ],
+        "workspace-common-command-facts" => &[(
+            "CommonCommand",
+            "ВсеФайлы",
+            "CommonCommands",
+            "Command",
+            &["Command"],
+        )],
+        _ => unreachable!("{fixture_name} has no configuration module witness"),
+    };
+    assert!(fixture
+        .sets
+        .iter()
+        .any(|(set, kind, _)| { set == "main" && *kind == SourceSetKind::Configuration }));
+    let configuration = fixture_xml(fixture, "main:Configuration", "Configuration.xml");
+    let configuration =
+        roxmltree::Document::parse(configuration.trim_start_matches('\u{feff}')).unwrap();
+    let root = configuration.root_element();
+    let format = root.attribute("version");
+    assert_eq!(format, Some("2.20"));
+    let registrations = metadata_child(metadata_child(root, "Configuration"), "ChildObjects");
+    for &(kind, name, directory, role, roles) in owners {
+        assert_eq!(
+            registrations.children()
+                .filter(|node| node.has_tag_name((MD_CLASSES_NS, kind)) && node.text() == Some(name))
+                .count(),
+            1,
+            "{fixture_name}: {kind}.{name} registration",
+        );
+        let owner = format!("main:{kind}.{name}");
+        let stem = format!("{directory}/{name}");
+        let raw = fixture_xml(fixture, &owner, &format!("{stem}.xml"));
+        let document = roxmltree::Document::parse(raw.trim_start_matches('\u{feff}')).unwrap();
+        let root = document.root_element();
+        let object = check_metadata_identity(root, kind, name);
+        assert_eq!(root.attribute("version"), format);
+        assert!(object
+            .attribute("uuid")
+            .is_some_and(unica_xml_format::names::is_valid_uuid));
+        check_configuration_module_role(
+            runtime,
+            fixture,
+            evidence,
+            &owner,
+            role,
+            roles,
+            (fixture_name, &format!("{stem}/Ext/{role}Module.bsl")),
+        );
+        if kind == "Document" {
+            let forms = metadata_child(object, "ChildObjects")
+                .children()
+                .filter(|node| {
+                    node.has_tag_name((MD_CLASSES_NS, "Form")) && node.text() == Some("Main")
+                })
+                .count();
+            assert_eq!(forms, 1, "{owner}: Form.Main registration");
+            let raw = fixture_xml(fixture, &owner, &format!("{stem}/Forms/Main.xml"));
+            let document = roxmltree::Document::parse(raw.trim_start_matches('\u{feff}')).unwrap();
+            let root = document.root_element();
+            let form = check_metadata_identity(root, "Form", "Main");
+            assert_eq!(root.attribute("version"), format);
+            assert!(form
+                .attribute("uuid")
+                .is_some_and(unica_xml_format::names::is_valid_uuid));
+            check_configuration_module_role(
+                runtime,
+                fixture,
+                evidence,
+                &format!("{owner}.Form.Main"),
+                "Form",
+                &["Form"],
+                (
+                    fixture_name,
+                    &format!("{stem}/Forms/Main/Ext/Form/Module.bsl"),
+                ),
+            );
+        }
+    }
+}
+
+fn check_configuration_module_role(
+    runtime: &V5CanonicalInvocationRuntime,
+    fixture: &Fixture,
+    evidence: &mut EvidenceRows,
+    parent: &str,
+    role: &str,
+    roles: &[&str],
+    origin: (&str, &str),
+) {
+    let branch = format!("{parent}.Module");
+    let (view, _) = read_view(runtime, &fixture.workspace, parent);
+    assert_eq!(
+        published_branch_counts(&view, &branch).collect::<Vec<_>>(),
+        [roles.len() as u64],
+        "{parent}: {branch}",
+    );
+    let modules = check_fixture_members(runtime, fixture, &branch, roles.iter().copied());
+    assert_eq!(modules[role]["props"]["role"], role);
+    let at = format!("{branch}.{role}");
+    check_resource(runtime, fixture, &at, origin.1);
+    evidence.record_evidence(
+        fixture,
+        origin,
+        Evidence::ModuleRoundTrip {
+            at: &at,
+            external_owner_descriptor: None,
+        },
+    );
 }
 
 fn published_branch_counts<'a>(view: &'a Value, at: &'a str) -> impl Iterator<Item = u64> + 'a {
@@ -1152,6 +1297,9 @@ fn medium_published_document_and_bsl_branches_have_canonical_addresses() {
             ][..],
         ),
         ("workspace-code", &[][..]),
+        ("workspace-resolve-resources", &[][..]),
+        ("workspace-data-history-settings", &[][..]),
+        ("workspace-common-command-facts", &[][..]),
     ] {
         let fixture = fixture(name);
         let runtime = V5CanonicalInvocationRuntime::new(
@@ -1175,6 +1323,11 @@ fn medium_published_document_and_bsl_branches_have_canonical_addresses() {
             }
             "workspace-external-alias" => check_external_modules(&runtime, &fixture, &mut evidence),
             "workspace-code" => check_extension_common_module(&runtime, &fixture, &mut evidence),
+            "workspace-resolve-resources"
+            | "workspace-data-history-settings"
+            | "workspace-common-command-facts" => {
+                check_configuration_module_roles(&runtime, &fixture, name, &mut evidence)
+            }
             _ => {}
         }
         if name == "workspace-configuration-support" {

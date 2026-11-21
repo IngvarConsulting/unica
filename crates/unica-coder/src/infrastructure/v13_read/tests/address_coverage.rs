@@ -2999,6 +2999,15 @@ fn native_registered_modules_match_profile_and_physical_paths() {
         )];
         let finder = WorkspaceFindDirectoryBuilder::default();
         let registrations = root_registrations(&source, xml);
+        if xml == "2.20" {
+            check_baseline_native_modules(
+                &authority,
+                &profile_fixture,
+                &source,
+                &registrations,
+                &mut evidence,
+            );
+        }
         for (kind, descriptor, role, modules) in [
             (
                 "Document",
@@ -3126,6 +3135,112 @@ fn native_registered_modules_match_profile_and_physical_paths() {
         }
     }
     evidence.finish();
+}
+
+fn check_baseline_native_modules(
+    authority: &LogicalViewReadAuthority<'_>,
+    profile_fixture: &ModuleCapabilityFixture,
+    source: &Path,
+    registrations: &[(String, String)],
+    evidence: &mut EvidenceRows,
+) {
+    use crate::application::v13::source_text::ModuleText;
+
+    let profile = authority.platform_profile();
+    assert_eq!(profile.id(), profile_fixture.profile);
+    for (kind, name, directory, role) in [
+        ("CommonModule", "EventHandlers", "CommonModules", "Common"),
+        (
+            "IntegrationService",
+            "Probe",
+            "IntegrationServices",
+            "IntegrationService",
+        ),
+    ] {
+        assert_eq!(
+            registrations
+                .iter()
+                .filter(|(tag, value)| tag == kind && value == name)
+                .count(),
+            1,
+            "{kind}.{name}: native configuration registration",
+        );
+        let descriptor = source.join(directory).join(format!("{name}.xml"));
+        let raw = read_fixture_descriptor(&descriptor);
+        let document = parse_fixture_descriptor(&raw, &descriptor);
+        assert_eq!(document.root_element().attribute("version"), Some("2.20"));
+        let artifact = fixture_artifact(&document, kind, &descriptor);
+        assert_eq!(fixture_properties_name(artifact), Some(name));
+        assert!(uuid::Uuid::parse_str(artifact.attribute("uuid").unwrap()).is_ok());
+        let owner = format!("main:{kind}.{name}");
+        let module = descriptor.with_extension("").join("Ext/Module.bsl");
+        if role == "Common" {
+            assert!(
+                profile_fixture.module_capabilities.iter().any(|case| {
+                    if !case.exists || case.role.as_deref() != Some(role) {
+                        return false;
+                    }
+                    let sample = QualifiedAddress::parse(&case.at).unwrap();
+                    matches!(sample.segments(), [segment]
+                    if sample.source_set() == "main"
+                        && segment.kind() == NodeKind::CommonModule
+                        && segment.name().is_some())
+                }),
+                "profile fixture has no bare CommonModule capability"
+            );
+            let at = QualifiedAddress::parse(&owner).unwrap();
+            assert_eq!(
+                profile.module_capability(&at).unwrap().role().as_str(),
+                role
+            );
+            assert_eq!(read(authority, &owner)["kind"], "Module");
+            let raw = fs::read_to_string(&module).unwrap();
+            let expected = raw.trim_start_matches('\u{feff}');
+            assert!(!expected.is_empty());
+            let body = QualifiedAddress::parse(&format!("{owner}.Body")).unwrap();
+            let snapshot = authority.snapshot(&body).unwrap();
+            assert_eq!(
+                authority.read_module_text(&body, &snapshot).unwrap(),
+                Some(ModuleText::whole(expected.to_owned())),
+            );
+            evidence.record(
+                profile.line(),
+                &owner,
+                "Module",
+                Some(role),
+                &fixture_origin(&module),
+                AddressEvidence::Read(&owner),
+            );
+            println!(
+                "{} {owner}: read on the bare CommonModule address",
+                profile.id()
+            );
+        } else {
+            let at = check_registered_module_read(authority, profile_fixture, &owner, role);
+            let missing = fs::symlink_metadata(&module).unwrap_err();
+            assert_eq!(missing.kind(), std::io::ErrorKind::NotFound, "{module:?}");
+            assert_eq!(
+                authority
+                    .existing_export_path(&at, None)
+                    .unwrap_err()
+                    .code(),
+                RefusalCode::NotFound,
+                "{at}: absent native BSL",
+            );
+            evidence.record(
+                profile.line(),
+                &owner,
+                "Module",
+                Some(role),
+                &fixture_origin(&descriptor),
+                AddressEvidence::Read(&at.to_string()),
+            );
+            println!(
+                "{} {at}: read from registered owner; native BSL absent",
+                profile.id()
+            );
+        }
+    }
 }
 
 fn native_command_owners<'a, 'input: 'a>(
