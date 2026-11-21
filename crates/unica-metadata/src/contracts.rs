@@ -16,6 +16,13 @@ pub fn metadata_object_create_input_schema() -> &'static Value {
             .filter(|kind| kind.requires_creation_type())
             .map(crate::CreatableKind::as_str)
             .collect::<Vec<_>>();
+        let namespaced = kinds
+            .iter()
+            .copied()
+            .filter(|kind| kind.requires_creation_namespace())
+            .map(crate::CreatableKind::as_str)
+            .collect::<Vec<_>>();
+        let specialized = typed.iter().chain(&namespaced).copied().collect::<Vec<_>>();
         let mut values = object(
             &[
                 ("kind", json!({"type":"string","enum":kinds.into_iter().map(crate::CreatableKind::as_str).collect::<Vec<_>>()})),
@@ -23,12 +30,20 @@ pub fn metadata_object_create_input_schema() -> &'static Value {
                 // must not move it ahead of a later operation's error.
                 ("name", json!({"type":"string","minLength":1})),
                 ("type", crate::metadata_type_schema()),
+                ("namespace", json!({
+                    "type":"string",
+                    "pattern":r"^[A-Za-z][A-Za-z0-9+.-]*:(?:[A-Za-z0-9._~:/?@\[\]!$&'()*+,;=-]|%[A-Fa-f0-9]{2})+(?:#(?:[A-Za-z0-9._~:/?@\[\]!$&'()*+,;=-]|%[A-Fa-f0-9]{2})*)?$",
+                    "description":"Explicit namespace URI for a new XDTOPackage."
+                })),
             ],
             &["kind", "name"],
         );
         values["anyOf"] = json!([
-            {"properties":{"kind":{"enum":typed}},"required":["type"]},
-            {"properties":{"kind":{"not":{"enum":typed}}},"not":{"required":["type"]}}
+            {"properties":{"kind":{"enum":typed}},"required":["type"],"not":{"required":["namespace"]}},
+            {"properties":{"kind":{"enum":namespaced}},"required":["namespace"],"not":{"required":["type"]}},
+            {"properties":{"kind":{"not":{"enum":specialized}}},"not":{"anyOf":[
+                {"required":["type"]},{"required":["namespace"]}
+            ]}}
         ]);
         object(&[("at", text(true)), ("values", values)], &["values"])
     })
@@ -497,7 +512,7 @@ pub fn metadata_object_create() -> OperationContract {
         schema,
         target: "The Configuration root: <source-set>:Configuration.",
         effect: "Create and register a new metadata object with its minimal supported files.",
-        notes: "Choose an unused valid 1C identifier. FilterCriterion also requires type as a structured metadata type and starts with empty content. Configure other properties and members with subsequent operations in the same apply call.",
+        notes: "Choose an unused valid 1C identifier. FilterCriterion also requires type as a structured metadata type and starts with empty content. XDTOPackage requires an explicit namespace URI and starts with no types. Configure other properties and members with subsequent operations in the same apply call.",
         example_args: json!({"values":{"kind":"Catalog","name":"Sample"}}),
         help: "skills/meta-add/SKILL.md",
         format_validators: &[],

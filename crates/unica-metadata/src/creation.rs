@@ -39,6 +39,10 @@ impl CreatableKind {
             .chain(Self::declared())
     }
 
+    pub fn requires_creation_namespace(self) -> bool {
+        matches!(self, Self::Declared("XDTOPackage"))
+    }
+
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Typed(kind) => kind.as_str(),

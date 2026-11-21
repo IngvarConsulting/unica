@@ -63,6 +63,7 @@ pub enum MetadataPlanKind {
         kind: unica_metadata::CreatableKind,
         name: String,
         metadata_type: Option<unica_metadata::MetadataType>,
+        creation_namespace: Option<String>,
     },
     Remove {
         target: MetadataAddress,
@@ -950,10 +951,36 @@ pub fn parse_object_create(
         }
         None
     };
+    let namespace_path = format!("ops[{op_index}].args.values.namespace");
+    let creation_namespace = if kind.requires_creation_namespace() {
+        let raw = values.get("namespace").ok_or_else(|| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::BadValue,
+                "XDTOPackage creation requires an explicit namespace URI",
+            )
+            .at_path(&namespace_path)
+        })?;
+        check_input_field(values_shape, "namespace", raw, &namespace_path)?;
+        Some(
+            raw.as_str()
+                .expect("validated namespace string")
+                .to_string(),
+        )
+    } else {
+        if values.contains_key("namespace") {
+            return Err(ApplyPlanError::new(
+                ApplyPlanErrorKind::BadValue,
+                "object.create accepts namespace only for XDTOPackage",
+            )
+            .at_path(namespace_path));
+        }
+        None
+    };
     Ok(MetadataPlanKind::Create {
         kind,
         name: name.to_string(),
         metadata_type,
+        creation_namespace,
     })
 }
 pub fn parse_object_remove(

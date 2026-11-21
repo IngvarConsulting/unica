@@ -365,6 +365,7 @@ pub fn plan_metadata_batch<R: MetadataPlanningRead>(
                 kind,
                 name,
                 metadata_type,
+                creation_namespace,
             } => {
                 stage_object_create(
                     reader,
@@ -375,6 +376,7 @@ pub fn plan_metadata_batch<R: MetadataPlanningRead>(
                     *kind,
                     name,
                     metadata_type.as_ref(),
+                    creation_namespace.as_deref(),
                     op_index,
                     &mut provisional,
                 )?;
@@ -857,6 +859,7 @@ pub fn stage_object_create<R: MetadataPlanningRead>(
     kind: unica_metadata::CreatableKind,
     name: &str,
     metadata_type: Option<&MetadataType>,
+    creation_namespace: Option<&str>,
     op_index: usize,
     provisional: &mut Vec<ProvisionalApplyEffect>,
 ) -> Result<(), ApplyPlanError> {
@@ -924,6 +927,7 @@ pub fn stage_object_create<R: MetadataPlanningRead>(
                 handler: false,
                 language_codes,
                 creation_type: metadata_type.cloned(),
+                creation_namespace: creation_namespace.map(str::to_owned),
             },
             source_set_name,
             &language,
@@ -1030,6 +1034,24 @@ pub fn stage_object_create<R: MetadataPlanningRead>(
                 source.format_version,
                 op_index,
             )?);
+        }
+        if let Some(namespace) = creation_namespace {
+            let at = format!("ops[{op_index}].args.values.name");
+            let package = unica_source_designer::layout::attached_resource_relative(
+                &post_image.metadata_path,
+                "Package.bin",
+                source_kind,
+            )
+            .map_err(|error| {
+                ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, error).at_path(at.clone())
+            })?;
+            staged
+                .create(
+                    &package,
+                    crate::template_catalog::empty_xdto_package(namespace),
+                )
+                .map_err(|error| ApplyPlanError::staging(error, at))?;
+            touched.push(package);
         }
         // 8.3.27 lists a registrar's records in the order of the registers'
         // UUIDs; the new record moves to its place once every file of the new

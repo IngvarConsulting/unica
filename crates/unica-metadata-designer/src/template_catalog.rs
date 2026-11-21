@@ -47,6 +47,7 @@ pub struct MetadataTemplateOperationOverrides {
     /// took; without it the template reads the languages on disk.
     pub language_codes: Option<Vec<String>>,
     pub creation_type: Option<unica_metadata::MetadataType>,
+    pub creation_namespace: Option<String>,
 }
 
 pub struct MetadataPostImage<G = ()> {
@@ -612,6 +613,22 @@ pub fn template_failure(
         .into()
 }
 
+/// The empty Package.bin emitted on supported Designer profiles.
+pub(crate) fn empty_xdto_package(namespace: &str) -> Vec<u8> {
+    let namespace = unica_xml_format::text::escape_xml(namespace);
+    let text = format!(
+        concat!(
+            "<package xmlns=\"http://v8.1c.ru/8.1/xdto\" ",
+            "xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" ",
+            "xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" ",
+            "targetNamespace=\"{namespace}\">\r\n",
+            "</package>\r\n",
+        ),
+        namespace = namespace,
+    );
+    with_utf8_bom(text.as_bytes())
+}
+
 pub fn with_utf8_bom(bytes: &[u8]) -> Vec<u8> {
     let mut output = Vec::with_capacity(3 + bytes.len());
     output.extend_from_slice(b"\xef\xbb\xbf");
@@ -740,15 +757,24 @@ pub fn minimal_metadata_xml<G>(
     context: &MinimalTemplateContext<G>,
     fresh_uuid: fn() -> String,
 ) -> Result<(String, String), String> {
-    minimal_metadata_xml_with_type(kind, obj_name, format_version, context, None, fresh_uuid)
+    minimal_metadata_xml_with_inputs(
+        kind,
+        obj_name,
+        format_version,
+        context,
+        None,
+        None,
+        fresh_uuid,
+    )
 }
 
-fn minimal_metadata_xml_with_type<G>(
+fn minimal_metadata_xml_with_inputs<G>(
     kind: CreatableKind,
     obj_name: &str,
     format_version: &str,
     context: &MinimalTemplateContext<G>,
     creation_type: Option<&unica_metadata::MetadataType>,
+    creation_namespace: Option<&str>,
     fresh_uuid: fn() -> String,
 ) -> Result<(String, String), String> {
     let defn = MetaTemplateDefinition {
@@ -791,6 +817,12 @@ fn minimal_metadata_xml_with_type<G>(
                 let metadata_type = creation_type
                     .ok_or_else(|| format!("metadata kind {object_type} needs a creation type"))?;
                 crate::xml_model::emit_meta_typed_value_type(&mut lines, "\t\t\t", metadata_type);
+            }
+            if kind.requires_creation_namespace() {
+                let namespace = creation_namespace.ok_or_else(|| {
+                    format!("metadata kind {object_type} needs a creation namespace")
+                })?;
+                emit_meta_optional_text(&mut lines, "			", "Namespace", Some(namespace));
             }
             for property in template.properties {
                 lines.push(format!("\t\t\t{property}"));
@@ -3221,12 +3253,13 @@ pub fn minimal_object<G>(
             context
         }
     };
-    let (xml, _) = minimal_metadata_xml_with_type(
+    let (xml, _) = minimal_metadata_xml_with_inputs(
         kind,
         name,
         source.format_version,
         &context,
         overrides.creation_type.as_ref(),
+        overrides.creation_namespace.as_deref(),
         source.fresh_uuid,
     )
     .map_err(|message| template_failure(&metadata_path, message))?;
@@ -3343,12 +3376,14 @@ mod typed_template_tests {
             let metadata_type = unica_metadata::MetadataType {
                 variants: vec![unica_metadata::MetadataTypeVariant::Boolean],
             };
-            let (xml, uuid) = minimal_metadata_xml_with_type(
+            let (xml, uuid) = minimal_metadata_xml_with_inputs(
                 kind,
                 &name,
                 "2.20",
                 &context,
                 kind.requires_creation_type().then_some(&metadata_type),
+                kind.requires_creation_namespace()
+                    .then_some("urn:unica:test"),
                 metadata_fixture_uuid,
             )
             .unwrap_or_else(|error| panic!("{}: {error}", kind.as_str()));
