@@ -75,7 +75,7 @@ impl RequiredKeys {
 
     fn record(
         &mut self,
-        line: PlatformLine,
+        source: (PlatformLine, SourceSetKind),
         owner: &QualifiedAddress,
         branch: &str,
         role: Option<&str>,
@@ -84,7 +84,7 @@ impl RequiredKeys {
         if self.output.is_none() {
             return;
         }
-        let key = address_key((line, SourceSetKind::Configuration), owner, branch, role);
+        let key = address_key(source, owner, branch, role);
         let requirement = match requirement {
             AddressRequirement::Address => serde_json::json!({"kind": "address"}),
             AddressRequirement::IntroducedIn(since) => {
@@ -347,7 +347,13 @@ fn native_configuration_root_address_table_matches_published_branches() {
                 AddressRequirement::Address,
                 AddressRequirement::IntroducedIn,
             );
-        required.record(line, &configuration, kind, None, requirement);
+        required.record(
+            (line, SourceSetKind::Configuration),
+            &configuration,
+            kind,
+            None,
+            requirement,
+        );
     }
     required.finish();
     let mut rows = BTreeMap::new();
@@ -655,6 +661,7 @@ fn native_extension_root_language_matches_registration() {
 fn native_external_root_descriptors_match_published_addresses() {
     use unica_workspace::source_profile::platform_xml_source_profile;
 
+    let mut required = RequiredKeys::new("required_native_external_child_keys.jsonl");
     let mut evidence = EvidenceRows::new(
         "native_external_root_descriptors_match_published_addresses",
         SourceSetKind::ExternalProcessor,
@@ -785,32 +792,49 @@ fn native_external_root_descriptors_match_published_addresses() {
             &origin,
             AddressEvidence::RoundTrip(&at_text),
         );
-        let command_branch = QualifiedAddress::parse(&format!("{at_text}.Command")).unwrap();
-        let registered_commands: BTreeSet<_> = artifact
-            .children()
-            .filter(|node| node.has_tag_name((MD_CLASSES_NS, "ChildObjects")))
-            .flat_map(|children| children.children())
-            .filter(|node| node.has_tag_name((MD_CLASSES_NS, "Command")))
-            .map(|command| {
-                let command_name =
-                    fixture_properties_name(command).expect("command Properties.Name");
-                command_branch.member(command_name).unwrap().to_string()
-            })
-            .collect();
-        let command_branch = command_branch.to_string();
-        assert_eq!(
-            addresses(&read(&authority, &command_branch), "items"),
-            registered_commands,
-            "{relative}: the command collection follows the native registrations"
-        );
-        evidence.record_for_source(
-            (line, source_kind),
-            &at_text,
-            "Command",
-            None,
-            &origin,
-            AddressEvidence::Read(&command_branch),
-        );
+        for &child_kind in platform_child_object_order(kind).unwrap() {
+            // The external identity reader projects these native registrations.
+            // Attribute and TabularSection still need their own typed read path.
+            if !matches!(child_kind, "Form" | "Template" | "Command") {
+                continue;
+            }
+            required.record(
+                (line, source_kind),
+                &at,
+                child_kind,
+                None,
+                AddressRequirement::Address,
+            );
+            let child_branch = QualifiedAddress::parse(&format!("{at_text}.{child_kind}")).unwrap();
+            let registered: BTreeSet<_> = artifact
+                .children()
+                .filter(|node| node.has_tag_name((MD_CLASSES_NS, "ChildObjects")))
+                .flat_map(|children| children.children())
+                .filter(|node| node.has_tag_name((MD_CLASSES_NS, child_kind)))
+                .map(|child| {
+                    let child_name = if child.children().any(|node| node.is_element()) {
+                        fixture_properties_name(child).expect("external child Properties.Name")
+                    } else {
+                        child.text().expect("external child registration").trim()
+                    };
+                    child_branch.member(child_name).unwrap().to_string()
+                })
+                .collect();
+            let child_branch = child_branch.to_string();
+            assert_eq!(
+                addresses(&read(&authority, &child_branch), "items"),
+                registered,
+                "{relative}: {child_kind} follows the native registrations"
+            );
+            evidence.record_for_source(
+                (line, source_kind),
+                &at_text,
+                child_kind,
+                None,
+                &origin,
+                AddressEvidence::Read(&child_branch),
+            );
+        }
         if format == "2.20" && source_kind == SourceSetKind::ExternalReport {
             check_native_external_dcs_parameters(
                 &authority,
@@ -822,6 +846,7 @@ fn native_external_root_descriptors_match_published_addresses() {
             );
         }
     }
+    required.finish();
     evidence.finish();
 }
 
@@ -1044,7 +1069,7 @@ fn record_required_metadata_children(
                 "{xml}: declared child {owner}.{branch} has no admitted platform kind"
             );
             required.record(
-                profile.line(),
+                (profile.line(), SourceSetKind::Configuration),
                 &owner,
                 branch,
                 None,
@@ -1083,7 +1108,7 @@ fn record_required_configuration_module_roles(fixture: &ModuleCapabilityFixture)
             _ => panic!("{at}: unsupported positive module shape in profile"),
         };
         required.record(
-            line,
+            (line, SourceSetKind::Configuration),
             &owner,
             "Module",
             Some(role),

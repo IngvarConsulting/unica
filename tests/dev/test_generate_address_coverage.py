@@ -156,6 +156,36 @@ class AddressCoverageReportTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "only valid for a configuration root kind"):
             GENERATOR.merge_shards(self.root, frozenset({CHILD_KEYS}))
 
+    def test_external_form_requirement_rejects_a_missing_native_witness(self) -> None:
+        form = root_witness("erf", "Form")
+        form["key"].update(
+            source_kind="external_report",
+            owner_shape=[{"kind": "ExternalReport", "named": True, "role": None}],
+        )
+        form["witness"].update(
+            owner="erf:ExternalReport.SyntheticReport",
+            at="erf:ExternalReport.SyntheticReport.Form",
+            test_case=GENERATOR.EXTERNAL_ROOT_SHARD,
+        )
+        shard = GENERATOR.EXTERNAL_CHILD_KEYS_SHARD
+        self.write_shard(shard, required_key(form))
+        self.write_shard(GENERATOR.EXTERNAL_ROOT_SHARD, form)
+        self.assertEqual(
+            GENERATOR.merge_shards(self.root, frozenset({shard, GENERATOR.EXTERNAL_ROOT_SHARD})),
+            [{"key": form["key"], "witnesses": [form["witness"]]}],
+        )
+        command = {
+            **form,
+            "key": {**form["key"], "branch": "Command"},
+            "witness": {
+                **form["witness"],
+                "at": "erf:ExternalReport.SyntheticReport.Command",
+            },
+        }
+        self.write_shard(GENERATOR.EXTERNAL_ROOT_SHARD, command)
+        with self.assertRaisesRegex(ValueError, r'(?s)missing required native coverage.*"branch":"Form"'):
+            GENERATOR.merge_shards(self.root, frozenset({shard, GENERATOR.EXTERNAL_ROOT_SHARD}))
+
     def test_duplicate_and_conflicting_required_keys_are_refused(self) -> None:
         palette = root_witness("main", "PaletteColor", introduced_in="8.5.4")
         first = required_key(palette, introduced_in="8.5.4")

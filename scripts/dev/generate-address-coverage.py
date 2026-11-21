@@ -31,8 +31,11 @@ NATIVE_SHARDS = frozenset({
 DAEMON_SHARD = "medium_published_document_and_bsl_branches_have_canonical_addresses"
 ROOT_KEYS_SHARD = "required_configuration_root_keys"
 METADATA_CHILD_KEYS_SHARD = "required_native_metadata_child_keys"
+EXTERNAL_CHILD_KEYS_SHARD = "required_native_external_child_keys"
 MODULE_ROLE_KEYS_SHARD = "required_configuration_module_role_keys"
-REQUIRED_KEY_SHARDS = frozenset({ROOT_KEYS_SHARD, METADATA_CHILD_KEYS_SHARD, MODULE_ROLE_KEYS_SHARD})
+REQUIRED_KEY_SHARDS = frozenset({
+    ROOT_KEYS_SHARD, METADATA_CHILD_KEYS_SHARD, EXTERNAL_CHILD_KEYS_SHARD, MODULE_ROLE_KEYS_SHARD,
+})
 NATIVE_SCOPE = (
     "Configuration source sets and native Language registrations in extension source sets "
     "across three platform lines, plus native external processor and report root descriptors "
@@ -41,6 +44,7 @@ NATIVE_SCOPE = (
     "records the native XML export line. Read checks use the actual workspace profile selector "
     "and establish neither write support nor a match with the runtime profile."
     " The native report checks declaration closure for configuration roots and top-level metadata children."
+    " It requires external Form, Template, and Command collections witnessed against native XML."
 )
 DAEMON_SCOPE = (
     "Read witnesses from the selected document and BSL coverage test of unica-daemon, "
@@ -160,7 +164,16 @@ def validate_required_record(record: object, shard: str) -> None:
     validate_record_type(record, "required")
     key = record["key"]
     version = validate_key(key)
-    if key["source_kind"] != "configuration":
+    if shard == EXTERNAL_CHILD_KEYS_SHARD:
+        owner_kind = {
+            "external_processor": "ExternalDataProcessor",
+            "external_report": "ExternalReport",
+        }.get(key["source_kind"])
+        if owner_kind is None or key["owner_shape"] != [
+            {"kind": owner_kind, "named": True, "role": None},
+        ]:
+            raise ValueError("required external child key must name the matching external owner kind")
+    elif key["source_kind"] != "configuration":
         raise ValueError("required keys must belong to a configuration source set")
     shape = key["owner_shape"]
     requirement = record["requirement"]
