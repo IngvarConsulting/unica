@@ -153,16 +153,23 @@ impl StartupOutcome {
             Self::Unconfirmed => "unconfirmed",
         }
     }
-
-    /// Сеанс, который мог остаться работать после ответа.
-    fn leaves_live_session(self) -> bool {
-        matches!(self, Self::Started | Self::Unconfirmed)
-    }
 }
 
 struct ObservedStartup {
     outcome: StartupOutcome,
+    exit_code: Option<i32>,
     public: Value,
+}
+
+impl ObservedStartup {
+    /// Сеанс, который мог остаться работать после ответа.
+    fn leaves_live_session(&self) -> bool {
+        self.exit_code.is_none()
+            && matches!(
+                self.outcome,
+                StartupOutcome::Started | StartupOutcome::Unconfirmed
+            )
+    }
 }
 
 /// Проверяет `startup` раннера: исход, время события и код выхода должны
@@ -204,6 +211,7 @@ fn parse_startup(startup: &Value) -> Option<ObservedStartup> {
     }
     Some(ObservedStartup {
         outcome,
+        exit_code,
         public: json!({
             "outcome": outcome.as_str(),
             "eventAt": event_at,
@@ -619,7 +627,9 @@ fn execute_with_resolved_runner(
     if outcome == RunnerOutcome::StructuralWaitTimeout {
         return result;
     }
-    let live_session = startup_outcome.is_none_or(StartupOutcome::leaves_live_session);
+    let live_session = startup
+        .as_ref()
+        .is_none_or(ObservedStartup::leaves_live_session);
     // Сеанс — внешний эффект, не файл рабочего пространства: путь сюда не
     // кладётся, иначе запись читалась бы как правка исходников. Завершившийся
     // до ответа клиент сеанса не оставил.
@@ -2141,6 +2151,7 @@ fn main() {
             ),
             ("closed", Value::Null, json!(0), true, None, false),
             ("unconfirmed", Value::Null, Value::Null, true, None, true),
+            ("unconfirmed", Value::Null, json!(0), true, None, false),
         ];
         for mode in ["thin", "thick", "ordinary"] {
             for (outcome, event_at, exit_code, ok, refusal, live) in cases.clone() {
@@ -2184,7 +2195,11 @@ fn main() {
                     3,
                     "startup carries only outcome, eventAt and exitCode"
                 );
-                assert_eq!(result.changed.len(), usize::from(live), "{mode} {outcome}");
+                assert_eq!(
+                    result.changed.len(),
+                    usize::from(live),
+                    "{mode} {outcome}, exit code {exit_code}"
+                );
                 let encoded = serde_json::to_string(&result).unwrap();
                 for leaked in [
                     "secret-password",
