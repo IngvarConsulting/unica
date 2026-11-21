@@ -350,6 +350,182 @@ fn sequence_record_set_first_insert_and_blank_replacement_use_public_apply() {
     }
 }
 
+const RECALCULATION: &str = "main:CalculationRegister.Начисления.Recalculation.Перерасчет1";
+const RECALCULATION_DESCRIPTOR: &str =
+    "CalculationRegisters/Начисления/Recalculations/Перерасчет1.xml";
+const RECALCULATION_MODULE: &str =
+    "CalculationRegisters/Начисления/Recalculations/Перерасчет1/Ext/RecordSetModule.bsl";
+const RECALCULATION_METHOD: &str = "UnicaRecalculationRoundTripProbe";
+
+fn recalculation_workspace() -> tempfile::TempDir {
+    let root = tempfile::tempdir().unwrap();
+    copy_tree(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/formats/platform_xml/2.20/recalculation"),
+        root.path(),
+    );
+    root
+}
+
+/// rule: INV.SOURCE.RESOLVED-RESOURCE-IDENTITY
+#[test]
+fn recalculation_record_set_body_and_resolve_require_registered_owners() {
+    let root = recalculation_workspace();
+    let src = root.path().join("src");
+    let owner_branch = "main:CalculationRegister.Начисления.Recalculation";
+    let module = format!("{RECALCULATION}.Module.RecordSet");
+    let body = format!("{module}.Body");
+    let wrong_role = RECALCULATION_MODULE.replace("RecordSetModule", "ManagerModule");
+    let wrong_parent =
+        RECALCULATION_MODULE.replace("CalculationRegisters/Начисления", "Documents/Приход");
+    let orphan = RECALCULATION_MODULE.replace("Перерасчет1", "Orphan");
+    let orphan_descriptor = RECALCULATION_DESCRIPTOR.replace("Перерасчет1", "Orphan");
+    for path in [&wrong_role, &wrong_parent, &orphan] {
+        let path = src.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::copy(src.join(RECALCULATION_MODULE), path).unwrap();
+    }
+    let descriptor = std::fs::read_to_string(src.join(RECALCULATION_DESCRIPTOR)).unwrap();
+    std::fs::write(
+        src.join(orphan_descriptor),
+        descriptor.replace("Перерасчет1", "Orphan"),
+    )
+    .unwrap();
+
+    let mut mcp = resource_resolve_mcp(root.path());
+    let mut id = 1_u64;
+    let mut call = |tool, args| {
+        id += 1;
+        mcp.completed_tool_call(call_tool(id, tool, args))
+    };
+    let branch = call("unica.view", json!({"at":owner_branch}));
+    assert_eq!(branch["ok"], true, "{branch:#}");
+    assert_eq!(branch["data"]["items"][0]["at"], RECALCULATION);
+    let owner = call("unica.view", json!({"at":RECALCULATION}));
+    assert_eq!(owner["ok"], true, "{owner:#}");
+    let module_branch = format!("{RECALCULATION}.Module");
+    assert!(owner["data"]["branches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|branch| branch["at"] == module_branch && branch["count"] == 1));
+    let roles = call("unica.view", json!({"at":module_branch}));
+    assert_eq!(roles["ok"], true, "{roles:#}");
+    assert_eq!(roles["data"]["items"][0]["at"], module);
+
+    for query in [
+        json!({"at":module}),
+        json!({"path":RECALCULATION_MODULE}),
+        json!({"path":format!("src/{RECALCULATION_MODULE}")}),
+    ] {
+        let resolved = call("unica.resolve", query);
+        assert_eq!(resolved["ok"], true, "{resolved:#}");
+        assert_eq!(resolved["data"]["at"], module);
+        assert_eq!(resolved["data"]["path"], RECALCULATION_MODULE);
+        assert_eq!(resolved["data"]["kind"], "Module");
+    }
+    for path in [wrong_role, wrong_parent, orphan] {
+        let result = call("unica.resolve", json!({"path":path}));
+        assert_eq!(result["ok"], false, "{result:#}");
+        assert_eq!(result["diagnostics"][0]["code"], "not_found");
+    }
+    let orphan_at = format!("{owner_branch}.Orphan.Module.RecordSet");
+    for (tool, args) in [
+        ("unica.view", json!({"at":orphan_at})),
+        ("unica.resolve", json!({"at":orphan_at})),
+        (
+            "unica.apply",
+            json!({"at":orphan_at,"ops":[{"op":"code.insert","args":{"text":"// edit"}}]}),
+        ),
+    ] {
+        let result = call(tool, args);
+        assert_eq!(result["ok"], false, "{tool}: {result:#}");
+        assert_eq!(result["diagnostics"][0]["code"], "not_found");
+    }
+
+    let response = mcp.exchange(call_tool(id + 1, "unica.view", json!({"at":body})));
+    let content = response["result"]["content"].as_array().unwrap();
+    let envelope: Value = serde_json::from_str(content[0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(envelope["ok"], true, "{envelope:#}");
+    assert_eq!(envelope["data"]["at"], body);
+    assert_eq!(envelope["data"]["kind"], "Body");
+    assert!(content[1]["text"]
+        .as_str()
+        .unwrap()
+        .contains(RECALCULATION_METHOD));
+    mcp.finish();
+}
+
+/// rule: INV.SOURCE.TAIL-INSERT
+#[test]
+fn recalculation_record_set_materializes_and_clears_through_public_apply() {
+    let root = recalculation_workspace();
+    let src = root.path().join("src");
+    let path = src.join(RECALCULATION_MODULE);
+    let native = std::fs::read_to_string(&path).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    let ext = path.parent().unwrap();
+    std::fs::remove_dir(ext).unwrap();
+    std::fs::remove_dir(ext.parent().unwrap()).unwrap();
+    let unchanged = [
+        src.join(RECALCULATION_DESCRIPTOR),
+        src.join("CalculationRegisters/Начисления.xml"),
+        src.join("CalculationRegisters/Начисления/Ext/RecordSetModule.bsl"),
+    ]
+    .map(|path| {
+        let before = std::fs::read(&path).unwrap();
+        (path, before)
+    });
+
+    let mut mcp = resource_resolve_mcp(root.path());
+    let mut id = 1_u64;
+    let mut call = |tool, args| {
+        id += 1;
+        mcp.completed_tool_call(call_tool(id, tool, args))
+    };
+    let module = format!("{RECALCULATION}.Module.RecordSet");
+    let missing = call("unica.resolve", json!({"path":RECALCULATION_MODULE}));
+    assert_eq!(missing["ok"], false, "{missing:#}");
+    assert_eq!(missing["diagnostics"][0]["code"], "not_found");
+    let view = call("unica.view", json!({"at":module}));
+    assert_eq!(view["ok"], true, "{view:#}");
+    assert_eq!(view["data"]["props"]["role"], "RecordSet");
+
+    let body = format!("{module}.Body");
+    for (at, op, text) in [
+        (
+            module.as_str(),
+            "code.insert",
+            native.trim_start_matches('\u{feff}'),
+        ),
+        (body.as_str(), "code.replace", "\n"),
+    ] {
+        let before = std::fs::read(&path).ok();
+        let plan = call(
+            "unica.apply",
+            json!({"at":at,"ops":[{"op":op,"args":{"text":text}}]}),
+        );
+        assert_eq!(plan["ok"], true, "{op}: {plan:#}");
+        assert_eq!(std::fs::read(&path).ok(), before);
+        let token = plan["data"]["executionToken"].as_str().unwrap();
+        let applied = call("unica.apply", json!({"executionToken":token}));
+        assert_eq!(applied["ok"], true, "{op}: {applied:#}");
+        let after = std::fs::read_to_string(&path).unwrap();
+        if op == "code.insert" {
+            assert!(after.contains(RECALCULATION_METHOD), "{after:?}");
+        } else {
+            assert!(matches!(
+                after.trim_start_matches('\u{feff}'),
+                "\n" | "\r\n"
+            ));
+        }
+        for (path, before) in &unchanged {
+            assert_eq!(std::fs::read(path).unwrap(), *before, "{path:?}");
+        }
+    }
+    mcp.finish();
+}
+
 /// rule: INV.SOURCE.RESOLVED-RESOURCE-IDENTITY
 #[test]
 fn resolve_resources_refuse_unregistered_and_absent_targets_on_public_mcp() {

@@ -182,27 +182,48 @@ fn native_ordinary_interface_has_a_registration_only_root_branch() {
     }
 }
 
+/// rule: INV.SOURCE.PLATFORM-CAPABILITY-EXISTENCE
 #[test]
-fn pending_recalculation_module_has_no_address_in_the_profile() {
-    let recalculation = "main:CalculationRegister.Payroll.Recalculation.Probe";
-    let owner = QualifiedAddress::parse(recalculation).unwrap();
-    assert_eq!(owner.segments()[1].kind(), NodeKind::Recalculation);
-    let prospective = format!("{recalculation}.Module.RecordSet");
-    for (line, _) in unica_source_contract::format_identity::DESCRIBED_PLATFORM_LINES {
-        let profile = PlatformProfile::for_line(*line).unwrap();
-        if let Ok(address) = QualifiedAddress::parse(&prospective) {
+fn native_recalculation_module_address_table_matches_registered_owner() {
+    let source = fixture_path("formats/platform_xml/2.20/recalculation/src");
+    let profile = PlatformProfile::v8_3_27();
+    let cancellation = CancellationToken::new();
+    let authority = native_authority(&cancellation, &source, profile);
+    let parent_branch = "main:CalculationRegister.Начисления.Recalculation";
+    let owners = addresses(&read(&authority, parent_branch), "items");
+    assert_eq!(
+        owners,
+        BTreeSet::from([format!("{parent_branch}.Перерасчет1")])
+    );
+    for owner in owners {
+        let branch = format!("{owner}.Module");
+        assert!(addresses(&read(&authority, &owner), "branches").contains(&branch));
+        let branch_at = QualifiedAddress::parse(&branch).unwrap();
+        let roles = profile.module_children(&branch_at);
+        let published = addresses(&read(&authority, &branch), "items");
+        assert_eq!(
+            published,
+            roles
+                .iter()
+                .map(|child| child.at().to_string())
+                .collect::<BTreeSet<_>>()
+        );
+        assert_eq!(published, BTreeSet::from([format!("{branch}.RecordSet")]));
+        for role in roles {
+            let at = role.at();
+            let route = route_logical_address(at, profile).unwrap();
+            assert_eq!(route.reader(), LogicalReader::Module);
+            let node = read(&authority, &at.to_string());
             assert!(
-                profile.module_capability(&address).is_none(),
-                "{line}: {prospective}"
+                addresses(&node, "branches").contains(&format!("{at}.Body")),
+                "{node:#}"
             );
-            assert!(
-                route_logical_address(&address, profile).is_err(),
-                "{line}: {prospective}"
+            println!(
+                "| {} | Recalculation | Module.{} | {at} |",
+                profile.line(),
+                role.capability().role().as_str()
             );
         }
-        println!(
-            "| {line} | Recalculation | Module.RecordSet | No canonical route. The XML generated type RecalculationRecordSet does not prove a BSL module. A native export of a registered recalculation with nonempty BSL is required. |"
-        );
     }
 }
 

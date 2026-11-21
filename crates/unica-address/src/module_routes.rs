@@ -106,8 +106,7 @@ pub enum ModuleRouteKind {
     CommonCommand,
     NestedForm,
     NestedCommand,
-    /// A module of a nested object that declares its place in its owner:
-    /// a table, cube or dimension table of an external data source.
+    /// A module of a nested object that declares its place in its owner.
     NestedObject,
     Service,
     Bot,

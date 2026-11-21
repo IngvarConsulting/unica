@@ -594,13 +594,8 @@ fn object_descriptor_evidence(parts: &[&str]) -> Option<ObjectDescriptorEvidence
     let mut path = PathBuf::from(owner.directory);
     let (mut parent, mut last_kind, mut last_name) = (owner.tag, owner.tag, *name);
     for (index, pair) in rest.chunks(2).enumerate() {
-        let directory = match (index, pair[0]) {
-            (0, "Recalculation") if owner.tag == "CalculationRegister" => "Recalculations",
-            (0, "Recalculation") => return None,
-            // A nested object described inline in its owner has no
-            // descriptor of its own and is no source target.
-            (depth, nested) => nested_directory(parent, depth + 1, nested)?,
-        };
+        // A nested object described inline has no descriptor of its own.
+        let directory = nested_directory(parent, index + 1, pair[0])?;
         path.push(last_name);
         path.push(directory);
         parent = pair[0];
