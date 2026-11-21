@@ -3192,29 +3192,36 @@ fn native_registered_modules_match_profile_and_physical_paths() {
                 &mut evidence,
             );
         }
-        for (kind, descriptor, role, modules) in [
+        for (kind, descriptor, modules) in [
+            (
+                "Catalog",
+                "Catalogs/Валюты.xml",
+                &[
+                    ("Manager", None, "Catalogs/Валюты/Ext/ManagerModule.bsl"),
+                    ("Object", None, "Catalogs/Валюты/Ext/ObjectModule.bsl"),
+                ][..],
+            ),
             (
                 "Sequence",
                 "Sequences/Probe.xml",
-                "RecordSet",
-                &[(None, "Sequences/Probe/Ext/RecordSetModule.bsl")][..],
+                &[("RecordSet", None, "Sequences/Probe/Ext/RecordSetModule.bsl")][..],
             ),
             (
                 "Document",
                 "Documents/Приход.xml",
-                "Object",
-                &[(None, "Documents/Приход/Ext/ObjectModule.bsl")][..],
+                &[("Object", None, "Documents/Приход/Ext/ObjectModule.bsl")][..],
             ),
             (
                 "Document",
                 "Documents/Orders.xml",
-                "Command",
                 &[
                     (
+                        "Command",
                         Some("Probe"),
                         "Documents/Orders/Commands/Probe/Ext/CommandModule.bsl",
                     ),
                     (
+                        "Command",
                         Some("Other"),
                         "Documents/Orders/Commands/Other/Ext/CommandModule.bsl",
                     ),
@@ -3223,31 +3230,42 @@ fn native_registered_modules_match_profile_and_physical_paths() {
             (
                 "HTTPService",
                 "HTTPServices/ПроверкаСвязи.xml",
-                "HTTPService",
-                &[(None, "HTTPServices/ПроверкаСвязи/Ext/Module.bsl")][..],
+                &[(
+                    "HTTPService",
+                    None,
+                    "HTTPServices/ПроверкаСвязи/Ext/Module.bsl",
+                )][..],
             ),
             (
                 "WebService",
                 "WebServices/ОбменДанными.xml",
-                "WebService",
-                &[(None, "WebServices/ОбменДанными/Ext/Module.bsl")][..],
+                &[(
+                    "WebService",
+                    None,
+                    "WebServices/ОбменДанными/Ext/Module.bsl",
+                )][..],
             ),
             (
                 "Bot",
                 "Bots/AllKindsBot.xml",
-                "Bot",
-                &[(None, "Bots/AllKindsBot/Ext/Module.bsl")][..],
+                &[("Bot", None, "Bots/AllKindsBot/Ext/Module.bsl")][..],
             ),
             (
                 "WebSocketClient",
                 "WebSocketClients/AllKindsWebSocketClient.xml",
-                "WebSocketClient",
                 &[(
+                    "WebSocketClient",
                     None,
                     "WebSocketClients/AllKindsWebSocketClient/Ext/Module.bsl",
                 )][..],
             ),
-        ] {
+        ]
+        .into_iter()
+        .chain((xml == "2.22").then_some((
+            "Queue",
+            "Queues/Probe.xml",
+            &[("Manager", None, "Queues/Probe/Ext/ManagerModule.bsl")][..],
+        ))) {
             let descriptor = source.join(descriptor);
             let raw = read_fixture_descriptor(&descriptor);
             let document = parse_fixture_descriptor(&raw, &descriptor);
@@ -3264,14 +3282,36 @@ fn native_registered_modules_match_profile_and_physical_paths() {
                 "{xml}: exactly one {kind}.{name} registration",
             );
             let owner = format!("main:{kind}.{name}");
-            let commands = if role == "Command" {
+            // Check the explicit group expectations for these owners, which
+            // are outside the frozen 8.3.27 module fixture.
+            let native_group = matches!(kind, "Catalog" | "Queue");
+            if native_group {
+                let branch = format!("{owner}.Module");
+                let expected = modules
+                    .iter()
+                    .map(|(role, _, _)| format!("{branch}.{role}"))
+                    .collect();
+                check_native_branch(&authority, &read(&authority, &owner), &branch, &expected);
+                evidence.record(
+                    line,
+                    &owner,
+                    "Module",
+                    None,
+                    &fixture_origin(&descriptor),
+                    AddressEvidence::Read(&branch),
+                );
+            }
+            let expected_commands: BTreeSet<_> = modules
+                .iter()
+                .filter_map(|(_, command, _)| *command)
+                .collect();
+            let commands = if expected_commands.is_empty() {
+                BTreeMap::new()
+            } else {
                 let commands = native_command_owners(&owner, artifact);
                 assert_eq!(
                     commands.keys().copied().collect::<BTreeSet<_>>(),
-                    modules
-                        .iter()
-                        .map(|(command, _)| command.unwrap())
-                        .collect::<BTreeSet<_>>(),
+                    expected_commands,
                     "{xml}: exact native command owners for {owner}",
                 );
                 check_native_branch(
@@ -3281,12 +3321,19 @@ fn native_registered_modules_match_profile_and_physical_paths() {
                     &commands.values().cloned().collect(),
                 );
                 commands
-            } else {
-                BTreeMap::new()
             };
-            for &(command, relative) in modules {
+            for &(role, command, relative) in modules {
                 let parent = command.map_or(owner.as_str(), |name| commands[name].as_str());
-                let at = check_registered_module_read(&authority, &profile_fixture, parent, role);
+                let at = if native_group {
+                    let at = format!("{parent}.Module.{role}");
+                    if kind == "Queue" {
+                        assert_eq!(read(&authority, &at)["kind"], "Module", "{at}");
+                        read(&authority, &format!("{at}.Body"));
+                    }
+                    QualifiedAddress::parse(&at).unwrap()
+                } else {
+                    check_registered_module_read(&authority, &profile_fixture, parent, role)
+                };
                 if kind == "Sequence" {
                     evidence.record(
                         line,
