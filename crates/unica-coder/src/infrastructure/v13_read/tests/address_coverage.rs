@@ -785,6 +785,32 @@ fn native_external_root_descriptors_match_published_addresses() {
             &origin,
             AddressEvidence::RoundTrip(&at_text),
         );
+        let command_branch = QualifiedAddress::parse(&format!("{at_text}.Command")).unwrap();
+        let registered_commands: BTreeSet<_> = artifact
+            .children()
+            .filter(|node| node.has_tag_name((MD_CLASSES_NS, "ChildObjects")))
+            .flat_map(|children| children.children())
+            .filter(|node| node.has_tag_name((MD_CLASSES_NS, "Command")))
+            .map(|command| {
+                let command_name =
+                    fixture_properties_name(command).expect("command Properties.Name");
+                command_branch.member(command_name).unwrap().to_string()
+            })
+            .collect();
+        let command_branch = command_branch.to_string();
+        assert_eq!(
+            addresses(&read(&authority, &command_branch), "items"),
+            registered_commands,
+            "{relative}: the command collection follows the native registrations"
+        );
+        evidence.record_for_source(
+            (line, source_kind),
+            &at_text,
+            "Command",
+            None,
+            &origin,
+            AddressEvidence::Read(&command_branch),
+        );
         if format == "2.20" && source_kind == SourceSetKind::ExternalReport {
             check_native_external_dcs_parameters(
                 &authority,
