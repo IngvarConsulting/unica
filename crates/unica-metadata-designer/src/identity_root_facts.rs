@@ -351,7 +351,7 @@ mod tests {
     fn an_unmodelled_platform_type_is_a_limit_not_an_absence() {
         let payload = read(
             "SessionParameter",
-            "<Type><v8:Type>v8:FixedStructure</v8:Type></Type>",
+            "<Type><v8:Type>v8:UnknownType</v8:Type></Type>",
         );
         assert_eq!(property(&payload, "Type"), None);
         assert_eq!(unreadable(&payload), ["properties.Type"]);
@@ -359,6 +359,23 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("incomplete"));
+    }
+
+    /// rule: INV.SOURCE.OBSERVED-TYPE-CAPABILITY
+    #[test]
+    fn fixed_structure_is_observed_without_a_writer() {
+        let payload = read(
+            "SessionParameter",
+            "<Type><v8:Type>v8:FixedStructure</v8:Type></Type>",
+        );
+        assert_eq!(
+            property(&payload, "Type"),
+            Some(&json!({
+                "variants": [{"kind": "fixedStructure"}],
+                "mutationCapability": "readOnly"
+            }))
+        );
+        assert!(unreadable(&payload).is_empty());
     }
 
     #[test]

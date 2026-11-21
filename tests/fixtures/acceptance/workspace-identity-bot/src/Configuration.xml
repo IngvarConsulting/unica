@@ -250,6 +250,8 @@
 		</Properties>
 		<ChildObjects>
 			<Language>Русский</Language>
-		<Bot>Notifications</Bot></ChildObjects>
+			<SessionParameter>БуферОбмена</SessionParameter>
+			<Bot>Notifications</Bot>
+		</ChildObjects>
 	</Configuration>
 </MetaDataObject>
