@@ -1395,6 +1395,187 @@ pub(super) mod medium_cf_read_selector_bridge_tests {
         let _ = fs::remove_dir_all(&context.workspace_root);
     }
 
+    /// Внешний источник данных из выгрузки платформы проверка конфигурации
+    /// знает: ни «неизвестного типа», ни пропавшего каталога.
+    #[test]
+    fn cf_validate_knows_the_external_data_source_of_the_platform_export() {
+        for export in [
+            "../../tests/fixtures/formats/platform_xml/2.20/all_kinds",
+            "../../tests/fixtures/formats/platform_xml/2.21/all_kinds",
+            "../../tests/fixtures/formats/platform_xml/2.22/all_kinds",
+        ] {
+            let root = Path::new(env!("CARGO_MANIFEST_DIR")).join(export);
+            let context = WorkspaceContext {
+                cwd: root.clone(),
+                workspace_root: root.clone(),
+                cache_root: std::env::temp_dir().join("unica-cf-validate-all-kinds"),
+                workspace_epoch: 1,
+            };
+
+            let outcome = validate_cf(
+                &Map::from_iter([
+                    ("ConfigPath".to_string(), json!("src")),
+                    ("Detailed".to_string(), json!(true)),
+                ]),
+                &context,
+            );
+
+            let stdout = outcome.stdout.as_deref().unwrap_or_default();
+            // Проверка дошла до каталогов объектов: она прошла и `ChildObjects`.
+            assert!(
+                stdout.contains("8. Object directories:"),
+                "{export}: {stdout}"
+            );
+            assert!(
+                !stdout.contains("Unknown type 'ExternalDataSource'"),
+                "{export}: {stdout}"
+            );
+            assert!(
+                !stdout.contains("Missing directory: ExternalDataSources"),
+                "{export}: {stdout}"
+            );
+        }
+    }
+
+    fn copy_tree(from: &Path, to: &Path) {
+        fs::create_dir_all(to).unwrap();
+        for entry in fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let target = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_tree(&entry.path(), &target);
+            } else {
+                fs::copy(entry.path(), target).unwrap();
+            }
+        }
+    }
+
+    /// The platform export of every root kind validates its WebSocket client
+    /// as a known kind whose objects live in `WebSocketClients/` (#3246).
+    #[test]
+    fn cf_validate_knows_the_web_socket_client_of_the_platform_export() {
+        for (format, export) in [
+            (
+                "2.20",
+                "../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src",
+            ),
+            (
+                "2.21",
+                "../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src",
+            ),
+            (
+                "2.22",
+                "../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src",
+            ),
+        ] {
+            let context = workspace(&format!("all-kinds-{format}"));
+            let source = context.workspace_root.join("src");
+            fs::remove_dir_all(&source).unwrap();
+            copy_tree(&Path::new(env!("CARGO_MANIFEST_DIR")).join(export), &source);
+            let outcome = validate_cf(
+                &Map::from_iter([("ConfigPath".to_string(), json!("src"))]),
+                &context,
+            );
+            let report = format!("{outcome:?}");
+            assert!(outcome.ok, "{format}: {report}");
+
+            // The kind's directory is checked as for any laid-out kind.
+            fs::remove_dir_all(source.join("WebSocketClients")).unwrap();
+            let missing = validate_cf(
+                &Map::from_iter([("ConfigPath".to_string(), json!("src"))]),
+                &context,
+            );
+            assert!(
+                missing.stdout.as_deref().is_some_and(
+                    |report| report.contains("Missing directory: WebSocketClients (1 objects)")
+                ),
+                "{format}: {missing:?}"
+            );
+            let _ = fs::remove_dir_all(&context.workspace_root);
+        }
+    }
+
+    /// Конфигуратор 8.3.27 создаёт функциональную опцию, параметр
+    /// функциональных опций и последовательность с пустыми `Location`, `Use`
+    /// и `Documents`, а загрузка такой выгрузки отказывает. Проверка
+    /// конфигурации называет каждое пустое свойство ошибкой с отказом
+    /// платформы и молчит о выгрузке, где они заданы.
+    #[test]
+    fn cf_validate_reports_a_required_property_the_platform_refuses_without() {
+        let export = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src");
+        let root =
+            std::env::temp_dir().join(format!("unica-cf-validate-required-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        crate::infrastructure::test_fixtures::copy_tree(&export, &root.join("src"));
+        let context = WorkspaceContext {
+            cwd: root.clone(),
+            workspace_root: root.clone(),
+            cache_root: root.join(".cache"),
+            workspace_epoch: 1,
+        };
+        let validate = || {
+            validate_cf(
+                &Map::from_iter([
+                    ("ConfigPath".to_string(), json!("src")),
+                    ("Detailed".to_string(), json!(true)),
+                ]),
+                &context,
+            )
+        };
+        let set = validate();
+        let stdout = set.stdout.as_deref().unwrap_or_default();
+        assert!(
+            stdout.contains("10. Required properties: 4 objects checked"),
+            "{stdout}"
+        );
+
+        let empty = |relative: &str, property: &str| {
+            let path = root.join("src").join(relative);
+            let text = fs::read_to_string(&path).unwrap();
+            let open = format!("<{property}>");
+            let close = format!("</{property}>");
+            let start = text.find(&open).unwrap();
+            let end = text.find(&close).unwrap() + close.len();
+            fs::write(
+                &path,
+                format!("{}<{property}/>{}", &text[..start], &text[end..]),
+            )
+            .unwrap();
+        };
+        empty("FunctionalOptions/ByConstant.xml", "Location");
+        empty("FunctionalOptionsParameters/Probe.xml", "Use");
+        empty("Sequences/Probe.xml", "Documents");
+        empty("CommonCommands/Probe.xml", "Group");
+        let unset = validate();
+        assert!(!unset.ok, "{unset:?}");
+        for expected in [
+            "10. FunctionalOption.ByConstant: Location is not set; the platform refuses to load it: «Не установлено Хранение функциональной опции»",
+            "10. FunctionalOptionsParameter.Probe: Use is not set; the platform refuses to load it: «Не установлено Использование параметра функциональной опции»",
+            "10. Sequence.Probe: Documents is not set; the platform refuses to load it: «Не один документ не участвует в последовательности»",
+            "10. CommonCommand.Probe: Group is not set; the platform refuses to load it: «Не указана группа, в которую входит команда по умолчанию»",
+        ] {
+            assert!(
+                unset.errors.iter().any(|error| error.contains(expected)),
+                "{expected}: {:?}",
+                unset.errors
+            );
+        }
+
+        // A descriptor that cannot be read is an error, not a checked object.
+        fs::remove_file(root.join("src/Sequences/Probe.xml")).unwrap();
+        let missing = validate();
+        assert!(
+            missing
+                .errors
+                .iter()
+                .any(|error| error.contains("10. Sequence.Probe: Documents cannot be checked")),
+            "{:?}",
+            missing.errors
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
     #[test]
     pub(crate) fn cf_validate_answers_identically_for_a_source_set_and_a_config_path() {
         let context = workspace("validate");

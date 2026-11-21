@@ -1,3 +1,4 @@
+mod creation;
 mod diagnostics;
 mod event_subscription;
 mod info;
@@ -12,6 +13,7 @@ mod schema;
 mod types;
 pub mod wsdl;
 
+pub use creation::*;
 pub use diagnostics::*;
 pub use event_subscription::*;
 pub use info::*;
@@ -26,9 +28,7 @@ pub use schema::*;
 pub use types::*;
 
 pub mod subsystem;
-pub use subsystem::{
-    EffectiveSubsystemRole, SubsystemAddress, SubsystemAddressError, SUBSYSTEM_ADDRESS_MAX_DEPTH,
-};
+pub use subsystem::{EffectiveSubsystemRole, SubsystemAddress, SubsystemAddressError};
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -44,6 +44,7 @@ pub mod descriptor_operations;
 pub mod document_numerator;
 pub mod event;
 pub mod event_contract;
+pub mod external_data_source;
 pub mod support;
 
 pub mod subsystem_operations;
@@ -55,6 +56,8 @@ pub mod site;
 pub mod borrowing;
 
 pub mod read_codec;
+
+pub mod child_resources;
 
 pub mod support_state;
 

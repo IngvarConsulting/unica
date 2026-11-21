@@ -200,6 +200,8 @@ pub fn parse_cf_info_xml(
             .filter(|(_, key)| !matches!(*key, "synonym" | "caption" | "shortCaption"))
             .filter_map(|(tag, key)| localized(tag).map(|value| (key.to_string(), value.into())))
             .collect();
+    let purpose = read_cf_purpose_properties(props)?;
+    property_limits.extend(purpose.reference_list_limits.iter().cloned());
     let data = CfInfoData {
         format: version.to_string(),
         name: cf_prop_text(props, "Name"),
@@ -213,7 +215,7 @@ pub fn parse_cf_info_xml(
         extension_purpose,
         properties: CfInfoProperties {
             localized_properties,
-            purpose: read_cf_purpose_properties(props)?,
+            purpose,
             compatibility_mode: optional(cf_prop_text(props, "CompatibilityMode")),
             default_run_mode: optional(cf_prop_text(props, "DefaultRunMode")),
             script_variant: optional(cf_prop_text(props, "ScriptVariant")),
@@ -446,9 +448,26 @@ fn read_cf_purpose_properties(
                 .collect::<Result<Vec<_>, String>>()
         })
         .transpose()?;
+    use unica_metadata::descriptor_operations::DescriptorProperty;
+    let mut reference_list_limits = Vec::new();
+    let mut read_list = |property| match crate::configuration_reference_lists::read(props, property)
+    {
+        Ok(value) => value,
+        Err(error) => {
+            reference_list_limits.push(format!("source_unreadable: {error}"));
+            None
+        }
+    };
+    let additional_full_text_search_dictionaries =
+        read_list(DescriptorProperty::AdditionalFullTextSearchDictionaries);
+    let standalone_configuration_restriction_roles =
+        read_list(DescriptorProperty::StandaloneConfigurationRestrictionRoles);
     Ok(CfPurposeProperties {
         use_purposes,
         default_roles,
+        additional_full_text_search_dictionaries,
+        standalone_configuration_restriction_roles,
+        reference_list_limits,
         used_mobile_application_functionalities,
         include_help_in_contents: section("IncludeHelpInContents")?.map(boolean).transpose()?,
     })
@@ -2046,6 +2065,43 @@ impl CfValidationReporter {
     }
 }
 
+/// A property the platform requires before it loads an object of the kind,
+/// although the Configurator creates the object without it.
+struct CfValidateRequiredProperty {
+    kind: &'static str,
+    directory: &'static str,
+    property: &'static str,
+    /// The platform's refusal when it loads the object without the property.
+    platform: &'static str,
+}
+
+const CF_VALIDATE_REQUIRED_PROPERTIES: &[CfValidateRequiredProperty] = &[
+    CfValidateRequiredProperty {
+        kind: "FunctionalOption",
+        directory: "FunctionalOptions",
+        property: "Location",
+        platform: "Не установлено Хранение функциональной опции",
+    },
+    CfValidateRequiredProperty {
+        kind: "FunctionalOptionsParameter",
+        directory: "FunctionalOptionsParameters",
+        property: "Use",
+        platform: "Не установлено Использование параметра функциональной опции",
+    },
+    CfValidateRequiredProperty {
+        kind: "Sequence",
+        directory: "Sequences",
+        property: "Documents",
+        platform: "Не один документ не участвует в последовательности",
+    },
+    CfValidateRequiredProperty {
+        kind: "CommonCommand",
+        directory: "CommonCommands",
+        property: "Group",
+        platform: "Не указана группа, в которую входит команда по умолчанию",
+    },
+];
+
 pub fn validate_cf_source(
     reader: &dyn ProjectDiscoveryRead,
     args: &Map<String, Value>,
@@ -2058,6 +2114,7 @@ pub fn validate_cf_source(
     const HP_NS: &str = "http://v8.1c.ru/8.3/xcf/extrnprops";
 
     let config_dir = resolved_path.parent().unwrap_or(cwd);
+    let mut required_to_check = Vec::<(&CfValidateRequiredProperty, String)>::new();
     let detailed = unica_operation_contract::input::bool_arg(args, &["detailed", "Detailed"]);
     let owner_shape_only = scope == CfValidationScope::OwnerShape;
     let max_errors = unica_operation_contract::input::int_arg(args, &["maxErrors", "MaxErrors"])
@@ -2444,6 +2501,14 @@ pub fn validate_cf_source(
             if type_name == "Language" {
                 continue;
             }
+            if let Some(required) = CF_VALIDATE_REQUIRED_PROPERTIES
+                .iter()
+                .find(|required| required.kind == type_name)
+            {
+                if let Some(name) = child.text().map(str::trim).filter(|name| !name.is_empty()) {
+                    required_to_check.push((required, name.to_string()));
+                }
+            }
             if let Some(dir_name) = cf_validate_child_type_dir(type_name) {
                 if let Some((_, count)) = dirs_to_check
                     .iter_mut()
@@ -2544,6 +2609,58 @@ pub fn validate_cf_source(
     } else {
         for error in form_ref_errors {
             report.error(format!("9. {error}"));
+        }
+    }
+
+    if !owner_shape_only {
+        let mut unset = 0usize;
+        for (required, name) in &required_to_check {
+            let path = config_dir
+                .join(required.directory)
+                .join(format!("{name}.xml"));
+            let mut unreadable = |reason: String| {
+                unset += 1;
+                report.error(format!(
+                    "10. {}.{name}: {} cannot be checked: {reason}",
+                    required.kind, required.property
+                ));
+            };
+            let text = match read_utf8_sig(reader, &path) {
+                Ok(text) => text,
+                Err(error) => {
+                    unreadable(error);
+                    continue;
+                }
+            };
+            let document = match Document::parse(&text) {
+                Ok(document) => document,
+                Err(error) => {
+                    unreadable(format!("{} is not XML: {error}", path.display()));
+                    continue;
+                }
+            };
+            let properties = document
+                .descendants()
+                .find(|node| node.is_element() && node.tag_name().name() == "Properties");
+            let property = properties
+                .and_then(|node| unica_xml_format::read::child_element(node, required.property));
+            let set = property.is_some_and(|node| {
+                node.children().any(|child| child.is_element())
+                    || unica_xml_format::read::direct_text(node).trim() != ""
+            });
+            if !set {
+                unset += 1;
+                report.error(format!(
+                    "10. {}.{name}: {} is not set; the platform refuses to load it: «{}»",
+                    required.kind, required.property, required.platform
+                ));
+            }
+        }
+        if unset == 0 {
+            report.ok(format!(
+                "10. Required properties: {} objects checked",
+                required_to_check.len()
+            ));
         }
     }
 

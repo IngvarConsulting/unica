@@ -1,0 +1,142 @@
+{
+  "id": "S-1568-identity-metadata-facts-bot",
+  "issue": 1568,
+  "area": "Метаданные",
+  "workspace": "tests/fixtures/acceptance/workspace-identity-bot",
+  "task": "Прочитать бота и параметр сеанса по адресам из коллекций. Сверить с XML синонимы в форме НСтр, явный Predefined=false и наблюдаемый тип FixedStructure. Исходники не меняются.",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effectiveSourceSet",
+          "eq": "main"
+        }
+      ],
+      "captures": {
+        "unchanged1": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "unchanged2": {
+          "file": "src/Bots/Notifications.xml",
+          "kind": "sha256"
+        },
+        "unchanged3": {
+          "file": "src/SessionParameters/БуферОбмена.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Bot"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Bot.Notifications"
+        }
+      ],
+      "captures": {
+        "node0": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.node0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Bot"
+        },
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": "ru = 'Оповещения пользователей о событиях'"
+        },
+        {
+          "pointer": "/data/props/Predefined",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:SessionParameter"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:SessionParameter.БуферОбмена"
+        }
+      ],
+      "captures": {
+        "sessionParameter": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.sessionParameter"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": "ru = 'Буфер обмена'"
+        },
+        {
+          "pointer": "/data/props/Type",
+          "eq": {
+            "variants": [
+              {
+                "kind": "fixedStructure"
+              }
+            ],
+            "mutationCapability": "readOnly"
+          }
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged1"
+        },
+        {
+          "path": "src/Bots/Notifications.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged2"
+        },
+        {
+          "path": "src/SessionParameters/БуферОбмена.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged3"
+        }
+      ]
+    }
+  ]
+}

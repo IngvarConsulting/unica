@@ -1,0 +1,431 @@
+{
+  "id": "S-2022-command-group-interface-purge",
+  "name": "command-group-interface-purge",
+  "issue": 2022,
+  "area": "Создание и удаление объектов",
+  "task": "Удалить группу команд, которую упоминают только командные интерфейсы подсистемы и основного раздела: предпросмотр называет вычищаемый интерфейс и предупреждает, что команды вернутся в группы по умолчанию; исполнение убирает группу из порядка групп и записи о размещении и порядке её команд. Затем удалить группу, которую упоминает только командная панель формы: элемент только с группой уходит целиком, у скрытого по умолчанию уходит лишь группа, элемент без группы не меняется",
+  "workspace": "tests/fixtures/acceptance/workspace-command-groups",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "kept0": {
+          "kind": "sha256",
+          "file": "src/CommandGroups/ГруппаА.xml"
+        },
+        "kept1": {
+          "kind": "sha256",
+          "file": "src/CommandGroups/ГруппаВ.xml"
+        },
+        "kept2": {
+          "kind": "sha256",
+          "file": "src/CommonCommands/КомандаА.xml"
+        },
+        "kept3": {
+          "kind": "sha256",
+          "file": "src/CommonCommands/КомандаБ.xml"
+        },
+        "kept4": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Справочник1.xml"
+        },
+        "kept5": {
+          "kind": "sha256",
+          "file": "src/Subsystems/Подсистема1.xml"
+        },
+        "kept6": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Справочник1/Forms/ФормаСписка/Ext/Form.xml"
+        },
+        "kept7": {
+          "kind": "sha256",
+          "file": "src/CommandGroups/ГруппаГ.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommandGroup.ГруппаБ",
+        "ops": [
+          {
+            "op": "object.remove"
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/warnings/0/code",
+          "eq": "composition_cleaned"
+        },
+        {
+          "pointer": "/warnings/0/entries",
+          "eq": [
+            {
+              "at": "main:Configuration",
+              "property": "MainSectionCommandInterface"
+            },
+            {
+              "at": "main:Subsystem.Подсистема1",
+              "property": "CommandInterface"
+            }
+          ]
+        },
+        {
+          "pointer": "/warnings/0/message",
+          "eq": "the removal also takes `main:CommandGroup.ГруппаБ` out of `main:Configuration` → MainSectionCommandInterface, `main:Subsystem.Подсистема1` → CommandInterface; the commands placed in it return to their default groups"
+        },
+        {
+          "pointer": "/warnings/1",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "exists",
+          "path": "src/CommandGroups/ГруппаБ.xml",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/warnings/0/code",
+          "eq": "composition_cleaned"
+        },
+        {
+          "pointer": "/warnings/0/entries",
+          "eq": [
+            {
+              "at": "main:Configuration",
+              "property": "MainSectionCommandInterface"
+            },
+            {
+              "at": "main:Subsystem.Подсистема1",
+              "property": "CommandInterface"
+            }
+          ]
+        },
+        {
+          "pointer": "/warnings/0/message",
+          "eq": "the removal also takes `main:CommandGroup.ГруппаБ` out of `main:Configuration` → MainSectionCommandInterface, `main:Subsystem.Подсистема1` → CommandInterface; the commands placed in it return to their default groups"
+        },
+        {
+          "pointer": "/warnings/1",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "exists",
+          "path": "src/CommandGroups/ГруппаБ.xml",
+          "eq": false
+        },
+        {
+          "kind": "xml",
+          "path": "src/Configuration.xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}CommandGroup",
+          "eq": [
+            "ГруппаА",
+            "ГруппаВ",
+            "ГруппаГ"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/Subsystems/Подсистема1/Ext/CommandInterface.xml",
+          "select": "./{http://v8.1c.ru/8.3/xcf/extrnprops}GroupsOrder/{http://v8.1c.ru/8.3/xcf/extrnprops}Group",
+          "eq": [
+            "ActionsPanelCreate",
+            "ActionsPanelReports",
+            "ActionsPanelTools"
+          ]
+        },
+        {
+          "kind": "xmlTags",
+          "path": "src/Subsystems/Подсистема1/Ext/CommandInterface.xml",
+          "select": "./{http://v8.1c.ru/8.3/xcf/extrnprops}CommandsPlacement/*",
+          "eq": []
+        },
+        {
+          "kind": "xmlTags",
+          "path": "src/Subsystems/Подсистема1/Ext/CommandInterface.xml",
+          "select": "./{http://v8.1c.ru/8.3/xcf/extrnprops}CommandsOrder/*",
+          "eq": []
+        },
+        {
+          "kind": "xml",
+          "path": "src/Ext/MainSectionCommandInterface.xml",
+          "select": "./{http://v8.1c.ru/8.3/xcf/extrnprops}GroupsOrder/{http://v8.1c.ru/8.3/xcf/extrnprops}Group",
+          "eq": [
+            "ActionsPanelCreate"
+          ]
+        },
+        {
+          "kind": "xmlTags",
+          "path": "src/Ext/MainSectionCommandInterface.xml",
+          "select": "./{http://v8.1c.ru/8.3/xcf/extrnprops}CommandsPlacement/*",
+          "eq": []
+        },
+        {
+          "kind": "xmlTags",
+          "path": "src/Ext/MainSectionCommandInterface.xml",
+          "select": "./{http://v8.1c.ru/8.3/xcf/extrnprops}CommandsOrder/*",
+          "eq": []
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommandGroups/ГруппаА.xml",
+          "eq": "$capture.kept0"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommandGroups/ГруппаВ.xml",
+          "eq": "$capture.kept1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonCommands/КомандаА.xml",
+          "eq": "$capture.kept2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonCommands/КомандаБ.xml",
+          "eq": "$capture.kept3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Справочник1.xml",
+          "eq": "$capture.kept4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Subsystems/Подсистема1.xml",
+          "eq": "$capture.kept5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Справочник1/Forms/ФормаСписка/Ext/Form.xml",
+          "eq": "$capture.kept6"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommandGroups/ГруппаГ.xml",
+          "eq": "$capture.kept7"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommandGroup.ГруппаГ",
+        "ops": [
+          {
+            "op": "object.remove"
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/warnings/0/code",
+          "eq": "composition_cleaned"
+        },
+        {
+          "pointer": "/warnings/0/entries",
+          "eq": [
+            {
+              "at": "main:Catalog.Справочник1.Form.ФормаСписка",
+              "property": "CommandInterface"
+            }
+          ]
+        },
+        {
+          "pointer": "/warnings/0/message",
+          "eq": "the removal also takes `main:CommandGroup.ГруппаГ` out of `main:Catalog.Справочник1.Form.ФормаСписка` → CommandInterface; the commands placed in it return to their default groups"
+        },
+        {
+          "pointer": "/warnings/1",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Справочник1/Forms/ФормаСписка/Ext/Form.xml",
+          "eq": "$capture.kept6"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/warnings/0/code",
+          "eq": "composition_cleaned"
+        },
+        {
+          "pointer": "/warnings/0/entries",
+          "eq": [
+            {
+              "at": "main:Catalog.Справочник1.Form.ФормаСписка",
+              "property": "CommandInterface"
+            }
+          ]
+        },
+        {
+          "pointer": "/warnings/0/message",
+          "eq": "the removal also takes `main:CommandGroup.ГруппаГ` out of `main:Catalog.Справочник1.Form.ФормаСписка` → CommandInterface; the commands placed in it return to their default groups"
+        },
+        {
+          "pointer": "/warnings/1",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "exists",
+          "path": "src/CommandGroups/ГруппаГ.xml",
+          "eq": false
+        },
+        {
+          "kind": "xml",
+          "path": "src/Configuration.xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}CommandGroup",
+          "eq": [
+            "ГруппаА",
+            "ГруппаВ"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/Catalogs/Справочник1/Forms/ФормаСписка/Ext/Form.xml",
+          "select": "./{http://v8.1c.ru/8.3/xcf/logform}CommandInterface/{http://v8.1c.ru/8.3/xcf/logform}CommandBar/{http://v8.1c.ru/8.3/xcf/logform}Item/{http://v8.1c.ru/8.3/xcf/logform}Command",
+          "eq": [
+            "Catalog.Справочник1.StandardCommand.Create",
+            "CommonCommand.КомандаА"
+          ]
+        },
+        {
+          "kind": "xmlTags",
+          "path": "src/Catalogs/Справочник1/Forms/ФормаСписка/Ext/Form.xml",
+          "select": "./{http://v8.1c.ru/8.3/xcf/logform}CommandInterface/{http://v8.1c.ru/8.3/xcf/logform}CommandBar/{http://v8.1c.ru/8.3/xcf/logform}Item[1]/*",
+          "eq": [
+            "Command",
+            "Type",
+            "DefaultVisible"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/Catalogs/Справочник1/Forms/ФормаСписка/Ext/Form.xml",
+          "select": "./{http://v8.1c.ru/8.3/xcf/logform}CommandInterface/{http://v8.1c.ru/8.3/xcf/logform}CommandBar/{http://v8.1c.ru/8.3/xcf/logform}Item[1]/{http://v8.1c.ru/8.3/xcf/logform}DefaultVisible",
+          "eq": [
+            "false"
+          ]
+        },
+        {
+          "kind": "xmlTags",
+          "path": "src/Catalogs/Справочник1/Forms/ФормаСписка/Ext/Form.xml",
+          "select": "./{http://v8.1c.ru/8.3/xcf/logform}CommandInterface/{http://v8.1c.ru/8.3/xcf/logform}CommandBar/{http://v8.1c.ru/8.3/xcf/logform}Item[2]/*",
+          "eq": [
+            "Command",
+            "Type"
+          ]
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommandGroups/ГруппаА.xml",
+          "eq": "$capture.kept0"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommandGroups/ГруппаВ.xml",
+          "eq": "$capture.kept1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonCommands/КомандаА.xml",
+          "eq": "$capture.kept2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonCommands/КомандаБ.xml",
+          "eq": "$capture.kept3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Справочник1.xml",
+          "eq": "$capture.kept4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Subsystems/Подсистема1.xml",
+          "eq": "$capture.kept5"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommandGroup"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:CommandGroup.ГруппаА"
+        },
+        {
+          "pointer": "/data/items/1/at",
+          "eq": "main:CommandGroup.ГруппаВ"
+        },
+        {
+          "pointer": "/data/items/2",
+          "absent": true
+        }
+      ]
+    }
+  ]
+}

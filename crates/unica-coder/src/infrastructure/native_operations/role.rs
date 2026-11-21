@@ -1990,6 +1990,22 @@ pub(crate) mod medium_role_validate_contract_tests {
     const PREDEFINED_DATA_WARNING: &str =
         "grants interactive changes to predefined data (predefined data is part of the configuration and should not be available to end users)";
 
+    /// Права, которые платформа 8.3.27 оставляет на объектах внешнего
+    /// источника и их членах, проходят проверку роли без предупреждений.
+    /// rule: INV.SOURCE.ROLE-RIGHT-ADDRESSES
+    #[test]
+    fn validate_role_accepts_the_platform_rights_of_external_data_source_objects() {
+        let evidence = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/formats/platform_xml/2.20/external_data_source_rights");
+        for part in ["objects", "members"] {
+            let rights = fs::read_to_string(evidence.join(part).join("Rights.xml")).unwrap();
+            assert!(rights.contains("ExternalDataSource."), "{part}");
+            let stdout = validate_role_stdout(&rights);
+            assert!(!stdout.contains("WARN"), "{part}: {stdout}");
+            assert!(!stdout.contains("ERROR"), "{part}: {stdout}");
+        }
+    }
+
     #[test]
     fn validate_role_warns_on_interactive_predefined_data_right_set_true() {
         let rights = concat!(

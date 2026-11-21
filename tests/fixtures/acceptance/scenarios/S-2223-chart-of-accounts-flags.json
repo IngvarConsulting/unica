@@ -1,0 +1,226 @@
+{
+  "id": "S-2223-chart-of-accounts-flags",
+  "issue": 2223,
+  "area": "Метаданные",
+  "workspace": "tests/fixtures/acceptance/workspace-chart-of-accounts-flags",
+  "task": "Из ChartOfAccounts перейти по возвращённому адресу к ветвям AccountingFlag (3) и ExtDimensionAccountingFlag (2), прочитать признаки и одноимённый обычный реквизит. Проверить Props.type, русский псевдоним; все байты сохраняются. Синтетический пример, не пользовательские исходники.",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effectiveSourceSet",
+          "eq": "main"
+        }
+      ],
+      "captures": {
+        "unchanged1": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "unchanged2": {
+          "file": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256"
+        },
+        "unchanged3": {
+          "file": "src/Languages/Русский.xml",
+          "kind": "sha256"
+        },
+        "unchanged4": {
+          "file": "src/ChartsOfAccounts/Ledger.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfAccounts"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:ChartOfAccounts.Ledger"
+        }
+      ],
+      "captures": {
+        "chart": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.chart"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "main:ChartOfAccounts.Ledger.Attribute",
+            "count": 1
+          }
+        },
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "main:ChartOfAccounts.Ledger.AccountingFlag",
+            "count": 3
+          }
+        },
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "main:ChartOfAccounts.Ledger.ExtDimensionAccountingFlag",
+            "count": 2
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfAccounts.Ledger.AccountingFlag"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:ChartOfAccounts.Ledger.AccountingFlag.Currency"
+        },
+        {
+          "pointer": "/data/items/1/at",
+          "eq": "main:ChartOfAccounts.Ledger.AccountingFlag.Quantity"
+        },
+        {
+          "pointer": "/data/items/2/at",
+          "eq": "main:ChartOfAccounts.Ledger.AccountingFlag.TaxAccounting"
+        }
+      ],
+      "captures": {
+        "flag": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.flag"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "AccountingFlag"
+        },
+        {
+          "pointer": "/data/props/type/variants",
+          "eq": [
+            {
+              "kind": "boolean"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfAccounts.Ledger.ExtDimensionAccountingFlag"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:ChartOfAccounts.Ledger.ExtDimensionAccountingFlag.Amount"
+        },
+        {
+          "pointer": "/data/items/1/at",
+          "eq": "main:ChartOfAccounts.Ledger.ExtDimensionAccountingFlag.Currency"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfAccounts.Ledger.Attribute.Currency"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Attribute"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ПланСчетов.Ledger.ПризнакУчетаСубконто.Amount"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:ChartOfAccounts.Ledger.ExtDimensionAccountingFlag.Amount"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "ExtDimensionAccountingFlag"
+        },
+        {
+          "pointer": "/data/props/type/variants",
+          "eq": [
+            {
+              "kind": "boolean"
+            }
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged1"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged2"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged3"
+        },
+        {
+          "path": "src/ChartsOfAccounts/Ledger.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged4"
+        }
+      ]
+    }
+  ]
+}

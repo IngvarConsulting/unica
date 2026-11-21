@@ -31,6 +31,14 @@ impl MetadataDecodeContext<'_> {
 }
 #[derive(Debug, Clone)]
 pub enum MetadataPlanKind {
+    ExternalDataSourceAdd {
+        at: QualifiedAddress,
+        items: Vec<unica_metadata::external_data_source::AddItem>,
+    },
+    ExternalDataSourceProperties {
+        at: QualifiedAddress,
+        changes: unica_metadata::external_data_source::Changes,
+    },
     ExchangeContent {
         owner: MetadataAddress,
         items: Vec<unica_metadata::MetaExchangeContentItem>,
@@ -52,8 +60,10 @@ pub enum MetadataPlanKind {
         change: PredefinedChange,
     },
     Create {
-        kind: MetadataKind,
+        kind: unica_metadata::CreatableKind,
         name: String,
+        metadata_type: Option<unica_metadata::MetadataType>,
+        creation_namespace: Option<String>,
     },
     Remove {
         target: MetadataAddress,
@@ -104,6 +114,10 @@ pub enum DescriptorPropertyChanges {
     PaletteColor(unica_metadata::property_input::PaletteColorPropertyChanges),
     Queue(unica_metadata::property_input::QueuePropertyChanges),
     FunctionalOption(unica_metadata::property_input::FunctionalOptionPropertyChanges),
+    CommonCommand {
+        group: String,
+        comment: Option<String>,
+    },
     Role(unica_metadata::property_input::RolePropertyChanges),
     WSReference(unica_metadata::property_input::WsReferencePropertyChanges),
     Subsystem(unica_metadata::property_input::SubsystemPropertyChanges),
@@ -208,6 +222,61 @@ pub fn parse_metadata_plan_operation_in(
     if let Some(operation) = descriptor.and_then(
         OperationDescriptor::operation::<unica_metadata::apply_operations::MetadataOperation>,
     ) {
+        let external_operation = operation.external_child(None).is_some();
+        if external_operation
+            || matches!(
+                operation,
+                RegisteredMetadataOperation::DimensionAdd
+                    | RegisteredMetadataOperation::ResourceAdd
+            )
+        {
+            let at = object
+                .get("at")
+                .and_then(Value::as_str)
+                .and_then(|raw| QualifiedAddress::parse(raw).ok());
+            if let Some((at, child)) = at.and_then(|at| {
+                let owner = unica_metadata::external_data_source::kind(at.segments())?;
+                let child = operation.external_child(Some(owner))?;
+                Some((at, child))
+            }) {
+                if binding.source_kind != unica_source_contract::SourceSetKind::Configuration
+                    || at.source_set() != binding.source_set_name()
+                {
+                    return Err(ApplyPlanError::new(
+                        ApplyPlanErrorKind::BadValue,
+                        "external data source writes require the admitted ordinary configuration",
+                    )
+                    .at_path(format!("ops[{op_index}].args.at")));
+                }
+                let contract = unica_metadata::external_data_source::add_contract(child);
+                reject_unknown_args_with(
+                    operation.name(),
+                    object,
+                    |key| key == "at" || contract.schema["properties"].get(key).is_some(),
+                    op_index,
+                    binding.registry,
+                )?;
+                let items = unica_metadata::external_data_source::decode_add(
+                    child,
+                    object.get("items").unwrap_or(&Value::Null),
+                    &format!("ops[{op_index}].args.items"),
+                )
+                .map_err(|error| {
+                    ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.message)
+                        .at_path(error.path)
+                })?;
+                return Ok(MetadataPlanOperation {
+                    kind: MetadataPlanKind::ExternalDataSourceAdd { at, items },
+                });
+            }
+            if external_operation {
+                return Err(ApplyPlanError::new(
+                    ApplyPlanErrorKind::BadValue,
+                    operation.applicability().shape(),
+                )
+                .at_path(format!("ops[{op_index}].args.at")));
+            }
+        }
         let member_contract = operation
             .member_collection()
             .map(|_| operation.contract_at(None));
@@ -226,6 +295,13 @@ pub fn parse_metadata_plan_operation_in(
             )?;
         }
         let kind = match operation {
+            RegisteredMetadataOperation::ExternalTableAdd
+            | RegisteredMetadataOperation::ExternalCubeAdd
+            | RegisteredMetadataOperation::ExternalFunctionAdd
+            | RegisteredMetadataOperation::ExternalDimensionTableAdd
+            | RegisteredMetadataOperation::ExternalFieldAdd => {
+                unreachable!("external families have addressed decoding")
+            }
             RegisteredMetadataOperation::AttributeAdd => {
                 parse_attribute_add(object, op_index, binding)?
             }
@@ -808,7 +884,13 @@ pub fn parse_object_create(
         )
         .at_path(format!("ops[{op_index}].args.values.kind"))
     })?;
-    let kind = MetadataKind::parse(kind_text).map_err(|diagnostic| {
+    // A kind the set's line does not have is refused before whether Unica
+    // creates it: the platform would not take it (INV.SOURCE.PROFILE-CAPABILITIES).
+    if let Some(reason) = unica_metadata::kind_line_refusal(kind_text, binding.source_line) {
+        return Err(ApplyPlanError::new(ApplyPlanErrorKind::BadValue, reason)
+            .at_path(format!("ops[{op_index}].args.values.kind")));
+    }
+    let kind = unica_metadata::CreatableKind::parse(kind_text).map_err(|diagnostic| {
         ApplyPlanError::new(ApplyPlanErrorKind::BadValue, diagnostic.message)
             .at_path(format!("ops[{op_index}].args.values.kind"))
     })?;
@@ -835,9 +917,84 @@ pub fn parse_object_create(
         &values["name"],
         &format!("ops[{op_index}].args.values.name"),
     )?;
+    let type_path = format!("ops[{op_index}].args.values.type");
+    let metadata_type = if kind.requires_creation_type() {
+        let raw = values.get("type").ok_or_else(|| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::BadValue,
+                format!("{kind_text} creation requires a structured metadata type"),
+            )
+            .at_path(&type_path)
+        })?;
+        let metadata_type = unica_metadata::request::parse_metadata_type(raw, "type")
+            .and_then(|metadata_type| {
+                unica_metadata::validate_metadata_element_value_profile(
+                    Some(&metadata_type),
+                    None,
+                    unica_metadata::MetaValueProfileContext::NewElement,
+                )?;
+                Ok(metadata_type)
+            })
+            .map_err(|diagnostic| {
+                let suffix = diagnostic
+                    .field
+                    .as_deref()
+                    .and_then(|field| field.strip_prefix("type"))
+                    .unwrap_or_default();
+                ApplyPlanError::new(ApplyPlanErrorKind::BadValue, diagnostic.message)
+                    .at_path(format!("{type_path}{suffix}"))
+            })?;
+        Some(metadata_type)
+    } else {
+        if values.contains_key("type") {
+            return Err(ApplyPlanError::new(
+                ApplyPlanErrorKind::BadValue,
+                "object.create values accept only `kind` and `name`, not `type`",
+            )
+            .at_path(type_path));
+        }
+        None
+    };
+    let namespace_path = format!("ops[{op_index}].args.values.namespace");
+    let creation_namespace = if kind.requires_creation_namespace() {
+        let raw = values.get("namespace").ok_or_else(|| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::BadValue,
+                "XDTOPackage creation requires an explicit namespace URI",
+            )
+            .at_path(&namespace_path)
+        })?;
+        values_shape
+            .property("namespace")
+            .expect("object.create namespace")
+            .validate_field_with_formats(
+                raw,
+                &namespace_path,
+                unica_metadata::contracts::XDTO_NAMESPACE_FORMATS,
+            )
+            .map_err(|error| {
+                ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.message).at_path(error.path)
+            })?;
+        Some(
+            raw.as_str()
+                .expect("validated namespace string")
+                .to_string(),
+        )
+    } else {
+        if values.contains_key("namespace") {
+            return Err(ApplyPlanError::new(
+                ApplyPlanErrorKind::BadValue,
+                "object.create accepts namespace only for XDTOPackage",
+            )
+            .at_path(namespace_path));
+        }
+        None
+    };
     Ok(MetadataPlanKind::Create {
         kind,
         name: name.to_string(),
+        metadata_type,
+        creation_namespace,
     })
 }
 pub fn parse_object_remove(
@@ -1180,6 +1337,12 @@ pub fn parse_properties(
         ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.message).at_path(error.path)
     })?;
     let (directory, changes) = match intent {
+        unica_metadata::property_input::PropertiesIntent::ExternalDataSource(changes) => {
+            return Ok(MetadataPlanKind::ExternalDataSourceProperties {
+                at: target,
+                changes,
+            });
+        }
         unica_metadata::property_input::PropertiesIntent::CatalogOwner {
             fill_from_filling_value,
         } => {
@@ -1212,6 +1375,10 @@ pub fn parse_properties(
         unica_metadata::property_input::PropertiesIntent::FunctionalOption(values) => (
             "FunctionalOptions",
             DescriptorPropertyChanges::FunctionalOption(values),
+        ),
+        unica_metadata::property_input::PropertiesIntent::CommonCommand { group, comment } => (
+            "CommonCommands",
+            DescriptorPropertyChanges::CommonCommand { group, comment },
         ),
         unica_metadata::property_input::PropertiesIntent::Metadata(values) => {
             let (target, _) = metadata_owner(&target, op_index)?;

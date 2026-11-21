@@ -47,6 +47,19 @@ pub(super) fn metadata_detail_props(
             }
         }
     }
+    // Картинка группы команд — объект с платформенными `Ref` и
+    // `LoadTransparent`, как у общей команды.
+    if let Some(value) = details.get("picture").filter(|value| !value.is_null()) {
+        place_prop(
+            &mut props,
+            limits,
+            address,
+            "Picture",
+            value,
+            false,
+            "metadata picture",
+        );
+    }
     // Тип корня — свойство платформы `Type`, под тем же именем его
     // принимает запись.
     if let Some(value) = details.get("type") {

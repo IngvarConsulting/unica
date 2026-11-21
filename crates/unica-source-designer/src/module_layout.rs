@@ -49,7 +49,79 @@ impl PlatformXmlModuleRole {
     }
 }
 pub fn platform_xml_module_identity(relative: &Path) -> Result<PlatformXmlModuleIdentity, String> {
+    let components = relative_module_path_components(relative)?;
+    let parts = components.iter().map(String::as_str).collect::<Vec<_>>();
+    if let Some(identity) = nested_object_module_identity(&parts) {
+        return identity;
+    }
     module_layout_for_relative(relative).map(|(_, identity)| identity)
+}
+
+/// A module of a nested object that declares its place in its owner, such as
+/// a table of an external data source or the dimension table of its cube:
+/// `<Каталог>/<Владелец>{/<Каталог вида>/<Имя>}/Ext/<Роль>.bsl`. Every link of
+/// the chain is a declared nested kind, so its descriptors prove the owner.
+fn nested_object_module_identity(
+    parts: &[&str],
+) -> Option<Result<PlatformXmlModuleIdentity, String>> {
+    let [directory, owner_name, chain @ .., "Ext", file] = parts else {
+        return None;
+    };
+    if chain.is_empty() || chain.len() % 2 != 0 {
+        return None;
+    }
+    let owner = metadata_kind_by_directory(directory)?;
+    let mut parent = owner.tag;
+    let mut logical = vec![owner.tag, *owner_name];
+    let mut descriptors = vec![metadata_descriptor(owner.directory, owner_name)];
+    let mut physical = PathBuf::from(owner.directory).join(owner_name);
+    for pair in chain.chunks(2) {
+        let kind = unica_address::kinds::nested_kind_by_directory(parent, pair[0])?;
+        physical.push(pair[0]);
+        descriptors.push(physical.join(format!("{}.xml", pair[1])));
+        physical.push(pair[1]);
+        logical.extend([kind, pair[1]]);
+        parent = kind;
+    }
+    let terminal = file.strip_suffix(".bsl")?;
+    let role = ModuleRoleClass::Direct.parse(terminal)?;
+    let place = unica_address::kinds::nested_place(logical[logical.len() - 4], parent)?;
+    if !place.modules.contains(&terminal) {
+        return None;
+    }
+    logical.push(terminal);
+    Some(module_identity(
+        logical.join("."),
+        format!("{}.{owner_name}", owner.tag),
+        role,
+        descriptors,
+    ))
+}
+
+/// The inverse of [`nested_object_module_identity`].
+fn nested_object_module_relative(parts: &[&str]) -> Option<PathBuf> {
+    let [owner_kind, owner_name, chain @ .., terminal] = parts else {
+        return None;
+    };
+    if chain.is_empty() || chain.len() % 2 != 0 {
+        return None;
+    }
+    let owner = metadata_kind(owner_kind)?;
+    let mut parent = owner.tag;
+    let mut path = PathBuf::from(owner.directory).join(owner_name);
+    let mut place = None;
+    for pair in chain.chunks(2) {
+        let nested = unica_address::kinds::nested_place(parent, pair[0])?;
+        path.push(nested.directory?);
+        path.push(pair[1]);
+        parent = pair[0];
+        place = Some(nested);
+    }
+    place?.modules.contains(terminal).then(|| {
+        path.push("Ext");
+        path.push(format!("{terminal}.bsl"));
+        path
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,6 +141,7 @@ const OWNER_MODULE_KINDS: &[&str] = &[
     "HTTPService",
     "WebService",
     "IntegrationService",
+    "WebSocketClient",
 ];
 
 #[derive(Debug, Clone, Copy)]
@@ -556,6 +629,9 @@ fn module_identity(
 /// source-set layout and are resolved before this mapper is called.
 pub fn platform_xml_module_relative(address: &MetadataAddress) -> Result<PathBuf, String> {
     let parts = address.segments().collect::<Vec<_>>();
+    if let Some(path) = nested_object_module_relative(&parts) {
+        return Ok(path);
+    }
     for family in PLATFORM_XML_MODULE_LAYOUT_FAMILIES {
         if let Some(path) = family.path_from_address(&parts) {
             return path;
@@ -669,15 +745,28 @@ pub fn module_descriptor_requirements(
         return Ok(vec![PathBuf::from("Configuration.xml")]);
     }
     let parts = target.as_str().split('.').collect::<Vec<_>>();
+    if route_kind == ModuleRouteKind::NestedObject {
+        // Every object of the chain proves the next one: the owner and each
+        // nested object up to the module's own.
+        return (2..parts.len())
+            .step_by(2)
+            .map(|end| {
+                let object = MetadataAddress::parse_logical(&parts[..end].join("."))
+                    .map_err(|error| error.to_string())?;
+                metadata_descriptor_relative(&object, source_set_kind)
+            })
+            .collect();
+    }
     let descriptor_raw = match route_kind {
         ModuleRouteKind::Direct
         | ModuleRouteKind::Common
         | ModuleRouteKind::CommonForm
         | ModuleRouteKind::CommonCommand
         | ModuleRouteKind::Service
-        | ModuleRouteKind::Bot => parts[..2].join("."),
+        | ModuleRouteKind::Bot
+        | ModuleRouteKind::WebSocketClient => parts[..2].join("."),
         ModuleRouteKind::NestedForm | ModuleRouteKind::NestedCommand => parts[..4].join("."),
-        ModuleRouteKind::Root | ModuleRouteKind::WebSocketClient => {
+        ModuleRouteKind::Root | ModuleRouteKind::NestedObject => {
             return Err(String::from(
                 "module descriptor requirements are unavailable for this layout",
             ))
@@ -766,7 +855,22 @@ pub fn module_source_address(
                 required_segment_name(Some(child), owner_kind, role)?,
             )
         }
-        ModuleRouteKind::Service | ModuleRouteKind::Bot => {
+        ModuleRouteKind::NestedObject => {
+            let (module, chain) = segments
+                .split_last()
+                .ok_or_else(|| unsupported_logical_module_layout(owner_kind, role))?;
+            if module.kind() != NodeKind::Module {
+                return Err(unsupported_logical_module_layout(owner_kind, role));
+            }
+            let mut logical = Vec::with_capacity(chain.len() * 2 + 1);
+            for segment in chain {
+                logical.push(segment.kind().as_str().to_string());
+                logical.push(required_segment_name(Some(segment), owner_kind, role)?.to_string());
+            }
+            logical.push(format!("{}Module", role.as_str()));
+            logical.join(".")
+        }
+        ModuleRouteKind::Service | ModuleRouteKind::Bot | ModuleRouteKind::WebSocketClient => {
             let owner = segments
                 .first()
                 .ok_or_else(|| unsupported_logical_module_layout(owner_kind, role))?;
@@ -774,12 +878,6 @@ pub fn module_source_address(
                 "{}.{}.Module",
                 owner.kind().as_str(),
                 required_segment_name(Some(owner), owner_kind, role)?
-            )
-        }
-        ModuleRouteKind::WebSocketClient => {
-            return Err(
-                "WebSocketClient source layout is not specified for platform profile 8.3.27"
-                    .to_string(),
             )
         }
     };
@@ -827,10 +925,9 @@ pub fn logical_module_from_metadata(metadata: &str) -> Option<String> {
         ["CommonModule", name, "Module"] => Some(format!("CommonModule.{name}")),
         [kind, name, "Module"] => Some(format!("{kind}.{name}.Module.{kind}")),
         [kind, name, terminal] => Some(format!("{kind}.{name}.Module.{}", role(terminal)?)),
-        [kind, name, child_kind, child, terminal] => Some(format!(
-            "{kind}.{name}.{child_kind}.{child}.Module.{}",
-            role(terminal)?
-        )),
+        [pairs @ .., terminal] if pairs.len() >= 4 && pairs.len() % 2 == 0 => {
+            Some(format!("{}.Module.{}", pairs.join("."), role(terminal)?))
+        }
         _ => None,
     }
 }
@@ -1051,5 +1148,96 @@ mod code_layout_tests {
         });
         assert_eq!(identity.owner, owner, "{path}");
         assert_eq!(identity.role.as_str(), role, "{path}");
+    }
+
+    /// Модули таблиц, кубов и таблиц измерений внешнего источника из выгрузки
+    /// платформы: путь и адрес переводятся друг в друга однозначно,
+    /// а владелец доказывается цепочкой описаний.
+    #[test]
+    fn external_data_source_modules_round_trip_through_their_owner_chain() {
+        use super::{platform_xml_module_relative, MetadataAddress};
+        let source = "ExternalDataSources/S";
+        for (relative, address, descriptors) in [
+            (
+                "Tables/T/Ext/ObjectModule.bsl",
+                "ExternalDataSource.S.Table.T.ObjectModule",
+                &["", "Tables/T.xml"][..],
+            ),
+            (
+                "Tables/T/Ext/ManagerModule.bsl",
+                "ExternalDataSource.S.Table.T.ManagerModule",
+                &["", "Tables/T.xml"][..],
+            ),
+            (
+                "Tables/T/Ext/RecordSetModule.bsl",
+                "ExternalDataSource.S.Table.T.RecordSetModule",
+                &["", "Tables/T.xml"][..],
+            ),
+            (
+                "Cubes/C/Ext/ManagerModule.bsl",
+                "ExternalDataSource.S.Cube.C.ManagerModule",
+                &["", "Cubes/C.xml"][..],
+            ),
+            (
+                "Cubes/C/Ext/RecordSetModule.bsl",
+                "ExternalDataSource.S.Cube.C.RecordSetModule",
+                &["", "Cubes/C.xml"][..],
+            ),
+            (
+                "Cubes/C/DimensionTables/D/Ext/ObjectModule.bsl",
+                "ExternalDataSource.S.Cube.C.DimensionTable.D.ObjectModule",
+                &["", "Cubes/C.xml", "Cubes/C/DimensionTables/D.xml"][..],
+            ),
+            (
+                "Cubes/C/DimensionTables/D/Ext/ManagerModule.bsl",
+                "ExternalDataSource.S.Cube.C.DimensionTable.D.ManagerModule",
+                &["", "Cubes/C.xml", "Cubes/C/DimensionTables/D.xml"][..],
+            ),
+        ] {
+            let path = Path::new(source).join(relative);
+            let identity = module_identity(&path).unwrap();
+            assert_eq!(identity.address.as_str(), address, "{relative}");
+            assert_eq!(identity.owner, "ExternalDataSource.S", "{relative}");
+            let expected = descriptors
+                .iter()
+                .map(|descriptor| {
+                    if descriptor.is_empty() {
+                        Path::new("ExternalDataSources/S.xml").to_path_buf()
+                    } else {
+                        Path::new(source).join(descriptor)
+                    }
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(identity.descriptors, expected, "{relative}");
+            assert_eq!(
+                platform_xml_module_relative(&MetadataAddress::parse_logical(address).unwrap())
+                    .unwrap(),
+                path,
+                "{address}"
+            );
+        }
+        // Куб не держит модуля объекта, таблица измерения — модуля набора
+        // записей, функция модулей не имеет вовсе.
+        for relative in [
+            "Cubes/C/Ext/ObjectModule.bsl",
+            "Cubes/C/DimensionTables/D/Ext/RecordSetModule.bsl",
+            "Tables/T/DimensionTables/D/Ext/ObjectModule.bsl",
+            "Functions/F/Ext/ObjectModule.bsl",
+        ] {
+            assert!(
+                module_identity(&Path::new(source).join(relative)).is_err(),
+                "{relative}"
+            );
+        }
+        for address in [
+            "ExternalDataSource.S.Cube.C.ObjectModule",
+            "ExternalDataSource.S.Function.F.ObjectModule",
+        ] {
+            assert!(
+                platform_xml_module_relative(&MetadataAddress::parse_logical(address).unwrap())
+                    .is_err(),
+                "{address}"
+            );
+        }
     }
 }

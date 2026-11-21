@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject version="2.20" xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <ChartOfAccounts uuid="cccccccc-cccc-4ccc-8ccc-cccccccccccc">
+    <Properties><Name>Ledger</Name><MaxExtDimensionCount>3</MaxExtDimensionCount></Properties>
+    <ChildObjects>
+      <Attribute><Properties><Name>Currency</Name><Type><v8:Type>xs:boolean</v8:Type></Type></Properties></Attribute>
+      <AccountingFlag><Properties><Name>Currency</Name><Type><v8:Type>xs:boolean</v8:Type></Type></Properties></AccountingFlag>
+      <AccountingFlag><Properties><Name>Quantity</Name><Type><v8:Type>xs:boolean</v8:Type></Type></Properties></AccountingFlag>
+      <AccountingFlag><Properties><Name>TaxAccounting</Name><Type><v8:Type>xs:boolean</v8:Type></Type></Properties></AccountingFlag>
+      <ExtDimensionAccountingFlag><Properties><Name>Amount</Name><Type><v8:Type>xs:boolean</v8:Type></Type></Properties></ExtDimensionAccountingFlag>
+      <ExtDimensionAccountingFlag><Properties><Name>Currency</Name><Type><v8:Type>xs:boolean</v8:Type></Type></Properties></ExtDimensionAccountingFlag>
+    </ChildObjects>
+  </ChartOfAccounts>
+</MetaDataObject>

@@ -66,6 +66,17 @@ pub(super) fn parse(
             "from must name a top-level object, Enum.EnumValue or object Form in a distinct parent source set",
         ));
     }
+    // A kind the parent's line does not have is refused with both lines,
+    // not as an unregistered object (INV.SOURCE.PROFILE-CAPABILITIES).
+    if let Some(profile) = binding.workspace_source_profile(parent.source_set()) {
+        let kind = parent.segments()[0].kind();
+        if let Some(reason) =
+            unica_metadata::kind_line_refusal(kind.as_str(), profile.semantic_line())
+        {
+            return Err(ApplyPlanError::new(ApplyPlanErrorKind::BadValue, reason)
+                .at_path(format!("ops[{index}].args.from")));
+        }
+    }
     shape
         .property("from")
         .expect("borrow from field")

@@ -100,15 +100,20 @@ setx PYTHONUTF8 1
 
 ### Rust
 
-Установите стабильный Rust через [`rustup`](https://rust-lang.org/tools/install/)
-и добавьте компоненты, используемые при разработке:
+Версию Rust задаёт `rust-toolchain.toml` в корне репозитория: её используют
+CI и локальные сборки. Установите [`rustup`](https://rust-lang.org/tools/install/);
+в рабочей копии он сам берёт эту версию. Из корня рабочей копии поставьте её
+с компонентами, используемыми при разработке:
 
 ```sh
-rustup toolchain install stable --profile default
-rustup default stable
-rustup component add rustfmt clippy rust-analyzer rust-src
+rustup toolchain install
+rustup component add rust-analyzer rust-src
 cargo install cargo-nextest --locked
 ```
+
+`rustup toolchain install` без аргументов ставит версию и компоненты
+из `rust-toolchain.toml`. После смены версии в файле повторите обе команды:
+каталоги сборки пересоберутся новой версией.
 
 На Windows `rustup` ставится командой `winget install --id Rustlang.Rustup -e`,
 на macOS и Linux — установщиком с [rustup.rs](https://rustup.rs/). Версию
@@ -171,7 +176,7 @@ claude --plugin-dir ./plugins/unica
 
 На Windows x64 запускайте `install-local-unica.sh` из **Git Bash**, входящего
 в 64-битный Git for Windows. Для локальной сборки нужны Python 3.12 или новее,
-стабильный Rust с нативным toolchain MSVC, а также Microsoft C++ Build Tools
+Rust версии из `rust-toolchain.toml` с нативным toolchain MSVC, а также Microsoft C++ Build Tools
 и Windows SDK. WSL сохраняет Linux-семантику и собирает `linux-x64`. MSYS2
 и Cygwin не входят в поддерживаемые shell для этого installer; используйте
 Git Bash.

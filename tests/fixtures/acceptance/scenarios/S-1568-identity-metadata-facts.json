@@ -1,0 +1,743 @@
+{
+  "id": "S-1568-identity-metadata-facts",
+  "issue": 1568,
+  "area": "Метаданные",
+  "workspace": "tests/fixtures/acceptance/workspace-root-comments",
+  "task": "По каждому из 13 видов без собственного профиля (Language, StyleItem, CommonPicture, SessionParameter, FilterCriterion, CommonAttribute, SettingsStorage, FunctionalOption, FunctionalOptionsParameter, CommonCommand, DocumentNumerator, WSReference, IntegrationService) пройти коллекцию → возвращённый адрес → деталь и сверить с XML выгрузки платформы базовые факты корня: синоним в форме НСтр, тип с вариантами и квалификаторами, флаги false и число 11. Исходники не меняются.",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effectiveSourceSet",
+          "eq": "main"
+        }
+      ],
+      "captures": {
+        "unchanged1": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "unchanged2": {
+          "file": "src/Languages/Русский.xml",
+          "kind": "sha256"
+        },
+        "unchanged3": {
+          "file": "src/StyleItems/Probe.xml",
+          "kind": "sha256"
+        },
+        "unchanged4": {
+          "file": "src/CommonPictures/Probe.xml",
+          "kind": "sha256"
+        },
+        "unchanged5": {
+          "file": "src/SessionParameters/SessionProbe.xml",
+          "kind": "sha256"
+        },
+        "unchanged6": {
+          "file": "src/FilterCriteria/Probe.xml",
+          "kind": "sha256"
+        },
+        "unchanged7": {
+          "file": "src/CommonAttributes/Probe.xml",
+          "kind": "sha256"
+        },
+        "unchanged8": {
+          "file": "src/SettingsStorages/Probe.xml",
+          "kind": "sha256"
+        },
+        "unchanged9": {
+          "file": "src/FunctionalOptions/Probe.xml",
+          "kind": "sha256"
+        },
+        "unchanged10": {
+          "file": "src/FunctionalOptionsParameters/Probe.xml",
+          "kind": "sha256"
+        },
+        "unchanged11": {
+          "file": "src/CommonCommands/Probe.xml",
+          "kind": "sha256"
+        },
+        "unchanged12": {
+          "file": "src/DocumentNumerators/Probe.xml",
+          "kind": "sha256"
+        },
+        "unchanged13": {
+          "file": "src/IntegrationServices/Probe.xml",
+          "kind": "sha256"
+        },
+        "unchanged14": {
+          "file": "src/WSReferences/Probe.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Language"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Language.Русский"
+        }
+      ],
+      "captures": {
+        "node0": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.node0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Language"
+        },
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": "ru = 'Русский'"
+        },
+        {
+          "pointer": "/data/props/LanguageCode",
+          "eq": "ru"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:StyleItem"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:StyleItem.Probe"
+        }
+      ],
+      "captures": {
+        "node1": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.node1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "StyleItem"
+        },
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": "ru = 'Актуальная подписка цвет'"
+        },
+        {
+          "pointer": "/data/props/Type",
+          "eq": "Color"
+        },
+        {
+          "pointer": "/data/props/Value",
+          "eq": "#009646"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:StyleItem.Probe.Props.Synonym"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": "ru = 'Актуальная подписка цвет'"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonPicture"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:CommonPicture.Probe"
+        }
+      ],
+      "captures": {
+        "node2": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.node2"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "CommonPicture"
+        },
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": "ru = 'App store'"
+        },
+        {
+          "pointer": "/data/props/AvailabilityForChoice",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:SessionParameter"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:SessionParameter.SessionProbe"
+        }
+      ],
+      "captures": {
+        "node3": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.node3"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "SessionParameter"
+        },
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": "ru = 'CDN-площадки с ошибками обмена ИС МП'"
+        },
+        {
+          "pointer": "/data/props/Type",
+          "eq": {
+            "variants": [
+              {
+                "kind": "valueStorage"
+              }
+            ],
+            "mutationCapability": "editable"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:FilterCriterion"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:FilterCriterion.Probe"
+        }
+      ],
+      "captures": {
+        "node4": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.node4"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "FilterCriterion"
+        },
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": "ru = 'Взаимодействия контакта'"
+        },
+        {
+          "pointer": "/data/props/Type",
+          "eq": {
+            "variants": [
+              {
+                "kind": "string",
+                "length": 20,
+                "allowedLength": "variable"
+              }
+            ],
+            "mutationCapability": "editable"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonAttribute"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:CommonAttribute.Probe"
+        }
+      ],
+      "captures": {
+        "node5": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.node5"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "CommonAttribute"
+        },
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": "ru = 'Комментарий (дополнительный язык)'"
+        },
+        {
+          "pointer": "/data/props/Type",
+          "eq": {
+            "variants": [
+              {
+                "kind": "string",
+                "length": 0,
+                "allowedLength": "variable"
+              }
+            ],
+            "mutationCapability": "editable"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:SettingsStorage"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:SettingsStorage.Probe"
+        }
+      ],
+      "captures": {
+        "node6": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.node6"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "SettingsStorage"
+        },
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": "ru = 'Буферы обмена новостей'"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:FunctionalOption"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:FunctionalOption.Probe"
+        }
+      ],
+      "captures": {
+        "node7": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.node7"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "FunctionalOption"
+        },
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": "ru = 'Автоматически создавать партнеров при отправке электронного чека покупателю'"
+        },
+        {
+          "pointer": "/data/props/Location",
+          "eq": "Constant.Support"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:FunctionalOptionsParameter"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:FunctionalOptionsParameter.Probe"
+        }
+      ],
+      "captures": {
+        "node8": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.node8"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "FunctionalOptionsParameter"
+        },
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": "ru = 'Дополнительные отчеты и обработки объект назначения'"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonCommand"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:CommonCommand.Probe"
+        }
+      ],
+      "captures": {
+        "node9": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.node9"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "CommonCommand"
+        },
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": "ru = 'Автономная работа'"
+        },
+        {
+          "pointer": "/data/props/Group",
+          "eq": "NavigationPanelOrdinary"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:DocumentNumerator"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:DocumentNumerator.Probe"
+        }
+      ],
+      "captures": {
+        "node10": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.node10"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "DocumentNumerator"
+        },
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": "ru = 'Документы реализации товаров'"
+        },
+        {
+          "pointer": "/data/props/NumberLength",
+          "eq": 11
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:WSReference"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:WSReference.Probe"
+        }
+      ],
+      "captures": {
+        "node12": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.node12"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "WSReference"
+        },
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": "ru = 'Update files api impl service'"
+        },
+        {
+          "pointer": "/data/props/LocationURL",
+          "eq": "https://update-api.1c.ru/ws/files?wsdl"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:IntegrationService"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:IntegrationService.Probe"
+        }
+      ],
+      "captures": {
+        "node11": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.node11"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "IntegrationService"
+        },
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": "ru = 'Обмен сообщениями'"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged1"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged2"
+        },
+        {
+          "path": "src/StyleItems/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged3"
+        },
+        {
+          "path": "src/CommonPictures/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged4"
+        },
+        {
+          "path": "src/SessionParameters/SessionProbe.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged5"
+        },
+        {
+          "path": "src/FilterCriteria/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged6"
+        },
+        {
+          "path": "src/CommonAttributes/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged7"
+        },
+        {
+          "path": "src/SettingsStorages/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged8"
+        },
+        {
+          "path": "src/FunctionalOptions/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged9"
+        },
+        {
+          "path": "src/FunctionalOptionsParameters/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged10"
+        },
+        {
+          "path": "src/CommonCommands/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged11"
+        },
+        {
+          "path": "src/DocumentNumerators/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged12"
+        },
+        {
+          "path": "src/IntegrationServices/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged13"
+        },
+        {
+          "path": "src/WSReferences/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged14"
+        }
+      ]
+    }
+  ]
+}

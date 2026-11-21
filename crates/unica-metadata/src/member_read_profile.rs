@@ -361,25 +361,23 @@ impl MetaMemberPropertySpec {
     }
 }
 
-// The eleven StandardCommandsGroup values of the platform (since 8.2) and
-// named CommandGroup references. This read vocabulary does not depend on
-// mutation contracts.
-fn command_group(value: &str) -> bool {
-    if [
-        "NavigationPanelImportant",
-        "NavigationPanelOrdinary",
-        "NavigationPanelSeeAlso",
-        "FormNavigationPanelGoTo",
-        "FormNavigationPanelImportant",
-        "FormNavigationPanelSeeAlso",
-        "FormCommandBarImportant",
-        "FormCommandBarCreateBasedOn",
-        "ActionsPanelCreate",
-        "ActionsPanelReports",
-        "ActionsPanelTools",
-    ]
-    .contains(&value)
-    {
+// The eleven StandardCommandsGroup values of the platform (since 8.2).
+pub(crate) const STANDARD_COMMAND_GROUPS: &[&str] = &[
+    "NavigationPanelImportant",
+    "NavigationPanelOrdinary",
+    "NavigationPanelSeeAlso",
+    "FormNavigationPanelGoTo",
+    "FormNavigationPanelImportant",
+    "FormNavigationPanelSeeAlso",
+    "FormCommandBarImportant",
+    "FormCommandBarCreateBasedOn",
+    "ActionsPanelCreate",
+    "ActionsPanelReports",
+    "ActionsPanelTools",
+];
+
+pub(crate) fn command_group(value: &str) -> bool {
+    if STANDARD_COMMAND_GROUPS.contains(&value) {
         return true;
     }
     let Ok(address) = unica_address::source_target::MetadataAddress::parse_logical(value) else {

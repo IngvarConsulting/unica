@@ -1,257 +1,9 @@
-use crate::source_target::metadata_address_kind_matches;
 use serde::{Deserialize, Serialize, Serializer};
 use std::borrow::Cow;
 use std::fmt;
 use unica_xml_format::names::xml_ncname_is_valid;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum NodeKind {
-    Configuration,
-    Language,
-    Subsystem,
-    StyleItem,
-    Style,
-    CommonPicture,
-    SessionParameter,
-    Role,
-    CommonTemplate,
-    FilterCriterion,
-    CommonModule,
-    Bot,
-    CommonAttribute,
-    ExchangePlan,
-    XdtoPackage,
-    WebService,
-    HttpService,
-    WsReference,
-    EventSubscription,
-    ScheduledJob,
-    Schedule,
-    /// Read-only semantic declarations of a WSReference's local WSDL.
-    Definition,
-    SettingsStorage,
-    FunctionalOption,
-    FunctionalOptionsParameter,
-    DefinedType,
-    CommonCommand,
-    CommandGroup,
-    Constant,
-    CommonForm,
-    Catalog,
-    Document,
-    DocumentNumerator,
-    Sequence,
-    DocumentJournal,
-    Enum,
-    Report,
-    DataProcessor,
-    InformationRegister,
-    AccumulationRegister,
-    ChartOfCharacteristicTypes,
-    ChartOfAccounts,
-    AccountingRegister,
-    ChartOfCalculationTypes,
-    CalculationRegister,
-    BusinessProcess,
-    Task,
-    IntegrationService,
-    Form,
-    /// Локальное описание формы; содержимое остаётся в корне формы.
-    Metadata,
-    Template,
-    Command,
-    ExternalDataProcessor,
-    ExternalReport,
-    WebSocketClient,
-    PaletteColor,
-    Queue,
-    Attribute,
-    AddressingAttribute,
-    StandardAttribute,
-    TabularSection,
-    Dimension,
-    Resource,
-    EnumValue,
-    Column,
-    Recalculation,
-    Item,
-    Parameter,
-    Right,
-    Rls,
-    DataSet,
-    Field,
-    Query,
-    /// Источник данных схемы компоновки: `Template.T.DataSource.<имя>`.
-    DataSource,
-    /// Вычисляемое поле схемы: `Template.T.CalculatedField.<dataPath>`.
-    CalculatedField,
-    /// Итог (ресурс) схемы: `Template.T.Total.<dataPath>`.
-    Total,
-    Setting,
-    Area,
-    /// Группа командного интерфейса: место, куда платформа кладёт команду.
-    /// Не путать с `CommandGroup` — тот объект метаданных, а это ссылка на
-    /// группу панели, стандартную либо заведённую таким объектом.
-    Group,
-    Module,
-    Method,
-    Variable,
-    Binding,
-    Body,
-    Region,
-    Interface,
-    Event,
-    UrlTemplate,
-    Operation,
-    Channel,
-    Namespace,
-    Type,
-    Property,
-    /// Ссылка объекта метаданных наружу: владелец, движение, основание,
-    /// источник события. Элемент этой ветви адресует чужой объект, а не
-    /// потомка.
-    Relation,
-    /// Характеристика плана видов характеристик: пара источников типов и
-    /// значений. Прикладного имени у неё нет, поэтому элементы этой ветви
-    /// остаются строками данных.
-    Characteristic,
-    StandardTabularSection,
-    /// Метод, который зовёт этот метод. Элемент этой ветви адресует чужой
-    /// метод, а не потомка: граф вызовов показывает наружу.
-    Caller,
-    /// Метод, которого зовёт этот метод.
-    Callee,
-    /// Предопределённый элемент объекта: носит имя и идентификатор, поэтому
-    /// адресуется — в отличие от характеристики, названной парой источников.
-    PredefinedItem,
-    /// Операция словаря узла: `<узел>.Can.<op>`. Сегмент терминальный, и
-    /// его имя — весь остаток адреса, потому что имя операции само содержит
-    /// точку (`query.set`). Узел, чей словарь спрашивают, — адрес до `Can`.
-    Can,
-    /// Одно свойство узла целиком: `<узел>.Props.<имя>`. Сегмент
-    /// терминальный; так читается свойство, которое не поместилось в
-    /// `props` узла (#2088). Узел-владелец — адрес до `Props`.
-    Props,
-}
-
-const LEGACY_METADATA_KINDS: &[NodeKind] = &[
-    NodeKind::Language,
-    NodeKind::Subsystem,
-    NodeKind::StyleItem,
-    NodeKind::Style,
-    NodeKind::CommonPicture,
-    NodeKind::SessionParameter,
-    NodeKind::Role,
-    NodeKind::CommonTemplate,
-    NodeKind::FilterCriterion,
-    NodeKind::CommonModule,
-    NodeKind::Bot,
-    NodeKind::CommonAttribute,
-    NodeKind::ExchangePlan,
-    NodeKind::XdtoPackage,
-    NodeKind::WebService,
-    NodeKind::HttpService,
-    NodeKind::WsReference,
-    NodeKind::EventSubscription,
-    NodeKind::ScheduledJob,
-    NodeKind::SettingsStorage,
-    NodeKind::FunctionalOption,
-    NodeKind::FunctionalOptionsParameter,
-    NodeKind::DefinedType,
-    NodeKind::CommonCommand,
-    NodeKind::CommandGroup,
-    NodeKind::Constant,
-    NodeKind::CommonForm,
-    NodeKind::Catalog,
-    NodeKind::Document,
-    NodeKind::DocumentNumerator,
-    NodeKind::Sequence,
-    NodeKind::DocumentJournal,
-    NodeKind::Enum,
-    NodeKind::Report,
-    NodeKind::DataProcessor,
-    NodeKind::InformationRegister,
-    NodeKind::AccumulationRegister,
-    NodeKind::ChartOfCharacteristicTypes,
-    NodeKind::ChartOfAccounts,
-    NodeKind::AccountingRegister,
-    NodeKind::ChartOfCalculationTypes,
-    NodeKind::CalculationRegister,
-    NodeKind::BusinessProcess,
-    NodeKind::Task,
-    NodeKind::IntegrationService,
-    NodeKind::Form,
-    NodeKind::Template,
-    NodeKind::Command,
-    NodeKind::ExternalDataProcessor,
-    NodeKind::ExternalReport,
-    NodeKind::PaletteColor,
-    NodeKind::Queue,
-];
-
-#[derive(Clone, Copy)]
-struct V13KindSpelling {
-    kind: NodeKind,
-    aliases: &'static [&'static str],
-}
-
-const V13_KIND_SPELLINGS: &[V13KindSpelling] = &[
-    spelling(NodeKind::Configuration, &["Конфигурация"]),
-    spelling(NodeKind::Metadata, &["Метаданные"]),
-    spelling(NodeKind::Schedule, &["Расписание"]),
-    spelling(NodeKind::WebSocketClient, &[]),
-    spelling(NodeKind::Attribute, &["Реквизит"]),
-    spelling(NodeKind::AddressingAttribute, &["РеквизитАдресации"]),
-    spelling(NodeKind::StandardAttribute, &["СтандартныйРеквизит"]),
-    spelling(NodeKind::TabularSection, &["ТабличнаяЧасть"]),
-    spelling(NodeKind::Dimension, &["Измерение"]),
-    spelling(NodeKind::Resource, &["Ресурс"]),
-    spelling(NodeKind::EnumValue, &["ЗначениеПеречисления"]),
-    spelling(NodeKind::Column, &["Колонка"]),
-    spelling(
-        NodeKind::Recalculation,
-        &["Перерасчет", "Перерасчёт", "Перерасчеты", "Перерасчёты"],
-    ),
-    spelling(NodeKind::Item, &["Элемент"]),
-    spelling(NodeKind::Parameter, &["Параметр"]),
-    spelling(NodeKind::Right, &["Право"]),
-    spelling(NodeKind::Rls, &[]),
-    spelling(NodeKind::DataSet, &["НаборДанных"]),
-    spelling(NodeKind::Field, &["Поле"]),
-    spelling(NodeKind::Query, &["Запрос"]),
-    spelling(NodeKind::DataSource, &["ИсточникДанных"]),
-    spelling(NodeKind::CalculatedField, &["ВычисляемоеПоле"]),
-    spelling(NodeKind::Total, &["Итог"]),
-    spelling(NodeKind::Setting, &["Настройка"]),
-    spelling(NodeKind::Area, &["Область"]),
-    spelling(NodeKind::Module, &["Модуль"]),
-    spelling(NodeKind::Method, &["Метод"]),
-    spelling(NodeKind::Variable, &["Переменная"]),
-    spelling(NodeKind::Binding, &[]),
-    spelling(NodeKind::Body, &["Тело"]),
-    spelling(NodeKind::Region, &["ОбластьКода"]),
-    spelling(NodeKind::Interface, &["Интерфейс"]),
-    spelling(NodeKind::Group, &["Группа"]),
-    spelling(NodeKind::Event, &["Событие"]),
-    spelling(NodeKind::UrlTemplate, &["ШаблонURL"]),
-    spelling(NodeKind::Operation, &["Операция"]),
-    spelling(NodeKind::Channel, &["Канал"]),
-    spelling(NodeKind::Namespace, &["ПространствоИмен"]),
-    spelling(NodeKind::Type, &["Тип"]),
-    spelling(NodeKind::Property, &["Свойство"]),
-    spelling(NodeKind::Definition, &["Определение"]),
-    spelling(NodeKind::Relation, &["Связь"]),
-    spelling(NodeKind::Characteristic, &["Характеристика"]),
-    spelling(
-        NodeKind::StandardTabularSection,
-        &["СтандартнаяТабличнаяЧасть"],
-    ),
-    spelling(NodeKind::Caller, &["Вызывающий"]),
-    spelling(NodeKind::Callee, &["Вызываемый"]),
-    spelling(NodeKind::PredefinedItem, &["ПредопределённыйЭлемент"]),
-    spelling(NodeKind::Can, &[]),
-    spelling(NodeKind::Props, &[]),
-];
+pub use crate::kinds::NodeKind;
 
 /// Сегменты до элемента структуры варианта СКД: `…Setting.V[.Item.I…]` —
 /// после именованного `Setting` идут только именованные `Item`.
@@ -267,13 +19,16 @@ fn structure_item_route(owners: &[AddressSegment]) -> bool {
         })
 }
 
-const fn spelling(kind: NodeKind, aliases: &'static [&'static str]) -> V13KindSpelling {
-    V13KindSpelling { kind, aliases }
-}
-
 impl NodeKind {
+    /// Виды объектов метаданных с адресом исходников: виды корня в порядке
+    /// `ChildObjects` конфигурации, затем остальные.
     pub const fn metadata_kinds() -> &'static [Self] {
-        LEGACY_METADATA_KINDS
+        &crate::kinds::METADATA_KINDS
+    }
+
+    /// Виды корня в порядке групп дерева Конфигуратора.
+    pub const fn configurator_tree_order() -> &'static [Self] {
+        &crate::kinds::CONFIGURATOR_TREE_ORDER
     }
 
     /// Носит ли вид прикладное имя.
@@ -283,15 +38,7 @@ impl NodeKind {
     /// Терминальный вид без имени — другое: это адрес ветки, и он допустим у
     /// любого вида. См. `arch/rules/mcp/qualified-logical-address.md`.
     pub const fn takes_name(self) -> bool {
-        !matches!(
-            self,
-            Self::Configuration
-                | Self::Binding
-                | Self::Interface
-                | Self::Metadata
-                | Self::Schedule
-                | Self::Definition
-        )
+        self.declaration().named
     }
 
     /// Может ли имя узла этого вида в этом месте адреса содержать точку.
@@ -341,132 +88,17 @@ impl NodeKind {
     // `&raw const`/`&raw mut` и человеком, и разборщиками. Один такой случай
     // уже делал этот файл неразбираемым для стража неизменности продукта.
     pub fn parse(token: &str) -> Result<Self, AddressError> {
-        if let Some(kind) = LEGACY_METADATA_KINDS
-            .iter()
-            .find(|kind| metadata_address_kind_matches(kind.as_str(), token))
-        {
-            return Ok(*kind);
-        }
-        V13_KIND_SPELLINGS
-            .iter()
-            .find(|spelling| spelling.kind.as_str() == token || spelling.aliases.contains(&token))
-            .map(|spelling| spelling.kind)
-            .ok_or_else(|| {
-                AddressError::new(
-                    AddressErrorCode::UnknownKind,
-                    format!("unknown logical node kind `{token}`"),
-                )
-            })
+        crate::kinds::spelled(token).ok_or_else(|| {
+            AddressError::new(
+                AddressErrorCode::UnknownKind,
+                format!("unknown logical node kind `{token}`"),
+            )
+        })
     }
 
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Configuration => "Configuration",
-            Self::Language => "Language",
-            Self::Subsystem => "Subsystem",
-            Self::StyleItem => "StyleItem",
-            Self::Style => "Style",
-            Self::CommonPicture => "CommonPicture",
-            Self::SessionParameter => "SessionParameter",
-            Self::Role => "Role",
-            Self::CommonTemplate => "CommonTemplate",
-            Self::FilterCriterion => "FilterCriterion",
-            Self::CommonModule => "CommonModule",
-            Self::Bot => "Bot",
-            Self::CommonAttribute => "CommonAttribute",
-            Self::ExchangePlan => "ExchangePlan",
-            Self::XdtoPackage => "XDTOPackage",
-            Self::WebService => "WebService",
-            Self::HttpService => "HTTPService",
-            Self::WsReference => "WSReference",
-            Self::Definition => "Definition",
-            Self::EventSubscription => "EventSubscription",
-            Self::ScheduledJob => "ScheduledJob",
-            Self::Schedule => "Schedule",
-            Self::SettingsStorage => "SettingsStorage",
-            Self::FunctionalOption => "FunctionalOption",
-            Self::FunctionalOptionsParameter => "FunctionalOptionsParameter",
-            Self::DefinedType => "DefinedType",
-            Self::CommonCommand => "CommonCommand",
-            Self::CommandGroup => "CommandGroup",
-            Self::Constant => "Constant",
-            Self::CommonForm => "CommonForm",
-            Self::Catalog => "Catalog",
-            Self::Document => "Document",
-            Self::DocumentNumerator => "DocumentNumerator",
-            Self::Sequence => "Sequence",
-            Self::DocumentJournal => "DocumentJournal",
-            Self::Enum => "Enum",
-            Self::Report => "Report",
-            Self::DataProcessor => "DataProcessor",
-            Self::InformationRegister => "InformationRegister",
-            Self::AccumulationRegister => "AccumulationRegister",
-            Self::ChartOfCharacteristicTypes => "ChartOfCharacteristicTypes",
-            Self::ChartOfAccounts => "ChartOfAccounts",
-            Self::AccountingRegister => "AccountingRegister",
-            Self::ChartOfCalculationTypes => "ChartOfCalculationTypes",
-            Self::CalculationRegister => "CalculationRegister",
-            Self::BusinessProcess => "BusinessProcess",
-            Self::Task => "Task",
-            Self::IntegrationService => "IntegrationService",
-            Self::Form => "Form",
-            Self::Metadata => "Metadata",
-            Self::Template => "Template",
-            Self::Command => "Command",
-            Self::ExternalDataProcessor => "ExternalDataProcessor",
-            Self::ExternalReport => "ExternalReport",
-            Self::WebSocketClient => "WebSocketClient",
-            Self::PaletteColor => "PaletteColor",
-            Self::Queue => "Queue",
-            Self::Attribute => "Attribute",
-            Self::AddressingAttribute => "AddressingAttribute",
-            Self::StandardAttribute => "StandardAttribute",
-            Self::TabularSection => "TabularSection",
-            Self::Dimension => "Dimension",
-            Self::Resource => "Resource",
-            Self::EnumValue => "EnumValue",
-            Self::Column => "Column",
-            Self::Recalculation => "Recalculation",
-            Self::Item => "Item",
-            Self::Parameter => "Parameter",
-            Self::Right => "Right",
-            Self::Rls => "RLS",
-            Self::DataSet => "DataSet",
-            Self::Field => "Field",
-            Self::Query => "Query",
-            Self::DataSource => "DataSource",
-            Self::CalculatedField => "CalculatedField",
-            Self::Total => "Total",
-            Self::Setting => "Setting",
-            Self::Area => "Area",
-            Self::Group => "Group",
-            Self::Module => "Module",
-            Self::Method => "Method",
-            Self::Variable => "Variable",
-            Self::Binding => "Binding",
-            Self::Body => "Body",
-            Self::Region => "Region",
-            Self::Interface => "Interface",
-            Self::Event => "Event",
-            Self::UrlTemplate => "URLTemplate",
-            Self::Operation => "Operation",
-            Self::Channel => "Channel",
-            Self::Namespace => "Namespace",
-            Self::Type => "Type",
-            Self::Property => "Property",
-            Self::Relation => "Relation",
-            Self::Characteristic => "Characteristic",
-            Self::StandardTabularSection => "StandardTabularSection",
-            Self::Caller => "Caller",
-            Self::Callee => "Callee",
-            Self::PredefinedItem => "PredefinedItem",
-            Self::Can => "Can",
-            Self::Props => "Props",
-        }
-    }
-
-    pub fn is_metadata_kind(self) -> bool {
-        self == Self::WebSocketClient || LEGACY_METADATA_KINDS.contains(&self)
+    pub const fn is_metadata_kind(self) -> bool {
+        let declaration = self.declaration();
+        declaration.metadata.is_some() || declaration.root.is_some()
     }
 }
 
@@ -1097,6 +729,30 @@ mod tests {
         let root = QualifiedAddress::parse("main:Interface").expect("корневой интерфейс");
         assert_eq!(root.segments().len(), 1);
         assert_eq!(root.segments()[0].name(), None);
+    }
+
+    /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
+    #[test]
+    fn ordinary_interfaces_have_their_own_address_kind() {
+        for (address, kind, name) in [
+            ("main:OrdinaryInterface", NodeKind::OrdinaryInterface, None),
+            (
+                "main:OrdinaryInterface.Public",
+                NodeKind::OrdinaryInterface,
+                Some("Public"),
+            ),
+            ("main:Subsystem.Sales.Interface", NodeKind::Interface, None),
+            (
+                "main:CommonModule.Shared.Interface.Public",
+                NodeKind::Interface,
+                Some("Public"),
+            ),
+        ] {
+            let parsed = QualifiedAddress::parse(address).unwrap();
+            assert_eq!(parsed.to_string(), address);
+            let terminal = parsed.segments().last().unwrap();
+            assert_eq!((terminal.kind(), terminal.name()), (kind, name));
+        }
     }
 
     /// `<узел>.Props.<имя>` называет одно свойство узла: сегмент последний и
@@ -1797,15 +1453,9 @@ mod prefix_tests {
         ]
         .map(str::to_owned)
         .to_vec();
-        for spelling in super::V13_KIND_SPELLINGS
-            .iter()
-            .filter(|entry| entry.kind == NodeKind::Can)
-        {
-            for token in
-                std::iter::once(spelling.kind.as_str()).chain(spelling.aliases.iter().copied())
-            {
-                addresses.push(format!("main:Catalog.Things.{token}.props.set"));
-            }
+        let can = NodeKind::Can.declaration();
+        for token in std::iter::once(can.tag).chain(can.russian.iter().copied()) {
+            addresses.push(format!("main:Catalog.Things.{token}.props.set"));
         }
         for address in &addresses {
             for prefix in [

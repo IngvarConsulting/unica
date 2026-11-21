@@ -941,6 +941,14 @@ fn support_record_uuid(
             .at_path(at_path.to_string())
         });
     }
+    if target.starts_with("ExternalDataSource.") {
+        let address = unica_address::address::QualifiedAddress::parse(&format!(
+            "{}:{target}",
+            authority.source_set_name(),
+        ))
+        .map_err(|error| not_found(error.to_string()))?;
+        return crate::external_data_source_support::staged_uuid(staged, &address, at_path);
+    }
     let parts: Vec<&str> = target.split('.').collect();
     let [owner_kind, owner_name, rest @ ..] = parts.as_slice() else {
         return Err(not_found("support target has no owner".to_string()));

@@ -55,6 +55,7 @@ pub const META_INFO_PROPERTY_NAMES: &[&str] = &[
     "AuxiliarySettingsForm",
     "AuxiliaryVariantForm",
     "BasePeriod",
+    "Category",
     "CharacteristicExtValues",
     "ChartOfAccounts",
     "ChartOfCalculationTypes",
@@ -158,6 +159,7 @@ pub const META_INFO_PROPERTY_NAMES: &[&str] = &[
     "RegisterRecordsDeletion",
     "RegisterRecordsWritingOnPost",
     "RegisterType",
+    "Representation",
     "RestartCountOnFailure",
     "RestartIntervalOnFailure",
     "ReturnValuesReuse",
@@ -201,6 +203,16 @@ impl MetaInfoPropertyProfile {
             (MetadataKind::InformationRegister, "WriteMode") => {
                 Some(&["Independent", "RecorderSubordinate"])
             }
+            // ButtonRepresentation и CommandGroupCategory платформы.
+            (MetadataKind::CommandGroup, "Representation") => {
+                Some(&["Auto", "Text", "Picture", "PictureAndText"])
+            }
+            (MetadataKind::CommandGroup, "Category") => Some(&[
+                "NavigationPanel",
+                "ActionsPanel",
+                "FormNavigationPanel",
+                "FormCommandBar",
+            ]),
             _ => None,
         }
     }
@@ -412,6 +424,8 @@ fn mutation_property_is_observable(kind: MetadataKind, key: MetaPropertyKey) -> 
     match key {
         // Constant Type is observed through MetaInfoDetails, not scalar properties.
         Type | ClientOrdinaryApplication | Key => false,
+        // Настройки группы команд читает дополнительный профиль вида.
+        Representation | Category | ToolTip => false,
         Synonym | Comment => true,
         EditType => matches!(kind, Catalog | InformationRegister),
         ActionPeriod | BasePeriod => kind == CalculationRegister,
@@ -798,6 +812,7 @@ fn additional_property_is_observable(kind: MetadataKind, name: &str) -> bool {
         HTTPService => false,
         WebService => name == "DescriptorFileName",
         DefinedType | EventSubscription => false,
+        CommandGroup => matches!(name, "Representation" | "ToolTip" | "Category"),
     }
 }
 
@@ -928,6 +943,8 @@ mod tests {
                 assert_eq!(observed.key, writer.public_name);
                 let expected_kind = if writer.key == MetaPropertyKey::Synonym {
                     MetaInfoPropertyValueKind::LegacyLocalizedString
+                } else if writer.key.is_localized() {
+                    MetaInfoPropertyValueKind::LocalizedString
                 } else {
                     match writer.value_kind {
                         MetaPropertyValueKind::String => MetaInfoPropertyValueKind::String,

@@ -138,6 +138,7 @@ class ComponentBoundaryTests(unittest.TestCase):
             ("unica-mcp", "unica-daemon-protocol"),
             ("unica-mcp", "unica-application"),
             ("unica-mcp", "unica-execution"),
+            ("unica-mcp", "unica-error-reporting"),
             ("unica-product", "unica-mcp"),
             ("unica-lsp", "unica-daemon-protocol"),
             ("unica-lsp", "unica-lsp-contract"),

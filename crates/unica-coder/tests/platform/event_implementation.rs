@@ -828,3 +828,56 @@ fn a_queue_manager_event_handler_is_planned_only_in_the_line_that_has_the_event(
     assert_eq!(error.kind(), ApplyPlanErrorKind::ProviderUnavailable);
     std::fs::remove_dir_all(root).unwrap();
 }
+
+/// The WebSocket client of the platform export implements its event in the
+/// module of its layout, as a bot does (#3246).
+#[test]
+fn web_socket_client_event_is_implemented_in_the_module_of_its_layout() {
+    fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for entry in std::fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let target = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_tree(&entry.path(), &target);
+            } else {
+                std::fs::copy(entry.path(), target).unwrap();
+            }
+        }
+    }
+    let root = temp_root("web-socket-client");
+    copy_tree(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src"),
+        &root,
+    );
+    let (planned, effects) = plan_event_implement_batch_owned_for_test(
+        staged(&root),
+        "main",
+        SourceSetKind::Configuration,
+        PlatformProfile::v8_3_27(),
+        &[EventImplementArgs {
+            at: QualifiedAddress::parse(
+                "main:WebSocketClient.AllKindsWebSocketClient.Module.WebSocketClient.Event.OnMessage",
+            )
+            .unwrap(),
+            call_type: None,
+        }],
+    )
+    .unwrap();
+    let changes = planned.planned_changes();
+    assert_eq!(changes.len(), 1, "{changes:?}");
+    assert_eq!(
+        changes[0].relative_path,
+        PathBuf::from("WebSocketClients/AllKindsWebSocketClient/Ext/Module.bsl")
+    );
+    let module = match &changes[0].current {
+        unica_source_contract::proposal::StagedFileState::Bytes(bytes) => {
+            String::from_utf8(bytes.clone()).unwrap()
+        }
+        other => panic!("{other:?}"),
+    };
+    assert!(module.contains("Процедура "), "{module}");
+    assert_eq!(effects.events().len(), 1);
+    std::fs::remove_dir_all(root).unwrap();
+}

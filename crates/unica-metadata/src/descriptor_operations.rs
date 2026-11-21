@@ -53,9 +53,11 @@ pub enum PropertiesSite {
         source_kind: SourceSetKind,
     },
     CommentOnly(NodeKind),
+    ExternalDataSource(NodeKind),
     CatalogOwner,
     DocumentNumerator,
     FunctionalOption,
+    CommonCommand,
     Role,
     WSReference,
     Subsystem,
@@ -171,6 +173,8 @@ pub enum DescriptorPropertyKind {
     Parts,
     /// A set of distinct values of the property's closed enumeration.
     List,
+    /// Ordered references to registered objects of the property's target kinds.
+    ReferenceList,
 }
 
 macro_rules! descriptor_properties {
@@ -212,7 +216,7 @@ macro_rules! descriptor_properties {
                     PropertiesSite::Configuration { extension, line } => {
                         self.on_root(extension) && !line_lacks(line, self.names()[0], None)
                     }
-                    PropertiesSite::Metadata { .. } | PropertiesSite::CatalogOwner => false,
+                    PropertiesSite::Metadata { .. } | PropertiesSite::CatalogOwner | PropertiesSite::ExternalDataSource(_) => false,
                     PropertiesSite::FormDescriptor { common, extension, line } => {
                         if extension {
                             self == Self::Comment
@@ -223,7 +227,7 @@ macro_rules! descriptor_properties {
                         }
                     }
                     PropertiesSite::DocumentNumerator => self == Self::Comment,
-                    PropertiesSite::CommentOnly(_) | PropertiesSite::Language => self == Self::Comment,
+                    PropertiesSite::CommentOnly(_) | PropertiesSite::Language | PropertiesSite::CommonCommand => self == Self::Comment,
                     PropertiesSite::FunctionalOption => matches!(self, Self::Location | Self::PrivilegedGetMode | Self::Comment),
                     PropertiesSite::StyleItem | PropertiesSite::PaletteColor | PropertiesSite::Queue => self == Self::Comment,
                     PropertiesSite::WSReference => matches!(self, Self::LocationUrl | Self::Comment),
@@ -279,10 +283,17 @@ descriptor_properties!(
     DefaultExtensionPropertyCheckAction => ("DefaultExtensionPropertyCheckAction", "defaultExtensionPropertyCheckAction", Enum, false, false, false, true),
     TypeReductionByConfigurationExtensionMode => ("TypeReductionByConfigurationExtensionMode", "typeReductionByConfigurationExtensionMode", Enum, false, false, false, true),
     ActionOnExtendedConfigurationObjectsMissing => ("ActionOnExtendedConfigurationObjectsMissing", "actionOnExtendedConfigurationObjectsMissing", Parts, false, false, false, true),
+    AdditionalFullTextSearchDictionaries => ("AdditionalFullTextSearchDictionaries", "additionalFullTextSearchDictionaries", ReferenceList, false, false, true, false),
+    StandaloneConfigurationRestrictionRoles => ("StandaloneConfigurationRestrictionRoles", "standaloneConfigurationRestrictionRoles", ReferenceList, false, false, true, false),
     // Form descriptor properties (`PropertiesSite::FormDescriptor`).
     UsePurposes => ("UsePurposes", "usePurposes", List, false, false, false, false),
     UseInInterfaceCompatibilityMode => ("UseInInterfaceCompatibilityMode", "useInInterfaceCompatibilityMode", Enum, false, false, false, false),
 );
+
+pub const CONFIGURATION_REFERENCE_LISTS: &[DescriptorProperty] = &[
+    DescriptorProperty::AdditionalFullTextSearchDictionaries,
+    DescriptorProperty::StandaloneConfigurationRestrictionRoles,
+];
 
 /// The member kind of a form descriptor in the line tables.
 const fn form_member(common: bool) -> &'static str {
@@ -309,6 +320,16 @@ pub const CONFIGURATION_LOCALIZED_PROPERTIES: &[(&str, &str)] = &[
 ];
 
 impl DescriptorProperty {
+    pub const fn reference_kinds(self) -> &'static [NodeKind] {
+        match self {
+            Self::AdditionalFullTextSearchDictionaries => {
+                &[NodeKind::CommonTemplate, NodeKind::Constant]
+            }
+            Self::StandaloneConfigurationRestrictionRoles => &[NodeKind::Role],
+            _ => &[],
+        }
+    }
+
     /// Localized properties keep one value per language; the others are
     /// plain element text.
     pub const fn localized(self) -> bool {
@@ -481,6 +502,10 @@ impl PropertiesSite {
     /// the owner's write profile; a nested subsystem owns a descriptor of its
     /// own and the subsystem profile with it.
     pub fn from_address(at: &QualifiedAddress, source_kind: SourceSetKind) -> Option<Self> {
+        if let Some(kind) = crate::external_data_source::kind(at.segments()) {
+            return (source_kind == SourceSetKind::Configuration)
+                .then_some(Self::ExternalDataSource(kind));
+        }
         if let Some(owner) = at.form_metadata_owner() {
             // The workspace plans no metadata write in an external processor
             // or report, so their forms offer no property edit.
@@ -521,6 +546,9 @@ impl PropertiesSite {
             NodeKind::PaletteColor => Some(Self::PaletteColor),
             NodeKind::Queue => Some(Self::Queue),
             NodeKind::FunctionalOption => Some(Self::FunctionalOption),
+            NodeKind::CommonCommand if source_kind == SourceSetKind::Configuration => {
+                Some(Self::CommonCommand)
+            }
             NodeKind::Role => Some(Self::Role),
             NodeKind::Language => Some(Self::Language),
             NodeKind::WsReference => Some(Self::WSReference),
@@ -531,7 +559,6 @@ impl PropertiesSite {
             | NodeKind::FilterCriterion
             | NodeKind::SettingsStorage
             | NodeKind::CommonCommand
-            | NodeKind::CommandGroup
             | NodeKind::CommonTemplate
             | NodeKind::CommonPicture
             | NodeKind::IntegrationService
@@ -593,7 +620,23 @@ impl PropertiesSite {
                 json!({"type":"integer", "minimum":1}),
             );
         }
+        if self == Self::CommonCommand {
+            properties.insert(
+                "Group".into(),
+                json!({
+                    "type":"string",
+                    "anyOf":[
+                        {"enum":crate::member_read_profile::STANDARD_COMMAND_GROUPS},
+                        {"pattern":r"^CommandGroup\.[^.]+$"}
+                    ],
+                    "description":"A standard command group or the logical address of a registered CommandGroup in this configuration."
+                }),
+            );
+        }
         match self {
+            Self::ExternalDataSource(kind) => {
+                return crate::external_data_source::values_schema(kind)
+            }
             Self::DocumentNumerator => {
                 // The numerator's closed scalar profile plus the descriptor
                 // Comment that the Designer property palette also edits.
@@ -629,6 +672,7 @@ impl PropertiesSite {
             | Self::Queue
             | Self::WSReference
             | Self::FunctionalOption
+            | Self::CommonCommand
             | Self::Language
             | Self::Role
             | Self::Subsystem
@@ -668,6 +712,19 @@ impl PropertiesSite {
                         }
                         DescriptorPropertyKind::List => json!({"type":"array", "uniqueItems":true,
                             "items":{"type":"string", "enum":self.enum_values(field)}}),
+                        DescriptorPropertyKind::ReferenceList => {
+                            let kinds = field
+                                .reference_kinds()
+                                .iter()
+                                .map(|kind| kind.as_str())
+                                .collect::<Vec<_>>();
+                            json!({
+                                "type":"array",
+                                "uniqueItems":true,
+                                "items":{"type":"string", "minLength":1},
+                                "description": format!("Ordered addresses in this source set. Allowed kinds: {}. An empty array clears the list.", kinds.join(", ")),
+                            })
+                        }
                     };
                     let schema = if field == DescriptorProperty::Location {
                         let mut schema = schema;
@@ -821,7 +878,9 @@ impl PropertiesOperation {
                     PropertiesSite::FormDescriptor { common: true, .. } => "The existing common form descriptor at `<set>:CommonForm.Name.Metadata`.",
                     PropertiesSite::FormDescriptor { .. } => "The existing descriptor of a form of a metadata object at `<set>:Kind.Name.Form.Name.Metadata`.",
                     PropertiesSite::CatalogOwner => "The standard Owner attribute at `<set>:Catalog.Name.StandardAttribute.Owner` in a configuration source.",
+                    PropertiesSite::ExternalDataSource(_) => "The registered external data source object or member at its full logical address in an ordinary configuration.",
                     PropertiesSite::CommentOnly(_) => "The existing named root metadata descriptor at `<set>:Kind.Name`. This profile changes only Comment.",
+                    PropertiesSite::CommonCommand => "The named CommonCommand registered in a configuration source set. It may be created by an earlier operation in the same apply.",
                     _ => "The existing named top-level metadata object, role or subsystem, or a nested subsystem, at its full address. The address selects the property profile.",
                 },
                 effect: "Change the supplied descriptor properties, preserving identity, other properties, translations and companion files.",
@@ -833,6 +892,7 @@ impl PropertiesOperation {
                     PropertiesSite::StyleItem => "Color Value and optional string Comment/comment are accepted: #RRGGBB or an enumerated web/builtin style color. Empty Value, null and arbitrary XML are refused; empty Comment clears the comment, and simultaneous Comment/comment aliases are refused. Type, identity and bytes outside supplied Value/Comment stay. Font/Border, missing/damaged Value and unmodelled colors have no color write capability. The same semantic color is a byte-preserving no-op, including prefix aliases and RGB case. Arguments are checked before descriptor state. Preview writes nothing; execute only its saved executionToken.",
                     PropertiesSite::FormDescriptor { extension: false, .. } => "values is a nonempty object of Comment, IncludeHelpInContents, UsePurposes and, from platform 8.5.1, UseInInterfaceCompatibilityMode; use one spelling of each. Comment is an exact string, an empty one clears it. IncludeHelpInContents is a JSON boolean. UsePurposes is the whole set of distinct application purposes; an empty array clears it. FormType is read only: a form's type changes together with its content. An absent property is written in the place the platform writes it. The same value is a byte-preserving no-op. Name, synonym, identity, content and module stay. Preview writes nothing; execute only its saved executionToken.",
                     PropertiesSite::FormDescriptor { extension: true, .. } => "Comment/comment is an exact string; an empty string clears it. An extension changes no other property of its forms. Preview writes nothing; execute only its saved executionToken.",
+                    PropertiesSite::CommonCommand => "Group is a standard group or a reference written CommandGroup.Name, registered in this configuration. An empty Group is invalid. Comment/comment uses one spelling and an empty string clears it. Preview writes nothing; execute only its saved executionToken.",
                     _ => "values is a nonempty object. Use JSON booleans for flags. An empty string clears text where the property allows it; Location requires a nonempty storage reference. null is not omission. Use one spelling of each property, never both aliases. Argument errors are checked before descriptor state; valid arguments still require an existing readable descriptor. Preview writes nothing; execute only the saved execution token.",
                 },
                 example_args: match site {
@@ -840,6 +900,7 @@ impl PropertiesOperation {
                     PropertiesSite::DocumentNumerator => json!({"values":{"NumberLength":12,"CheckUnique":true}}),
                     PropertiesSite::WSReference => json!({"values":{"LocationURL":"https://example.invalid/service?wsdl"}}),
                     PropertiesSite::FunctionalOption => json!({"values":{"Location":"Constant.UseGoods","PrivilegedGetMode":true}}),
+                    PropertiesSite::CommonCommand => json!({"values":{"Group":"NavigationPanelOrdinary"}}),
                     PropertiesSite::Configuration { .. } => json!({"values":{"Version":"1.0.0.2"}}),
                     PropertiesSite::StyleItem => json!({"values":{"Value":"#F0F0F0"}}),
                     PropertiesSite::PaletteColor => json!({"values":{"Color":"#1A2B3C"}}),
@@ -849,7 +910,7 @@ impl PropertiesOperation {
                     _ => json!({"values":{"Comment":"Updated comment"}}),
                 },
                 help: match site {
-                    PropertiesSite::WSReference | PropertiesSite::Metadata { .. } | PropertiesSite::DocumentNumerator | PropertiesSite::CommentOnly(_) | PropertiesSite::FormDescriptor { .. } | PropertiesSite::FunctionalOption | PropertiesSite::StyleItem | PropertiesSite::PaletteColor | PropertiesSite::Queue | PropertiesSite::Language | PropertiesSite::CatalogOwner => "skills/meta-edit/SKILL.md",
+                    PropertiesSite::ExternalDataSource(_) | PropertiesSite::WSReference | PropertiesSite::Metadata { .. } | PropertiesSite::DocumentNumerator | PropertiesSite::CommentOnly(_) | PropertiesSite::FormDescriptor { .. } | PropertiesSite::FunctionalOption | PropertiesSite::CommonCommand | PropertiesSite::StyleItem | PropertiesSite::PaletteColor | PropertiesSite::Queue | PropertiesSite::Language | PropertiesSite::CatalogOwner => "skills/meta-edit/SKILL.md",
                     PropertiesSite::Role => "skills/role-edit/SKILL.md",
                     PropertiesSite::Subsystem => "skills/subsystem-edit/SKILL.md",
                     PropertiesSite::Configuration { .. } => "skills/cf-edit/SKILL.md",
@@ -1538,7 +1599,6 @@ mod tests {
             "FilterCriterion",
             "SettingsStorage",
             "CommonCommand",
-            "CommandGroup",
             "CommonForm",
             "CommonTemplate",
             "CommonPicture",
@@ -1553,9 +1613,8 @@ mod tests {
             } else {
                 format!("main:{kind}.Probe")
             };
-            // A form of an extension writes only its Comment; a
-            // configuration's form has a profile of its own.
-            let source = if kind == "CommonForm" {
+            // A form or common command of an extension keeps the Comment-only profile.
+            let source = if matches!(kind, "CommonForm" | "CommonCommand") {
                 SourceSetKind::Extension
             } else {
                 SourceSetKind::Configuration
@@ -1609,7 +1668,6 @@ mod tests {
             }
         }
         for at in [
-            "main:ExternalDataSource.Probe",
             "main:Interface.Probe",
             "main:CommonForm.Probe",
             "main:CommonForm.Probe.Metadata.Body",

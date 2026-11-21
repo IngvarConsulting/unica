@@ -1,5 +1,11 @@
 fn main() {
+    let _reporting = unica_error_reporting::init(unica_error_reporting::Component::Core);
     unica_daemon::run_platform_main(run);
+}
+
+fn exit(code: i32) -> ! {
+    unica_error_reporting::flush_before_exit();
+    std::process::exit(code);
 }
 
 fn run() {
@@ -9,30 +15,30 @@ fn run() {
     // starting MCP, whose silence a client would only notice by its timeout.
     // `unica mcp` names the default explicitly; tooling starts it that way.
     match args.get(1).map(String::as_str) {
-        Some("lsp") => std::process::exit(unica_lsp::run_stdio(
+        Some("lsp") => exit(unica_lsp::run_stdio(
             unica_daemon::interfaces::daemon::connect_user_daemon,
         )),
-        Some("dap") => std::process::exit(unica_dap::run_stdio(
+        Some("dap") => exit(unica_dap::run_stdio(
             unica_daemon::interfaces::workspace_debug_modules,
         )),
         Some("mcp") => {}
         Some(command) if !command.starts_with('-') => {
             eprintln!("unica: unknown command `{command}`; supported commands: mcp, lsp, dap");
-            std::process::exit(2);
+            exit(2);
         }
         _ => {}
     }
     if args.iter().any(|arg| arg == "--daemon") {
         if let Err(error) = unica_daemon::interfaces::daemon::run_from_args(&args) {
             eprintln!("{error}");
-            std::process::exit(1);
+            exit(1);
         }
         return;
     }
     if args.iter().any(|arg| arg == "--print-core-identity") {
         if let Err(error) = unica_daemon::interfaces::daemon::print_core_identity() {
             eprintln!("{error}");
-            std::process::exit(1);
+            exit(1);
         }
         return;
     }
@@ -40,21 +46,21 @@ fn run() {
         if let Err(error) = unica_daemon::interfaces::daemon::print_capacity_report_from_args(&args)
         {
             eprintln!("{error}");
-            std::process::exit(1);
+            exit(1);
         }
         return;
     }
     if args.iter().any(|arg| arg == "--workspace-service") {
         if let Err(error) = unica_daemon::interfaces::workspace_service::run_from_args(&args) {
             eprintln!("{error}");
-            std::process::exit(1);
+            exit(1);
         }
         return;
     }
     if args.iter().any(|arg| arg == "--runtime-job-worker") {
         if let Err(error) = unica_daemon::interfaces::runtime_job_worker::run_from_args(&args) {
             eprintln!("{error}");
-            std::process::exit(1);
+            exit(1);
         }
         return;
     }
