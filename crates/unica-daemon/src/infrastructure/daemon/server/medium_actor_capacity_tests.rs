@@ -810,12 +810,32 @@ fn canonical_apply_and_view_use_the_registered_ninth_subsystem_level() {
         &at,
         serde_json::json!({"op":"props.set","args":{"values":{"Comment":"ninth"}}}),
     );
-    let details = submit_canonical(
-        &runtime,
-        root,
-        ToolIdentity::View,
-        serde_json::json!({"at":at}),
-    );
+    let view = |at: &str| {
+        submit_canonical(
+            &runtime,
+            root,
+            ToolIdentity::View,
+            serde_json::json!({"at":at}),
+        )
+    };
+    let branch_child = |branch: &str, expected: &str| {
+        let response = view(branch);
+        assert!(response.ok, "{branch}: {response:?}");
+        let data = response.data.unwrap();
+        assert_eq!(data["at"], branch);
+        let child = data["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["at"] == expected)
+            .unwrap_or_else(|| panic!("{branch}: missing {expected} in {data}"));
+        assert_eq!(child["kind"], "Subsystem");
+        child["at"].as_str().unwrap().to_owned()
+    };
+    let _ = branch_child("main:Subsystem", "main:Subsystem.Depth1");
+    let depth_eight_branch = at.strip_suffix(".Depth9").unwrap();
+    let leaf = branch_child(depth_eight_branch, &at);
+    let details = view(&leaf);
     assert!(details.ok, "{at}: {details:?}");
     let data = details.data.unwrap();
     assert_eq!(data["at"], at);
@@ -833,12 +853,7 @@ fn canonical_apply_and_view_use_the_registered_ninth_subsystem_level() {
         unica_workspace::test_support::tree_snapshot(&source),
         before
     );
-    let absent = submit_canonical(
-        &runtime,
-        root,
-        ToolIdentity::View,
-        serde_json::json!({"at":missing}),
-    );
+    let absent = view(&missing);
     assert!(!absent.ok, "{absent:?}");
     assert_eq!(absent.diagnostics[0]["code"], "not_found", "{absent:?}");
 }
