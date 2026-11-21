@@ -235,6 +235,45 @@ class AddressCoverageReportTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "must name an 8.3.27 Module role"):
             GENERATOR.merge_shards(self.root, shards, native_only=True)
 
+    def test_eds_module_requires_native_roundtrip_in_both_report_modes(self) -> None:
+        role = root_witness("main", "Module")
+        role["key"].update(
+            line="8.5.4",
+            owner_shape=[
+                {"kind": kind, "named": True, "role": None}
+                for kind in ("ExternalDataSource", "Cube", "DimensionTable")
+            ],
+            role="Object",
+        )
+        owner = "main:ExternalDataSource.Source.Cube.Sales.DimensionTable.Products"
+        role["witness"].update(
+            owner=owner, at=f"{owner}.Module.Object", level="roundtrip", test_case=METADATA_SHARD,
+        )
+        branch = {
+            **role,
+            "key": {**role["key"], "role": None},
+            "witness": {**role["witness"], "at": f"{owner}.Module", "level": "read"},
+        }
+        role_required = {**required_key(role), "requirement": {"kind": "roundtrip"}}
+        branch_required = {**required_key(branch), "requirement": {"kind": "read"}}
+        shard = GENERATOR.EDS_MODULE_KEYS_SHARD
+        self.write_shard(shard, role_required, branch_required)
+        shards = frozenset({shard, METADATA_SHARD})
+        for native_only in (False, True):
+            with self.subTest(native_only=native_only):
+                self.write_shard(METADATA_SHARD, branch, role)
+                rows = GENERATOR.merge_shards(self.root, shards, native_only=native_only)
+                self.assertEqual(len(rows), 2)
+
+                self.write_shard(METADATA_SHARD, branch)
+                with self.assertRaisesRegex(ValueError, r'(?s)"role":"Object".*expected roundtrip, found no native evidence'):
+                    GENERATOR.merge_shards(self.root, shards, native_only=native_only)
+
+                read_only = {**role, "witness": {**role["witness"], "level": "read"}}
+                self.write_shard(METADATA_SHARD, branch, read_only)
+                with self.assertRaisesRegex(ValueError, r'(?s)"role":"Object".*expected roundtrip, found read'):
+                    GENERATOR.merge_shards(self.root, shards, native_only=native_only)
+
     def test_module_role_cannot_declare_or_witness_absence(self) -> None:
         manager = manager_witness(MODULE_SHARD)
         absence = required_key(manager, introduced_in="8.5.1")

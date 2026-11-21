@@ -28,6 +28,8 @@ enum AddressEvidence<'a> {
 
 enum AddressRequirement {
     Address,
+    Read,
+    RoundTrip,
     IntroducedIn(PlatformLine),
 }
 
@@ -87,6 +89,8 @@ impl RequiredKeys {
         let key = address_key(source, owner, branch, role);
         let requirement = match requirement {
             AddressRequirement::Address => serde_json::json!({"kind": "address"}),
+            AddressRequirement::Read => serde_json::json!({"kind": "read"}),
+            AddressRequirement::RoundTrip => serde_json::json!({"kind": "roundtrip"}),
             AddressRequirement::IntroducedIn(since) => {
                 serde_json::json!({"kind": "introduced_in", "line": since.to_string()})
             }
@@ -991,6 +995,7 @@ fn native_metadata_address_table_matches_declared_and_observed_child_branches() 
         SourceSetKind::Configuration,
     );
     let mut required = RequiredKeys::new("required_native_metadata_child_keys.jsonl");
+    let mut required_eds = RequiredKeys::new("required_native_eds_module_keys.jsonl");
     println!("| Profile | Owner | Branch | Canonical address | Evidence |");
     println!("| --- | --- | --- | --- | --- |");
     let fixtures = [
@@ -1009,9 +1014,24 @@ fn native_metadata_address_table_matches_declared_and_observed_child_branches() 
         let profile = PlatformProfile::for_line_or_base(source_profile.semantic_line());
         let registrations = root_registrations(&source, xml);
         record_required_metadata_children(&source, xml, profile, &registrations, &mut required);
+        for (owner, _, roles) in EDS_MODULE_OWNERS {
+            let owner = QualifiedAddress::parse(owner).unwrap();
+            let source = (line, SourceSetKind::Configuration);
+            required_eds.record(source, &owner, "Module", None, AddressRequirement::Read);
+            for &role in roles {
+                required_eds.record(
+                    source,
+                    &owner,
+                    "Module",
+                    Some(role),
+                    AddressRequirement::RoundTrip,
+                );
+            }
+        }
         (source, xml, profile, registrations)
     });
     required.finish();
+    required_eds.finish();
     for (source, xml, profile, registrations) in fixtures {
         let line = profile.line();
         let cancellation = CancellationToken::new();
@@ -1060,7 +1080,7 @@ fn native_metadata_address_table_matches_declared_and_observed_child_branches() 
                 );
             }
         }
-        check_eds_module_rows(&authority, &source, &cancellation);
+        check_eds_module_rows(&authority, &source, &cancellation, &mut evidence);
     }
     evidence.finish();
 }
@@ -2012,17 +2032,31 @@ fn check_native_command_and_bound_events(evidence: &mut EvidenceRows) {
     }
 }
 
+const EDS_MODULE_OWNERS: [(&str, &str, &[&str]); 3] = [
+    (
+        "main:ExternalDataSource.AllKindsExternalSource.Table.Items",
+        "ExternalDataSources/AllKindsExternalSource/Tables/Items",
+        &["Manager", "Object", "RecordSet"],
+    ),
+    (
+        "main:ExternalDataSource.AllKindsExternalSource.Cube.Sales",
+        "ExternalDataSources/AllKindsExternalSource/Cubes/Sales",
+        &["Manager", "RecordSet"],
+    ),
+    (
+        "main:ExternalDataSource.AllKindsExternalSource.Cube.Sales.DimensionTable.Products",
+        "ExternalDataSources/AllKindsExternalSource/Cubes/Sales/DimensionTables/Products",
+        &["Manager", "Object"],
+    ),
+];
+
 fn check_eds_module_rows(
     authority: &LogicalViewReadAuthority<'_>,
     source: &Path,
     cancellation: &CancellationToken,
+    evidence: &mut EvidenceRows,
 ) {
-    let root_branch = "main:ExternalDataSource";
-    let owners = addresses(&read(authority, root_branch), "items");
-    let owner = owners
-        .get("main:ExternalDataSource.AllKindsExternalSource")
-        .unwrap();
-    let branches = addresses(&read(authority, owner), "branches");
+    let line = authority.platform_profile().line();
     let root =
         unica_workspace::read::open_source_directory(&source.canonicalize().unwrap()).unwrap();
     let find_sources = [LayoutFindSource::new(
@@ -2031,47 +2065,48 @@ fn check_eds_module_rows(
         &root,
     )];
     let finder = WorkspaceFindDirectoryBuilder::default();
-    for (branch, name, role, native_path) in [
-        (
-            "Table",
-            "Items",
-            "Manager",
-            "ExternalDataSources/AllKindsExternalSource/Tables/Items/Ext/ManagerModule.bsl",
-        ),
-        (
-            "Cube",
-            "Sales",
-            "RecordSet",
-            "ExternalDataSources/AllKindsExternalSource/Cubes/Sales/Ext/RecordSetModule.bsl",
-        ),
-    ] {
-        let collection = format!("{owner}.{branch}");
-        assert!(branches.contains(&collection));
-        let items = addresses(&read(authority, &collection), "items");
-        let item = items.get(&format!("{collection}.{name}")).unwrap();
-        let modules = format!("{item}.Module");
-        assert!(addresses(&read(authority, item), "branches").contains(&modules));
-        let items = addresses(&read(authority, &modules), "items");
-        let module = items.get(&format!("{modules}.{role}")).unwrap();
-        read(authority, &format!("{module}.Body"));
-
-        let at = QualifiedAddress::parse(module).unwrap();
-        let path = authority.existing_export_path(&at, None).unwrap();
-        assert_eq!(path, native_path);
-        let document = finder
-            .locate_path(
-                &find_sources,
-                &path,
-                ProviderDeadline::no_deadline(),
-                cancellation,
-            )
-            .unwrap()
-            .unwrap();
-        assert_eq!(document.at(), module.as_str());
-        println!(
-            "| {} | {item} | Module.{role} | {module} | native owner and {branch}; file round-trip |",
-            authority.platform_profile().id()
+    for (owner, directory, roles) in EDS_MODULE_OWNERS {
+        let branch = format!("{owner}.Module");
+        let expected = roles
+            .iter()
+            .map(|role| format!("{branch}.{role}"))
+            .collect();
+        check_native_branch(authority, &read(authority, owner), &branch, &expected);
+        evidence.record(
+            line,
+            owner,
+            "Module",
+            None,
+            &fixture_origin(&source.join(format!("{directory}.xml"))),
+            AddressEvidence::Read(&branch),
         );
+
+        for &role in roles {
+            let module = format!("{branch}.{role}");
+            read(authority, &format!("{module}.Body"));
+            let at = QualifiedAddress::parse(&module).unwrap();
+            let path = authority.existing_export_path(&at, None).unwrap();
+            let native_path = format!("{directory}/Ext/{role}Module.bsl");
+            assert_eq!(path, native_path, "{line}: {module}");
+            let document = finder
+                .locate_path(
+                    &find_sources,
+                    &native_path,
+                    ProviderDeadline::no_deadline(),
+                    cancellation,
+                )
+                .unwrap()
+                .unwrap();
+            assert_eq!(document.at(), module.as_str(), "{line}: {native_path}");
+            evidence.record(
+                line,
+                owner,
+                "Module",
+                Some(role),
+                &fixture_origin(&source.join(&native_path)),
+                AddressEvidence::RoundTrip(&module),
+            );
+        }
     }
 }
 

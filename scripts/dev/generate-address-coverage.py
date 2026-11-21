@@ -18,11 +18,12 @@ EMITTER_ENV = "UNICA_484_ADDRESS_JSONL_DIR"
 SCHEMA_VERSION = 1
 EXTENSION_LANGUAGE_SHARD = "native_extension_root_language_matches_registration"
 EXTERNAL_ROOT_SHARD = "native_external_root_descriptors_match_published_addresses"
+METADATA_SHARD = "native_metadata_address_table_matches_declared_and_observed_child_branches"
 NATIVE_SHARDS = frozenset({
     "native_configuration_root_address_table_matches_published_branches",
     "native_ordinary_interface_has_a_registration_only_root_branch",
     "native_recalculation_module_address_table_matches_registered_owner",
-    "native_metadata_address_table_matches_declared_and_observed_child_branches",
+    METADATA_SHARD,
     "native_form_and_template_addresses_follow_text_registrations",
     "native_registered_modules_match_profile_and_physical_paths",
     EXTENSION_LANGUAGE_SHARD,
@@ -33,8 +34,10 @@ ROOT_KEYS_SHARD = "required_configuration_root_keys"
 METADATA_CHILD_KEYS_SHARD = "required_native_metadata_child_keys"
 EXTERNAL_CHILD_KEYS_SHARD = "required_native_external_child_keys"
 MODULE_ROLE_KEYS_SHARD = "required_configuration_module_role_keys"
+EDS_MODULE_KEYS_SHARD = "required_native_eds_module_keys"
 REQUIRED_KEY_SHARDS = frozenset({
     ROOT_KEYS_SHARD, METADATA_CHILD_KEYS_SHARD, EXTERNAL_CHILD_KEYS_SHARD, MODULE_ROLE_KEYS_SHARD,
+    EDS_MODULE_KEYS_SHARD,
 })
 NATIVE_SCOPE = (
     "Configuration source sets and native Language registrations in extension source sets "
@@ -44,7 +47,8 @@ NATIVE_SCOPE = (
     "records the native XML export line. Read checks use the actual workspace profile selector "
     "and establish neither write support nor a match with the runtime profile."
     " The native report checks declaration closure for configuration roots and top-level metadata children."
-    " It requires external Form, Template, and Command collections witnessed against native XML."
+    " It requires external Form, Template, and Command collections witnessed against native XML,"
+    " and ExternalDataSource module collections and round-trips for the native files on each line."
 )
 DAEMON_SCOPE = (
     "Read witnesses from the selected document and BSL coverage test of unica-daemon, "
@@ -178,6 +182,23 @@ def validate_required_record(record: object, shard: str) -> None:
     shape = key["owner_shape"]
     requirement = record["requirement"]
     configuration = [{"kind": "Configuration", "named": False, "role": None}]
+    if shard == EDS_MODULE_KEYS_SHARD:
+        owner_kinds = tuple(segment["kind"] for segment in shape)
+        if (
+            key["branch"] != "Module"
+            or owner_kinds not in {
+                ("ExternalDataSource", "Table"),
+                ("ExternalDataSource", "Cube"),
+                ("ExternalDataSource", "Cube", "DimensionTable"),
+            }
+            or any(not segment["named"] or segment["role"] is not None for segment in shape)
+        ):
+            raise ValueError("required EDS module key must name a table, cube or dimension table owner")
+        exact_fields(requirement, {"kind"}, "EDS module requirement")
+        expected = "read" if key["role"] is None else "roundtrip"
+        if requirement["kind"] != expected:
+            raise ValueError(f"required EDS module key needs {expected} evidence")
+        return
     if shard == MODULE_ROLE_KEYS_SHARD:
         if key["line"] != "8.3.27" or key["branch"] != "Module" or key["role"] is None:
             raise ValueError("required module role key must name an 8.3.27 Module role")
@@ -238,9 +259,22 @@ def canonical_json(value: object) -> str:
 def check_required_keys(requirements: dict, groups: dict, *, native_only: bool) -> None:
     missing = {"address": 0, "introduced_in": 0}
     missing_module_roles = []
+    missing_eds_modules = []
     diagnostics = []
     for key, (shard, record) in sorted(requirements.items()):
         witnesses = groups.get(key, {}).get("witnesses", ())
+        if shard == EDS_MODULE_KEYS_SHARD:
+            level = record["requirement"]["kind"]
+            levels = {
+                witness["level"] for witness in witnesses
+                if witness["test_case"] == METADATA_SHARD and witness["reason"] is None
+            }
+            if level not in levels:
+                found = ", ".join(sorted(levels)) if levels else "no native evidence"
+                missing_eds_modules.append(
+                    f"{canonical_json(record['key'])}: expected {level}, found {found}",
+                )
+            continue
         if shard == MODULE_ROLE_KEYS_SHARD:
             if not native_only and not any(witness["reason"] is None for witness in witnesses):
                 missing_module_roles.append(canonical_json(record["key"]))
@@ -259,6 +293,8 @@ def check_required_keys(requirements: dict, groups: dict, *, native_only: bool) 
             f"missing required native coverage: {missing['address']} address, "
             f"{missing['introduced_in']} introduced_in\n" + "\n".join(diagnostics)
         )
+    if missing_eds_modules:
+        errors.append("missing required native EDS module coverage:\n" + "\n".join(missing_eds_modules))
     if missing_module_roles:
         errors.append(
             f"missing required configuration module roles: {len(missing_module_roles)} address\n"
