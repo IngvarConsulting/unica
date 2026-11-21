@@ -874,6 +874,34 @@ fn a_quarantined_snapshot_can_be_cleaned_by_repeating_drop_with_its_id() {
 
 /// rule: INV.RUNTIME.FETCH-LEAVES-THE-WORKING-COPY
 #[test]
+fn an_unreadable_source_set_does_not_prune_ready_snapshots() {
+    let workspace = workspace();
+    let root = workspace.path();
+    fs::rename(root.join("main"), root.join("saved-source")).unwrap();
+    fs::write(root.join("main"), "a file in place of the source directory").unwrap();
+    let storage = SnapshotStorage::open(root, true).unwrap().unwrap();
+    let ids = ["1", "2", "3", "4"].map(|digit| digit.repeat(32));
+    for id in &ids {
+        store_snapshot_fixture(&storage, id);
+    }
+    let runner = ProtocolRunner::new(Script::Exports);
+
+    let result = run(root, &prepared(root, false), &runner);
+
+    assert!(!result.ok, "{result:?}");
+    assert!(
+        result
+            .summary
+            .contains("fetch could not read main of the source set"),
+        "{result:?}"
+    );
+    assert!(runner.args.lock().unwrap().is_empty());
+    assert_eq!(snapshots(root), ids);
+    assert_eq!(storage.owned_snapshots().unwrap().len(), ids.len());
+}
+
+/// rule: INV.RUNTIME.FETCH-LEAVES-THE-WORKING-COPY
+#[test]
 fn a_rejected_fetch_keeps_the_earlier_cleanup_warning() {
     let workspace = workspace();
     let root = workspace.path();

@@ -431,6 +431,12 @@ pub(super) fn execute_with_tool(
         Ok(lock) => lock,
         Err(error) => return lock_refusal(FETCH, error),
     };
+    // Если набор невозможно прочитать, прежние снимки не удаляются.
+    // Отпечаток снимается до выгрузки: правка набора во время неё — уже расхождение.
+    let fingerprint = match source_fingerprint(&root, &directory, &cancellation) {
+        Ok(fingerprint) => fingerprint,
+        Err(result) => return result,
+    };
     let mut warnings = match prune_snapshots(&root, &storage, SNAPSHOTS_KEPT - 1) {
         Ok(warnings) => warnings,
         Err(error) => return storage_refusal(FETCH, error),
@@ -456,23 +462,17 @@ pub(super) fn execute_with_tool(
             return finish_failed_fetch(result, &storage, &id, &stage, None, warnings, &root);
         }
     };
-    // Отпечаток снимается до выгрузки: правка набора во время неё — уже
-    // расхождение с тем, что видел снимок.
-    let outcome = source_fingerprint(&root, &directory, &cancellation).and_then(|fingerprint| {
-        exchange(
-            prepared,
-            &root,
-            &source_set,
-            &directory,
-            &stage,
-            runner,
-            &cancellation,
-            tool,
-        )
-        .map(|envelope| (fingerprint, envelope))
-    });
-    let (fingerprint, envelope) = match outcome {
-        Ok(snapshot) => snapshot,
+    let envelope = match exchange(
+        prepared,
+        &root,
+        &source_set,
+        &directory,
+        &stage,
+        runner,
+        &cancellation,
+        tool,
+    ) {
+        Ok(envelope) => envelope,
         Err(result) => {
             return finish_failed_fetch(result, &storage, &id, &stage, None, warnings, &root);
         }
