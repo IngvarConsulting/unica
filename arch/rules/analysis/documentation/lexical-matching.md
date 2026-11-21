@@ -1,6 +1,5 @@
 ---
 id: INV.APP.DOCUMENTATION-LEXICAL-MATCHING
-gap: https://github.com/IngvarConsulting/unica/issues/953
 ---
 
 # Поиск справки сопоставляет слова запроса, а не только целую подстроку

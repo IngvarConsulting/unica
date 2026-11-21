@@ -400,6 +400,34 @@ mod tests {
 
     /// rule: INV.APP.DOCUMENTATION-LEXICAL-MATCHING
     #[test]
+    fn another_matching_word_improves_an_otherwise_equal_hit() {
+        let index = corpus(&[
+            ("Page", "orbit comet"),
+            ("Page", "orbit planet"),
+            ("Page", "distant planet"),
+        ]);
+        let hits = index.query("orbit comet", 5, &[]);
+        assert_eq!(
+            hits.iter().map(|hit| hit.document).collect::<Vec<_>>(),
+            [0, 1],
+            "the partial match remains visible; the unrelated page does not"
+        );
+        assert!(hits[0].score > hits[1].score, "{hits:?}");
+    }
+
+    /// rule: INV.APP.DOCUMENTATION-LEXICAL-MATCHING
+    #[test]
+    fn a_rare_title_word_can_outrank_full_body_coverage() {
+        let mut pages = vec![("Quasar", "spectrum"), ("Guide", "quasar archive file")];
+        pages.extend([("Listing", "archive file"); 8]);
+        let hits = corpus(&pages).query("quasar archive file", pages.len(), &[]);
+        let full = hits.iter().find(|hit| hit.document == 1).unwrap();
+        assert_eq!(hits[0].document, 0, "{hits:?}");
+        assert!(hits[0].score > full.score, "{hits:?}");
+    }
+
+    /// rule: INV.APP.DOCUMENTATION-LEXICAL-MATCHING
+    #[test]
     fn shorter_page_outranks_long_enumeration_for_equal_field() {
         let long_enumeration = "Свернуть окно раздел приложение команда список действие \
              панель клавиша сочетание переход навигация закладка история буфер обмена \
