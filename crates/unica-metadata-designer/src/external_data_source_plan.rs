@@ -283,9 +283,7 @@ pub(crate) fn dimension_type(
         .filter_map(|segment| segment.name())
         .collect::<Vec<_>>()
         .join(".");
-    Ok(format!(
-        "cfg:ExternalDataSourceCubeDimensionTableRef.{names}"
-    ))
+    Ok(format!("ExternalDataSourceCubeDimensionTableRef.{names}"))
 }
 
 pub(crate) fn add(
@@ -320,9 +318,6 @@ pub(crate) fn add(
     } else {
         ChildStorage::Inline
     };
-    let fragment = seed::emit(item, name, &generated_name, &mut || {
-        uuid::Uuid::new_v4().to_string()
-    });
     let (text, form) = PrefixForm::normalize(located.descriptor.text(site)?)
         .map_err(|error| damaged(site, error))?;
     let document = parse(&text, site)?;
@@ -340,6 +335,11 @@ pub(crate) fn add(
             format!("{address} already exists"),
         ));
     }
+    let children = direct(owner_node, "ChildObjects").map_err(|error| damaged(site, error))?;
+    let namespaces = xml::TypeNamespaces::for_scope(Some(children));
+    let fragment = seed::emit(item, name, &generated_name, &namespaces, &mut || {
+        uuid::Uuid::new_v4().to_string()
+    });
     let registration = if separate {
         xml::physical_reference(kind, name)
     } else {

@@ -5,6 +5,10 @@ const MD: &str = "http://v8.1c.ru/8.3/MDClasses";
 /// The descriptor with every MDClasses element under `md:` and no default
 /// namespace; other namespaces keep their prefixes.
 fn prefixed(source: &str) -> String {
+    prefixed_as(source, "md")
+}
+
+fn prefixed_as(source: &str, prefix: &str) -> String {
     let body = source.trim_start_matches('\u{feff}');
     let offset = source.len() - body.len();
     let Ok(doc) = roxmltree::Document::parse(body) else {
@@ -27,9 +31,13 @@ fn prefixed(source: &str) -> String {
     inserts.sort_unstable_by(|a, b| b.cmp(a));
     let mut text = source.to_string();
     for at in inserts {
-        text.insert_str(at, "md:");
+        text.insert_str(at, &format!("{prefix}:"));
     }
-    text.replacen(&format!("xmlns=\"{MD}\""), &format!("xmlns:md=\"{MD}\""), 1)
+    text.replacen(
+        &format!("xmlns=\"{MD}\""),
+        &format!("xmlns:{prefix}=\"{MD}\""),
+        1,
+    )
 }
 
 fn unprefixed(source: &str) -> String {
@@ -521,5 +529,140 @@ fn root_comment_edits_preserve_a_foreign_default_namespace_in_either_declaration
         assert_eq!(std::fs::read_to_string(&path).unwrap(), expected);
         publish(&runtime, &fixture, request);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), expected);
+    }
+}
+
+/// rule: INV.SOURCE.METADATA-NODE-PROPERTIES
+#[test]
+fn medium_external_source_writes_keep_namespaces_when_the_owner_uses_a_value_prefix() {
+    const CORE: &str = "http://v8.1c.ru/8.1/data/core";
+    const XS: &str = "http://www.w3.org/2001/XMLSchema";
+    const XSI: &str = "http://www.w3.org/2001/XMLSchema-instance";
+    const CONFIG: &str = "http://v8.1c.ru/8.1/data/enterprise/current-config";
+    const ROOT: &str = "main:ExternalDataSource.Store";
+    const TABLE: &str = "main:ExternalDataSource.Store.Table.Items";
+    const CUBE: &str = "main:ExternalDataSource.Store.Cube.Sales";
+
+    fn expanded<'a>(context: roxmltree::Node<'a, '_>, value: &'a str) -> (&'a str, &'a str) {
+        let (prefix, local) = value.split_once(':').expect("emitted value is a QName");
+        (context.lookup_namespace_uri(Some(prefix)).unwrap(), local)
+    }
+
+    fn with_collision(path: &Path, prefix: &str) {
+        let source = std::fs::read_to_string(path).unwrap();
+        let original_palette = source
+            .replace(&format!("xmlns:{prefix}="), &format!("xmlns:old_{prefix}="))
+            .replace(&format!("{prefix}:"), &format!("old_{prefix}:"));
+        let changed = prefixed_as(&original_palette, prefix);
+        assert!(changed.contains(&format!("<{prefix}:MetaDataObject")));
+        std::fs::write(path, changed.as_bytes()).unwrap();
+    }
+
+    for prefix in ["v8", "xs", "xsi", "cfg"] {
+        let fixture = Fixture::blank();
+        let runtime = runtime();
+        publish(
+            &runtime,
+            &fixture,
+            json!({"at":"main:Configuration","ops":[
+                {"op":"object.create","args":{"values":{"kind":"ExternalDataSource","name":"Store"}}},
+                {"op":"table.add","args":{"at":ROOT,"items":[
+                    {"name":"Items","tableType":"Table","nameInDataSource":"items"}
+                ]}},
+                {"op":"cube.add","args":{"at":ROOT,"items":[{"name":"Sales","nameInDataSource":"sales"}]}},
+                {"op":"dimensionTable.add","args":{"at":CUBE,"items":[
+                    {"name":"Products","nameInDataSource":"products"}
+                ]}}
+            ]}),
+        );
+        let descriptor = fixture
+            .source
+            .join("ExternalDataSources/Store/Tables/Items.xml");
+        let cube = fixture
+            .source
+            .join("ExternalDataSources/Store/Cubes/Sales.xml");
+        with_collision(&descriptor, prefix);
+        with_collision(&cube, prefix);
+        let parent = fixture.source.join("ExternalDataSources/Store.xml");
+        let parent_before = std::fs::read(&parent).unwrap();
+
+        publish(
+            &runtime,
+            &fixture,
+            json!({"at":ROOT,"ops":[
+                {"op":"field.add","args":{"at":TABLE,"items":[
+                    {"name":"Code","nameInDataSource":"code","type":{"variants":[
+                        {"kind":"string","length":10,"allowedLength":"variable"}
+                    ]}}
+                ]}},
+                {"op":"dimension.add","args":{"at":CUBE,"items":[
+                    {"name":"Product","type":"main:ExternalDataSource.Store.Cube.Sales.DimensionTable.Products"}
+                ]}}
+            ]}),
+        );
+
+        let text = std::fs::read_to_string(&descriptor).unwrap();
+        let doc = roxmltree::Document::parse(text.trim_start_matches('\u{feff}')).unwrap();
+        let field = doc
+            .descendants()
+            .find(|node| node.has_tag_name((MD, "Field")))
+            .unwrap();
+        assert!(doc.input_text()[field.range()].starts_with(&format!("<{prefix}:Field")));
+        let fill = field
+            .descendants()
+            .find(|node| node.has_tag_name((MD, "FillValue")))
+            .unwrap();
+        assert_eq!(
+            expanded(fill, fill.attribute((XSI, "type")).unwrap()),
+            (XS, "string")
+        );
+        let ty = field
+            .descendants()
+            .find(|node| node.has_tag_name((CORE, "Type")))
+            .unwrap();
+        assert_eq!(expanded(ty, ty.text().unwrap()), (XS, "string"));
+
+        let cube_text = std::fs::read_to_string(&cube).unwrap();
+        let cube_doc =
+            roxmltree::Document::parse(cube_text.trim_start_matches('\u{feff}')).unwrap();
+        let dim = cube_doc
+            .descendants()
+            .find(|node| node.has_tag_name((MD, "Dimension")))
+            .unwrap();
+        assert!(cube_doc.input_text()[dim.range()].starts_with(&format!("<{prefix}:Dimension")));
+        let ty = dim
+            .descendants()
+            .find(|node| node.has_tag_name((CORE, "Type")))
+            .unwrap();
+        assert_eq!(
+            expanded(ty, ty.text().unwrap()),
+            (
+                CONFIG,
+                "ExternalDataSourceCubeDimensionTableRef.Store.Sales.Products"
+            )
+        );
+
+        let edit = json!({"at":TABLE,"ops":[{"op":"props.set","args":{
+            "at":format!("{TABLE}.Field.Code"),"values":{"Type":{"variants":[
+                {"kind":"string","length":20,"allowedLength":"variable"}
+            ]}}
+        }}]});
+        publish(&runtime, &fixture, edit.clone());
+        let edited = std::fs::read_to_string(&descriptor).unwrap();
+        let doc = roxmltree::Document::parse(edited.trim_start_matches('\u{feff}')).unwrap();
+        let length = doc
+            .descendants()
+            .find(|node| node.has_tag_name((CORE, "Length")))
+            .unwrap();
+        assert_eq!(length.text(), Some("20"));
+        let ty = doc
+            .descendants()
+            .find(|node| node.has_tag_name((CORE, "Type")))
+            .unwrap();
+        assert_eq!(expanded(ty, ty.text().unwrap()), (XS, "string"));
+        publish(&runtime, &fixture, edit);
+        assert_eq!(std::fs::read_to_string(&descriptor).unwrap(), edited);
+        assert_eq!(std::fs::read_to_string(&cube).unwrap(), cube_text);
+        assert_eq!(std::fs::read(&parent).unwrap(), parent_before);
     }
 }

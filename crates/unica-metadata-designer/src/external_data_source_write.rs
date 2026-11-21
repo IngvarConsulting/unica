@@ -9,25 +9,84 @@ use unica_xml_format::text::escape_xml;
 
 use crate::descriptor_comment::{descriptor_properties, direct};
 use crate::edit::meta_edit_line_indent;
-use crate::predefined::opening_tag_end;
+use crate::predefined::{opening_tag_end, render_type, FragmentXmlContext};
 
 const CORE: &str = "http://v8.1c.ru/8.1/data/core";
 const XML_SCHEMA: &str = "http://www.w3.org/2001/XMLSchema";
 const CONFIG: &str = "http://v8.1c.ru/8.1/data/enterprise/current-config";
 
-fn canonical_type_shell<'a>(
-    property: Node<'_, '_>,
-    opening: &'a str,
-    spelling: &'a str,
-) -> (String, &'a str) {
-    let bindings = [("v8", CORE), ("xs", XML_SCHEMA), ("cfg", CONFIG)];
-    if bindings
-        .iter()
-        .all(|(prefix, namespace)| property.lookup_namespace_uri(Some(prefix)) == Some(*namespace))
-    {
-        (opening.to_string(), spelling)
-    } else {
-        (format!("<Type xmlns=\"{MD_CLASSES_NS}\" xmlns:v8=\"{CORE}\" xmlns:xs=\"{XML_SCHEMA}\" xmlns:cfg=\"{CONFIG}\""), "Type")
+const XML_INSTANCE: &str = "http://www.w3.org/2001/XMLSchema-instance";
+
+/// Bindings used by the generated fragment. Fixed names stay canonical when
+/// available, but never shadow the owner's MDClasses prefix.
+pub(crate) struct TypeNamespaces {
+    bindings: [(String, &'static str); 4],
+}
+
+impl TypeNamespaces {
+    pub(crate) fn for_scope(scope: Option<Node<'_, '_>>) -> Self {
+        let mut context = scope.map_or_else(
+            || FragmentXmlContext::from_namespaces(std::iter::empty()),
+            FragmentXmlContext::for_node,
+        );
+        let canonical = [
+            ("v8", CORE),
+            ("xs", XML_SCHEMA),
+            ("xsi", XML_INSTANCE),
+            ("cfg", CONFIG),
+        ];
+        // An alias chosen for one namespace must not be a canonical name
+        // that the type renderer will process for a different namespace.
+        context
+            .reserved_generated_prefixes
+            .extend(canonical.map(|(prefix, _)| prefix.to_string()));
+        let bindings = canonical.map(|(prefix, namespace)| {
+            let selected = if context
+                .in_scope_prefixes
+                .get(prefix)
+                .is_some_and(|bound| bound != namespace)
+            {
+                context.generated_prefix(namespace, prefix).0
+            } else {
+                prefix.to_string()
+            };
+            (selected, namespace)
+        });
+        Self { bindings }
+    }
+
+    pub(crate) fn declarations(&self, scope: Option<Node<'_, '_>>) -> String {
+        let mut output = String::new();
+        for (prefix, namespace) in &self.bindings {
+            if scope.is_none_or(|node| node.lookup_namespace_uri(Some(prefix)) != Some(*namespace))
+            {
+                output.push_str(&format!(" xmlns:{prefix}=\"{namespace}\""));
+            }
+        }
+        output
+    }
+
+    pub(crate) fn xsi(&self) -> &str {
+        &self.bindings[2].0
+    }
+
+    pub(crate) fn xs(&self) -> &str {
+        &self.bindings[1].0
+    }
+
+    pub(crate) fn type_xml(&self, value: &MetadataType, indent: &str, eol: &str) -> String {
+        let context = FragmentXmlContext::from_namespaces(
+            self.bindings
+                .iter()
+                .map(|(prefix, namespace)| (prefix.as_str(), *namespace)),
+        );
+        render_type(value, indent, eol, &context)
+    }
+
+    pub(crate) fn dimension_type_xml(&self, local: &str) -> String {
+        let core = &self.bindings[0].0;
+        let config = &self.bindings[3].0;
+        format!("<{core}:Type>{config}:{}</{core}:Type>", escape_xml(local))
     }
 }
 
@@ -258,19 +317,17 @@ pub(crate) fn patch_property(
             if MetadataType::try_from(observed).as_ref().ok() == Some(value) {
                 return Ok(source.into());
             }
-            let (opening, spelling) = canonical_type_shell(property, opening, spelling);
-            let mut lines = Vec::new();
-            crate::xml_model::emit_meta_typed_value_type(&mut lines, &indent, value);
-            let body = lines
-                .iter()
-                .skip(1)
-                .take(lines.len().saturating_sub(2))
-                .cloned()
-                .collect::<Vec<_>>()
-                .join(eol);
-            format!("{opening}>{eol}{body}{eol}{indent}</{spelling}>")
+            let namespaces = TypeNamespaces::for_scope(Some(property));
+            let declarations = namespaces.declarations(Some(property));
+            let xml = namespaces.type_xml(value, &indent, eol);
+            let (head, tail) = xml.split_once(eol).ok_or("generated Type has no body")?;
+            let body = tail
+                .strip_suffix(&format!("{eol}{indent}</Type>"))
+                .ok_or("generated Type has no closing element")?;
+            debug_assert_eq!(head.trim_start(), "<Type>");
+            format!("{opening}{declarations}>{eol}{body}{eol}{indent}</{spelling}>")
         }
-        Property::DimensionType(wire) => {
+        Property::DimensionType(local_name) => {
             let items = property
                 .children()
                 .filter(Node::is_element)
@@ -292,14 +349,13 @@ pub(crate) fn patch_property(
             {
                 return Err("Dimension Type must be a reference to a dimension table".into());
             }
-            if wire.strip_prefix("cfg:") == Some(local.as_str()) {
+            if local_name == local {
                 return Ok(source.into());
             }
-            let (opening, spelling) = canonical_type_shell(property, opening, spelling);
-            format!(
-                "{opening}>{eol}{indent}\t<v8:Type>{}</v8:Type>{eol}{indent}</{spelling}>",
-                escape_xml(wire)
-            )
+            let namespaces = TypeNamespaces::for_scope(Some(property));
+            let declarations = namespaces.declarations(Some(property));
+            let element = namespaces.dimension_type_xml(local_name);
+            format!("{opening}{declarations}>{eol}{indent}\t{element}{eol}{indent}</{spelling}>")
         }
     };
     let mut updated = source.to_string();

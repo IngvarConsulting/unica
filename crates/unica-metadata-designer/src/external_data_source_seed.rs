@@ -6,6 +6,8 @@ use unica_metadata::{MetadataType, MetadataTypeVariant};
 use unica_source_designer::owner::MD_CLASSES_NS;
 use unica_xml_format::text::escape_xml;
 
+use crate::external_data_source_write::TypeNamespaces;
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum TableSource<'a> {
     Table(&'a str),
@@ -63,11 +65,13 @@ impl Seed<'_> {
     }
 }
 
-/// Namespace declarations owned by an inline child keep it canonical even in
-/// a descriptor whose surrounding elements have another spelling.
-const INLINE_BINDINGS: &str = r#"xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config""#;
-
-pub(crate) fn emit<F>(seed: Seed<'_>, name: &str, generated_name: &str, next_uuid: &mut F) -> String
+pub(crate) fn emit<F>(
+    seed: Seed<'_>,
+    name: &str,
+    generated_name: &str,
+    namespaces: &TypeNamespaces,
+    next_uuid: &mut F,
+) -> String
 where
     F: FnMut() -> String,
 {
@@ -77,7 +81,8 @@ where
     let open = if standalone {
         format!("<{kind} uuid=\"{uuid}\">")
     } else {
-        format!("<{kind} xmlns=\"{MD_CLASSES_NS}\" {INLINE_BINDINGS} uuid=\"{uuid}\">")
+        let declarations = namespaces.declarations(None);
+        format!("<{kind} xmlns=\"{MD_CLASSES_NS}\"{declarations} uuid=\"{uuid}\">")
     };
     let mut lines = vec![open];
     if standalone {
@@ -116,17 +121,19 @@ where
             source_name,
             field_type,
         } => {
-            write_type(&mut lines, field_type);
-            defaults(&mut lines, FIELD_DEFAULTS_BEFORE_FILL);
+            lines.push(namespaces.type_xml(field_type, "\t\t", "\n"));
+            inline_defaults(&mut lines, FIELD_DEFAULTS_BEFORE_FILL, namespaces);
+            let xsi = namespaces.xsi();
             let fill = if matches!(
                 field_type.variants.as_slice(),
                 [MetadataTypeVariant::String { .. }]
             ) {
-                r#"<FillValue xsi:type="xs:string"/>"#
+                let xs = namespaces.xs();
+                format!(r#"<FillValue {xsi}:type="{xs}:string"/>"#)
             } else {
-                r#"<FillValue xsi:nil="true"/>"#
+                format!(r#"<FillValue {xsi}:nil="true"/>"#)
             };
-            defaults(&mut lines, &[fill]);
+            defaults(&mut lines, &[&fill]);
             defaults(&mut lines, FIELD_DEFAULTS_AFTER_FILL);
             scalar(&mut lines, "NameInDataSource", source_name);
             defaults(
@@ -144,23 +151,23 @@ where
                 "ReturnValue",
                 if return_value { "true" } else { "false" },
             );
-            write_type(&mut lines, return_type);
+            lines.push(namespaces.type_xml(return_type, "\t\t", "\n"));
             scalar(&mut lines, "ExpressionInDataSource", expression);
         }
         Seed::Dimension { type_qname } => {
             lines.push("\t\t<Type>".into());
             lines.push(format!(
-                "\t\t\t<v8:Type>{}</v8:Type>",
-                escape_xml(type_qname)
+                "\t\t\t{}",
+                namespaces.dimension_type_xml(type_qname)
             ));
             lines.push("\t\t</Type>".into());
-            defaults(&mut lines, DIMENSION_DEFAULTS);
+            inline_defaults(&mut lines, DIMENSION_DEFAULTS, namespaces);
         }
         Seed::Resource {
             source_name,
             field_type,
         } => {
-            write_type(&mut lines, field_type);
+            lines.push(namespaces.type_xml(field_type, "\t\t", "\n"));
             defaults(&mut lines, RESOURCE_DEFAULTS);
             scalar(&mut lines, "NameInDataSource", source_name);
         }
@@ -186,8 +193,13 @@ pub(crate) fn standalone(fragment: &str, version: &str) -> Vec<u8> {
     bytes
 }
 
-fn write_type(lines: &mut Vec<String>, value: &MetadataType) {
-    crate::xml_model::emit_meta_typed_value_type(lines, "\t\t", value);
+fn inline_defaults(lines: &mut Vec<String>, values: &[&str], namespaces: &TypeNamespaces) {
+    let xsi_prefix = format!(" {}:", namespaces.xsi());
+    lines.extend(
+        values
+            .iter()
+            .map(|xml| format!("\t\t{}", xml.replace(" xsi:", &xsi_prefix))),
+    );
 }
 
 fn scalar(lines: &mut Vec<String>, tag: &str, value: &str) {
@@ -349,7 +361,11 @@ mod tests {
         let seed = Seed::Cube {
             source_name: "sales & costs",
         };
-        let xml = standalone(&emit(seed, "Sales", "Warehouse.Sales", &mut id), "2.22");
+        let namespaces = TypeNamespaces::for_scope(None);
+        let xml = standalone(
+            &emit(seed, "Sales", "Warehouse.Sales", &namespaces, &mut id),
+            "2.22",
+        );
         let text = std::str::from_utf8(&xml)
             .unwrap()
             .trim_start_matches('\u{feff}');
