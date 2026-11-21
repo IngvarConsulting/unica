@@ -712,6 +712,7 @@ fn real_typed_readers_cover_every_task14_profile_without_skipping() {
 /// branch, the descriptor under its English and Russian kind and its module
 /// (#3246).
 /// rule: INV.SOURCE.PLATFORM-CAPABILITY-EXISTENCE
+/// rule: CTR.SOURCE.METADATA-COLLECTION-ROW
 #[test]
 fn websocket_client_of_the_platform_export_is_read_by_its_layout() {
     for (format, export) in [
