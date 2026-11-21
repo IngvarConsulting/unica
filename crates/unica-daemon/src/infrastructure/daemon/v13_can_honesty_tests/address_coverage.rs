@@ -89,7 +89,7 @@ impl EvidenceRows {
                 json!({
                     "kind": segment.kind().as_str(),
                     "named": segment.name().is_some(),
-                    "role": (segment.kind() == NodeKind::Interface)
+                    "role": matches!(segment.kind(), NodeKind::Interface | NodeKind::Module)
                         .then_some(segment.name())
                         .flatten(),
                 })
@@ -888,6 +888,120 @@ fn check_native_subsystem_interface(
     }
 }
 
+fn check_module_variables_fixture(
+    runtime: &V5CanonicalInvocationRuntime,
+    fixture: &Fixture,
+    evidence: &mut EvidenceRows,
+) {
+    const OWNER: &str = "main:CommonModule.Probe";
+    const BRANCH: &str = "main:CommonModule.Probe.Variable";
+    const ORIGIN: (&str, &str) = (
+        "workspace-module-variables",
+        "CommonModules/Probe/Ext/Module.bsl",
+    );
+    let raw = fixture_xml(fixture, OWNER, ORIGIN.1);
+    let lines: Vec<_> = raw.trim_start_matches('\u{feff}').lines().collect();
+    assert_eq!(lines[1], "Перем Первый Экспорт, Второй;");
+    assert_eq!(&lines[3..5], ["Var Third,", "    Fourth Export;"]);
+    assert_eq!(lines[7], "Перем ВнеОбласти;");
+    assert_eq!(lines[9].trim(), "Перем Локальная;");
+    let outer = format!("{OWNER}.Region.ОписаниеПеременных");
+    let inner = format!("{outer}.Region.Вложенная");
+    let expected = [
+        ("Первый", true, 2, Some(outer.as_str())),
+        ("Второй", false, 2, Some(outer.as_str())),
+        ("Third", false, 4, Some(inner.as_str())),
+        ("Fourth", true, 4, Some(inner.as_str())),
+        ("ВнеОбласти", false, 8, None),
+    ];
+    let (owner, _) = read_view(runtime, &fixture.workspace, OWNER);
+    assert_eq!(
+        published_branch_counts(&owner, BRANCH).collect::<Vec<_>>(),
+        [expected.len() as u64],
+    );
+    let variables = check_fixture_members(
+        runtime,
+        fixture,
+        BRANCH,
+        expected.iter().map(|(name, _, _, _)| *name),
+    );
+    for (name, exported, line, region) in expected {
+        let mut props = json!({"name": name, "export": exported, "line": line});
+        if let Some(region) = region {
+            props["region"] = json!(region);
+        }
+        assert_eq!(variables[name]["props"], props, "{name}");
+    }
+    evidence.record(fixture, ORIGIN, BRANCH);
+}
+
+fn check_notification_binding_fixture(
+    runtime: &V5CanonicalInvocationRuntime,
+    fixture: &Fixture,
+    evidence: &mut EvidenceRows,
+) {
+    const MODULE: &str = "main:Catalog.Команды.Form.ФормаСписка.Module.Form";
+    const ORIGIN: (&str, &str) = (
+        "workspace-notification-binding",
+        "Catalogs/Команды/Forms/ФормаСписка/Ext/Form/Module.bsl",
+    );
+    let raw = fixture_xml(fixture, MODULE, ORIGIN.1);
+    let lines: Vec<_> = raw.trim_start_matches('\u{feff}').lines().collect();
+    let step = format!("{MODULE}.Method.Step");
+    let start = format!("{MODULE}.Method.Start");
+    let binding = format!("{step}.Binding");
+    assert_eq!(lines[1], "Procedure Start()");
+    assert_eq!(lines[16], "Procedure Step(Parameters = Undefined) Export");
+    assert!(lines[5].contains("NotifyDescription(GetName(), ThisObject)"));
+    assert!(lines[6].contains(r#"NotifyDescription("Step", GetReceiver())"#));
+    let expected_ranges: Vec<_> = [
+        (3, r#"New NotifyDescription("Step", ThisObject)"#),
+        (4, r#"Новый ОписаниеОповещения("Step", ЭтотОбъект)"#),
+    ]
+    .into_iter()
+    .flat_map(|(line, expression)| {
+        let text = lines[line];
+        text.match_indices(expression)
+            .map(move |(offset, matched)| {
+                let start = text[..offset].encode_utf16().count();
+                let end = start + matched.encode_utf16().count();
+                json!({
+                    "start": {"line": line, "character": start},
+                    "end": {"line": line, "character": end},
+                })
+            })
+    })
+    .collect();
+    assert_eq!(expected_ranges.len(), 3);
+    let (method, _) = read_view(runtime, &fixture.workspace, &step);
+    let published: Vec<_> = method["branches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| row["at"] == binding)
+        .cloned()
+        .collect();
+    assert_eq!(published, [json!({"at": binding})]);
+    let (view, rows) = read_view(runtime, &fixture.workspace, &binding);
+    assert_eq!(view["kind"], "Binding");
+    assert_eq!(rows.len(), expected_ranges.len());
+    for (row, range) in rows.iter().zip(expected_ranges) {
+        // at points to the containing method, not to a notification node.
+        assert_eq!(row["at"], start);
+        assert_eq!(row["kind"], "Method");
+        assert_eq!(row["binding"], "notifyDescription");
+        assert_eq!(row["range"], range);
+    }
+    assert!(view["limits"].as_array().unwrap().iter().any(|limit| {
+        limit
+            .as_str()
+            .is_some_and(|text| text.contains("dynamic name or receiver"))
+    }));
+    let (origin, _) = read_view(runtime, &fixture.workspace, &start);
+    assert_eq!(origin["kind"], "Method");
+    evidence.record(fixture, ORIGIN, &binding);
+}
+
 fn check_resource(
     runtime: &V5CanonicalInvocationRuntime,
     fixture: &Fixture,
@@ -1320,6 +1434,12 @@ fn medium_published_document_and_bsl_branches_have_canonical_addresses() {
             }
             "workspace-command-groups" => {
                 check_native_subsystem_interface(&runtime, &fixture, &mut evidence)
+            }
+            "workspace-module-variables" => {
+                check_module_variables_fixture(&runtime, &fixture, &mut evidence)
+            }
+            "workspace-notification-binding" => {
+                check_notification_binding_fixture(&runtime, &fixture, &mut evidence)
             }
             "workspace-external-alias" => check_external_modules(&runtime, &fixture, &mut evidence),
             "workspace-code" => check_extension_common_module(&runtime, &fixture, &mut evidence),

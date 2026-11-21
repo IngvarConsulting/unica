@@ -45,7 +45,8 @@ fn address_key(
             serde_json::json!({
                 "kind": segment.kind().as_str(),
                 "named": segment.name().is_some(),
-                "role": (segment.kind() == NodeKind::Interface).then_some(segment.name()).flatten(),
+                "role": matches!(segment.kind(), NodeKind::Interface | NodeKind::Module)
+                    .then_some(segment.name()).flatten(),
             })
         })
         .collect();
@@ -2124,7 +2125,7 @@ fn check_native_xdto_package(
     assert_eq!(view["props"]["targetNamespace"], namespace);
     check_native_xdto_properties(authority, &owner, &view, root, &origin, evidence);
     let namespace_at = format!("{owner}.Namespace");
-    check_native_xdto_count(&view, &namespace_at, 1);
+    check_native_branch_count(&view, &namespace_at, 1);
     let namespace_view = read(authority, &namespace_at);
     assert_eq!(namespace_view["kind"], "Namespace");
     assert_eq!(namespace_view["props"]["namespace"], namespace);
@@ -2188,7 +2189,7 @@ fn check_native_xdto_package(
     }
 }
 
-fn check_native_xdto_count(view: &Value, at: &str, count: usize) {
+fn check_native_branch_count(view: &Value, at: &str, count: usize) {
     let rows: Vec<_> = view["branches"]
         .as_array()
         .unwrap()
@@ -2251,7 +2252,7 @@ fn check_native_xdto_properties(
             assert!(references.insert(raw, (local, namespace)).is_none());
         }
     }
-    check_native_xdto_count(view, &branch_at, properties.len());
+    check_native_branch_count(view, &branch_at, properties.len());
     let collection = read(authority, &branch_at);
     let items = collection["items"].as_array().unwrap();
     assert_eq!(items.len(), properties.len(), "{branch_at}");
@@ -3046,6 +3047,7 @@ fn native_registered_modules_match_profile_and_physical_paths() {
         )];
         let finder = WorkspaceFindDirectoryBuilder::default();
         let registrations = root_registrations(&source, xml);
+        check_native_bsl_interiors(&authority, &source, xml, &registrations, &mut evidence);
         if xml == "2.20" {
             check_baseline_native_modules(
                 &authority,
@@ -3182,6 +3184,224 @@ fn native_registered_modules_match_profile_and_physical_paths() {
         }
     }
     evidence.finish();
+}
+
+fn check_native_bsl_interiors(
+    authority: &LogicalViewReadAuthority<'_>,
+    source: &Path,
+    format: &str,
+    registrations: &[(String, String)],
+    evidence: &mut EvidenceRows,
+) {
+    // Each span is transcribed from these short native files: declaration,
+    // first Body line (including attached comment), last Body line.
+    for (kind, name, directory, role, file, methods, region) in [
+        (
+            "HTTPService",
+            "ПроверкаСвязи",
+            "HTTPServices",
+            "HTTPService",
+            "Module.bsl",
+            &[("ПингGET", 1, 1, 5), ("ПринятьДанныеPOST", 7, 7, 13)][..],
+            None,
+        ),
+        (
+            "WebService",
+            "ОбменДанными",
+            "WebServices",
+            "WebService",
+            "Module.bsl",
+            &[("Пинг", 1, 1, 3), ("ПринятьПакет", 5, 5, 11)][..],
+            None,
+        ),
+        (
+            "Catalog",
+            "Валюты",
+            "Catalogs",
+            "Manager",
+            "ManagerModule.bsl",
+            &[("ВалютаПоКоду", 13, 5, 17)][..],
+            Some(("ПрограммныйИнтерфейс", 3, 19)),
+        ),
+        (
+            "Catalog",
+            "Валюты",
+            "Catalogs",
+            "Object",
+            "ObjectModule.bsl",
+            &[("ПередЗаписью", 3, 3, 13)][..],
+            Some(("ОбработчикиСобытий", 1, 15)),
+        ),
+    ] {
+        assert_eq!(
+            registrations
+                .iter()
+                .filter(|(tag, value)| tag == kind && value == name)
+                .count(),
+            1,
+            "{format}: {kind}.{name} registration",
+        );
+        let descriptor = source.join(directory).join(format!("{name}.xml"));
+        let xml = read_fixture_descriptor(&descriptor);
+        let document = parse_fixture_descriptor(&xml, &descriptor);
+        assert_eq!(document.root_element().attribute("version"), Some(format));
+        let artifact = fixture_artifact(&document, kind, &descriptor);
+        assert_eq!(fixture_properties_name(artifact), Some(name));
+        assert!(uuid::Uuid::parse_str(artifact.attribute("uuid").unwrap()).is_ok());
+        let relative = format!("{directory}/{name}/Ext/{file}");
+        let module = format!("main:{kind}.{name}.Module.{role}");
+        let at = QualifiedAddress::parse(&module).unwrap();
+        assert_eq!(authority.existing_export_path(&at, None).unwrap(), relative);
+        let path = source.join(relative);
+        let raw = fs::read_to_string(&path).unwrap();
+        let raw = raw.trim_start_matches('\u{feff}');
+        let lines: Vec<_> = raw.split_inclusive('\n').collect();
+        let view = read(authority, &module);
+        assert_eq!(view["kind"], "Module");
+        let origin = fixture_origin(&path);
+        let line = authority.platform_profile().line();
+        let body = format!("{module}.Body");
+        check_native_branch_count(&view, &body, lines.len());
+        check_native_bsl_body(authority, &body, raw, 1, lines.len());
+        evidence.record(
+            line,
+            &module,
+            "Body",
+            None,
+            &origin,
+            AddressEvidence::Read(&body),
+        );
+
+        let method_branch = QualifiedAddress::parse(&format!("{module}.Method")).unwrap();
+        let expected: BTreeSet<_> = methods
+            .iter()
+            .map(|(name, _, _, _)| method_branch.member(name).unwrap().to_string())
+            .collect();
+        assert_eq!(expected.len(), methods.len());
+        check_native_branch(authority, &view, &method_branch.to_string(), &expected);
+        evidence.record(
+            line,
+            &module,
+            "Method",
+            None,
+            &origin,
+            AddressEvidence::Read(&method_branch.to_string()),
+        );
+        for &(name, declaration, first, last) in methods {
+            let (kind, signature) = lines[declaration - 1].trim().split_once(' ').unwrap();
+            assert!(matches!(kind, "Функция" | "Процедура"));
+            assert_eq!(signature.split_once('(').unwrap().0, name);
+            assert!(matches!(
+                lines[last - 1].trim(),
+                "КонецФункции" | "КонецПроцедуры"
+            ));
+            assert!(lines[first - 1..declaration - 1]
+                .iter()
+                .all(|line| line.trim_start().starts_with("//")));
+
+            let method = method_branch.member(name).unwrap().to_string();
+            let method_view = read(authority, &method);
+            assert_eq!(method_view["kind"], "Method");
+            assert_eq!(method_view["props"]["declarationLine"], declaration);
+            assert_eq!(method_view["props"]["line"], first);
+            assert_eq!(method_view["props"]["endLine"], last);
+            evidence.record(
+                line,
+                &module,
+                "Method",
+                None,
+                &origin,
+                AddressEvidence::Read(&method),
+            );
+            let body = format!("{method}.Body");
+            check_native_branch_count(&method_view, &body, last + 1 - first);
+            check_native_bsl_body(
+                authority,
+                &body,
+                &lines[first - 1..last].concat(),
+                first,
+                last,
+            );
+            evidence.record(
+                line,
+                &method,
+                "Body",
+                None,
+                &origin,
+                AddressEvidence::Read(&body),
+            );
+        }
+
+        let region_branch = format!("{module}.Region");
+        if let Some((name, first, last)) = region {
+            assert_eq!(lines[first - 1].trim(), format!("#Область {name}"));
+            assert_eq!(lines[last - 1].trim(), "#КонецОбласти");
+            let region_at = QualifiedAddress::parse(&region_branch)
+                .unwrap()
+                .member(name)
+                .unwrap()
+                .to_string();
+            check_native_branch(
+                authority,
+                &view,
+                &region_branch,
+                &BTreeSet::from([region_at.clone()]),
+            );
+            let region_view = read(authority, &region_at);
+            assert_eq!(region_view["kind"], "Region");
+            assert_eq!(region_view["props"]["line"], first);
+            assert_eq!(region_view["props"]["endLine"], last);
+            assert_eq!(addresses(&region_view, "items"), expected);
+            evidence.record(
+                line,
+                &module,
+                "Region",
+                None,
+                &origin,
+                AddressEvidence::Read(&region_at),
+            );
+        } else {
+            assert!(!lines
+                .iter()
+                .any(|line| line.trim_start().starts_with("#Область")));
+            check_native_branch(authority, &view, &region_branch, &BTreeSet::new());
+        }
+        evidence.record(
+            line,
+            &module,
+            "Region",
+            None,
+            &origin,
+            AddressEvidence::Read(&region_branch),
+        );
+    }
+}
+
+fn check_native_bsl_body(
+    authority: &LogicalViewReadAuthority<'_>,
+    body: &str,
+    expected: &str,
+    first: usize,
+    last: usize,
+) {
+    use crate::domain::node_view::SourceText;
+
+    let at = QualifiedAddress::parse(body).unwrap();
+    assert_eq!(at.to_string(), body);
+    let snapshot = authority.snapshot(&at).unwrap();
+    let mut view = authority.read_exact(&at, &snapshot).unwrap();
+    assert_eq!(view.at(), body);
+    assert_eq!(serde_json::to_value(&view).unwrap()["kind"], "Body");
+    let (text, _) = view.take_text().expect("native BSL Body text");
+    assert_eq!(
+        text,
+        SourceText::Window {
+            text: Box::new(SourceText::Whole(expected.to_owned())),
+            from: first,
+            to: last,
+        },
+        "{body}: exact source text and absolute line span",
+    );
 }
 
 fn check_baseline_native_modules(
