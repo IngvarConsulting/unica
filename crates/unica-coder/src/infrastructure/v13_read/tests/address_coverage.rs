@@ -15,6 +15,119 @@ use unica_source_contract::format_identity::{
 use unica_source_designer::owner::MD_CLASSES_NS;
 use unica_work_control::provider_deadline::ProviderDeadline;
 
+// One sorted JSONL file per successful test, when explicitly requested. Use
+// an empty output directory per exact run; the caller verifies the test result.
+const EVIDENCE_DIRECTORY: &str = "UNICA_484_ADDRESS_JSONL_DIR";
+
+enum AddressEvidence<'a> {
+    Read(&'a str),
+    RoundTrip(&'a str),
+    IntroducedIn(PlatformLine),
+}
+
+struct EvidenceRows {
+    directory: Option<std::path::PathBuf>,
+    test_case: &'static str,
+    source_kind: SourceSetKind,
+    lines: Vec<String>,
+}
+
+impl EvidenceRows {
+    fn new(test_case: &'static str, source_kind: SourceSetKind) -> Self {
+        Self {
+            directory: std::env::var_os(EVIDENCE_DIRECTORY).map(std::path::PathBuf::from),
+            test_case,
+            source_kind,
+            lines: Vec::new(),
+        }
+    }
+
+    fn record(
+        &mut self,
+        line: PlatformLine,
+        owner: &str,
+        branch: &str,
+        role: Option<&str>,
+        origin: &str,
+        evidence: AddressEvidence<'_>,
+    ) {
+        if self.directory.is_none() {
+            return;
+        }
+        let owner_address = QualifiedAddress::parse(owner).expect("witness owner address");
+        assert_eq!(owner_address.to_string(), owner);
+        let owner_shape: Vec<_> = owner_address
+            .segments()
+            .iter()
+            .map(|segment| {
+                serde_json::json!({
+                    "kind": segment.kind().as_str(),
+                    "named": segment.name().is_some(),
+                    "role": (segment.kind() == NodeKind::Interface).then_some(segment.name()).flatten(),
+                })
+            })
+            .collect();
+        let (at, level, reason) = match evidence {
+            AddressEvidence::Read(at) => (Some(at), Some("read"), None),
+            AddressEvidence::RoundTrip(at) => (Some(at), Some("roundtrip"), None),
+            AddressEvidence::IntroducedIn(since) => (
+                None,
+                None,
+                Some(serde_json::json!({"kind": "introduced_in", "line": since.to_string()})),
+            ),
+        };
+        self.lines.push(
+            serde_json::json!({
+                "schema_version": 1,
+                "record_type": "evidence",
+                "key": {
+                    "line": line.to_string(),
+                    "source_kind": self.source_kind,
+                    "owner_shape": owner_shape,
+                    "branch": branch,
+                    "role": role,
+                },
+                "witness": {
+                    "owner": owner,
+                    "at": at,
+                    "level": level,
+                    "origin": origin,
+                    "test_case": self.test_case,
+                    "reason": reason,
+                },
+            })
+            .to_string(),
+        );
+    }
+
+    fn finish(mut self) {
+        if let Some(directory) = self.directory {
+            self.lines.sort_unstable();
+            let output = directory.join(format!("{}.jsonl", self.test_case));
+            let mut file = fs::File::create(&output)
+                .unwrap_or_else(|error| panic!("address evidence {}: {error}", output.display()));
+            use std::io::Write;
+            for row in self.lines {
+                writeln!(file, "{row}").unwrap_or_else(|error| {
+                    panic!("address evidence {}: {error}", output.display())
+                });
+            }
+        }
+    }
+}
+
+fn fixture_origin(path: &Path) -> String {
+    let relative = path
+        .strip_prefix(fixture_path(""))
+        .expect("native test fixture");
+    Path::new("tests")
+        .join("fixtures")
+        .join(relative)
+        .to_str()
+        .unwrap()
+        .replace('\\', "/")
+}
+
 fn read(authority: &LogicalViewReadAuthority<'_>, address: &str) -> Value {
     let at = QualifiedAddress::parse(address).unwrap_or_else(|error| panic!("{address}: {error}"));
     assert_eq!(
@@ -124,6 +237,10 @@ fn native_configuration_root_address_table_matches_published_branches() {
         .collect();
     let mut rows = BTreeMap::new();
     let mut modules = Vec::new();
+    let mut evidence = EvidenceRows::new(
+        "native_configuration_root_address_table_matches_published_branches",
+        SourceSetKind::Configuration,
+    );
     for xml in ["2.20", "2.21", "2.22"] {
         let line = export_format_line(xml).unwrap();
         let source = fixture_path(&format!("formats/platform_xml/{xml}/all_kinds/src"));
@@ -135,6 +252,7 @@ fn native_configuration_root_address_table_matches_published_branches() {
             .into_iter()
             .partition(|kind| metadata_kind_exists(Some(line), kind));
         let registrations = root_registrations(&source, xml);
+        let origin = fixture_origin(&source.join("Configuration.xml"));
         let native_kinds: BTreeSet<_> = registrations
             .iter()
             .map(|(kind, _)| kind.as_str())
@@ -153,6 +271,14 @@ fn native_configuration_root_address_table_matches_published_branches() {
                 .get(spelling)
                 .unwrap_or_else(|| panic!("{line}: unexpected root branch {at}"));
             read(&authority, &at);
+            evidence.record(
+                line,
+                "main:Configuration",
+                kind,
+                None,
+                &origin,
+                AddressEvidence::Read(&at),
+            );
             assert!(rows
                 .insert((line, "Configuration", kind), RootAddress::Canonical(at))
                 .is_none());
@@ -161,6 +287,14 @@ fn native_configuration_root_address_table_matches_published_branches() {
             let since = metadata_kind_since(kind)
                 .filter(|since| line < *since)
                 .expect("a missing root kind must have a later introduction line");
+            evidence.record(
+                line,
+                "main:Configuration",
+                kind,
+                None,
+                "crates/unica-address/src/kinds.rs",
+                AddressEvidence::IntroducedIn(since),
+            );
             assert!(rows
                 .insert(
                     (line, "Configuration", kind),
@@ -203,6 +337,25 @@ fn native_configuration_root_address_table_matches_published_branches() {
             observed_modules, expected_modules,
             "{line}: configuration module rows"
         );
+        let module_origin = "tests/fixtures/v013/address-profile-8.3.27.json";
+        evidence.record(
+            line,
+            "main:Configuration",
+            "Module",
+            None,
+            module_origin,
+            AddressEvidence::Read("main:Module"),
+        );
+        for (at, role) in observed_modules {
+            evidence.record(
+                line,
+                "main:Configuration",
+                "Module",
+                Some(role),
+                module_origin,
+                AddressEvidence::Read(at),
+            );
+        }
     }
 
     let actual_keys: BTreeSet<_> = rows.keys().copied().collect();
@@ -223,6 +376,7 @@ fn native_configuration_root_address_table_matches_published_branches() {
     for (line, role, at) in modules {
         println!("| {line} | Configuration | {role} | {at} |");
     }
+    evidence.finish();
 }
 
 /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
@@ -232,6 +386,11 @@ fn native_ordinary_interface_has_a_registration_only_root_branch() {
     let profile = PlatformProfile::v8_3_27();
     let cancellation = CancellationToken::new();
     let authority = native_authority(&cancellation, &source, profile);
+    let mut evidence = EvidenceRows::new(
+        "native_ordinary_interface_has_a_registration_only_root_branch",
+        SourceSetKind::Configuration,
+    );
+    let origin = fixture_origin(&source.join("Configuration.xml"));
     let at = "main:OrdinaryInterface";
     assert!(addresses(&read(&authority, "main:Configuration"), "branches").contains(at));
     let branch = read(&authority, at);
@@ -250,13 +409,30 @@ fn native_ordinary_interface_has_a_registration_only_root_branch() {
         .collect::<BTreeSet<_>>();
     assert!(!registered.is_empty());
     assert_eq!(items, registered);
+    evidence.record(
+        profile.line(),
+        "main:Configuration",
+        "OrdinaryInterface",
+        None,
+        &origin,
+        AddressEvidence::Read(at),
+    );
     println!("| 8.3.27 | Configuration | OrdinaryInterface | {at} |");
     for item in items {
         let address = QualifiedAddress::parse(&item).unwrap();
         assert_eq!(address.segments()[0].kind(), NodeKind::OrdinaryInterface);
         read(&authority, &item);
+        evidence.record(
+            profile.line(),
+            "main:Configuration",
+            "OrdinaryInterface",
+            None,
+            &origin,
+            AddressEvidence::Read(&item),
+        );
         println!("| 8.3.27 | OrdinaryInterface | Member | {item} |");
     }
+    evidence.finish();
 }
 
 /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
@@ -268,6 +444,10 @@ fn native_recalculation_module_address_table_matches_registered_owner() {
     let profile = PlatformProfile::v8_3_27();
     let cancellation = CancellationToken::new();
     let authority = native_authority(&cancellation, &source, profile);
+    let mut evidence = EvidenceRows::new(
+        "native_recalculation_module_address_table_matches_registered_owner",
+        SourceSetKind::Configuration,
+    );
     let register = "main:CalculationRegister.Начисления";
     let parent_branch = format!("{register}.Recalculation");
     let descriptor = source.join("CalculationRegisters/Начисления.xml");
@@ -282,6 +462,15 @@ fn native_recalculation_module_address_table_matches_registered_owner() {
     let parent = read(&authority, register);
     check_native_branch(&authority, &parent, &parent_branch, &native_owners);
     let owners = native_owners;
+    let origin = fixture_origin(&descriptor);
+    evidence.record(
+        profile.line(),
+        register,
+        "Recalculation",
+        None,
+        &origin,
+        AddressEvidence::Read(&parent_branch),
+    );
     println!(
         "| {} | CalculationRegister | Recalculation | {parent_branch} |",
         profile.line()
@@ -289,6 +478,14 @@ fn native_recalculation_module_address_table_matches_registered_owner() {
     for owner in owners {
         let node = read(&authority, &owner);
         assert_eq!(node["kind"], "Recalculation", "{owner}");
+        evidence.record(
+            profile.line(),
+            register,
+            "Recalculation",
+            None,
+            &origin,
+            AddressEvidence::Read(&owner),
+        );
         let branch = format!("{owner}.Module");
         assert!(addresses(&node, "branches").contains(&branch));
         let branch_at = QualifiedAddress::parse(&branch).unwrap();
@@ -318,11 +515,16 @@ fn native_recalculation_module_address_table_matches_registered_owner() {
             );
         }
     }
+    evidence.finish();
 }
 
 /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
 #[test]
 fn native_metadata_address_table_matches_declared_and_observed_child_branches() {
+    let mut evidence = EvidenceRows::new(
+        "native_metadata_address_table_matches_declared_and_observed_child_branches",
+        SourceSetKind::Configuration,
+    );
     println!("| Profile | Owner | Branch | Canonical address | Evidence |");
     println!("| --- | --- | --- | --- | --- |");
     for (xml, line) in [
@@ -339,7 +541,7 @@ fn native_metadata_address_table_matches_declared_and_observed_child_branches() 
             let at = QualifiedAddress::parse(&format!("main:{kind}.{name}")).unwrap();
             let route = route_logical_address(&at, profile).unwrap();
             if route.reader() == LogicalReader::Metadata {
-                check_metadata_owner(&authority, &source, &at, &mut verified);
+                check_metadata_owner(&authority, &source, &at, &mut verified, &mut evidence);
             }
         }
         assert!(
@@ -367,12 +569,17 @@ fn native_metadata_address_table_matches_declared_and_observed_child_branches() 
         }
         check_eds_module_rows(&authority, &source, &cancellation);
     }
+    evidence.finish();
 }
 
 /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
 /// rule: INV.SOURCE.RESOLVED-RESOURCE-IDENTITY
 #[test]
 fn native_form_and_template_addresses_follow_text_registrations() {
+    let mut evidence = EvidenceRows::new(
+        "native_form_and_template_addresses_follow_text_registrations",
+        SourceSetKind::Configuration,
+    );
     for xml in ["2.20", "2.21", "2.22"] {
         let source = fixture_path(&format!("formats/platform_xml/{xml}/all_kinds/src"));
         let line = export_format_line(xml).unwrap();
@@ -442,6 +649,20 @@ fn native_form_and_template_addresses_follow_text_registrations() {
                     &descriptor,
                     &verify_path,
                     &mut covered,
+                    &mut evidence,
+                );
+                let resource = if kind == "CommonForm" {
+                    descriptor.with_extension("").join("Ext/Form.xml")
+                } else {
+                    descriptor.clone()
+                };
+                evidence.record(
+                    line,
+                    "main:Configuration",
+                    kind,
+                    None,
+                    &fixture_origin(&resource),
+                    AddressEvidence::RoundTrip(&at.to_string()),
                 );
                 assert!(expected.insert(at.to_string()), "duplicate native {at}");
             }
@@ -449,7 +670,16 @@ fn native_form_and_template_addresses_follow_text_registrations() {
                 !expected.is_empty(),
                 "XML {xml}: native fixture needs a {kind}"
             );
-            check_native_branch(&authority, &configuration, &branch.to_string(), &expected);
+            let branch = branch.to_string();
+            check_native_branch(&authority, &configuration, &branch, &expected);
+            evidence.record(
+                line,
+                "main:Configuration",
+                kind,
+                None,
+                &fixture_origin(&source.join("Configuration.xml")),
+                AddressEvidence::Read(&branch),
+            );
         }
 
         for (kind, name) in registrations {
@@ -499,12 +729,36 @@ fn native_form_and_template_addresses_follow_text_registrations() {
                         &descriptor,
                         &verify_path,
                         &mut covered,
+                        &mut evidence,
                     );
-                    assert!(expected.insert(at.to_string()), "duplicate native {at}");
+                    let address = at.to_string();
+                    let resource = if child_kind == "Form" {
+                        descriptor.with_extension("").join("Ext/Form.xml")
+                    } else {
+                        descriptor
+                    };
+                    evidence.record(
+                        line,
+                        &owner_at,
+                        child_kind,
+                        None,
+                        &fixture_origin(&resource),
+                        AddressEvidence::RoundTrip(&address),
+                    );
+                    assert!(expected.insert(address), "duplicate native {at}");
                 }
                 let owner = read(&authority, &owner_at);
-                check_native_branch(&authority, &owner, &branch.to_string(), &expected);
-                covered.insert(branch.to_string());
+                let branch = branch.to_string();
+                check_native_branch(&authority, &owner, &branch, &expected);
+                evidence.record(
+                    line,
+                    &owner_at,
+                    child_kind,
+                    None,
+                    &fixture_origin(&descriptor),
+                    AddressEvidence::Read(&branch),
+                );
+                covered.insert(branch);
             }
         }
         for witness in [
@@ -523,6 +777,7 @@ fn native_form_and_template_addresses_follow_text_registrations() {
             );
         }
     }
+    evidence.finish();
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -535,6 +790,7 @@ fn check_native_form_or_template(
     descriptor: &Path,
     verify_path: &impl Fn(&QualifiedAddress, &Path),
     covered: &mut BTreeSet<String>,
+    evidence: &mut EvidenceRows,
 ) {
     let raw = read_fixture_descriptor(descriptor);
     let document = parse_fixture_descriptor(&raw, descriptor);
@@ -568,6 +824,7 @@ fn check_native_form_or_template(
     let ext = descriptor.with_extension("").join("Ext");
     let form = matches!(kind, "Form" | "CommonForm");
     let at_text = at.to_string();
+    let line = authority.platform_profile().line();
     let status = if form {
         assert_eq!(
             property("FormType"),
@@ -597,6 +854,14 @@ fn check_native_form_or_template(
         );
         assert_eq!(read(authority, &metadata)["kind"], "Metadata");
         verify_path(&QualifiedAddress::parse(&metadata).unwrap(), descriptor);
+        evidence.record(
+            line,
+            &at_text,
+            "Metadata",
+            None,
+            &fixture_origin(descriptor),
+            AddressEvidence::RoundTrip(&metadata),
+        );
         covered.insert(metadata);
         let module = ext.join("Form/Module.bsl");
         if module.is_file() {
@@ -606,6 +871,14 @@ fn check_native_form_or_template(
             );
             assert_eq!(read(authority, &module_at)["kind"], "Module");
             verify_path(&QualifiedAddress::parse(&module_at).unwrap(), &module);
+            evidence.record(
+                line,
+                &at_text,
+                "Module",
+                Some("Form"),
+                &fixture_origin(&module),
+                AddressEvidence::RoundTrip(&module_at),
+            );
             covered.insert(module_at);
         }
         "Managed Form"
@@ -668,8 +941,25 @@ fn check_native_form_or_template(
         if template == "DataCompositionSchema" {
             let branch = format!("{at}.DataSet");
             check_native_branch(authority, &owner_view, &branch, &data_sets);
+            let origin = fixture_origin(&ext.join("Template.xml"));
+            evidence.record(
+                line,
+                &at_text,
+                "DataSet",
+                None,
+                &origin,
+                AddressEvidence::Read(&branch),
+            );
             for item in &data_sets {
                 assert_eq!(read(authority, item)["kind"], "DataSet", "{item}");
+                evidence.record(
+                    line,
+                    &at_text,
+                    "DataSet",
+                    None,
+                    &origin,
+                    AddressEvidence::Read(item),
+                );
             }
             covered.insert(branch);
         }
@@ -749,6 +1039,7 @@ fn check_metadata_owner(
     source: &Path,
     owner: &QualifiedAddress,
     verified: &mut BTreeSet<String>,
+    evidence: &mut EvidenceRows,
 ) {
     let profile = authority.platform_profile();
     let route = route_logical_address(owner, profile).unwrap();
@@ -767,11 +1058,29 @@ fn check_metadata_owner(
         .unwrap_or_else(|error| panic!("{owner}: {error:?}"));
     let published = read(authority, &owner_at);
     let (facts, addressing_issue) = owner_facts(owner, &payload);
+    let origin = fixture_origin(&descriptor);
     for (branch, expected) in native_branches {
         check_native_branch(authority, &published, &branch, &expected);
-        let child_kind = branch.rsplit('.').next().unwrap();
+        let branch_address = QualifiedAddress::parse(&branch).unwrap();
+        let child_kind = branch_address.segments().last().unwrap().kind().as_str();
+        evidence.record(
+            profile.line(),
+            &owner_at,
+            child_kind,
+            None,
+            &origin,
+            AddressEvidence::Read(&branch),
+        );
         for item in &expected {
             assert_eq!(read(authority, item)["kind"], child_kind, "{item}");
+            evidence.record(
+                profile.line(),
+                &owner_at,
+                child_kind,
+                None,
+                &origin,
+                AddressEvidence::Read(item),
+            );
         }
         println!(
             "| {} | {owner} | {child_kind} | {branch} | {} native registration(s) with matching descriptors |",
@@ -786,8 +1095,24 @@ fn check_metadata_owner(
         for (kind, expected) in branches {
             let branch = format!("{inline_owner}.{kind}");
             check_native_branch(authority, owner_view, &branch, &expected);
+            evidence.record(
+                profile.line(),
+                &inline_owner,
+                kind,
+                None,
+                &origin,
+                AddressEvidence::Read(&branch),
+            );
             for item in &expected {
                 assert_eq!(read(authority, item)["kind"], kind, "{item}");
+                evidence.record(
+                    profile.line(),
+                    &inline_owner,
+                    kind,
+                    None,
+                    &origin,
+                    AddressEvidence::Read(item),
+                );
             }
             println!(
                 "| {} | {inline_owner} | {kind} | {branch} | {} native inline registration(s) |",
@@ -808,7 +1133,9 @@ fn check_metadata_owner(
             profile.id()
         );
     }
-    check_metadata_child_branches(authority, source, owner, &published, &facts, verified);
+    check_metadata_child_branches(
+        authority, source, owner, &published, &facts, verified, evidence,
+    );
 }
 
 fn read_fixture_descriptor(path: &Path) -> String {
@@ -1094,6 +1421,7 @@ fn check_metadata_child_branches(
     published: &Value,
     facts: &[BranchFact<'_>],
     verified: &mut BTreeSet<String>,
+    evidence: &mut EvidenceRows,
 ) {
     let profile = authority.platform_profile();
     let actual = published_metadata_branches(owner, published, profile);
@@ -1143,7 +1471,7 @@ fn check_metadata_child_branches(
             {
                 // EDS tables, cubes and dimension tables own descriptors and
                 // their own typed collection facts.
-                check_metadata_owner(authority, source, &item, verified);
+                check_metadata_owner(authority, source, &item, verified, evidence);
                 continue;
             }
             let branches = item_facts(member);
@@ -1153,7 +1481,9 @@ fn check_metadata_child_branches(
                 published_metadata_branches(&item, &view, profile),
                 "{item}: collection row and direct view disagree"
             );
-            check_metadata_child_branches(authority, source, &item, &view, &branches, verified);
+            check_metadata_child_branches(
+                authority, source, &item, &view, &branches, verified, evidence,
+            );
         }
     }
 }
