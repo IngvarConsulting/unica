@@ -7,7 +7,11 @@ use crate::infrastructure::v13_read_projection::metadata_address_coverage::{
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use unica_address::address::NodeKind;
-use unica_source_contract::format_identity::PlatformLine;
+use unica_address::kinds::DECLARED_ROOT_KINDS;
+use unica_source_contract::format_identity::{
+    export_format_line, metadata_kind_exists, metadata_kind_since, PlatformLine,
+    DESCRIBED_PLATFORM_LINES,
+};
 use unica_source_designer::owner::MD_CLASSES_NS;
 use unica_work_control::provider_deadline::ProviderDeadline;
 
@@ -44,10 +48,11 @@ fn addresses(value: &Value, field: &str) -> BTreeSet<String> {
     addresses
 }
 
-fn root_registrations(source: &Path) -> Vec<(String, String)> {
+fn root_registrations(source: &Path, expected_format: &str) -> Vec<(String, String)> {
     let xml = fs::read_to_string(source.join("Configuration.xml")).unwrap();
     let document = roxmltree::Document::parse(xml.trim_start_matches('\u{feff}')).unwrap();
     let root = document.root_element();
+    assert_eq!(root.attribute("version"), Some(expected_format));
     let owner = root
         .children()
         .find(|node| node.has_tag_name((MD_CLASSES_NS, "Configuration")))
@@ -69,11 +74,9 @@ fn root_registrations(source: &Path) -> Vec<(String, String)> {
         .collect()
 }
 
-fn registration_rows(source: &Path) -> BTreeSet<String> {
-    root_registrations(source)
-        .into_iter()
-        .map(|(kind, _)| format!("main:{kind}"))
-        .collect()
+enum RootAddress {
+    Canonical(String),
+    IntroducedIn(PlatformLine),
 }
 
 fn native_authority<'a>(
@@ -95,33 +98,61 @@ fn native_authority<'a>(
 }
 
 /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
+/// rule: INV.SOURCE.PROFILE-CAPABILITIES
 #[test]
 fn native_configuration_root_address_table_matches_published_branches() {
-    println!("| Profile | Kind | Branch | Address or reason |");
-    println!("| --- | --- | --- | --- |");
-    for (xml, line) in [
-        ("2.20", PlatformLine::new(8, 3, 27)),
-        ("2.21", PlatformLine::new(8, 5, 1)),
-        ("2.22", PlatformLine::new(8, 5, 4)),
-    ] {
+    let expected_keys: BTreeSet<_> = DESCRIBED_PLATFORM_LINES
+        .iter()
+        .flat_map(|(line, _)| DECLARED_ROOT_KINDS.map(|kind| (*line, "Configuration", kind)))
+        .collect();
+    let mut rows = BTreeMap::new();
+    let mut modules = Vec::new();
+    for xml in ["2.20", "2.21", "2.22"] {
+        let line = export_format_line(xml).unwrap();
         let source = fixture_path(&format!("formats/platform_xml/{xml}/all_kinds/src"));
         let profile = PlatformProfile::for_line(line).unwrap();
         let cancellation = CancellationToken::new();
         let authority = native_authority(&cancellation, &source, profile);
 
-        // The fixture's independent platform export describes one registration
-        // for every collection kind on this line, with some extra members.
-        let mut table = registration_rows(&source);
-        assert!(table.insert("main:Module".into()));
+        let (admitted, unavailable): (BTreeSet<_>, Vec<_>) = DECLARED_ROOT_KINDS
+            .into_iter()
+            .partition(|kind| metadata_kind_exists(Some(line), kind));
+        let registrations = root_registrations(&source, xml);
+        let native_kinds: BTreeSet<_> = registrations
+            .iter()
+            .map(|(kind, _)| kind.as_str())
+            .collect();
+        assert_eq!(native_kinds, admitted, "XML {xml}: registered root kinds");
+
         let published = read(&authority, "main:Configuration");
-        assert_eq!(addresses(&published, "branches"), table, "XML {xml}");
-        for at in &table {
-            read(&authority, at);
-            let branch = QualifiedAddress::parse(at).unwrap();
-            let kind = branch.segments().last().unwrap().kind();
-            println!("| {line} | Configuration | {} | {at} |", kind.as_str());
+        let mut branches = addresses(&published, "branches");
+        assert!(
+            branches.remove("main:Module"),
+            "{line}: missing Module branch"
+        );
+        for at in branches {
+            let spelling = at.strip_prefix("main:").unwrap();
+            let &kind = admitted
+                .get(spelling)
+                .unwrap_or_else(|| panic!("{line}: unexpected root branch {at}"));
+            read(&authority, &at);
+            assert!(rows
+                .insert((line, "Configuration", kind), RootAddress::Canonical(at))
+                .is_none());
+        }
+        for kind in unavailable {
+            let since = metadata_kind_since(kind)
+                .filter(|since| line < *since)
+                .expect("a missing root kind must have a later introduction line");
+            assert!(rows
+                .insert(
+                    (line, "Configuration", kind),
+                    RootAddress::IntroducedIn(since)
+                )
+                .is_none());
         }
 
+        modules.push((line, "Module".to_string(), "main:Module".to_string()));
         let branch = QualifiedAddress::parse("main:Module").unwrap();
         let role_addresses: BTreeSet<_> = profile
             .module_children(&branch)
@@ -142,11 +173,27 @@ fn native_configuration_root_address_table_matches_published_branches() {
                 crate::infrastructure::logical_tree::LogicalReader::Module
             );
             let role = profile.module_capability(&address).unwrap().role();
-            println!(
-                "| {line} | Configuration | Module.{} | {at} |",
-                role.as_str()
-            );
+            modules.push((line, format!("Module.{}", role.as_str()), at.clone()));
         }
+    }
+
+    let actual_keys: BTreeSet<_> = rows.keys().copied().collect();
+    assert_eq!(
+        actual_keys, expected_keys,
+        "declared root address table coverage"
+    );
+    println!("| Profile | Kind | Branch | Address or reason |");
+    println!("| --- | --- | --- | --- |");
+    for ((line, owner, kind), address) in rows {
+        match address {
+            RootAddress::Canonical(at) => println!("| {line} | {owner} | {kind} | {at} |"),
+            RootAddress::IntroducedIn(since) => {
+                println!("| {line} | {owner} | {kind} | introduced in {since} |")
+            }
+        }
+    }
+    for (line, role, at) in modules {
+        println!("| {line} | Configuration | {role} | {at} |");
     }
 }
 
@@ -243,7 +290,7 @@ fn native_metadata_address_table_matches_declared_and_observed_child_branches() 
         let profile = PlatformProfile::for_line(line).unwrap();
         let cancellation = CancellationToken::new();
         let authority = native_authority(&cancellation, &source, profile);
-        for (kind, name) in root_registrations(&source) {
+        for (kind, name) in root_registrations(&source, xml) {
             let at = QualifiedAddress::parse(&format!("main:{kind}.{name}")).unwrap();
             let route = route_logical_address(&at, profile).unwrap();
             if route.reader() == LogicalReader::Metadata {
