@@ -1,5 +1,6 @@
 use super::*;
 use crate::infrastructure::logical_tree::LogicalReader;
+use crate::infrastructure::v13_find::{LayoutFindSource, WorkspaceFindDirectoryBuilder};
 use crate::infrastructure::v13_read_projection::metadata_address_coverage::{
     item_facts, owner_facts, BranchFact,
 };
@@ -8,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use unica_address::address::NodeKind;
 use unica_source_contract::format_identity::PlatformLine;
 use unica_source_designer::owner::MD_CLASSES_NS;
+use unica_work_control::provider_deadline::ProviderDeadline;
 
 fn read(authority: &LogicalViewReadAuthority<'_>, address: &str) -> Value {
     let at = QualifiedAddress::parse(address).unwrap_or_else(|error| panic!("{address}: {error}"));
@@ -248,7 +250,56 @@ fn native_metadata_address_table_matches_declared_and_observed_child_branches() 
                 check_metadata_owner(&authority, &at);
             }
         }
+        check_eds_table_manager_row(&authority, &source, &cancellation);
     }
+}
+
+fn check_eds_table_manager_row(
+    authority: &LogicalViewReadAuthority<'_>,
+    source: &Path,
+    cancellation: &CancellationToken,
+) {
+    let root_branch = "main:ExternalDataSource";
+    let owners = addresses(&read(authority, root_branch), "items");
+    let owner = owners
+        .get("main:ExternalDataSource.AllKindsExternalSource")
+        .unwrap();
+    let tables = format!("{owner}.Table");
+    assert!(addresses(&read(authority, owner), "branches").contains(&tables));
+    let items = addresses(&read(authority, &tables), "items");
+    let table = items.get(&format!("{tables}.Items")).unwrap();
+    let modules = format!("{table}.Module");
+    assert!(addresses(&read(authority, table), "branches").contains(&modules));
+    let items = addresses(&read(authority, &modules), "items");
+    let manager = items.get(&format!("{modules}.Manager")).unwrap();
+    read(authority, &format!("{manager}.Body"));
+
+    let at = QualifiedAddress::parse(manager).unwrap();
+    let path = authority.existing_export_path(&at, None).unwrap();
+    assert_eq!(
+        path,
+        "ExternalDataSources/AllKindsExternalSource/Tables/Items/Ext/ManagerModule.bsl"
+    );
+    let root =
+        unica_workspace::read::open_source_directory(&source.canonicalize().unwrap()).unwrap();
+    let document = WorkspaceFindDirectoryBuilder::default()
+        .locate_path(
+            &[LayoutFindSource::new(
+                "main",
+                SourceSetKind::Configuration,
+                &root,
+            )],
+            &path,
+            ProviderDeadline::no_deadline(),
+            cancellation,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(document.at(), manager.as_str());
+    println!(
+        "| {} | {table} | Module.Manager | {manager} | native owner and table; file round-trip |",
+        authority.platform_profile().id()
+    );
 }
 
 fn check_metadata_owner(authority: &LogicalViewReadAuthority<'_>, owner: &QualifiedAddress) {
