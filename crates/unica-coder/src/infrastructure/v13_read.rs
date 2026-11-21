@@ -168,6 +168,7 @@ mod method_doc;
 mod module_body_read;
 mod module_variables;
 mod notification_bindings;
+mod ordinary_interface;
 mod scheduled_job_handler;
 mod typed_payload_read;
 mod validation_input;
@@ -503,6 +504,16 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         }
         let route = route_logical_address(at, self.profile)
             .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
+        if let [interface] = at.segments() {
+            if interface.kind() == NodeKind::OrdinaryInterface {
+                return Ok(interface.name().map(|name| {
+                    format!(
+                        "{}/{name}.xml",
+                        unica_source_designer::layout::ORDINARY_INTERFACE_DIRECTORY
+                    )
+                }));
+            }
+        }
         if route.reader() == LogicalReader::Configuration {
             return Ok(matches!(
                 self.read.source_set_kind(),
@@ -592,6 +603,18 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         }
         let route = route_logical_address(at, self.profile)
             .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
+        if let [interface] = at.segments() {
+            if interface.kind() == NodeKind::OrdinaryInterface {
+                let view = self.ordinary_interface_view(at, interface.name(), admitted)?;
+                if admitted.revision != self.exact_revision()? {
+                    return Err(ViewError::new(
+                        RefusalCode::StaleCursor,
+                        "source revision changed during ordinary application interface read",
+                    ));
+                }
+                return Ok(view);
+            }
+        }
         let inherited = self.inherited_route_part(&route, admitted)?;
         let projected = if let Some((borrowing, resource)) = &inherited {
             project_inherited_part(&route, borrowing, resource)?

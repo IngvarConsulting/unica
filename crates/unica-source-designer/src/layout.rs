@@ -2,6 +2,10 @@ use std::path::{Path, PathBuf};
 use unica_address::source_target::MetadataAddress;
 use unica_source_contract::SourceSetKind;
 
+/// Интерфейс обычного приложения имеет отдельный маршрут чтения.
+pub const ORDINARY_INTERFACE_XML_TAG: &str = "Interface";
+pub const ORDINARY_INTERFACE_DIRECTORY: &str = "Interfaces";
+
 /// Раскладки видов объявлены в `unica_address::kinds`, по файлу на вид.
 pub use unica_address::kinds::MetadataLayout;
 
