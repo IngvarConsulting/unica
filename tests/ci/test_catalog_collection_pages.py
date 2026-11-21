@@ -1,4 +1,4 @@
-"""Перечисление справочников конфигурации класса УТ проходит до конца страницами ограниченного размера (#548)."""
+"""Справочники синтетической конфигурации УТ перечисляются до конца (#548)."""
 from __future__ import annotations
 
 from scripts.ci.prepared_binary import ensure_binary
@@ -21,16 +21,8 @@ MEDIUM = ("CatalogCollectionPagesTests",)
 
 GENERATOR = REPO_ROOT / "scripts/dev/synthetic-configuration.py"
 PROFILE = REPO_ROOT / "scripts/dev/synthetic-configuration-ut11.json"
-# Граница размера страницы по умолчанию: строка коллекции не растёт с объектом,
-# и чтение коллекции пополняет контекст агента предсказуемыми порциями. Точный
-# счёт токенов здесь не нужен. Порог выведен из ориентира 2000 токенов
-# на страницу (#548) по замеру 19.11.2026: tiktoken o200k_base на компактном
-# JSON `structuredContent` каждой страницы `view main:Catalog` при limit 20.
-# Синтетика УТ этого теста (471 справочник, 24 страницы) — наибольшая 1479
-# токенов при 7073 байтах; КА 2 2.6.2.72 (кодовая база УТ 11, 1090
-# справочников, 55 страниц) — 1922 токена при 8886 байтах. Кириллические имена
-# и синонимы дают 4,47–4,55 байта на токен; 2000 × 4,4 = 8800.
-PAGE_BYTES = 8800
+# Проверка роста страниц на синтетической фикстуре с фиксированным профилем.
+SYNTHETIC_PAGE_BYTES = 8800
 
 
 def generator():
@@ -86,8 +78,12 @@ class CatalogCollectionPagesTests(unittest.TestCase):
             spelled = row["props"]["synonym"].removeprefix("ru = '")[:-1].replace(" ", "")
             self.assertEqual(spelled.lower(), name.lower())
             self.assertGreater(row["props"]["children"], 0)
-        over = [(index + 1, size) for index, size in enumerate(sizes) if size > PAGE_BYTES]
-        self.assertEqual(over, [], f"pages over {PAGE_BYTES} bytes; sizes {sizes}")
+        oversized_pages = [
+            (index + 1, size)
+            for index, size in enumerate(sizes)
+            if size > SYNTHETIC_PAGE_BYTES
+        ]
+        self.assertEqual(oversized_pages, [], f"synthetic pages over {SYNTHETIC_PAGE_BYTES} bytes")
 
 
 if __name__ == "__main__":

@@ -25,6 +25,7 @@ use unica_bindings::events::{
 use unica_bindings::projection::{
     project_module, FormEventBindingInput, ModuleProjectionRequest, PlatformEventWriteCapability,
 };
+use unica_source_designer::layout::metadata_kind;
 use unica_source_designer::module_layout::module_source_address as shared_module_source_address;
 
 use crate::infrastructure::logical_tree::{route_logical_address, LogicalReader, LogicalTreeRoute};
@@ -750,7 +751,7 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                 if route.reader() == LogicalReader::Metadata
                     && route.reader_metadata_path().is_none()
                     && matches!(at.segments(), [root]
-                        if root.name().is_none() && root.kind() != NodeKind::WebSocketClient) =>
+                        if root.name().is_none() && metadata_kind(root.kind().as_str()).is_some()) =>
             {
                 NodeViewData::Collection(collection.try_map_items(|mut row| {
                     let owner = row["at"].as_str().ok_or_else(|| {
@@ -777,12 +778,10 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                         }
                         Err(error) => return Err(error),
                     };
-                    let mut props = serde_json::Map::new();
                     if let Some(synonym) = synonym {
-                        props.insert("synonym".to_string(), synonym);
+                        row["props"]["synonym"] = synonym;
                     }
-                    props.insert("children".to_string(), json!(children));
-                    row["props"] = Value::Object(props);
+                    row["props"]["children"] = json!(children);
                     if !limits.is_empty() {
                         row["limits"] = json!(limits);
                     }

@@ -44,7 +44,7 @@
         },
         {
           "pointer": "/data/items/4/support",
-          "absent": true
+          "eq": "unknown"
         },
         {
           "pointer": "/data/limits/0",
