@@ -354,7 +354,20 @@ fn filter_criterion_create_advertises_only_its_own_type_arguments() {
 fn filter_criterion_create_matches_native_descriptors_in_each_writable_format() {
     const MD: &str = "http://v8.1c.ru/8.3/MDClasses";
     const XR: &str = "http://v8.1c.ru/8.3/xcf/readable";
-    for version in ["2.20", "2.21", "2.22"] {
+    for (version, platform_path) in [
+        (
+            "2.20",
+            "../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/FilterCriteria/Probe.xml",
+        ),
+        (
+            "2.21",
+            "../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/FilterCriteria/Probe.xml",
+        ),
+        (
+            "2.22",
+            "../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src/FilterCriteria/Probe.xml",
+        ),
+    ] {
         let fixture = Fixture::blank();
         for relative in ["Configuration.xml", "Languages/Русский.xml"] {
             let path = fixture.source.join(relative);
@@ -383,14 +396,9 @@ fn filter_criterion_create_matches_native_descriptors_in_each_writable_format() 
 
         let relative = "FilterCriteria/Probe.xml";
         let observed = std::fs::read_to_string(fixture.source.join(relative)).unwrap();
-        let native = std::fs::read_to_string(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join(format!(
-                    "../../tests/fixtures/formats/platform_xml/{version}/all_kinds/src"
-                ))
-                .join(relative),
-        )
-        .unwrap();
+        let native =
+            std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(platform_path))
+                .unwrap();
         let actual = roxmltree::Document::parse(observed.trim_start_matches('\u{feff}')).unwrap();
         let oracle = roxmltree::Document::parse(native.trim_start_matches('\u{feff}')).unwrap();
         let actual_root = actual.root_element();
