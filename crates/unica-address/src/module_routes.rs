@@ -194,6 +194,7 @@ pub fn has_direct_module_route(owner_kind: NodeKind, role: ModuleRole) -> bool {
                 | NodeKind::AccumulationRegister
                 | NodeKind::AccountingRegister
                 | NodeKind::CalculationRegister
+                | NodeKind::Sequence
         ),
         ModuleRole::ValueManager => owner_kind == NodeKind::Constant,
         _ => false,

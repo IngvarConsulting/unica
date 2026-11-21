@@ -199,6 +199,157 @@ fn resolve_bot_module_round_trips_its_native_platform_path() {
     mcp.finish();
 }
 
+const SEQUENCE_RECORD_SET: &str = "main:Sequence.Probe.Module.RecordSet";
+const SEQUENCE_RECORD_SET_PATH: &str = "Sequences/Probe/Ext/RecordSetModule.bsl";
+const SEQUENCE_PROBE_METHOD: &str = "UnicaSequenceRoundTripProbe";
+const SEQUENCE_FORMATS: [&str; 3] = ["2.20", "2.21", "2.22"];
+
+fn sequence_module_workspace(format: &str) -> tempfile::TempDir {
+    let root = tempfile::tempdir().unwrap();
+    copy_tree(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
+            "../../tests/fixtures/formats/platform_xml/{format}/all_kinds"
+        )),
+        root.path(),
+    );
+    root
+}
+
+/// rule: INV.SOURCE.PLATFORM-CAPABILITY-EXISTENCE
+/// rule: INV.SOURCE.RESOLVED-RESOURCE-IDENTITY
+#[test]
+fn sequence_record_set_module_is_reachable_and_resolves_its_native_path() {
+    for format in SEQUENCE_FORMATS {
+        let root = sequence_module_workspace(format);
+        let src = root.path().join("src");
+        let native = src.join(SEQUENCE_RECORD_SET_PATH);
+        let wrong_role = "Sequences/Probe/Ext/ObjectModule.bsl";
+        let wrong_kind = "Documents/Orders/Ext/RecordSetModule.bsl";
+        let unregistered = "Sequences/Orphan/Ext/RecordSetModule.bsl";
+        for relative in [wrong_role, wrong_kind, unregistered] {
+            let path = src.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::copy(&native, path).unwrap();
+        }
+        let descriptor = std::fs::read_to_string(src.join("Sequences/Probe.xml")).unwrap();
+        std::fs::write(
+            src.join("Sequences/Orphan.xml"),
+            descriptor.replace("Probe", "Orphan"),
+        )
+        .unwrap();
+
+        let mut mcp = resource_resolve_mcp(root.path());
+        let mut id = 1_u64;
+        let mut call = |tool, args| {
+            id += 1;
+            mcp.completed_tool_call(call_tool(id, tool, args))
+        };
+        let branch_at = "main:Sequence.Probe.Module";
+        let owner = call("unica.view", json!({"at":"main:Sequence.Probe"}));
+        assert_eq!(owner["ok"], true, "{format}: {owner:#}");
+        assert!(owner["data"]["branches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|branch| branch["at"] == branch_at && branch["count"] == 1));
+        let branch = call("unica.view", json!({"at":branch_at}));
+        assert_eq!(branch["ok"], true, "{format}: {branch:#}");
+        assert_eq!(branch["data"]["items"][0]["at"], SEQUENCE_RECORD_SET);
+        let method_at = format!("{SEQUENCE_RECORD_SET}.Method.{SEQUENCE_PROBE_METHOD}");
+        let method = call("unica.view", json!({"at":method_at}));
+        assert_eq!(method["ok"], true, "{format}: {method:#}");
+        assert_eq!(method["data"]["kind"], "Method");
+
+        for query in [
+            json!({"at":SEQUENCE_RECORD_SET}),
+            json!({"path":SEQUENCE_RECORD_SET_PATH}),
+            json!({"path":format!("src/{SEQUENCE_RECORD_SET_PATH}")}),
+        ] {
+            let result = call("unica.resolve", query);
+            assert_eq!(result["ok"], true, "{format}: {result:#}");
+            assert_eq!(result["data"]["at"], SEQUENCE_RECORD_SET);
+            assert_eq!(result["data"]["path"], SEQUENCE_RECORD_SET_PATH);
+            assert_eq!(result["data"]["kind"], "Module");
+        }
+        for relative in [wrong_role, wrong_kind, unregistered] {
+            let result = call("unica.resolve", json!({"path":relative}));
+            assert_eq!(result["ok"], false, "{format}: {relative}: {result:#}");
+            assert_eq!(result["diagnostics"][0]["code"], "not_found");
+        }
+        mcp.finish();
+    }
+}
+
+/// rule: INV.SOURCE.PLATFORM-CAPABILITY-EXISTENCE
+/// rule: INV.SOURCE.TAIL-INSERT
+#[test]
+fn sequence_record_set_first_insert_and_blank_replacement_use_public_apply() {
+    for format in SEQUENCE_FORMATS {
+        let root = sequence_module_workspace(format);
+        let src = root.path().join("src");
+        let path = src.join(SEQUENCE_RECORD_SET_PATH);
+        let native = std::fs::read_to_string(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_dir(src.join("Sequences/Probe/Ext")).unwrap();
+        std::fs::remove_dir(src.join("Sequences/Probe")).unwrap();
+        let owner = src.join("Sequences/Probe.xml");
+        let neighbor = src.join("Documents/Orders.xml");
+        let owner_before = std::fs::read(&owner).unwrap();
+        let neighbor_before = std::fs::read(&neighbor).unwrap();
+
+        let mut mcp = resource_resolve_mcp(root.path());
+        let mut id = 1_u64;
+        let mut call = |tool, args| {
+            id += 1;
+            mcp.completed_tool_call(call_tool(id, tool, args))
+        };
+        let missing = call("unica.resolve", json!({"path":SEQUENCE_RECORD_SET_PATH}));
+        assert_eq!(missing["ok"], false, "{format}: {missing:#}");
+        assert_eq!(missing["diagnostics"][0]["code"], "not_found");
+        let module = call("unica.view", json!({"at":SEQUENCE_RECORD_SET}));
+        assert_eq!(module["ok"], true, "{format}: {module:#}");
+        assert_eq!(module["data"]["props"]["role"], "RecordSet");
+
+        let body = format!("{SEQUENCE_RECORD_SET}.Body");
+        for (op, at, text) in [
+            (
+                "code.insert",
+                SEQUENCE_RECORD_SET,
+                native.trim_start_matches('\u{feff}'),
+            ),
+            ("code.replace", body.as_str(), "\n"),
+        ] {
+            let before = path.is_file().then(|| std::fs::read(&path).unwrap());
+            let plan = call(
+                "unica.apply",
+                json!({"at":at,"ops":[{"op":op,"args":{"text":text}}]}),
+            );
+            assert_eq!(plan["ok"], true, "{format} {op}: {plan:#}");
+            assert_eq!(
+                path.is_file().then(|| std::fs::read(&path).unwrap()),
+                before
+            );
+            let token = plan["data"]["executionToken"]
+                .as_str()
+                .expect("execution token");
+            let applied = call("unica.apply", json!({"executionToken":token}));
+            assert_eq!(applied["ok"], true, "{format} {op}: {applied:#}");
+            let after = std::fs::read_to_string(&path).unwrap();
+            if op == "code.insert" {
+                assert!(after.contains(SEQUENCE_PROBE_METHOD), "{format}: {after:?}");
+            } else {
+                assert!(
+                    matches!(after.trim_start_matches('\u{feff}'), "\n" | "\r\n"),
+                    "{format}: {after:?}"
+                );
+            }
+            assert_eq!(std::fs::read(&owner).unwrap(), owner_before);
+            assert_eq!(std::fs::read(&neighbor).unwrap(), neighbor_before);
+        }
+        mcp.finish();
+    }
+}
+
 /// rule: INV.SOURCE.RESOLVED-RESOURCE-IDENTITY
 #[test]
 fn resolve_resources_refuse_unregistered_and_absent_targets_on_public_mcp() {
