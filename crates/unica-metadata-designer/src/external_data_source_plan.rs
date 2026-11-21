@@ -14,6 +14,7 @@ use unica_source_contract::proposal::{
     ApplyPlanError, ApplyPlanErrorKind, ApplyProposal, ProvisionalApplyEffect,
 };
 use unica_source_contract::SourceSetKind;
+use unica_xml_format::prefix_form::PrefixForm;
 
 use crate::descriptor_comment::{descriptor_properties, direct};
 use crate::external_data_source_seed::{self as seed, Seed};
@@ -322,9 +323,10 @@ pub(crate) fn add(
     let fragment = seed::emit(item, name, &generated_name, &mut || {
         uuid::Uuid::new_v4().to_string()
     });
-    let text = located.descriptor.text(site)?;
-    let document = parse(text, site)?;
-    let props = located.properties(text, &document, site)?;
+    let (text, form) = PrefixForm::normalize(located.descriptor.text(site)?)
+        .map_err(|error| damaged(site, error))?;
+    let document = parse(&text, site)?;
+    let props = located.properties(&text, &document, site)?;
     let owner_node = props
         .parent_element()
         .expect("canonical Properties has its owner");
@@ -343,7 +345,8 @@ pub(crate) fn add(
     } else {
         fragment.clone()
     };
-    let updated = xml::insert_child(text, owner_node, kind, name, storage, &registration)
+    let updated = xml::insert_child(&text, owner_node, kind, name, storage, &registration)
+        .and_then(|updated| form.restore(&updated))
         .map_err(|error| damaged(site, error))?;
     let mut paths = vec![located.descriptor.path.clone()];
     if separate {
@@ -387,8 +390,9 @@ pub(crate) fn set(
 ) -> Result<Option<ProvisionalApplyEffect>, ApplyPlanError> {
     let site = format!("ops[{op_index}].args.at");
     let located = locate(staged, at, &site)?;
-    let original = located.descriptor.text(&site)?;
-    let mut updated = original.to_string();
+    let (original, form) = PrefixForm::normalize(located.descriptor.text(&site)?)
+        .map_err(|error| damaged(&site, error))?;
+    let mut updated = original.clone();
     for (field, value) in changes {
         let tag = field.names()[0];
         let document = parse(&updated, &site)?;
@@ -430,6 +434,9 @@ pub(crate) fn set(
     if updated == original {
         return Ok(None);
     }
+    let updated = form
+        .restore(&updated)
+        .map_err(|error| damaged(&site, error))?;
     staged
         .replace(
             &located.descriptor.path,

@@ -399,7 +399,7 @@ pub fn add_contract(kind: NodeKind) -> unica_operation_contract::OperationContra
         ),
     };
     OperationContract {
-        schema: object(&[("items", json!({"type":"array","minItems":1,"items":item}))], &["items"]),
+        schema: object(&[("at", text(true)), ("items", json!({"type":"array","minItems":1,"items":item}))], &["items"]),
         target,
         effect: "Create every item in its registered owner and preserve other objects and byte ranges.",
         notes: "Identifiers are unique within this owner and kind. Table requires NameInDataSource. Expression table requires ExpressionInDataSource. TableDataType defaults to NonobjectData. A dimension type is the qualified address of a dimension table of the same cube. A function's formal parameters are part of its expression. Preview writes nothing; execute only the saved token.",
