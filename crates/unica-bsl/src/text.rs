@@ -402,6 +402,17 @@ pub fn plan_code_postimage(
                     ) {
                         Ok(())
                     } else {
+                        if let Some(error) = closing_comment_refusal(
+                            &args.at,
+                            content,
+                            (snapshot.decoded_text(), &indexed.methods),
+                            postimage,
+                            &post.methods,
+                            repeated,
+                            &text_path,
+                        ) {
+                            return Err(error);
+                        }
                         Err("addressed replacement would change bytes again".to_string())
                     }
                 }
@@ -417,6 +428,63 @@ pub fn plan_code_postimage(
         .at_path(&text_path)
     })?;
     Ok(StagedCodePostimage { after, no_op })
+}
+
+/// Identifies a repeat failure caused by the direct Method span ending
+/// before the inline comment in the supplied Method.Body text.
+fn closing_comment_refusal(
+    at: &QualifiedAddress,
+    source: &str,
+    (original, original_methods): (&str, &[Method]),
+    postimage: &str,
+    methods: &[Method],
+    repeat: ReplacementSite,
+    text_path: &str,
+) -> Option<ApplyPlanError> {
+    let (_, CodeProjection::Method(name)) = code_projection(at)? else {
+        return None;
+    };
+    let original_method = addressed_method(original_methods, &name, text_path).ok()?;
+    let original_tail = closing_line_tail(original, original_method.end);
+    if !original_tail.is_empty() && !original_tail.starts_with("//") {
+        return None;
+    }
+    let after_method = addressed_method(methods, &name, text_path).ok()?;
+    if repeat.end != after_method.end
+        || !closing_line_tail(postimage, after_method.end).starts_with("//")
+        || !declares_method(source)
+    {
+        return None;
+    }
+    let sent = analyze_module(source).ok()?;
+    let [method] = sent.methods.as_slice() else {
+        return None;
+    };
+    if !sent.diagnostics.is_empty()
+        || method.body_bounds.is_none()
+        || method.name.to_lowercase() != name.to_lowercase()
+        || doc_comment_start(source, safe_line_start(source, method.start)) != 0
+        || !closing_line_tail(source, method.end).starts_with("//")
+        || line_end(source, method.end) != source.len()
+    {
+        return None;
+    }
+    let body = format!("{at}.Body");
+    Some(
+        bad_code_arg(
+            text_path,
+            "replacement text includes a comment after the method's closing token, outside the Method span. Use Method.Body for the full text and request a new preview",
+        )
+        .with_next(serde_json::json!({
+            "tool": "unica.view",
+            "args": {"at": body},
+            "reason": "Read the full method text before previewing the replacement at its Body address"
+        })),
+    )
+}
+
+fn closing_line_tail(text: &str, end: usize) -> &str {
+    text[end..line_end(text, end)].trim()
 }
 
 /// The sent text inside the patched module: which module line holds each
@@ -781,7 +849,7 @@ pub fn locate_addressed_replacement(
             };
             // A full Method.Body roundtrip includes an inline closing comment,
             // but executable code on that line belongs outside this method.
-            let closing_tail = text[method.end..line_end].trim();
+            let closing_tail = closing_line_tail(text, method.end);
             let end = if closing_tail.is_empty()
                 || (target.with_closing_comment && closing_tail.starts_with("//"))
             {

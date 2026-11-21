@@ -70,6 +70,6 @@ impl CodeOperation {
             }
             _ => json!({"text":"// sample\n"}),
         };
-        contract(schema, self.applicability().shape(), "Insert or replace BSL source at the addressed module or projection.", "Module insertion without selector appends at the tail; an exact unique anchor inside one existing method requires before/after. Method insertion requires before/after. Addressed Body/Method replacement has no selector. Method.Body does not support insertion. Example anchors are templates: read the existing text before use. An args.at override changes the target; read Can at that target to obtain its contextual schema.", example, "skills/code-patch/SKILL.md")
+        contract(schema, self.applicability().shape(), "Insert or replace BSL source at the addressed module or projection.", "Module insertion without selector appends at the tail; an exact unique anchor inside one existing method requires before/after. Method insertion requires before/after. Addressed Body/Method replacement has no selector. Send the full text read from Method.Body, including any closing comment, to that same Body address. Method.Body does not support insertion. Example anchors are templates: read the existing text before use. An args.at override changes the target; read Can at that target to obtain its contextual schema.", example, "skills/code-patch/SKILL.md")
     }
 }
