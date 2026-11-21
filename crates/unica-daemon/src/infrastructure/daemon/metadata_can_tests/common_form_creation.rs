@@ -57,9 +57,23 @@ fn common_form_creation_and_first_insert_preserve_the_native_shape() {
         let kinds = values["properties"]["kind"]["enum"].as_array().unwrap();
         assert!(kinds.contains(&json!("CommonForm")), "{kinds:?}");
         assert_eq!(values["additionalProperties"], false);
-        assert_eq!(values["properties"].as_object().unwrap().len(), 2);
+        let creation = create("main:Configuration");
+        let args = &creation["ops"][0]["args"];
+        let schema = jsonschema::validator_for(&can["argsSchema"]).unwrap();
+        assert!(schema.is_valid(args), "{format}: {args}");
+        // FilterCriterion uses the type field in the shared object.create schema.
+        // The CommonForm branch must still reject that property.
+        let mut with_type = creation.clone();
+        with_type["ops"][0]["args"]["values"]["type"] = json!({"variants":[{"kind":"boolean"}]});
+        assert!(!schema.is_valid(&with_type["ops"][0]["args"]));
+        let refused = call(&runtime, &fixture, ToolIdentity::Apply, with_type);
+        assert!(!refused.ok, "{refused:?}");
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&fixture.source),
+            before
+        );
 
-        publish(&runtime, &fixture, create("main:Configuration"));
+        publish(&runtime, &fixture, creation);
         let created = unica_workspace::test_support::tree_snapshot(&fixture.source);
         let added = created
             .keys()
