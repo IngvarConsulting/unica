@@ -186,6 +186,70 @@ fn an_extension_does_not_create_a_language() {
     );
 }
 
+/// rule: INV.SOURCE.PROFILE-CAPABILITIES
+#[test]
+fn an_empty_integration_service_matches_the_platform_descriptor() {
+    let relative = Path::new("IntegrationServices/Probe.xml");
+    for version in ["2.20", "2.21", "2.22"] {
+        let fixture = Fixture::blank();
+        for path in ["Configuration.xml", "Languages/Русский.xml"] {
+            let path = fixture.source.join(path);
+            let xml = std::fs::read_to_string(&path).unwrap();
+            std::fs::write(
+                path,
+                xml.replace("version=\"2.20\"", &format!("version=\"{version}\"")),
+            )
+            .unwrap();
+        }
+        let runtime = runtime();
+        let at = "main:Configuration";
+        let can = contract(&runtime, &fixture, at, "object.create");
+        let args = json!({"values":{"kind":"IntegrationService","name":"Probe"}});
+        assert!(
+            jsonschema::validator_for(&can["argsSchema"])
+                .unwrap()
+                .is_valid(&args),
+            "{version}"
+        );
+        let before = unica_workspace::test_support::tree_snapshot(&fixture.source);
+        publish(
+            &runtime,
+            &fixture,
+            json!({"at":at,"ops":[{"op":"object.create","args":args}]}),
+        );
+
+        let written = std::fs::read_to_string(fixture.source.join(relative)).unwrap();
+        let platform = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join(format!(
+                    "../../tests/fixtures/formats/platform_xml/{version}/all_kinds/src"
+                ))
+                .join(relative),
+        )
+        .unwrap();
+        let normalize = |xml: &str| {
+            without_uuids(&without_synonym(xml.trim_start_matches('\u{feff}')))
+                .lines()
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        assert_eq!(normalize(&written), normalize(&platform), "{version}");
+        let after = unica_workspace::test_support::tree_snapshot(&fixture.source);
+        assert_eq!(
+            changed_paths(&before, &after),
+            (
+                BTreeSet::from([relative.to_path_buf()]),
+                BTreeSet::from([PathBuf::from("Configuration.xml")]),
+                BTreeSet::new(),
+            ),
+            "{version}"
+        );
+        let node = view(&runtime, &fixture, "main:IntegrationService.Probe");
+        assert_eq!(node["kind"], "IntegrationService", "{version}");
+        assert_eq!(node["title"], "Probe", "{version}");
+    }
+}
+
 #[test]
 fn synonym_is_emptied_and_the_rest_is_kept() {
     assert_eq!(
