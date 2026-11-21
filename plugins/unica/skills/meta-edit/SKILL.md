@@ -65,7 +65,7 @@ allowed-tools:
 
 `props.set` изменяет только строковый `Comment` у существующих
 `CommonAttribute`, `FunctionalOptionsParameter`,
-`SessionParameter`, `FilterCriterion`, `SettingsStorage`, `CommonCommand`,
+`SessionParameter`, `FilterCriterion`, `SettingsStorage`,
 `CommandGroup`, `CommonTemplate`, `CommonPicture`,
 `IntegrationService`, `XDTOPackage`,
 `Sequence` и `Style`. Эти владельцы адресуются как
@@ -73,6 +73,15 @@ allowed-tools:
 пустая строка очищает комментарий. Имя `comment` — допустимый псевдоним,
 одновременно оба написания не передаются. Отсутствующий, неоднозначный
 или составной `Comment` требует исправления исходного дескриптора.
+
+У общей команды в основной конфигурации `props.set` задаёт `Group`
+и меняет `Comment` (`comment`). Для `Group` укажите стандартную группу,
+например `NavigationPanelOrdinary`, или адрес зарегистрированной группы
+`CommandGroup.<Имя>` в том же наборе. Чтобы подготовить новую команду к
+импорту, выполните `object.create` и затем `props.set` с адресом
+`main:CommonCommand.<Имя>` в одном `apply` от `main:Configuration`.
+Если оставить группу пустой, `cf.validate` сообщит причину отказа импорта.
+У общей команды расширения `props.set` меняет только комментарий.
 
 Дескриптор формы адресуется как `main:CommonForm.<Имя>.Metadata` или
 `main:<Вид>.<Имя>.Form.<Форма>.Metadata`, в том числе у формы внешней

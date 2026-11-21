@@ -262,6 +262,47 @@ fn a_missing_common_command_group_refuses_the_entire_batch() {
     );
 }
 
+#[test]
+fn a_damaged_registered_group_refuses_the_entire_batch() {
+    let fixture = Fixture::blank();
+    let runtime = runtime();
+    publish(
+        &runtime,
+        &fixture,
+        json!({"at":"main:Configuration","ops":[
+            {"op":"object.create","args":{"values":{"kind":"CommandGroup","name":"Placement"}}}
+        ]}),
+    );
+    let descriptor = fixture.source.join("CommandGroups/Placement.xml");
+    let valid = std::fs::read_to_string(&descriptor).unwrap();
+    for damaged in [
+        "<Name>Placement<Extra/></Name>",
+        "<Name>Placement</Name><Name>Duplicate</Name>",
+    ] {
+        std::fs::write(
+            &descriptor,
+            valid.replace("<Name>Placement</Name>", damaged),
+        )
+        .unwrap();
+        let before = unica_workspace::test_support::tree_snapshot(&fixture.workspace);
+        let refused = call(
+            &runtime,
+            &fixture,
+            ToolIdentity::Apply,
+            json!({"at":"main:Configuration","ops":[
+                {"op":"object.create","args":{"values":{"kind":"CommonCommand","name":"Probe"}}},
+                {"op":"props.set","args":{"at":"main:CommonCommand.Probe","values":{"Group":"CommandGroup.Placement"}}}
+            ]}),
+        );
+        assert!(!refused.ok, "{damaged}: {refused:?}");
+        assert_eq!(refused.at.as_deref(), Some("ops[1].args.values.Group"));
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&fixture.workspace),
+            before
+        );
+    }
+}
+
 /// A palette color of the 8.5.4 line is created as the platform exports one
 /// imported without its color.
 /// rule: INV.SOURCE.PROFILE-CAPABILITIES

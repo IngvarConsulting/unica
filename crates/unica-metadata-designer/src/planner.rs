@@ -2055,9 +2055,7 @@ fn stage_descriptor_properties(
             (NodeKind::FunctionalOption, text)
         }
         DescriptorPropertyChanges::CommonCommand { group, comment } => {
-            use unica_source_designer::owner::{
-                prove_already_read_metadata_owner, prove_already_read_source_set_owner,
-            };
+            use unica_source_designer::owner::prove_already_read_source_set_owner;
             let invalid = |message: String| {
                 ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
                     .at_path(at_path.clone())
@@ -2094,13 +2092,15 @@ fn stage_descriptor_properties(
                     .read(&descriptor)
                     .map_err(|error| ApplyPlanError::staging(error, group_path.clone()))?
                     .ok_or_else(unavailable)?;
-                let owner = prove_already_read_metadata_owner(&descriptor, &bytes)
-                    .map_err(|error| invalid(error.message))?;
-                if owner.artifact_kind() != "CommandGroup"
-                    || owner.artifact_name() != Some(group_name)
-                {
-                    return Err(unavailable());
-                }
+                crate::common_command_group::prove_group_descriptor(&bytes, group_name).map_err(
+                    |message| {
+                        ApplyPlanError::new(
+                            ApplyPlanErrorKind::InvalidSource,
+                            format!("Group {group} descriptor is unreadable: {message}"),
+                        )
+                        .at_path(group_path)
+                    },
+                )?;
             }
             let text = crate::common_command_group::patch(&source, name, group).map_err(invalid)?;
             let text = if let Some(comment) = comment {
