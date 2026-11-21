@@ -98,9 +98,26 @@ fn native_authority<'a>(
 }
 
 /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
+/// rule: INV.SOURCE.LOGICAL-BRANCH-COUNT
+/// rule: INV.SOURCE.PLATFORM-CAPABILITY-EXISTENCE
 /// rule: INV.SOURCE.PROFILE-CAPABILITIES
 #[test]
 fn native_configuration_root_address_table_matches_published_branches() {
+    let profile_fixture = module_capability_fixture();
+    assert_eq!(profile_fixture.profile, PlatformProfile::v8_3_27().id());
+    // These lines share the 8.3.27 configuration module roles. The frozen
+    // fixture, independent of PlatformProfile::module_children, names each row.
+    let mut expected_modules = BTreeMap::new();
+    for case in &profile_fixture.module_capabilities {
+        if !case.at.starts_with("main:Module.") || !case.exists {
+            continue;
+        }
+        let role = case.role.as_deref().expect("an approved module has a role");
+        assert_eq!(case.at, format!("main:Module.{role}"));
+        assert!(expected_modules.insert(case.at.as_str(), role).is_none());
+    }
+    assert!(!expected_modules.is_empty());
+
     let expected_keys: BTreeSet<_> = DESCRIBED_PLATFORM_LINES
         .iter()
         .flat_map(|(line, _)| DECLARED_ROOT_KINDS.map(|kind| (*line, "Configuration", kind)))
@@ -152,29 +169,40 @@ fn native_configuration_root_address_table_matches_published_branches() {
                 .is_none());
         }
 
-        modules.push((line, "Module".to_string(), "main:Module".to_string()));
-        let branch = QualifiedAddress::parse("main:Module").unwrap();
-        let role_addresses: BTreeSet<_> = profile
-            .module_children(&branch)
-            .into_iter()
-            .map(|child| child.at().to_string())
-            .collect();
-        assert!(!role_addresses.is_empty());
+        let module_branch = published["branches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|branch| branch["at"] == "main:Module")
+            .unwrap();
         assert_eq!(
-            addresses(&read(&authority, "main:Module"), "items"),
-            role_addresses
+            module_branch["count"].as_u64(),
+            Some(expected_modules.len() as u64)
         );
-        for at in &role_addresses {
-            let address = QualifiedAddress::parse(at).unwrap();
-            assert_eq!(address.to_string(), *at);
-            let route = route_logical_address(&address, profile).unwrap();
-            assert_eq!(
-                route.reader(),
-                crate::infrastructure::logical_tree::LogicalReader::Module
+        modules.push((line, "Module".to_string(), "main:Module".to_string()));
+
+        let published_modules = read(&authority, "main:Module");
+        let mut observed_modules = BTreeMap::new();
+        for item in published_modules["items"].as_array().unwrap() {
+            assert_eq!(item["props"]["ownerKind"], "Configuration");
+            let at = item["at"].as_str().unwrap();
+            let role = item["props"]["role"].as_str().unwrap();
+            assert!(
+                observed_modules.insert(at, role).is_none(),
+                "{line}: duplicate {at}"
             );
-            let role = profile.module_capability(&address).unwrap().role();
-            modules.push((line, format!("Module.{}", role.as_str()), at.clone()));
+            let address = QualifiedAddress::parse(at).unwrap();
+            assert_eq!(
+                route_logical_address(&address, profile).unwrap().reader(),
+                LogicalReader::Module
+            );
+            assert_eq!(read(&authority, at)["kind"], "Module", "{line}: {at}");
+            modules.push((line, format!("Module.{role}"), at.to_string()));
         }
+        assert_eq!(
+            observed_modules, expected_modules,
+            "{line}: configuration module rows"
+        );
     }
 
     let actual_keys: BTreeSet<_> = rows.keys().copied().collect();

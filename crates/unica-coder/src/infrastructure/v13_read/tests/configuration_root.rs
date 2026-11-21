@@ -914,15 +914,12 @@ pub(crate) fn production_authorities_reach_all_profile_module_capabilities_from_
     let main = main_fixture.operation_read_authority();
     let epf = external_fixture.operation_read_authority("epf", SourceSetKind::ExternalProcessor);
     let erf = external_fixture.operation_read_authority("erf", SourceSetKind::ExternalReport);
-    let expected = serde_json::from_str::<ModuleCapabilityFixture>(include_str!(
-        "../../../../../../tests/fixtures/v013/address-profile-8.3.27.json"
-    ))
-    .unwrap()
-    .module_capabilities
-    .into_iter()
-    .filter(|case| case.exists)
-    .map(|case| case.at)
-    .collect::<std::collections::BTreeSet<_>>();
+    let expected = module_capability_fixture()
+        .module_capabilities
+        .into_iter()
+        .filter(|case| case.exists)
+        .map(|case| case.at)
+        .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(expected.len(), 25);
 
     let index = ReaderReach::new(vec![("main", &main), ("epf", &epf), ("erf", &erf)]);
