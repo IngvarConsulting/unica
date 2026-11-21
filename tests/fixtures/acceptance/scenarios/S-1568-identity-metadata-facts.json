@@ -153,12 +153,31 @@
           "eq": "StyleItem"
         },
         {
+          "pointer": "/data/props/Synonym",
+          "eq": "ru = 'Актуальная подписка цвет'"
+        },
+        {
           "pointer": "/data/props/Type",
           "eq": "Color"
         },
         {
           "pointer": "/data/props/Value",
           "eq": "#009646"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:StyleItem.Probe.Props.Synonym"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": "ru = 'Актуальная подписка цвет'"
         }
       ]
     },
