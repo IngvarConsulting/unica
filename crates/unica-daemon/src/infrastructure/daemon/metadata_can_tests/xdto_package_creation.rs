@@ -3,7 +3,7 @@ use super::*;
 const PACKAGE_AT: &str = "main:XDTOPackage.EmptyPackage";
 const DESCRIPTOR: &str = "XDTOPackages/EmptyPackage.xml";
 const BODY: &str = "XDTOPackages/EmptyPackage/Ext/Package.bin";
-const NAMESPACE: &str = "https://example.invalid/xdto?mode=empty&v=1";
+const NAMESPACE: &str = "https://[2001:0DB8::1]:8042/xdto?mode=empty&v=1";
 
 fn create(target: &str) -> Value {
     json!({"at":target,"ops":[{"op":"object.create","args":{
@@ -79,6 +79,29 @@ fn xdto_package_creation_has_a_closed_namespace_contract() {
         &cases,
     );
     let raw_contract = unica_metadata::contracts::metadata_object_create();
+    let uri_schema = jsonschema::options()
+        .should_validate_formats(true)
+        .build(&can["argsSchema"])
+        .unwrap();
+    for (namespace, expected) in [
+        ("https://[", false),
+        ("https://[broken]", false),
+        ("https://[2001:0DB8::1]:8042/xdto", true),
+        ("urn:unica:empty", true),
+    ] {
+        let request = args(json!({"kind":"XDTOPackage","name":"Probe","namespace":namespace}));
+        assert_eq!(uri_schema.is_valid(&request), expected, "{request}");
+        assert_eq!(
+            parse(&fixture.binding(false), at, "object.create", &request).is_ok(),
+            expected,
+            "{request}"
+        );
+        assert_eq!(
+            raw_contract.normalize(&request, "args").is_ok(),
+            expected,
+            "{request}"
+        );
+    }
     for (request, expected) in cases {
         assert_eq!(
             raw_contract.normalize(&request, "args").is_ok(),
@@ -132,7 +155,7 @@ fn xdto_package_creation_publishes_native_files_and_allows_first_type() {
                 "\u{feff}<package xmlns=\"http://v8.1c.ru/8.1/xdto\" ",
                 "xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" ",
                 "xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" ",
-                "targetNamespace=\"https://example.invalid/xdto?mode=empty&amp;v=1\">\r\n",
+                "targetNamespace=\"https://[2001:0DB8::1]:8042/xdto?mode=empty&amp;v=1\">\r\n",
                 "</package>\r\n",
             )
         );

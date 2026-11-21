@@ -2,9 +2,63 @@
 
 use crate::{MetadataKind, RelationEditMode};
 use serde_json::{json, Map, Value};
-use unica_operation_contract::{object, text, OperationContract};
+use unica_operation_contract::{object, text, FormatValidator, OperationContract};
 
 const METADATA_HELP: &str = "skills/meta-edit/SKILL.md";
+
+pub const XDTO_NAMESPACE_FORMATS: &[FormatValidator] = &[FormatValidator {
+    name: "uri",
+    validate: validate_xdto_namespace_uri,
+}];
+
+fn validate_xdto_namespace_uri(value: &Value) -> Result<(), String> {
+    let invalid = || "namespace must be a URI with a valid authority".to_string();
+    let (scheme, location) = value
+        .as_str()
+        .and_then(|uri| uri.split_once(':'))
+        .ok_or_else(invalid)?;
+    let requires_host = ["http", "https", "ftp", "ws", "wss"]
+        .iter()
+        .any(|name| scheme.eq_ignore_ascii_case(name));
+    let Some(location) = location.strip_prefix("//") else {
+        return if !requires_host && !location.contains(['[', ']']) {
+            Ok(())
+        } else {
+            Err(invalid())
+        };
+    };
+    let boundary = location.find(['/', '?', '#']).unwrap_or(location.len());
+    let (authority, tail) = location.split_at(boundary);
+    let host = match authority.split_once('@') {
+        Some((user, host)) if !user.contains(['[', ']']) && !host.contains('@') => host,
+        Some(_) => return Err(invalid()),
+        None => authority,
+    };
+    if tail.contains(['[', ']']) || (host.is_empty() && (requires_host || host != authority)) {
+        return Err(invalid());
+    }
+    valid_xdto_uri_host_and_port(host)
+        .then_some(())
+        .ok_or_else(invalid)
+}
+
+fn valid_xdto_uri_host_and_port(host_and_port: &str) -> bool {
+    if let Some(bracketed) = host_and_port.strip_prefix('[') {
+        return bracketed.split_once(']').is_some_and(|(address, port)| {
+            address.parse::<std::net::Ipv6Addr>().is_ok()
+                && (port.is_empty()
+                    || port
+                        .strip_prefix(':')
+                        .is_some_and(|port| port.bytes().all(|b| b.is_ascii_digit())))
+        });
+    }
+    if host_and_port.contains(['[', ']']) {
+        return false;
+    }
+    host_and_port
+        .split_once(':')
+        .is_none_or(|(host, port)| !host.is_empty() && port.bytes().all(|b| b.is_ascii_digit()))
+}
 
 pub fn metadata_object_create_input_schema() -> &'static Value {
     static SCHEMA: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
@@ -33,7 +87,8 @@ pub fn metadata_object_create_input_schema() -> &'static Value {
                 ("namespace", json!({
                     "type":"string",
                     "pattern":r"^[A-Za-z][A-Za-z0-9+.-]*:(?:[A-Za-z0-9._~:/?@\[\]!$&'()*+,;=-]|%[A-Fa-f0-9]{2})+(?:#(?:[A-Za-z0-9._~:/?@\[\]!$&'()*+,;=-]|%[A-Fa-f0-9]{2})*)?$",
-                    "description":"Explicit namespace URI for a new XDTOPackage."
+                    "format":"uri",
+                    "description":"Explicit namespace URI for a new XDTOPackage. The server checks the authority and IPv6 literal hosts and preserves the supplied spelling."
                 })),
             ],
             &["kind", "name"],
@@ -515,7 +570,7 @@ pub fn metadata_object_create() -> OperationContract {
         notes: "Choose an unused valid 1C identifier. FilterCriterion also requires type as a structured metadata type and starts with empty content. XDTOPackage requires an explicit namespace URI and starts with no types. Configure other properties and members with subsequent operations in the same apply call.",
         example_args: json!({"values":{"kind":"Catalog","name":"Sample"}}),
         help: "skills/meta-add/SKILL.md",
-        format_validators: &[],
+        format_validators: XDTO_NAMESPACE_FORMATS,
     }
 }
 

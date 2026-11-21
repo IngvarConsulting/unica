@@ -960,7 +960,17 @@ pub fn parse_object_create(
             )
             .at_path(&namespace_path)
         })?;
-        check_input_field(values_shape, "namespace", raw, &namespace_path)?;
+        values_shape
+            .property("namespace")
+            .expect("object.create namespace")
+            .validate_field_with_formats(
+                raw,
+                &namespace_path,
+                unica_metadata::contracts::XDTO_NAMESPACE_FORMATS,
+            )
+            .map_err(|error| {
+                ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.message).at_path(error.path)
+            })?;
         Some(
             raw.as_str()
                 .expect("validated namespace string")
