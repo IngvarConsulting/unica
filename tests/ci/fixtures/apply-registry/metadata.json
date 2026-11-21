@@ -20,6 +20,30 @@
       "skeleton": "Target"
     },
     {
+      "variant": "ExternalTableAdd",
+      "operation": "table.add",
+      "applicability": "ExternalDataSourceRoot",
+      "skeleton": "Items"
+    },
+    {
+      "variant": "ExternalCubeAdd",
+      "operation": "cube.add",
+      "applicability": "ExternalDataSourceRoot",
+      "skeleton": "Items"
+    },
+    {
+      "variant": "ExternalFunctionAdd",
+      "operation": "function.add",
+      "applicability": "ExternalDataSourceRoot",
+      "skeleton": "Items"
+    },
+    {
+      "variant": "ExternalDimensionTableAdd",
+      "operation": "dimensionTable.add",
+      "applicability": "ExternalDataCube",
+      "skeleton": "Items"
+    },
+    {
       "variant": "ContentSet",
       "operation": "content.set",
       "applicability": "ExchangePlan",
@@ -94,7 +118,7 @@
     {
       "variant": "DimensionAdd",
       "operation": "dimension.add",
-      "applicability": "MetadataDimensions",
+      "applicability": "MetadataDimensionsOrExternalCube",
       "skeleton": "Items"
     },
     {
@@ -112,7 +136,7 @@
     {
       "variant": "ResourceAdd",
       "operation": "resource.add",
-      "applicability": "MetadataResources",
+      "applicability": "MetadataResourcesOrExternalCube",
       "skeleton": "Items"
     },
     {
@@ -216,6 +240,12 @@
       "operation": "predefinedItem.remove",
       "applicability": "MetadataPredefinedItem",
       "skeleton": "Target"
+    },
+    {
+      "variant": "ExternalFieldAdd",
+      "operation": "field.add",
+      "applicability": "ExternalDataTable",
+      "skeleton": "Items"
     }
   ]
 }

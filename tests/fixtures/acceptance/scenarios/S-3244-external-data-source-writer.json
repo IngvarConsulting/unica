@@ -1,0 +1,1147 @@
+{
+  "id": "S-3244-external-data-source-writer",
+  "issue": 3244,
+  "area": "Metadata",
+  "task": "Создать внешний источник с двумя таблицами с одноимёнными полями, таблицей выражения, функцией и кубом с подчинёнными. Затем изменить только выбранные поле и таблицу, проверить чтение и атомарный отказ.",
+  "workspace": "tests/fixtures/acceptance/workspace-all-kinds",
+  "formats": [
+    "2.20",
+    "2.21",
+    "2.22"
+  ],
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "preconfig": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "object.create",
+            "args": {
+              "values": {
+                "kind": "ExternalDataSource",
+                "name": "WriterProbe"
+              }
+            }
+          },
+          {
+            "op": "table.add",
+            "args": {
+              "at": "main:ExternalDataSource.WriterProbe",
+              "items": [
+                {
+                  "name": "Items",
+                  "tableType": "Table",
+                  "nameInDataSource": "items"
+                }
+              ]
+            }
+          },
+          {
+            "op": "table.add",
+            "args": {
+              "at": "main:ExternalDataSource.WriterProbe",
+              "items": [
+                {
+                  "name": "OtherItems",
+                  "tableType": "Table",
+                  "nameInDataSource": "other_items"
+                }
+              ]
+            }
+          },
+          {
+            "op": "table.add",
+            "args": {
+              "at": "main:ExternalDataSource.WriterProbe",
+              "items": [
+                {
+                  "name": "ByValue",
+                  "tableType": "Expression",
+                  "expressionInDataSource": "dbo.RowsForValue(&1)"
+                }
+              ]
+            }
+          },
+          {
+            "op": "field.add",
+            "args": {
+              "at": "main:ExternalDataSource.WriterProbe.Table.Items",
+              "items": [
+                {
+                  "name": "Code",
+                  "nameInDataSource": "code",
+                  "type": {
+                    "variants": [
+                      {
+                        "kind": "number",
+                        "digits": 10,
+                        "fraction": 2,
+                        "sign": "any"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "op": "field.add",
+            "args": {
+              "at": "main:ExternalDataSource.WriterProbe.Table.OtherItems",
+              "items": [
+                {
+                  "name": "Code",
+                  "nameInDataSource": "code",
+                  "type": {
+                    "variants": [
+                      {
+                        "kind": "string",
+                        "length": 10,
+                        "allowedLength": "variable"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "op": "field.add",
+            "args": {
+              "at": "main:ExternalDataSource.WriterProbe.Table.ByValue",
+              "items": [
+                {
+                  "name": "Value",
+                  "nameInDataSource": "value",
+                  "type": {
+                    "variants": [
+                      {
+                        "kind": "boolean"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "op": "function.add",
+            "args": {
+              "at": "main:ExternalDataSource.WriterProbe",
+              "items": [
+                {
+                  "name": "Total",
+                  "expressionInDataSource": "dbo.Total(&1)",
+                  "returnValue": true,
+                  "type": {
+                    "variants": [
+                      {
+                        "kind": "number",
+                        "digits": 10,
+                        "fraction": 2,
+                        "sign": "any"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "op": "cube.add",
+            "args": {
+              "at": "main:ExternalDataSource.WriterProbe",
+              "items": [
+                {
+                  "name": "Sales",
+                  "nameInDataSource": "sales"
+                }
+              ]
+            }
+          },
+          {
+            "op": "dimensionTable.add",
+            "args": {
+              "at": "main:ExternalDataSource.WriterProbe.Cube.Sales",
+              "items": [
+                {
+                  "name": "Products",
+                  "nameInDataSource": "products"
+                }
+              ]
+            }
+          },
+          {
+            "op": "field.add",
+            "args": {
+              "at": "main:ExternalDataSource.WriterProbe.Cube.Sales.DimensionTable.Products",
+              "items": [
+                {
+                  "name": "Code",
+                  "nameInDataSource": "code",
+                  "type": {
+                    "variants": [
+                      {
+                        "kind": "string",
+                        "length": 10,
+                        "allowedLength": "variable"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "op": "dimension.add",
+            "args": {
+              "at": "main:ExternalDataSource.WriterProbe.Cube.Sales",
+              "items": [
+                {
+                  "name": "Product",
+                  "type": "main:ExternalDataSource.WriterProbe.Cube.Sales.DimensionTable.Products"
+                }
+              ]
+            }
+          },
+          {
+            "op": "resource.add",
+            "args": {
+              "at": "main:ExternalDataSource.WriterProbe.Cube.Sales",
+              "items": [
+                {
+                  "name": "Amount",
+                  "nameInDataSource": "amount",
+                  "type": {
+                    "variants": [
+                      {
+                        "kind": "number",
+                        "digits": 10,
+                        "fraction": 2,
+                        "sign": "any"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.preconfig"
+        },
+        {
+          "path": "src/ExternalDataSources/WriterProbe.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/ExternalDataSources/WriterProbe/Tables/Items.xml",
+          "kind": "exists",
+          "eq": false
+        }
+      ],
+      "captures": {
+        "create": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.create"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "captures": {
+        "initialconfig": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "initialroot": {
+          "file": "src/ExternalDataSources/WriterProbe.xml",
+          "kind": "sha256"
+        },
+        "initialtable": {
+          "file": "src/ExternalDataSources/WriterProbe/Tables/Items.xml",
+          "kind": "sha256"
+        },
+        "initialother": {
+          "file": "src/ExternalDataSources/WriterProbe/Tables/OtherItems.xml",
+          "kind": "sha256"
+        },
+        "initialexpressionTable": {
+          "file": "src/ExternalDataSources/WriterProbe/Tables/ByValue.xml",
+          "kind": "sha256"
+        },
+        "initialcube": {
+          "file": "src/ExternalDataSources/WriterProbe/Cubes/Sales.xml",
+          "kind": "sha256"
+        },
+        "initialdimensionTable": {
+          "file": "src/ExternalDataSources/WriterProbe/Cubes/Sales/DimensionTables/Products.xml",
+          "kind": "sha256"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/ExternalDataSources/WriterProbe.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}ExternalDataSource/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "WriterProbe"
+          ]
+        },
+        {
+          "path": "src/ExternalDataSources/WriterProbe/Tables/Items.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Field/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}Type",
+          "eq": [
+            "xs:decimal"
+          ]
+        },
+        {
+          "path": "src/ExternalDataSources/WriterProbe/Cubes/Sales.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Dimension/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}Type",
+          "eq": [
+            "cfg:ExternalDataSourceCubeDimensionTableRef.WriterProbe.Sales.Products"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ExternalDataSource.WriterProbe.Can.table.add"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/items/items/properties/tableType/enum",
+          "eq": [
+            "Table",
+            "Expression"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ExternalDataSource.WriterProbe.Table.Items.Can.field.add"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/items/items/required",
+          "eq": [
+            "name",
+            "nameInDataSource",
+            "type"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ExternalDataSource.WriterProbe.Cube.Sales.Can.dimension.add"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/items/items/properties/type/type",
+          "eq": "string"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ExternalDataSource.WriterProbe.Function.Total.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/ReturnValue/type",
+          "eq": "boolean"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ExternalDataSource.WriterProbe"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "ExternalDataSource"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ExternalDataSource.WriterProbe.Table.ByValue"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Table"
+        },
+        {
+          "pointer": "/data/props/TableType",
+          "eq": "Expression"
+        },
+        {
+          "pointer": "/data/props/ExpressionInDataSource",
+          "eq": "dbo.RowsForValue(&1)"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ExternalDataSource.WriterProbe.Table.ByValue.Field.Value"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Field"
+        },
+        {
+          "pointer": "/data/props/type/variants/0/kind",
+          "eq": "boolean"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ExternalDataSource.WriterProbe.Cube.Sales"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Cube"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ExternalDataSource.WriterProbe.Cube.Sales.DimensionTable.Products"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "DimensionTable"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ExternalDataSource.WriterProbe.Cube.Sales.DimensionTable.Products.Field.Code"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Field"
+        },
+        {
+          "pointer": "/data/props/type/variants/0/kind",
+          "eq": "string"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ExternalDataSource.WriterProbe.Cube.Sales.Dimension.Product"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Dimension"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ExternalDataSource.WriterProbe.Cube.Sales.Resource.Amount"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Resource"
+        },
+        {
+          "pointer": "/data/props/type/variants/0/kind",
+          "eq": "number"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ExternalDataSource.WriterProbe.Function.Total"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Function"
+        },
+        {
+          "pointer": "/data/props/ReturnValue",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/ExpressionInDataSource",
+          "eq": "dbo.Total(&1)"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ExternalDataSource.WriterProbe",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "at": "main:ExternalDataSource.WriterProbe.Table.Items",
+              "values": {
+                "Synonym": "ru = 'Товары и услуги'; en = 'Items and services'"
+              }
+            }
+          },
+          {
+            "op": "props.set",
+            "args": {
+              "at": "main:ExternalDataSource.WriterProbe.Table.Items.Field.Code",
+              "values": {
+                "Type": {
+                  "variants": [
+                    {
+                      "kind": "boolean"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialconfig"
+        },
+        {
+          "path": "src/ExternalDataSources/WriterProbe.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialroot"
+        },
+        {
+          "path": "src/ExternalDataSources/WriterProbe/Tables/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialtable"
+        },
+        {
+          "path": "src/ExternalDataSources/WriterProbe/Tables/OtherItems.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialother"
+        },
+        {
+          "path": "src/ExternalDataSources/WriterProbe/Tables/ByValue.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialexpressionTable"
+        },
+        {
+          "path": "src/ExternalDataSources/WriterProbe/Cubes/Sales.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialcube"
+        },
+        {
+          "path": "src/ExternalDataSources/WriterProbe/Cubes/Sales/DimensionTables/Products.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialdimensionTable"
+        }
+      ],
+      "captures": {
+        "edit": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.edit"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialconfig"
+        },
+        {
+          "path": "src/ExternalDataSources/WriterProbe.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialroot"
+        },
+        {
+          "path": "src/ExternalDataSources/WriterProbe/Tables/OtherItems.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialother"
+        },
+        {
+          "path": "src/ExternalDataSources/WriterProbe/Tables/ByValue.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialexpressionTable"
+        },
+        {
+          "path": "src/ExternalDataSources/WriterProbe/Cubes/Sales.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialcube"
+        },
+        {
+          "path": "src/ExternalDataSources/WriterProbe/Cubes/Sales/DimensionTables/Products.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialdimensionTable"
+        },
+        {
+          "path": "src/ExternalDataSources/WriterProbe/Tables/Items.xml",
+          "kind": "sha256",
+          "notEq": "$capture.initialtable"
+        },
+        {
+          "path": "src/ExternalDataSources/WriterProbe/Tables/Items.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Field/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}Type",
+          "eq": [
+            "xs:boolean"
+          ]
+        },
+        {
+          "path": "src/ExternalDataSources/WriterProbe/Tables/Items.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Table/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
+          "eq": [
+            "Товары и услуги",
+            "Items and services"
+          ]
+        }
+      ],
+      "captures": {
+        "editedtable": {
+          "file": "src/ExternalDataSources/WriterProbe/Tables/Items.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ExternalDataSource.WriterProbe.Table.Items"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Table"
+        },
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": "ru = 'Товары и услуги'; en = 'Items and services'"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ExternalDataSource.WriterProbe.Table.Items.Field.Code"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Field"
+        },
+        {
+          "pointer": "/data/props/type/variants/0/kind",
+          "eq": "boolean"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ExternalDataSource.WriterProbe.Table.OtherItems.Field.Code"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Field"
+        },
+        {
+          "pointer": "/data/props/type/variants/0/kind",
+          "eq": "string"
+        },
+        {
+          "pointer": "/data/props/type/variants/0/length",
+          "eq": 10
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ExternalDataSource.WriterProbe",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "at": "main:ExternalDataSource.WriterProbe",
+              "values": {
+                "Comment": "Source descriptor"
+              }
+            }
+          },
+          {
+            "op": "props.set",
+            "args": {
+              "at": "main:ExternalDataSource.WriterProbe.Function.Total",
+              "values": {
+                "ReturnValue": false,
+                "ExpressionInDataSource": "dbo.Total(&1{, &2})",
+                "Type": {
+                  "variants": [
+                    {
+                      "kind": "boolean"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ExternalDataSources/WriterProbe.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialroot"
+        },
+        {
+          "path": "src/ExternalDataSources/WriterProbe/Tables/OtherItems.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialother"
+        },
+        {
+          "path": "src/ExternalDataSources/WriterProbe/Tables/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.editedtable"
+        }
+      ],
+      "captures": {
+        "functionEdit": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.functionEdit"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ExternalDataSources/WriterProbe/Tables/OtherItems.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialother"
+        },
+        {
+          "path": "src/ExternalDataSources/WriterProbe/Cubes/Sales.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialcube"
+        },
+        {
+          "path": "src/ExternalDataSources/WriterProbe/Tables/ByValue.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialexpressionTable"
+        },
+        {
+          "path": "src/ExternalDataSources/WriterProbe/Tables/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.editedtable"
+        },
+        {
+          "path": "src/ExternalDataSources/WriterProbe.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Function/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}ExpressionInDataSource",
+          "eq": [
+            "dbo.Total(&1{, &2})"
+          ]
+        }
+      ],
+      "captures": {
+        "editedroot": {
+          "file": "src/ExternalDataSources/WriterProbe.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ExternalDataSource.WriterProbe"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "ExternalDataSource"
+        },
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "Source descriptor"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ExternalDataSource.WriterProbe.Function.Total"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Function"
+        },
+        {
+          "pointer": "/data/props/ReturnValue",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/ExpressionInDataSource",
+          "eq": "dbo.Total(&1{, &2})"
+        },
+        {
+          "pointer": "/data/props/type/variants/0/kind",
+          "eq": "boolean"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ExternalDataSource.WriterProbe",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "at": "main:ExternalDataSource.WriterProbe.Table.Items",
+              "values": {
+                "Synonym": "ru = 'Пакет должен откатиться'"
+              }
+            }
+          },
+          {
+            "op": "props.set",
+            "args": {
+              "at": "main:ExternalDataSource.WriterProbe.Function.Total.Field.Code",
+              "values": {
+                "Comment": "missing"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ExternalDataSources/WriterProbe/Tables/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.editedtable"
+        },
+        {
+          "path": "src/ExternalDataSources/WriterProbe.xml",
+          "kind": "sha256",
+          "eq": "$capture.editedroot"
+        },
+        {
+          "path": "src/ExternalDataSources/WriterProbe/Tables/OtherItems.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialother"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ExternalDataSource.WriterProbe",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "at": "main:ExternalDataSource.WriterProbe.Table.Items",
+              "values": {
+                "Synonym": "ru = 'Пакет должен откатиться'"
+              }
+            }
+          },
+          {
+            "op": "props.set",
+            "args": {
+              "at": "main:ExternalDataSource.WriterProbe.Function.Total.Parameter.Input",
+              "values": {
+                "Comment": "missing"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ExternalDataSources/WriterProbe/Tables/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.editedtable"
+        },
+        {
+          "path": "src/ExternalDataSources/WriterProbe.xml",
+          "kind": "sha256",
+          "eq": "$capture.editedroot"
+        },
+        {
+          "path": "src/ExternalDataSources/WriterProbe/Tables/OtherItems.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialother"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ExternalDataSource.WriterProbe",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "at": "main:ExternalDataSource.WriterProbe.Table.Items",
+              "values": {
+                "Synonym": "ru = 'Пакет должен откатиться'"
+              }
+            }
+          },
+          {
+            "op": "props.set",
+            "args": {
+              "at": "main:ExternalDataSource.WriterProbe.Table.Items.Field.Code",
+              "values": {
+                "Type": {
+                  "variants": [
+                    {
+                      "kind": "string",
+                      "length": 10,
+                      "allowedLength": "variable"
+                    },
+                    {
+                      "kind": "boolean"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ExternalDataSources/WriterProbe/Tables/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.editedtable"
+        },
+        {
+          "path": "src/ExternalDataSources/WriterProbe.xml",
+          "kind": "sha256",
+          "eq": "$capture.editedroot"
+        },
+        {
+          "path": "src/ExternalDataSources/WriterProbe/Tables/OtherItems.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialother"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ExternalDataSource.WriterProbe",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "at": "main:ExternalDataSource.WriterProbe.Table.Items",
+              "values": {
+                "Comment": "This change must remain staged"
+              }
+            }
+          },
+          {
+            "op": "dimension.add",
+            "args": {
+              "at": "main:ExternalDataSource.WriterProbe.Cube.Sales",
+              "items": [
+                {
+                  "name": "BadDimension",
+                  "type": "main:ExternalDataSource.WriterProbe.Cube.Sales.DimensionTable.Missing"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ExternalDataSources/WriterProbe/Tables/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.editedtable"
+        },
+        {
+          "path": "src/ExternalDataSources/WriterProbe.xml",
+          "kind": "sha256",
+          "eq": "$capture.editedroot"
+        },
+        {
+          "path": "src/ExternalDataSources/WriterProbe/Tables/OtherItems.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialother"
+        },
+        {
+          "path": "src/ExternalDataSources/WriterProbe/Cubes/Sales.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialcube"
+        }
+      ]
+    }
+  ]
+}
