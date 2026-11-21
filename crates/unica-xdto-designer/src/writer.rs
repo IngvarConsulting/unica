@@ -1,4 +1,4 @@
-use super::model::{XDTO_NS, XSI_NS};
+use super::model::{XDTO_NS, XML_SCHEMA_NS, XSI_NS};
 use roxmltree::Node;
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -1351,7 +1351,47 @@ fn insert_top_level(
         }
     }
     let sibling = root.children().rfind(Node::is_element);
+    if sibling.is_none() {
+        if let Some(edit) = insert_first_native_package_type(text, root, fragment) {
+            return Ok(edit);
+        }
+    }
     insert_before_explicit_close(text, root, sibling, fragment)
+}
+
+/// Designer exports an empty Package.bin with its default package namespace,
+/// only the xs/xsi bindings and an explicit closing tag on the second CRLF
+/// line. Its populated packages indent top-level types by one tab.
+fn insert_first_native_package_type(
+    text: &str,
+    root: Node<'_, '_>,
+    fragment: &str,
+) -> Option<TextEdit> {
+    const END: &str = "\r\n</package>";
+    let range = root.range();
+    let opening = text[range.clone()].strip_suffix(END)?;
+    if !matches!(&text[..range.start], "" | "\u{feff}")
+        || &text[range.end..] != "\r\n"
+        || !opening.starts_with("<package ")
+        || !opening.ends_with('>')
+        || opening.contains(['\r', '\n'])
+        || root.attributes().len() != 1
+        || root.attribute("targetNamespace").is_none_or(str::is_empty)
+        || root.namespaces().len() != 3
+        || root.lookup_namespace_uri(Some("xs")) != Some(XML_SCHEMA_NS)
+        || root.lookup_namespace_uri(Some("xsi")) != Some(XSI_NS)
+        || !root.children().all(|node| {
+            node.is_text()
+                && node.range() == (range.end - END.len()..range.end - "</package>".len())
+        })
+    {
+        return None;
+    }
+    let close = range.end - "</package>".len();
+    Some(TextEdit {
+        range: close..close,
+        replacement: format!("\t{fragment}\r\n"),
+    })
 }
 
 fn insert_line_before_node(
@@ -2023,6 +2063,28 @@ mod tests {
             format!("<package {ROOT}><valueType name=\"Added\" base=\"xs:string\"/></package>")
         );
         assert_edit_applies(&before, &planned);
+    }
+
+    /// rule: INV.SOURCE.XDTO-LOCAL-CHANGE
+    #[test]
+    fn xdto_writer_inserts_first_type_in_the_native_empty_package() {
+        let native_root = ROOT.replace(r#" xmlns:tns="urn:test""#, "");
+        let before = format!("<package {native_root}>\r\n</package>\r\n");
+        let operation = args(&[("name", json!("Added")), ("base", json!("xs:string"))]);
+        let planned = plan(&before, &operation, "add-value-type").unwrap();
+        assert_eq!(
+            planned.after,
+            format!("<package {native_root}>\r\n\t<valueType name=\"Added\" base=\"xs:string\"/>\r\n</package>\r\n")
+        );
+        assert_edit_applies(&before, &planned);
+
+        for other in [
+            format!("<package {native_root}>\r\n<!-- keep -->\r\n</package>\r\n"),
+            format!("<package {native_root}>\r\n</package>\n"),
+        ] {
+            let error = plan(&other, &operation, "add-value-type").unwrap_err();
+            assert!(error.contains("unsupported_node"), "{error}");
+        }
     }
 
     #[test]

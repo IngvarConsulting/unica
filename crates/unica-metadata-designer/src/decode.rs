@@ -62,6 +62,8 @@ pub enum MetadataPlanKind {
     Create {
         kind: unica_metadata::CreatableKind,
         name: String,
+        metadata_type: Option<unica_metadata::MetadataType>,
+        creation_namespace: Option<String>,
     },
     Remove {
         target: MetadataAddress,
@@ -112,6 +114,10 @@ pub enum DescriptorPropertyChanges {
     PaletteColor(unica_metadata::property_input::PaletteColorPropertyChanges),
     Queue(unica_metadata::property_input::QueuePropertyChanges),
     FunctionalOption(unica_metadata::property_input::FunctionalOptionPropertyChanges),
+    CommonCommand {
+        group: String,
+        comment: Option<String>,
+    },
     Role(unica_metadata::property_input::RolePropertyChanges),
     WSReference(unica_metadata::property_input::WsReferencePropertyChanges),
     Subsystem(unica_metadata::property_input::SubsystemPropertyChanges),
@@ -911,9 +917,84 @@ pub fn parse_object_create(
         &values["name"],
         &format!("ops[{op_index}].args.values.name"),
     )?;
+    let type_path = format!("ops[{op_index}].args.values.type");
+    let metadata_type = if kind.requires_creation_type() {
+        let raw = values.get("type").ok_or_else(|| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::BadValue,
+                format!("{kind_text} creation requires a structured metadata type"),
+            )
+            .at_path(&type_path)
+        })?;
+        let metadata_type = unica_metadata::request::parse_metadata_type(raw, "type")
+            .and_then(|metadata_type| {
+                unica_metadata::validate_metadata_element_value_profile(
+                    Some(&metadata_type),
+                    None,
+                    unica_metadata::MetaValueProfileContext::NewElement,
+                )?;
+                Ok(metadata_type)
+            })
+            .map_err(|diagnostic| {
+                let suffix = diagnostic
+                    .field
+                    .as_deref()
+                    .and_then(|field| field.strip_prefix("type"))
+                    .unwrap_or_default();
+                ApplyPlanError::new(ApplyPlanErrorKind::BadValue, diagnostic.message)
+                    .at_path(format!("{type_path}{suffix}"))
+            })?;
+        Some(metadata_type)
+    } else {
+        if values.contains_key("type") {
+            return Err(ApplyPlanError::new(
+                ApplyPlanErrorKind::BadValue,
+                "object.create values accept only `kind` and `name`, not `type`",
+            )
+            .at_path(type_path));
+        }
+        None
+    };
+    let namespace_path = format!("ops[{op_index}].args.values.namespace");
+    let creation_namespace = if kind.requires_creation_namespace() {
+        let raw = values.get("namespace").ok_or_else(|| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::BadValue,
+                "XDTOPackage creation requires an explicit namespace URI",
+            )
+            .at_path(&namespace_path)
+        })?;
+        values_shape
+            .property("namespace")
+            .expect("object.create namespace")
+            .validate_field_with_formats(
+                raw,
+                &namespace_path,
+                unica_metadata::contracts::XDTO_NAMESPACE_FORMATS,
+            )
+            .map_err(|error| {
+                ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.message).at_path(error.path)
+            })?;
+        Some(
+            raw.as_str()
+                .expect("validated namespace string")
+                .to_string(),
+        )
+    } else {
+        if values.contains_key("namespace") {
+            return Err(ApplyPlanError::new(
+                ApplyPlanErrorKind::BadValue,
+                "object.create accepts namespace only for XDTOPackage",
+            )
+            .at_path(namespace_path));
+        }
+        None
+    };
     Ok(MetadataPlanKind::Create {
         kind,
         name: name.to_string(),
+        metadata_type,
+        creation_namespace,
     })
 }
 pub fn parse_object_remove(
@@ -1294,6 +1375,10 @@ pub fn parse_properties(
         unica_metadata::property_input::PropertiesIntent::FunctionalOption(values) => (
             "FunctionalOptions",
             DescriptorPropertyChanges::FunctionalOption(values),
+        ),
+        unica_metadata::property_input::PropertiesIntent::CommonCommand { group, comment } => (
+            "CommonCommands",
+            DescriptorPropertyChanges::CommonCommand { group, comment },
         ),
         unica_metadata::property_input::PropertiesIntent::Metadata(values) => {
             let (target, _) = metadata_owner(&target, op_index)?;

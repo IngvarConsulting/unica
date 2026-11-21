@@ -6,6 +6,7 @@ use unica_address::address::QualifiedAddress;
 use unica_address::source_target::MetadataAddress;
 use unica_refusal::{RefusalCode, RefusalDetail};
 use unica_source_contract::portable_path::PortablePathExt;
+use unica_source_contract::read::SOURCE_TREE_TRAVERSAL_MAX_DEPTH;
 
 impl ProviderReadAuthority {
     pub(crate) fn subsystem_payload(
@@ -125,6 +126,15 @@ impl ProviderReadAuthority {
         nested: &[String],
         checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
     ) -> Result<String, ViewError> {
+        // The root descriptor sits under Subsystems. Every child adds its
+        // owning subsystem's directory and another Subsystems directory.
+        let directory_depth = 1 + 2 * nested.len();
+        if directory_depth > SOURCE_TREE_TRAVERSAL_MAX_DEPTH {
+            return Err(ViewError::new(
+                RefusalCode::ProviderLimitExceeded,
+                "registered subsystem path exceeds the source tree traversal-depth limit",
+            ));
+        }
         let (relative, bytes) = self.registered_subsystem_descriptor(target, nested, checkpoint)?;
         let descriptor = std::str::from_utf8(&bytes).map_err(|_| {
             ViewError::detailed(

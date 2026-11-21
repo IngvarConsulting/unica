@@ -19,6 +19,7 @@ bsl-syntax = { package = "syntax", git = "https://github.com/itrous/bsl-analyzer
 diffy = "0.5.0"
 fs2 = "0.4"
 jsonschema = { version = "0.30", default-features = false }
+fluent-uri = "=0.3.2"
 flate2 = "1"
 libc = "0.2"
 # MCP transport is owned by the official Rust SDK (ADR-0013); macros stay off

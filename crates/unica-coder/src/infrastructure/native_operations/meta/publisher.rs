@@ -527,7 +527,7 @@ pub(crate) fn prepare_meta_add(
         unica_metadata_designer::template_catalog::MetadataTemplateOperationOverrides {
             source: source_is_replaced_by_operation,
             handler: handler_is_replaced_by_operation,
-            language_codes: None,
+            ..Default::default()
         },
         &request.source_set,
         &language,

@@ -11,9 +11,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use unica_address::address::{NodeKind, QualifiedAddress};
 use unica_bsl::profile::PlatformProfile;
-use unica_metadata::subsystem::SUBSYSTEM_ADDRESS_MAX_DEPTH;
 use unica_refusal::{RefusalCode, RefusalDetail};
-use unica_source_contract::read::{FileIdentity, SourceDirectory, SourceEntry, SourceFile};
+use unica_source_contract::read::{
+    FileIdentity, SourceDirectory, SourceEntry, SourceFile, SOURCE_TREE_TRAVERSAL_MAX_DEPTH,
+};
 use unica_source_contract::SourceSetKind;
 use unica_source_designer::layout::{
     metadata_kind_by_directory, ORDINARY_INTERFACE_DIRECTORY, ORDINARY_INTERFACE_XML_TAG,
@@ -2715,14 +2716,15 @@ fn absolute_query_relative_path(
 }
 
 fn nested_subsystem_path(parts: &[&str]) -> bool {
-    (4..=2 * SUBSYSTEM_ADDRESS_MAX_DEPTH).contains(&parts.len())
+    // The final component is the descriptor, not a traversed directory.
+    (4..=SOURCE_TREE_TRAVERSAL_MAX_DEPTH + 1).contains(&parts.len())
         && parts.len().is_multiple_of(2)
         && parts.last().is_some_and(|name| name.ends_with(".xml"))
         && parts.iter().step_by(2).all(|part| *part == "subsystems")
 }
 
 fn point_path_depths<'a>(parts: &'a [&'a str]) -> impl DoubleEndedIterator<Item = usize> + 'a {
-    (1..=parts.len().min(2 * SUBSYSTEM_ADDRESS_MAX_DEPTH)).filter(|&depth| {
+    (1..=parts.len().min(SOURCE_TREE_TRAVERSAL_MAX_DEPTH + 1)).filter(|&depth| {
         depth <= MAX_POINT_PATH_DEPTH || nested_subsystem_path(&parts[parts.len() - depth..])
     })
 }
@@ -4468,6 +4470,26 @@ mod tests {
             )
             .expect_err("the existing external target must declare its actual kind");
         assert_eq!(error.code(), RefusalCode::InvalidSource);
+    }
+
+    #[test]
+    fn nested_subsystem_point_paths_count_directories_excluding_the_descriptor() {
+        use super::{nested_subsystem_path, point_path_depths, SOURCE_TREE_TRAVERSAL_MAX_DEPTH};
+
+        // The layout adds two directories per level. Its nearest valid
+        // descriptor paths lie one directory below and above the even limit.
+        let mut path = Vec::new();
+        for _ in 1..SOURCE_TREE_TRAVERSAL_MAX_DEPTH.div_ceil(2) {
+            path.extend(["subsystems", "parent"]);
+        }
+        path.extend(["subsystems", "level.xml"]);
+        assert_eq!(path.len() - 1, SOURCE_TREE_TRAVERSAL_MAX_DEPTH - 1);
+        assert!(nested_subsystem_path(&path));
+        assert_eq!(point_path_depths(&path).next_back(), Some(path.len()));
+        path.splice(0..0, ["subsystems", "parent"]);
+        assert_eq!(path.len() - 1, SOURCE_TREE_TRAVERSAL_MAX_DEPTH + 1);
+        assert!(!nested_subsystem_path(&path));
+        assert_ne!(point_path_depths(&path).next_back(), Some(path.len()));
     }
 
     /// Описания и модули вложенных объектов внешнего источника находятся по

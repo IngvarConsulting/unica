@@ -1060,6 +1060,26 @@ mod tests {
     }
 
     #[test]
+    fn create_then_configure_accepts_only_the_declared_creatable_target() {
+        let request = |kind: &str, at: &str| {
+            parse(json!({"at":"main:Configuration","dryRun":true,"ops":[
+                {"op":"object.create","args":{"values":{"kind":kind,"name":"Probe"}}},
+                {"op":"props.set","args":{"at":at,"values":{"Comment":"x"}}}
+            ]}))
+        };
+        assert!(request("Style", "main:Style.Probe").is_ok());
+        for (kind, at) in [
+            ("Style", "main:Style.Other"),
+            ("Style", "extension:Style.Probe"),
+            ("Style", "main:Catalog.Probe"),
+            ("Role", "main:Role.Probe"),
+            ("Unknown", "main:Style.Probe"),
+        ] {
+            assert_eq!(request(kind, at).unwrap_err().location(), "ops[1].args.at");
+        }
+    }
+
+    #[test]
     fn apply_request_preserves_explicit_dry_run_and_one_batch_revision() {
         let request = parse(json!({
             "at": "main:Document.Order",

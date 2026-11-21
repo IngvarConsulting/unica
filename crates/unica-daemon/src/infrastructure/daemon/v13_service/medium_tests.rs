@@ -1517,7 +1517,7 @@ fn resolve_metadata_point_matches_the_full_layout_directory() {
 
 /// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
 #[test]
-fn resolve_nested_subsystems_proves_the_requested_chain_at_the_maximum_depth() {
+fn resolve_nested_subsystems_proves_only_the_requested_registration_chain() {
     use unica_execution::invocation_store::ToolIdentity;
 
     let workspace = resolve_exact_workspace();
@@ -1532,7 +1532,7 @@ fn resolve_nested_subsystems_proves_the_requested_chain_at_the_maximum_depth() {
     let mut at = "main:".to_string();
     let mut directory = std::path::PathBuf::new();
     let mut relative = std::path::PathBuf::new();
-    let depth = unica_metadata::subsystem::SUBSYSTEM_ADDRESS_MAX_DEPTH;
+    let depth = 12;
     for level in 1..=depth {
         let name = format!("Level{level}");
         let next = if level == depth {

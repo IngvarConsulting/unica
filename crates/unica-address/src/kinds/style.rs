@@ -15,5 +15,7 @@ pub(super) const KIND: KindDeclaration = KindDeclaration {
         ..LayoutDeclaration::EMPTY
     }),
     generated_types: Some(&[]),
+    // Свойства нового объекта — как их пишет Конфигуратор 8.3.27 по «Добавить».
+    creation: Some(CreationDeclaration::properties(&[])),
     ..KindDeclaration::new("Style")
 };

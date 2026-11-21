@@ -18,5 +18,17 @@ pub(super) const KIND: KindDeclaration = KindDeclaration {
         ("FilterCriterionManager", "Manager"),
         ("FilterCriterionList", "List"),
     ]),
+    creation: Some(CreationDeclaration {
+        requires_type: true,
+        ..CreationDeclaration::properties(&[
+            "<UseStandardCommands>true</UseStandardCommands>",
+            "<Content/>",
+            "<DefaultForm/>",
+            "<AuxiliaryForm/>",
+            "<ListPresentation/>",
+            "<ExtendedListPresentation/>",
+            "<Explanation/>",
+        ])
+    }),
     ..KindDeclaration::new("FilterCriterion")
 };
