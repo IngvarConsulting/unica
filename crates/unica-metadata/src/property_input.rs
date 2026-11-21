@@ -66,6 +66,7 @@ pub struct WsReferencePropertyChanges {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PropertiesIntent {
+    ExternalDataSource(crate::external_data_source::Changes),
     DocumentNumerator(crate::document_numerator::DocumentNumeratorChanges),
     Metadata(MetaPropertyChanges),
     LanguageCode {
@@ -554,10 +555,21 @@ fn decode_with_contract(
                 .property("values")
                 .expect("declared values field");
             let mut values_reader = PropertyArgumentReader::new(values, shape, &values_path)?;
+            if let PropertiesSite::ExternalDataSource(kind) = site {
+                let changes = crate::external_data_source::decode_values(
+                    kind,
+                    values_reader.object,
+                    &values_path,
+                )?;
+                return reader.finish(PropertiesIntent::ExternalDataSource(changes));
+            }
             if values_reader.object.is_empty() {
                 return Err(invalid(&values_path, "property changes must not be empty"));
             }
             let intent = match site {
+                PropertiesSite::ExternalDataSource(_) => {
+                    unreachable!("external source properties decoded above")
+                }
                 PropertiesSite::CatalogOwner => {
                     let value = values_reader
                         .field("FillFromFillingValue", false)?

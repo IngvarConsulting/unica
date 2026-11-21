@@ -24,5 +24,9 @@ pub(super) const KIND: KindDeclaration = KindDeclaration {
         ("ExternalDataSourceCubesManager", "CubesManager"),
     ]),
     child_order: Some(&["Table", "Cube", "Function"]),
+    creation: Some(CreationDeclaration {
+        main_configuration_only: true,
+        ..CreationDeclaration::properties(&["<DataLockControlMode>Automatic</DataLockControlMode>"])
+    }),
     ..KindDeclaration::new("ExternalDataSource")
 };

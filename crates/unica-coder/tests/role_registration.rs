@@ -133,6 +133,8 @@ fn compile_registration_with_declarations(entry: &str, metadata: &str, form: &st
         enum OperationApplicability {{
             Configuration, ExtensionRoot, Metadata, MetadataWithHelp, MetadataRelations, MetadataOrCommonTemplate, Role, RoleRight, SupportRule, MetadataAttributeContainer,
             CatalogTabularAttribute,
+            ExternalDataSourceRoot, ExternalDataCube, ExternalDataTable,
+            MetadataDimensionsOrExternalCube, MetadataResourcesOrExternalCube,
             MetadataAttribute, MetadataCommands, MetadataCommand, MetadataForms, FormSlots,
             Form, FormAttribute, FormProperties, FormItemContainer, FormItem, FormEvent,
             MetadataTabularSections, MetadataTabularSection,
@@ -308,7 +310,7 @@ fn inline_metadata_member_registrations_require_their_typed_variants() {
         (
             "DimensionAdd",
             "dimension.add",
-            "MetadataDimensions",
+            "MetadataDimensionsOrExternalCube",
             "Items",
         ),
         (
@@ -323,7 +325,12 @@ fn inline_metadata_member_registrations_require_their_typed_variants() {
             "MetadataDimension",
             "Target",
         ),
-        ("ResourceAdd", "resource.add", "MetadataResources", "Items"),
+        (
+            "ResourceAdd",
+            "resource.add",
+            "MetadataResourcesOrExternalCube",
+            "Items",
+        ),
         ("ResourceSet", "resource.set", "MetadataResource", "Values"),
         (
             "ResourceRemove",
@@ -504,7 +511,7 @@ fn raw_metadata_guards_follow_literals_while_the_form_family_requires_typed_regi
         ),
         (
             "Metadata",
-            "MetadataResources",
+            "MetadataResourcesOrExternalCube",
             "ResourceAdd",
             "resource.add",
         ),

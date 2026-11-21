@@ -25,7 +25,10 @@ use super::v13_infobase_exports::{
     runner_start_rejection, valid_1c_identifier, CONFIG_NAME, LOCAL_CONFIG_NAME,
     RUNNER_OUTPUT_LIMIT,
 };
-use super::v13_source_set_name::{source_set_name_guidance, valid_source_set_name};
+use super::v13_source_set_name::{
+    exchange_source_set_name_guidance, source_set_name_guidance, valid_source_set_name,
+    valid_source_set_name_spelling,
+};
 use unica_artifact_delivery::engine::BundledTool;
 use unica_execution::invocation_store::ToolIdentity;
 use unica_process::runner::{
@@ -487,11 +490,11 @@ fn parse_export_arguments(args: &Map<String, Value>) -> Result<ExportArguments, 
         })?;
     let source_set = match args.get("sourceSet") {
         None => None,
-        Some(Value::String(value)) if valid_source_set_name(value) => Some(value.clone()),
+        Some(Value::String(value)) if valid_source_set_name_spelling(value) => Some(value.clone()),
         Some(_) => {
             return Err(reject(
                 RefusalCode::BadValue,
-                source_set_name_guidance(OPERATION),
+                exchange_source_set_name_guidance(OPERATION),
             ))
         }
     };
@@ -2461,41 +2464,41 @@ mod medium_tests {
     }
     #[test]
     fn preview_accepts_cyrillic_extension_source_set_from_public_run_request() {
-        let root = workspace();
-        let config = root.path().join(CONFIG_NAME);
-        let yaml = fs::read_to_string(&config)
-            .unwrap()
-            .replace("Sales", "Доработки");
-        fs::write(config, yaml).unwrap();
-        let request = InvocationRequest::new(
-            ToolIdentity::Run,
-            json!({
-                "op": "pull",
-                "args": {"sourceSet": "Доработки", "extension": "Доработки", "force": true},
-                "dryRun": true
-            }),
-            root.path().display().to_string(),
-            7000,
-        )
-        .unwrap();
-        let prepared = PreparedSourceExport::parse(&request).expect("Cyrillic source set");
-        let runner = SequenceRunner::new(vec![process(
-            envelope(root.path(), "Доработки", "FULL", Some("Доработки"), false),
-            true,
-        )]);
-        let result = run(root.path(), &prepared, &runner);
-        assert!(result.ok, "{result:?}");
-        assert_eq!(
-            result.data.as_ref().unwrap()["plan"]["sourceSet"],
-            "Доработки"
-        );
-        assert_eq!(result.data.as_ref().unwrap()["plan"]["target"], "Доработки");
-        assert!(runner.joined_args(0).contains("pull Доработки --force"));
-        assert!(runner
-            .joined_args(0)
-            .ends_with("--extension Доработки --dry-run"));
-        assert!(result.changed.is_empty());
-        assert!(!root.path().join("Доработки").exists());
+        for name in ["Доработки", "ДемонстрационноеРасширениеПримера1"]
+        {
+            let root = workspace();
+            let config = root.path().join(CONFIG_NAME);
+            let yaml = fs::read_to_string(&config).unwrap().replace("Sales", name);
+            fs::write(config, yaml).unwrap();
+            let request = InvocationRequest::new(
+                ToolIdentity::Run,
+                json!({
+                    "op": "pull",
+                    "args": {"sourceSet": name, "extension": name, "force": true},
+                    "dryRun": true
+                }),
+                root.path().display().to_string(),
+                7000,
+            )
+            .unwrap();
+            let prepared = PreparedSourceExport::parse(&request).expect("Cyrillic source set");
+            let runner = SequenceRunner::new(vec![process(
+                envelope(root.path(), name, "FULL", Some(name), false),
+                true,
+            )]);
+            let result = run(root.path(), &prepared, &runner);
+            assert!(result.ok, "{result:?}");
+            assert_eq!(result.data.as_ref().unwrap()["plan"]["sourceSet"], name);
+            assert_eq!(result.data.as_ref().unwrap()["plan"]["target"], name);
+            assert!(runner
+                .joined_args(0)
+                .contains(&format!("pull {name} --force")));
+            assert!(runner
+                .joined_args(0)
+                .ends_with(&format!("--extension {name} --dry-run")));
+            assert!(result.changed.is_empty());
+            assert!(!root.path().join(name).exists());
+        }
     }
     #[test]
     fn an_extension_set_requires_its_explicit_extension_before_runner_start() {

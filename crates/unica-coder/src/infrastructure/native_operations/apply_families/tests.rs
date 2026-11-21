@@ -2754,3 +2754,88 @@ fn mixed_event_batch_refusal_names_the_original_operation() {
         .join("Documents/First/Ext/ObjectModule.bsl")
         .exists());
 }
+
+/// rule: INV.SAFETY.APPLY-SUPPORT-GATE
+#[test]
+fn external_source_vendor_gate_binds_ancestor_and_inline_support_to_proved_uuids() {
+    use std::path::{Path, PathBuf};
+    use unica_address::address::QualifiedAddress;
+    use unica_source_contract::SourceSetKind;
+
+    let src = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src");
+    let root = "ExternalDataSource.AllKindsExternalSource";
+    let root_path = PathBuf::from("ExternalDataSources/AllKindsExternalSource.xml");
+    let table_path = PathBuf::from("ExternalDataSources/AllKindsExternalSource/Tables/Items.xml");
+    let table_uuid = "072b8ab6-8343-5f19-8b69-7c1ef655b09b";
+    let field_uuid = "9ff1e2c8-e0b1-51c5-b64d-68b6b4c8f866";
+    let item = format!("main:{root}.Table.Items.Field.Code");
+    let neighbor = format!("main:{root}.Cube.Sales.Resource.Amount");
+
+    let gate = |target: &str, uuid: &str, damage: Option<(&Path, &str, &str)>| {
+        let path = QualifiedAddress::parse(target).unwrap();
+        let marker = format!(
+            "\u{feff}{{6,0,1,dddddddd-dddd-4ddd-8ddd-dddddddddddd,0,{uuid},\"1.0\",\"Vendor\",\"VendorConf\",3,1,0,44444444-4444-4444-8444-444444444444,44444444-4444-4444-8444-444444444444,0,-1,{uuid},{uuid}}}",
+        ).into_bytes();
+        let mut read = |relative: &Path| -> Result<Option<Vec<u8>>, std::io::Error> {
+            if relative == Path::new("Ext/ParentConfigurations.bin") {
+                return Ok(Some(marker.clone()));
+            }
+            let bytes = std::fs::read(src.join(relative))?;
+            if let Some((damaged, old, new)) = damage.filter(|(path, _, _)| *path == relative) {
+                let contents = String::from_utf8(bytes).unwrap();
+                assert_eq!(contents.matches(old).count(), 1, "{}", damaged.display());
+                return Ok(Some(contents.replace(old, new).into_bytes()));
+            }
+            Ok(Some(bytes))
+        };
+        super::support_gate_facts(
+            &path,
+            SourceSetKind::Configuration,
+            false,
+            &mut read,
+            &mut |_| Ok(Vec::new()),
+        )
+        .unwrap()
+    };
+    let ancestor = gate(&item, table_uuid, None);
+    assert_eq!(ancestor.lock.unwrap().owner, format!("{root}.Table.Items"));
+    let own = gate(&item, field_uuid, None);
+    assert_eq!(own.node_rule, Some(0));
+    assert_eq!(
+        own.lock.unwrap().owner,
+        format!("{root}.Table.Items.Field.Code")
+    );
+    let allowed = gate(&neighbor, field_uuid, None);
+    assert!(allowed.lock.is_none() && allowed.unreadable.is_none());
+    let missing_uuid = gate(
+        &item,
+        field_uuid,
+        Some((
+            &table_path,
+            r#" uuid="9ff1e2c8-e0b1-51c5-b64d-68b6b4c8f866""#,
+            "",
+        )),
+    );
+    assert!(missing_uuid.lock.is_none());
+    assert!(missing_uuid
+        .unreadable
+        .unwrap()
+        .reason
+        .contains("no valid UUID"));
+    let duplicate = gate(
+        &item,
+        field_uuid,
+        Some((
+            &root_path,
+            "<Table>Items</Table>",
+            "<Table>Items</Table><Table>Items</Table>",
+        )),
+    );
+    assert!(duplicate.lock.is_none());
+    assert!(duplicate
+        .unreadable
+        .unwrap()
+        .reason
+        .contains("ambiguous Table"));
+}

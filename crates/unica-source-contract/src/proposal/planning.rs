@@ -61,6 +61,10 @@ impl ProvisionalApplyEffect {
         self
     }
 
+    pub fn paths(&self) -> &[PathBuf] {
+        &self.paths
+    }
+
     pub fn event(&self) -> &DomainEvent {
         &self.event
     }

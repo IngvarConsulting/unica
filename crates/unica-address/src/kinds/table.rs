@@ -9,6 +9,16 @@ pub(super) const KIND: KindDeclaration = KindDeclaration {
         directory: Some("Tables"),
         modules: &["ObjectModule", "ManagerModule", "RecordSetModule"],
     }),
+    generated_types: Some(&[
+        ("ExternalDataSourceTableManager", "Manager"),
+        ("ExternalDataSourceTableObject", "Object"),
+        ("ExternalDataSourceTableRef", "Ref"),
+        ("ExternalDataSourceTableList", "List"),
+        ("ExternalDataSourceTableRecord", "Record"),
+        ("ExternalDataSourceTableRecordSet", "RecordSet"),
+        ("ExternalDataSourceTableRecordKey", "RecordKey"),
+        ("ExternalDataSourceTableRecordManager", "RecordManager"),
+    ]),
     child_order: Some(&["Field"]),
     ..KindDeclaration::new("Table")
 };
