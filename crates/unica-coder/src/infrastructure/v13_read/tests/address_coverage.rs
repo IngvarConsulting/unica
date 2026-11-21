@@ -26,6 +26,103 @@ enum AddressEvidence<'a> {
     IntroducedIn(PlatformLine),
 }
 
+enum AddressRequirement {
+    Address,
+    IntroducedIn(PlatformLine),
+}
+
+fn address_key(
+    source: (PlatformLine, SourceSetKind),
+    owner: &QualifiedAddress,
+    branch: &str,
+    role: Option<&str>,
+) -> Value {
+    let (line, source_kind) = source;
+    let owner_shape: Vec<_> = owner
+        .segments()
+        .iter()
+        .map(|segment| {
+            serde_json::json!({
+                "kind": segment.kind().as_str(),
+                "named": segment.name().is_some(),
+                "role": (segment.kind() == NodeKind::Interface).then_some(segment.name()).flatten(),
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "line": line.to_string(),
+        "source_kind": source_kind,
+        "owner_shape": owner_shape,
+        "branch": branch,
+        "role": role,
+    })
+}
+
+struct RequiredKeys {
+    output: Option<PathBuf>,
+    rows: BTreeMap<String, Value>,
+}
+
+impl RequiredKeys {
+    fn new(shard: &str) -> Self {
+        Self {
+            output: std::env::var_os(EVIDENCE_DIRECTORY)
+                .map(|directory| PathBuf::from(directory).join(shard)),
+            rows: BTreeMap::new(),
+        }
+    }
+
+    fn record(
+        &mut self,
+        line: PlatformLine,
+        owner: &QualifiedAddress,
+        branch: &str,
+        requirement: AddressRequirement,
+    ) {
+        if self.output.is_none() {
+            return;
+        }
+        let key = address_key((line, SourceSetKind::Configuration), owner, branch, None);
+        let requirement = match requirement {
+            AddressRequirement::Address => serde_json::json!({"kind": "address"}),
+            AddressRequirement::IntroducedIn(since) => {
+                serde_json::json!({"kind": "introduced_in", "line": since.to_string()})
+            }
+        };
+        let row = serde_json::json!({
+            "schema_version": 1,
+            "record_type": "required",
+            "key": key,
+            "requirement": requirement,
+        });
+        match self.rows.entry(key.to_string()) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(row);
+            }
+            std::collections::btree_map::Entry::Occupied(entry) => {
+                assert_eq!(
+                    entry.get(),
+                    &row,
+                    "conflicting address requirement for {key}"
+                );
+            }
+        }
+    }
+
+    fn finish(self) {
+        if let Some(output) = self.output {
+            use std::io::Write;
+            let mut file = fs::File::create_new(&output)
+                .unwrap_or_else(|error| panic!("required addresses {}: {error}", output.display()));
+            for row in self.rows.into_values() {
+                writeln!(file, "{row}").unwrap_or_else(|error| {
+                    panic!("required addresses {}: {error}", output.display())
+                });
+            }
+        }
+    }
+}
+
 struct EvidenceRows {
     directory: Option<std::path::PathBuf>,
     test_case: &'static str,
@@ -74,20 +171,8 @@ impl EvidenceRows {
         if self.directory.is_none() {
             return;
         }
-        let (line, source_kind) = source;
         let owner_address = QualifiedAddress::parse(owner).expect("witness owner address");
         assert_eq!(owner_address.to_string(), owner);
-        let owner_shape: Vec<_> = owner_address
-            .segments()
-            .iter()
-            .map(|segment| {
-                serde_json::json!({
-                    "kind": segment.kind().as_str(),
-                    "named": segment.name().is_some(),
-                    "role": (segment.kind() == NodeKind::Interface).then_some(segment.name()).flatten(),
-                })
-            })
-            .collect();
         let (at, level, reason) = match evidence {
             AddressEvidence::Read(at) => (Some(at), Some("read"), None),
             AddressEvidence::RoundTrip(at) => (Some(at), Some("roundtrip"), None),
@@ -101,13 +186,7 @@ impl EvidenceRows {
             serde_json::json!({
                 "schema_version": 1,
                 "record_type": "evidence",
-                "key": {
-                    "line": line.to_string(),
-                    "source_kind": source_kind,
-                    "owner_shape": owner_shape,
-                    "branch": branch,
-                    "role": role,
-                },
+                "key": address_key(source, &owner_address, branch, role),
                 "witness": {
                     "owner": owner,
                     "at": at,
@@ -256,6 +335,18 @@ fn native_configuration_root_address_table_matches_published_branches() {
         .iter()
         .flat_map(|(line, _)| DECLARED_ROOT_KINDS.map(|kind| (*line, "Configuration", kind)))
         .collect();
+    let mut required = RequiredKeys::new("required_configuration_root_keys.jsonl");
+    let configuration = QualifiedAddress::parse("main:Configuration").unwrap();
+    for &(line, _, kind) in &expected_keys {
+        let requirement = metadata_kind_since(kind)
+            .filter(|since| line < *since)
+            .map_or(
+                AddressRequirement::Address,
+                AddressRequirement::IntroducedIn,
+            );
+        required.record(line, &configuration, kind, requirement);
+    }
+    required.finish();
     let mut rows = BTreeMap::new();
     let mut modules = Vec::new();
     let mut evidence = EvidenceRows::new(
@@ -796,13 +887,15 @@ fn native_metadata_address_table_matches_declared_and_observed_child_branches() 
         "native_metadata_address_table_matches_declared_and_observed_child_branches",
         SourceSetKind::Configuration,
     );
+    let mut required = RequiredKeys::new("required_native_metadata_child_keys.jsonl");
     println!("| Profile | Owner | Branch | Canonical address | Evidence |");
     println!("| --- | --- | --- | --- | --- |");
-    for (xml, line) in [
+    let fixtures = [
         ("2.20", PlatformLine::new(8, 3, 27)),
         ("2.21", PlatformLine::new(8, 5, 1)),
         ("2.22", PlatformLine::new(8, 5, 4)),
-    ] {
+    ]
+    .map(|(xml, line)| {
         let source = fixture_path(&format!("formats/platform_xml/{xml}/all_kinds/src"));
         let source_profile = unica_workspace::source_profile::platform_xml_source_profile(
             SourceSetKind::Configuration,
@@ -811,10 +904,17 @@ fn native_metadata_address_table_matches_declared_and_observed_child_branches() 
         assert_eq!(source_profile.serialization_format(), Some(xml));
         assert_eq!(source_profile.semantic_line(), Some(line));
         let profile = PlatformProfile::for_line_or_base(source_profile.semantic_line());
+        let registrations = root_registrations(&source, xml);
+        record_required_metadata_children(&source, xml, profile, &registrations, &mut required);
+        (source, xml, profile, registrations)
+    });
+    required.finish();
+    for (source, xml, profile, registrations) in fixtures {
+        let line = profile.line();
         let cancellation = CancellationToken::new();
         let authority = native_authority(&cancellation, &source, profile);
         let mut verified = BTreeSet::new();
-        for (kind, name) in root_registrations(&source, xml) {
+        for (kind, name) in registrations {
             let at = QualifiedAddress::parse(&format!("main:{kind}.{name}")).unwrap();
             let route = route_logical_address(&at, profile).unwrap();
             if route.reader() == LogicalReader::Metadata {
@@ -855,6 +955,63 @@ fn native_metadata_address_table_matches_declared_and_observed_child_branches() 
         check_eds_module_rows(&authority, &source, &cancellation);
     }
     evidence.finish();
+}
+
+fn record_required_metadata_children(
+    source: &Path,
+    xml: &str,
+    profile: PlatformProfile,
+    registrations: &[(String, String)],
+    required: &mut RequiredKeys,
+) {
+    if required.output.is_none() {
+        return;
+    }
+    for (kind, name) in registrations {
+        let Some(declared) = platform_child_object_order(kind) else {
+            continue;
+        };
+        let owner = QualifiedAddress::parse(&format!("main:{kind}.{name}")).unwrap();
+        if route_logical_address(&owner, profile).unwrap().reader() != LogicalReader::Metadata {
+            continue;
+        }
+        assert!(
+            metadata_kind_exists(Some(profile.line()), kind),
+            "{xml}: unadmitted {owner}"
+        );
+        let directory = METADATA_LAYOUTS
+            .iter()
+            .find(|layout| layout.tag == kind)
+            .unwrap()
+            .directory;
+        let descriptor = source.join(directory).join(format!("{name}.xml"));
+        let raw = read_fixture_descriptor(&descriptor);
+        let document = parse_fixture_descriptor(&raw, &descriptor);
+        assert_eq!(document.root_element().attribute("version"), Some(xml));
+        let artifact = fixture_artifact(&document, kind, &descriptor);
+        assert_eq!(fixture_properties_name(artifact), Some(name.as_str()));
+        assert!(uuid::Uuid::parse_str(artifact.attribute("uuid").unwrap()).is_ok());
+        for &branch in declared {
+            if branch == "AddressingAttribute" {
+                // This conditional collection is known when its native container is present.
+                let containers: Vec<_> = artifact
+                    .children()
+                    .filter(|node| node.is_element() && node.tag_name().name() == "ChildObjects")
+                    .collect();
+                assert_eq!(
+                    containers.len(),
+                    1,
+                    "{owner}: native addressing eligibility"
+                );
+                assert!(containers[0].has_tag_name((MD_CLASSES_NS, "ChildObjects")));
+            }
+            assert!(
+                metadata_kind_exists(Some(profile.line()), branch),
+                "{xml}: declared child {owner}.{branch} has no admitted platform kind"
+            );
+            required.record(profile.line(), &owner, branch, AddressRequirement::Address);
+        }
+    }
 }
 
 /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS

@@ -29,6 +29,9 @@ NATIVE_SHARDS = frozenset({
     EXTERNAL_ROOT_SHARD,
 })
 DAEMON_SHARD = "medium_published_document_and_bsl_branches_have_canonical_addresses"
+ROOT_KEYS_SHARD = "required_configuration_root_keys"
+METADATA_CHILD_KEYS_SHARD = "required_native_metadata_child_keys"
+REQUIRED_KEY_SHARDS = frozenset({ROOT_KEYS_SHARD, METADATA_CHILD_KEYS_SHARD})
 NATIVE_SCOPE = (
     "Configuration source sets and native Language registrations in extension source sets "
     "across three platform lines, plus native external processor and report root descriptors "
@@ -36,6 +39,7 @@ NATIVE_SCOPE = (
     "physical BSL witnesses in native configuration fixtures. For the external root witnesses, key.line "
     "records the native XML export line. Read checks use the actual workspace profile selector "
     "and establish neither write support nor a match with the runtime profile."
+    " The native report checks declaration closure for configuration roots and top-level metadata children."
 )
 DAEMON_SCOPE = (
     "Read witnesses from the selected document and BSL coverage test of unica-daemon, "
@@ -74,25 +78,9 @@ def source_prefix(value: object, label: str) -> str:
     return prefix
 
 
-def validate_record(record: object, test_case: str) -> None:
-    exact_fields(record, {"schema_version", "record_type", "key", "witness"}, "record")
-    if type(record["schema_version"]) is not int or record["schema_version"] != SCHEMA_VERSION:
-        raise ValueError("unsupported address evidence schema_version")
-    if record["record_type"] != "evidence":
-        raise ValueError("expected an evidence record")
-    key = record["key"]
+def validate_key(key: object) -> tuple[int, ...]:
     exact_fields(key, {"line", "source_kind", "owner_shape", "branch", "role"}, "key")
     version = line_number(key["line"])
-    source_kind = key["source_kind"]
-    allowed_kinds = ("configuration",)
-    if test_case == EXTENSION_LANGUAGE_SHARD:
-        allowed_kinds = ("extension",)
-    elif test_case == EXTERNAL_ROOT_SHARD:
-        allowed_kinds = ("external_processor", "external_report")
-    elif test_case == DAEMON_SHARD:
-        allowed_kinds = ("configuration", "extension", "external_processor", "external_report")
-    if source_kind not in allowed_kinds:
-        raise ValueError(f"unexpected source-set kind {source_kind!r} in shard {test_case!r}")
     token(key["branch"], "branch kind")
     if key["role"] is not None:
         token(key["role"], "branch role")
@@ -106,6 +94,31 @@ def validate_record(record: object, test_case: str) -> None:
             raise ValueError("owner named marker must be a boolean")
         if segment["role"] is not None:
             token(segment["role"], "owner role")
+    return version
+
+
+def validate_record_type(record: dict, kind: str) -> None:
+    if type(record["schema_version"]) is not int or record["schema_version"] != SCHEMA_VERSION:
+        raise ValueError("unsupported address evidence schema_version")
+    if record["record_type"] != kind:
+        raise ValueError(f"expected record_type {kind!r}")
+
+
+def validate_record(record: object, test_case: str) -> None:
+    exact_fields(record, {"schema_version", "record_type", "key", "witness"}, "record")
+    validate_record_type(record, "evidence")
+    key = record["key"]
+    version = validate_key(key)
+    source_kind = key["source_kind"]
+    allowed_kinds = ("configuration",)
+    if test_case == EXTENSION_LANGUAGE_SHARD:
+        allowed_kinds = ("extension",)
+    elif test_case == EXTERNAL_ROOT_SHARD:
+        allowed_kinds = ("external_processor", "external_report")
+    elif test_case == DAEMON_SHARD:
+        allowed_kinds = ("configuration", "extension", "external_processor", "external_report")
+    if source_kind not in allowed_kinds:
+        raise ValueError(f"unexpected source-set kind {source_kind!r} in shard {test_case!r}")
 
     witness = record["witness"]
     exact_fields(witness, {"owner", "at", "level", "origin", "test_case", "reason"}, "witness")
@@ -124,9 +137,44 @@ def validate_record(record: object, test_case: str) -> None:
         raise ValueError("absence reasons are only supported in native configuration shards")
     if witness["at"] is not None or witness["level"] is not None:
         raise ValueError("an absent address cannot have at or level")
-    exact_fields(reason, {"kind", "line"}, "absence reason")
-    if reason["kind"] != "introduced_in" or line_number(reason["line"]) <= version:
+    validate_introduction(reason, version, "absence reason")
+
+
+def validate_introduction(value: object, version: tuple[int, ...], label: str) -> None:
+    exact_fields(value, {"kind", "line"}, label)
+    if value["kind"] != "introduced_in" or line_number(value["line"]) <= version:
         raise ValueError("an introduced_in reason must name a later platform line")
+
+
+def validate_required_record(record: object, shard: str) -> None:
+    exact_fields(record, {"schema_version", "record_type", "key", "requirement"}, "record")
+    validate_record_type(record, "required")
+    key = record["key"]
+    version = validate_key(key)
+    if key["source_kind"] != "configuration":
+        raise ValueError("required keys must belong to a configuration source set")
+    if key["role"] is not None:
+        raise ValueError("required metadata keys cannot name a semantic role")
+    shape = key["owner_shape"]
+    if shard == ROOT_KEYS_SHARD:
+        if shape != [{"kind": "Configuration", "named": False, "role": None}]:
+            raise ValueError("required root key must have the Configuration root owner")
+    elif (
+        len(shape) != 1
+        or not shape[0]["named"]
+        or shape[0]["kind"] == "Configuration"
+        or shape[0]["role"] is not None
+    ):
+        raise ValueError("required metadata child key must have a named top-level owner kind")
+    requirement = record["requirement"]
+    if isinstance(requirement, dict) and requirement.get("kind") == "introduced_in":
+        if shard != ROOT_KEYS_SHARD:
+            raise ValueError("an introduced_in requirement is only valid for a configuration root kind")
+        validate_introduction(requirement, version, "requirement")
+    else:
+        exact_fields(requirement, {"kind"}, "requirement")
+        if requirement["kind"] != "address":
+            raise ValueError("expected an address or introduced_in requirement")
 
 
 def json_object(pairs: list[tuple[str, object]]) -> dict:
@@ -152,6 +200,26 @@ def canonical_json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+def check_required_keys(requirements: dict, groups: dict) -> None:
+    missing = {"address": 0, "introduced_in": 0}
+    diagnostics = []
+    for key, record in sorted(requirements.items()):
+        requirement = record["requirement"]
+        kind = requirement["kind"]
+        witnesses = groups.get(key, {}).get("witnesses", ())
+        reasons = [witness["reason"] for witness in witnesses if witness["test_case"] in NATIVE_SHARDS]
+        expected_reason = None if kind == "address" else requirement
+        if expected_reason not in reasons:
+            missing[kind] += 1
+            found = canonical_json(reasons[0]) if reasons else "no native evidence"
+            diagnostics.append(f"{canonical_json(record['key'])}: expected {canonical_json(requirement)}, found {found}")
+    if diagnostics:
+        raise ValueError(
+            f"missing required native coverage: {missing['address']} address, "
+            f"{missing['introduced_in']} introduced_in\n" + "\n".join(diagnostics)
+        )
+
+
 def merge_shards(directory: Path, required_shards: frozenset[str]) -> list[dict]:
     expected = {f"{test_case}.jsonl" for test_case in required_shards}
     actual = {path.name for path in directory.iterdir()}
@@ -159,6 +227,7 @@ def merge_shards(directory: Path, required_shards: frozenset[str]) -> list[dict]
         raise ValueError(f"evidence shards missing={sorted(expected - actual)}, extra={sorted(actual - expected)}")
 
     groups = {}
+    requirements = {}
     seen = set()
     for name in sorted(expected):
         shard = directory / name
@@ -170,6 +239,15 @@ def merge_shards(directory: Path, required_shards: frozenset[str]) -> list[dict]
         for index, line in enumerate(lines, 1):
             try:
                 record = json.loads(line, object_pairs_hook=json_object)
+                if shard.stem in REQUIRED_KEY_SHARDS:
+                    validate_required_record(record, shard.stem)
+                    key = structural_key(record["key"])
+                    if key in requirements:
+                        prior = requirements[key]["requirement"]
+                        kind = "duplicate" if prior == record["requirement"] else "conflicting"
+                        raise ValueError(f"{kind} requirement for structural key {canonical_json(record['key'])}")
+                    requirements[key] = record
+                    continue
                 validate_record(record, shard.stem)
                 signature = canonical_json(record)
                 if signature in seen:
@@ -187,6 +265,7 @@ def merge_shards(directory: Path, required_shards: frozenset[str]) -> list[dict]
             except ValueError as error:
                 raise ValueError(f"{name}:{index}: {error}") from error
 
+    check_required_keys(requirements, groups)
     result = [groups[key] for key in sorted(groups)]
     for group in result:
         group["witnesses"].sort(key=canonical_json)
@@ -234,7 +313,7 @@ def git_state() -> tuple[str, bytes]:
 def generate_report(native_only: bool) -> dict:
     revision, status = git_state()
     cases = [("unica-coder", "address_coverage")]
-    required_shards = NATIVE_SHARDS
+    required_shards = NATIVE_SHARDS | REQUIRED_KEY_SHARDS
     scope = NATIVE_SCOPE
     if not native_only:
         cases.append(("unica-daemon", DAEMON_SHARD))
