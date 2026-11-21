@@ -16,6 +16,8 @@ enum Script {
     /// Раннер отказал до выгрузки.
     RefusesBeforeReady,
     RefusesAndBlocksStageCleanup,
+    RefusesAndBlocksRetirement,
+    LateOwnerPublicationFailure,
     /// Итог утверждает публикацию, хотя её отклонили.
     ClaimsPublication,
 }
@@ -120,9 +122,18 @@ impl ProcessRunner for ProtocolRunner {
         if self.script == Script::RefusesAndBlocksStageCleanup {
             make_directory_link(stage.parent().unwrap(), &stage.join("unexpected-link"));
         }
+        if self.script == Script::RefusesAndBlocksRetirement {
+            let id = stage.file_name().unwrap().to_str().unwrap();
+            let records = stage.parent().unwrap().join(".fetch-cleanup");
+            assert!(records.join(format!("{id}.preparing")).is_file());
+            fs::write(stage.join("partial.txt"), "unfinished export").unwrap();
+            fs::create_dir(records.join(format!("{id}.retiring"))).unwrap();
+        }
         let refused_before_ready = matches!(
             self.script,
-            Script::RefusesBeforeReady | Script::RefusesAndBlocksStageCleanup
+            Script::RefusesBeforeReady
+                | Script::RefusesAndBlocksStageCleanup
+                | Script::RefusesAndBlocksRetirement
         );
         let (publication, result) = if refused_before_ready || !continued {
             ("not_published", refused("the platform refused"))
@@ -174,6 +185,9 @@ impl ProcessRunner for ProtocolRunner {
                     "publication": publication, "memory": "unchanged", "result": result,
                 })),
             );
+        }
+        if self.script == Script::LateOwnerPublicationFailure {
+            unica_workspace::test_support::inject_post_rename_sync_failure_for_test();
         }
         Ok(ProcessStreamOutput {
             status_success: false,
@@ -670,8 +684,7 @@ fn a_rebound_stage_after_owner_publication_cannot_be_reported_ready() {
 fn a_late_owner_publication_failure_rolls_back_the_exact_record_and_stage() {
     let workspace = workspace();
     let root = workspace.path();
-    let runner = ProtocolRunner::new(Script::Exports);
-    unica_workspace::test_support::inject_post_rename_sync_failure_for_test();
+    let runner = ProtocolRunner::new(Script::LateOwnerPublicationFailure);
 
     let result = run(root, &prepared(root, false), &runner);
 
@@ -690,6 +703,68 @@ fn a_late_owner_publication_failure_rolls_back_the_exact_record_and_stage() {
             .unwrap()
             .count(),
         0
+    );
+}
+
+/// rule: INV.RUNTIME.FETCH-LEAVES-THE-WORKING-COPY
+#[test]
+fn drop_can_resume_an_unfinished_fetch_without_a_retiring_record() {
+    let workspace = workspace();
+    let root = workspace.path();
+    let runner = ProtocolRunner::new(Script::RefusesAndBlocksRetirement);
+
+    let result = run(root, &prepared(root, false), &runner);
+
+    assert!(!result.ok, "{result:?}");
+    assert_eq!(result.diagnostics[0]["code"], "rollback_incomplete");
+    let warning = &result.warnings[0];
+    assert_eq!(warning["code"], SNAPSHOT_KEPT_WARNING);
+    let id = warning["snapshotId"].as_str().unwrap();
+    let public = root.join(warning["path"].as_str().unwrap());
+    assert_eq!(public.file_name().unwrap(), id);
+    assert_eq!(
+        fs::read(public.join("partial.txt")).unwrap(),
+        b"unfinished export"
+    );
+    let records = public.parent().unwrap().join(".fetch-cleanup");
+    let preparing = records.join(format!("{id}.preparing"));
+    assert!(preparing.is_file());
+    assert!(!records.join(format!("{id}.owner")).exists());
+    fs::remove_dir(records.join(format!("{id}.retiring"))).unwrap();
+    let storage = SnapshotStorage::open(root, false).unwrap().unwrap();
+    assert!(storage.owned_snapshots().unwrap().is_empty());
+    let drop = PreparedSourceExport::parse_fetch_drop(&drop_request(
+        root,
+        json!({"snapshotId": id}),
+        false,
+    ))
+    .unwrap();
+
+    let displaced = root.join("unfinished-stage");
+    fs::rename(&public, &displaced).unwrap();
+    fs::create_dir(&public).unwrap();
+    fs::write(public.join("foreign.txt"), "foreign content").unwrap();
+    let refused = drop.execute(CancellationToken::new());
+    assert!(!refused.ok, "{refused:?}");
+    assert_eq!(refused.diagnostics[0]["code"], "rollback_incomplete");
+    assert_eq!(
+        fs::read(public.join("foreign.txt")).unwrap(),
+        b"foreign content"
+    );
+    assert!(preparing.is_file());
+    let foreign = root.join("foreign-stage");
+    fs::rename(&public, &foreign).unwrap();
+    fs::rename(&displaced, &public).unwrap();
+
+    let removed = drop.execute(CancellationToken::new());
+
+    assert!(removed.ok, "{removed:?}");
+    assert_eq!(removed.data.unwrap()["removed"], true);
+    assert!(!public.exists());
+    assert!(!preparing.exists());
+    assert_eq!(
+        fs::read(foreign.join("foreign.txt")).unwrap(),
+        b"foreign content"
     );
 }
 
@@ -840,7 +915,8 @@ fn make_directory_link(target: &Path, link: &Path) {
 fn store_snapshot_fixture(storage: &SnapshotStorage, id: &str) {
     let snapshot = storage.create_stage(id).unwrap();
     fs::write(snapshot.path().join("Configuration.xml"), "<base/>").unwrap();
-    storage.remember(id, &snapshot).unwrap();
+    let preparing = storage.prepare(id, &snapshot).unwrap();
+    storage.remember(id, &snapshot, &preparing).unwrap();
 }
 
 fn verify_ready_snapshot_cannot_be_dropped(root: &Path, stage: &Path) {

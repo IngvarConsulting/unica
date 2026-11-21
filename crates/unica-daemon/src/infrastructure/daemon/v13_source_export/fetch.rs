@@ -261,7 +261,7 @@ pub(super) fn drop_snapshot(
     };
     let owned = match storage
         .as_ref()
-        .map(|storage| storage.drop_target(id))
+        .map(|storage| storage.drop_target(id, !prepared.dry_run))
         .transpose()
     {
         Ok(owned) => owned.flatten(),
@@ -297,6 +297,7 @@ pub(super) fn drop_snapshot(
     };
     let removal = match owned {
         DropTarget::Ready(snapshot) => storage.remove(&snapshot),
+        DropTarget::Preparing(record) => storage.remove_preparing(id, &record),
         DropTarget::Retiring(record) => storage.remove_retiring(id, &record),
     };
     match removal {
@@ -443,6 +444,18 @@ pub(super) fn execute_with_tool(
             return result;
         }
     };
+    let preparing = match storage.prepare(&id, &stage) {
+        Ok(preparing) => preparing,
+        Err(error) => {
+            let result = storage_refusal(
+                FETCH,
+                std::io::Error::other(format!(
+                    "could not confirm the cleanup record before starting the runner: {error}"
+                )),
+            );
+            return finish_failed_fetch(result, &storage, &id, &stage, None, warnings, &root);
+        }
+    };
     // Отпечаток снимается до выгрузки: правка набора во время неё — уже
     // расхождение с тем, что видел снимок.
     let outcome = source_fingerprint(&root, &directory, &cancellation).and_then(|fingerprint| {
@@ -464,7 +477,7 @@ pub(super) fn execute_with_tool(
             return finish_failed_fetch(result, &storage, &id, &stage, None, warnings, &root);
         }
     };
-    match storage.remember(&id, &stage) {
+    match storage.remember(&id, &stage, &preparing) {
         Ok(()) => {}
         Err(RememberFailure::Rejected(error, owner)) => {
             let result = storage_refusal(FETCH, error);
