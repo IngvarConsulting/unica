@@ -347,6 +347,37 @@ impl MetadataReadCodec for DesignerMetadataReadCodec {
     fn object_member_names(&self, descriptor: &[u8]) -> Result<ObjectMemberNames, String> {
         crate::object_member_names::read(descriptor)
     }
+
+    fn child_resource_diagnostics(
+        &self,
+        reader: &dyn unica_metadata::child_resources::TypedChildResourceRead,
+        descriptor: &Path,
+        owner: &MetadataAddress,
+        kind: &str,
+        name: &str,
+        owner_xml: &str,
+    ) -> Vec<unica_metadata::MetaDiagnostic> {
+        match crate::child_resources::observe_typed_child_resources_with(
+            reader,
+            crate::child_resources::TypedChildObservationScope::Diagnostics,
+            descriptor,
+            owner,
+            kind,
+            name,
+            owner_xml,
+        ) {
+            Ok(observation) => observation.diagnostics,
+            Err(failure) => failure.diagnostics,
+        }
+    }
+
+    fn observed_child_directories(&self) -> Vec<&'static str> {
+        crate::child_resources::observed_child_directories().collect()
+    }
+
+    fn child_tree_max_depth(&self) -> usize {
+        crate::child_resources::TYPED_CHILD_TREE_MAX_DEPTH
+    }
 }
 
 impl SupportStateStream for crate::support::SupportStateStreamParser {

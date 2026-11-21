@@ -258,6 +258,25 @@ pub trait MetadataReadCodec: Send + Sync {
     /// Имена реквизитов и табличных частей объекта с реквизитами каждой из
     /// них. Член без имени пропускается.
     fn object_member_names(&self, descriptor: &[u8]) -> Result<ObjectMemberNames, String>;
+
+    /// Ошибки форм, макетов и команд объекта — те же, что называет `check`,
+    /// без удержания их содержимого. `descriptor` — путь описания владельца
+    /// в пространстве путей `reader`.
+    fn child_resource_diagnostics(
+        &self,
+        reader: &dyn crate::child_resources::TypedChildResourceRead,
+        descriptor: &std::path::Path,
+        owner: &MetadataAddress,
+        kind: &str,
+        name: &str,
+        owner_xml: &str,
+    ) -> Vec<crate::MetaDiagnostic>;
+
+    /// Каталоги рядом с описанием владельца, которые читает эта проверка.
+    fn observed_child_directories(&self) -> Vec<&'static str>;
+
+    /// Глубина дерева дочернего ресурса, глубже которой проверка не читает.
+    fn child_tree_max_depth(&self) -> usize;
 }
 
 /// Имена членов объекта, которые видит код его модуля.
