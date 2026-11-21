@@ -323,7 +323,18 @@ fn check_fixture_members<'a>(
     names: impl IntoIterator<Item = &'a str>,
 ) -> BTreeMap<String, Value> {
     let address = parsed(branch);
-    let kind = address.segments().last().unwrap().kind().as_str();
+    let kind = address.segments().last().unwrap().kind();
+    check_fixture_members_with_kind(runtime, fixture, &address, names, kind)
+}
+
+fn check_fixture_members_with_kind<'a>(
+    runtime: &V5CanonicalInvocationRuntime,
+    fixture: &Fixture,
+    address: &QualifiedAddress,
+    names: impl IntoIterator<Item = &'a str>,
+    kind: NodeKind,
+) -> BTreeMap<String, Value> {
+    let branch = address.to_string();
     let mut expected = BTreeMap::new();
     for name in names {
         let at = address.member(name).unwrap().to_string();
@@ -332,7 +343,7 @@ fn check_fixture_members<'a>(
             "duplicate fixture member {name} of {branch}"
         );
     }
-    let (_, items) = read_view(runtime, &fixture.workspace, branch);
+    let (_, items) = read_view(runtime, &fixture.workspace, &branch);
     let actual: BTreeSet<_> = items
         .iter()
         .map(|item| item["at"].as_str().unwrap())
@@ -351,7 +362,7 @@ fn check_fixture_members<'a>(
         .into_iter()
         .map(|(at, name)| {
             let (view, _) = read_view(runtime, &fixture.workspace, &at);
-            assert_eq!(view["kind"], kind, "{at}");
+            assert_eq!(view["kind"], kind.as_str(), "{at}");
             (name.to_owned(), view)
         })
         .collect()
@@ -717,7 +728,14 @@ fn check_extension_common_module(
         [registered.len() as u64],
         "ext:Configuration: {COLL}"
     );
-    check_fixture_members(runtime, fixture, COLL, registered);
+    // The registration is CommonModule. Direct view opens its BSL module.
+    check_fixture_members_with_kind(
+        runtime,
+        fixture,
+        &parsed(COLL),
+        registered,
+        NodeKind::Module,
+    );
     let body = format!("{COLL}.{NAME}.Body");
     let response = invoke_on(
         runtime,
