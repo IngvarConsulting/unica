@@ -187,18 +187,21 @@ impl SnapshotStorage {
     /// Сохраняет право удалить незавершённую стадию до запуска раннера.
     pub(super) fn prepare(&self, id: &str, stage: &StateDirectory) -> io::Result<StateFile> {
         stage.validate_named_identity()?;
-        let name = preparing_name(id);
-        let bytes = stage.identity().stable_bytes();
+        let record = self.write_preparing(&preparing_name(id), &stage.identity().stable_bytes())?;
+        stage.validate_named_identity()?;
+        Ok(record)
+    }
+
+    fn write_preparing(&self, name: &str, bytes: &SnapshotIdentity) -> io::Result<StateFile> {
         let record = self
             .require_records()?
             .create_regular_child_atomically(
                 OsStr::new(&marker_stage_name()),
-                OsStr::new(&name),
-                &bytes,
+                OsStr::new(name),
+                bytes,
             )
             .map_err(|failure| failure.into_observation().0)?;
-        self.confirm_record(&name, &record, &bytes)?;
-        stage.validate_named_identity()?;
+        self.confirm_record(name, &record, bytes)?;
         Ok(record)
     }
 
@@ -231,10 +234,18 @@ impl SnapshotStorage {
                     }
                 });
                 let expected = stage.identity().stable_bytes();
+                let preparation = preparing_name(id);
                 let confirm_owner = || self.confirm_record(&owner, &published, &expected);
                 let finish_preparing = || {
-                    self.confirm_record(&preparing_name(id), preparing, &expected)?;
-                    preparing.remove_named_identity()
+                    self.confirm_record(&preparation, preparing, &expected)?;
+                    preparing.remove_named_identity()?;
+                    #[cfg(test)]
+                    AFTER_PREPARING_REMOVAL.with(|hook| {
+                        if let Some(hook) = hook.take() {
+                            hook();
+                        }
+                    });
+                    Ok(())
                 };
                 let confirm_ready =
                     || confirm_owner().and_then(|()| stage.validate_named_identity());
@@ -244,12 +255,19 @@ impl SnapshotStorage {
                 else {
                     return Ok(());
                 };
-                // Discard only the record this fetch published. A changed stage
-                // name or owner is never permission to touch another tree.
-                let error = confirm_owner()
-                    .and_then(|()| published.remove_named_identity())
-                    .err()
-                    .unwrap_or(error);
+                // Keep cleanup authority even if the last observation fails
+                // after removing the original preparation record.
+                let revoke = (|| {
+                    match self.record(&preparation)? {
+                        Some(current) => same_record(preparing, &current, &expected)?,
+                        None => {
+                            self.write_preparing(&preparation, &expected)?;
+                        }
+                    }
+                    confirm_owner()?;
+                    published.remove_named_identity()
+                })();
+                let error = revoke.err().unwrap_or(error);
                 Err(RememberFailure::Uncertain(CleanupFailure::ownership(
                     error,
                     Some(stage),
@@ -310,18 +328,12 @@ impl SnapshotStorage {
         same_record(expected, &current, bytes)
     }
 
-    pub(super) fn drop_target(
-        &self,
-        id: &str,
-        include_preparing: bool,
-    ) -> io::Result<Option<DropTarget>> {
+    pub(super) fn drop_target(&self, id: &str) -> io::Result<Option<DropTarget>> {
         if let Some(retiring) = self.record(&retirement_name(id))? {
             return Ok(Some(DropTarget::Retiring(retiring)));
         }
-        if include_preparing {
-            if let Some(preparing) = self.record(&preparing_name(id))? {
-                return Ok(Some(DropTarget::Preparing(preparing)));
-            }
+        if let Some(preparing) = self.record(&preparing_name(id))? {
+            return Ok(Some(DropTarget::Preparing(preparing)));
         }
         self.owned_snapshot(id)
             .map(|target| target.map(DropTarget::Ready))
@@ -367,7 +379,7 @@ impl SnapshotStorage {
         Ok(snapshots)
     }
 
-    pub(super) fn remove(&self, snapshot: &OwnedSnapshot) -> Result<(), CleanupFailure> {
+    pub(super) fn remove(&self, snapshot: &OwnedSnapshot) -> Result<bool, CleanupFailure> {
         self.remove_stage(&snapshot.id, &snapshot.directory, Some(&snapshot.ownership))
     }
 
@@ -375,22 +387,25 @@ impl SnapshotStorage {
         &self,
         id: &str,
         preparing: &StateFile,
-    ) -> Result<(), CleanupFailure> {
+    ) -> Result<bool, CleanupFailure> {
         let unknown = |error| CleanupFailure::ownership(error, None);
-        let expected = read_record(preparing).map_err(unknown)?;
-        let stage = self
-            .directory
-            .retain_directory_child(OsStr::new(id))
-            .map_err(unknown)?;
-        if stage.identity().stable_bytes() != expected {
-            return Err(unknown(ownership_changed()));
-        }
+        let stage = read_record(preparing).map_err(unknown)?;
         // A stopped fetch may have written the owner just before promotion.
-        // remove_stage checks any such record against the admitted directory.
         let owner = self
             .record(&ownership_name(id))
-            .map_err(|error| CleanupFailure::ownership(error, Some(&stage)))?;
-        self.remove_stage(id, &stage, owner.as_ref())
+            .map_err(unknown)?
+            .map(|record| {
+                if read_record(&record)? != stage {
+                    return Err(ownership_changed());
+                }
+                Ok(record.identity().stable_bytes())
+            })
+            .transpose()
+            .map_err(unknown)?;
+        let retiring = self
+            .begin_retirement(id, Retirement { stage, owner })
+            .map_err(unknown)?;
+        self.remove_retiring(id, &retiring, Some(preparing))
     }
 
     pub(super) fn remove_stage(
@@ -398,7 +413,7 @@ impl SnapshotStorage {
         id: &str,
         stage: &StateDirectory,
         owner: Option<&StateFile>,
-    ) -> Result<(), CleanupFailure> {
+    ) -> Result<bool, CleanupFailure> {
         let failure = |error| CleanupFailure::ownership(error, Some(stage));
         stage.validate_named_identity().map_err(failure)?;
         let bytes: SnapshotIdentity = stage.identity().stable_bytes();
@@ -416,26 +431,30 @@ impl SnapshotStorage {
             stage: bytes,
             owner: owner.map(|owner| owner.identity().stable_bytes()),
         };
-        let retiring = self
-            .require_records()
-            .map_err(failure)?
+        let retiring = self.begin_retirement(id, retirement).map_err(failure)?;
+        self.remove_retiring(id, &retiring, None)
+    }
+
+    fn begin_retirement(&self, id: &str, retirement: Retirement) -> io::Result<StateFile> {
+        self.require_records()?
             .create_regular_child_atomically(
                 OsStr::new(&marker_stage_name()),
                 OsStr::new(&retirement_name(id)),
                 &retirement.bytes(),
             )
-            .map_err(|error| failure(error.into_observation().0))?;
-        self.remove_retiring(id, &retiring)
+            .map_err(|error| error.into_observation().0)
     }
 
     pub(super) fn remove_retiring(
         &self,
         id: &str,
         retiring: &StateFile,
-    ) -> Result<(), CleanupFailure> {
+        expected_preparing: Option<&StateFile>,
+    ) -> Result<bool, CleanupFailure> {
         let unknown = |error| CleanupFailure::ownership(error, None);
         let expected = Retirement::read(retiring).map_err(unknown)?;
         let name = OsStr::new(id);
+        self.directory.validate_named_identity().map_err(unknown)?;
         let quarantined = self
             .require_records()
             .and_then(|records| optional_child(records.retain_directory_child(name)))
@@ -460,11 +479,17 @@ impl SnapshotStorage {
             return Err(failure(ownership_changed()));
         }
         let preparing = self.record(&preparing_name(id)).map_err(failure)?;
-        if let Some(preparing) = &preparing {
+        if let Some(admitted) = expected_preparing {
+            let observed = preparing
+                .as_ref()
+                .ok_or_else(|| failure(ownership_changed()))?;
+            same_record(admitted, observed, &expected.stage).map_err(failure)?;
+        } else if let Some(preparing) = &preparing {
             if read_record(preparing).map_err(failure)? != expected.stage {
                 return Err(failure(ownership_changed()));
             }
         }
+        retiring.validate_named_identity().map_err(failure)?;
         if let Some(owner) = self.record(&ownership_name(id)).map_err(failure)? {
             if Some(owner.identity().stable_bytes()) != expected.owner
                 || read_record(&owner).map_err(failure)? != expected.stage
@@ -473,7 +498,6 @@ impl SnapshotStorage {
             }
             owner.remove_named_identity().map_err(failure)?;
         }
-        retiring.validate_named_identity().map_err(failure)?;
         if let Some((directory, quarantined)) = &stage {
             if *quarantined {
                 self.directory
@@ -487,7 +511,8 @@ impl SnapshotStorage {
         if let Some(preparing) = preparing {
             preparing.remove_named_identity().map_err(unknown)?;
         }
-        retiring.remove_named_identity().map_err(unknown)
+        retiring.remove_named_identity().map_err(unknown)?;
+        Ok(stage.is_some())
     }
 }
 
@@ -512,7 +537,9 @@ fn same_record(
 #[cfg(test)]
 thread_local! {
     pub(super) static AFTER_OWNER_PUBLICATION: std::cell::Cell<Option<Box<dyn FnOnce()>>> =
-        std::cell::Cell::new(None);
+        const { std::cell::Cell::new(None) };
+    pub(super) static AFTER_PREPARING_REMOVAL: std::cell::Cell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::Cell::new(None) };
 }
 
 fn ownership_changed() -> io::Error {

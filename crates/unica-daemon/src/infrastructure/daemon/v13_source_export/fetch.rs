@@ -261,18 +261,20 @@ pub(super) fn drop_snapshot(
     };
     let owned = match storage
         .as_ref()
-        .map(|storage| storage.drop_target(id, !prepared.dry_run))
+        .map(|storage| storage.drop_target(id))
         .transpose()
     {
         Ok(owned) => owned.flatten(),
         Err(error) => return storage_refusal(FETCH_DROP, error),
     };
-    let exists = owned.is_some();
     if prepared.dry_run {
-        let mut result = DomainResult::success(if exists {
-            format!("fetch.drop plans to delete the snapshot {snapshot}")
-        } else {
-            format!("fetch.drop finds no snapshot {snapshot}; there is nothing to delete")
+        let exists = matches!(&owned, Some(DropTarget::Ready(_)));
+        let mut result = DomainResult::success(match &owned {
+            Some(DropTarget::Ready(_)) => format!("fetch.drop plans to delete the snapshot {snapshot}"),
+            Some(DropTarget::Preparing(_) | DropTarget::Retiring(_)) => format!(
+                "fetch.drop found an unfinished snapshot record for {id}; execution will verify any remaining directory under the snapshot lock"
+            ),
+            None => format!("fetch.drop finds no snapshot {snapshot}; there is nothing to delete"),
         });
         result.data = Some(json!({
             "op": FETCH_DROP,
@@ -298,18 +300,24 @@ pub(super) fn drop_snapshot(
     let removal = match owned {
         DropTarget::Ready(snapshot) => storage.remove(&snapshot),
         DropTarget::Preparing(record) => storage.remove_preparing(id, &record),
-        DropTarget::Retiring(record) => storage.remove_retiring(id, &record),
+        DropTarget::Retiring(record) => storage.remove_retiring(id, &record, None),
     };
     match removal {
-        Ok(()) => {
-            let mut result =
-                DomainResult::success(format!("fetch.drop deleted the snapshot {snapshot}"));
+        Ok(removed) => {
+            let mut result = DomainResult::success(if removed {
+                format!("fetch.drop deleted the snapshot {snapshot}")
+            } else {
+                format!("fetch.drop cleared the snapshot record for {id}; no snapshot directory remained")
+            });
             result.data = Some(json!({
-                "op": FETCH_DROP, "dryRun": false, "snapshotId": id, "snapshot": snapshot, "removed": true,
+                "op": FETCH_DROP,
+                "dryRun": false, "snapshotId": id, "snapshot": snapshot, "removed": removed,
             }));
-            result
-                .changed
-                .push(json!({"path": snapshot, "kind": "deleted"}));
+            if removed {
+                result
+                    .changed
+                    .push(json!({"path": snapshot, "kind": "deleted"}));
+            }
             result
         }
         Err(error) => {

@@ -681,6 +681,56 @@ fn a_rebound_stage_after_owner_publication_cannot_be_reported_ready() {
 
 /// rule: INV.RUNTIME.FETCH-LEAVES-THE-WORKING-COPY
 #[test]
+fn failure_after_removing_preparing_keeps_the_authority_to_drop_the_stage() {
+    let workspace = workspace();
+    let root = workspace.path();
+    let workspace_path = root.to_path_buf();
+    let displaced = root.join("displaced-stage");
+    let displaced_path = displaced.clone();
+    storage::AFTER_PREPARING_REMOVAL.with(|hook| {
+        hook.set(Some(Box::new(move || {
+            let ids = snapshots(&workspace_path);
+            let [id] = ids.as_slice() else {
+                panic!("expected one stage, got {ids:?}");
+            };
+            let fetch = workspace_path.join(".build/unica/fetch");
+            let records = fetch.join(".fetch-cleanup");
+            assert!(records.join(format!("{id}.owner")).is_file());
+            assert!(!records.join(format!("{id}.preparing")).exists());
+            fs::rename(fetch.join(id), displaced_path).unwrap();
+        })));
+    });
+
+    let runner = ProtocolRunner::new(Script::Exports);
+    let result = run(root, &prepared(root, false), &runner);
+
+    assert!(!result.ok, "{result:?}");
+    assert_eq!(result.diagnostics[0]["code"], "rollback_incomplete");
+    let warning = &result.warnings[0];
+    assert!(warning.get("path").is_none(), "{warning}");
+    let id = warning["snapshotId"].as_str().unwrap();
+    let fetch = root.join(".build/unica/fetch");
+    let records = fetch.join(".fetch-cleanup");
+    assert!(records.join(format!("{id}.preparing")).is_file());
+    assert!(!records.join(format!("{id}.owner")).exists());
+    fs::rename(displaced, fetch.join(id)).unwrap();
+
+    let drop = PreparedSourceExport::parse_fetch_drop(&drop_request(
+        root,
+        json!({"snapshotId": id}),
+        false,
+    ))
+    .unwrap();
+    let result = drop.execute(CancellationToken::new());
+
+    assert!(result.ok, "{result:?}");
+    assert_eq!(result.data.unwrap()["removed"], true);
+    assert!(!fetch.join(id).exists());
+    assert_eq!(fs::read_dir(records).unwrap().count(), 0);
+}
+
+/// rule: INV.RUNTIME.FETCH-LEAVES-THE-WORKING-COPY
+#[test]
 fn a_late_owner_publication_failure_rolls_back_the_exact_record_and_stage() {
     let workspace = workspace();
     let root = workspace.path();
@@ -765,6 +815,69 @@ fn drop_can_resume_an_unfinished_fetch_without_a_retiring_record() {
     assert_eq!(
         fs::read(foreign.join("foreign.txt")).unwrap(),
         b"foreign content"
+    );
+}
+
+/// rule: INV.RUNTIME.FETCH-LEAVES-THE-WORKING-COPY
+#[test]
+fn drop_clears_absent_preparing_stage_records_without_reporting_a_tree_removal() {
+    let workspace = workspace();
+    let root = workspace.path();
+    let storage = SnapshotStorage::open(root, true).unwrap().unwrap();
+    let id = "0123456789abcdef0123456789abcdef";
+    let fetch = root.join(".build/unica/fetch");
+    let records = fetch.join(".fetch-cleanup");
+    let stage = storage.create_stage(id).unwrap();
+    storage.prepare(id, &stage).unwrap();
+    drop(stage);
+    let preparing = records.join(format!("{id}.preparing"));
+    let owner = records.join(format!("{id}.owner"));
+    fs::copy(&preparing, &owner).unwrap();
+    fs::write(fetch.join(id).join("partial.txt"), "unfinished export").unwrap();
+    let displaced_stage = root.join("stage-outside-fetch");
+    fs::rename(fetch.join(id), &displaced_stage).unwrap();
+    let args = json!({"snapshotId": id});
+    let preview =
+        PreparedSourceExport::parse_fetch_drop(&drop_request(root, args.clone(), true)).unwrap();
+
+    let plan = preview.execute(CancellationToken::new());
+
+    assert!(plan.ok, "{plan:?}");
+    assert_eq!(plan.data.unwrap()["plan"]["exists"], false);
+    assert!(plan.summary.contains("unfinished snapshot record"));
+    assert!(plan.summary.contains("under the snapshot lock"));
+    assert!(!fetch.join(".fetch-lock").exists());
+    assert!(preparing.is_file());
+    assert!(owner.is_file());
+    let drop = PreparedSourceExport::parse_fetch_drop(&drop_request(root, args, false)).unwrap();
+
+    let quarantined = records.join(id);
+    fs::create_dir(&quarantined).unwrap();
+    fs::write(quarantined.join("foreign.txt"), "keep").unwrap();
+    let refused = drop.execute(CancellationToken::new());
+    assert!(!refused.ok, "{refused:?}");
+    assert_eq!(refused.diagnostics[0]["code"], "rollback_incomplete");
+    assert!(preparing.is_file());
+    assert!(owner.is_file());
+    assert!(records.join(format!("{id}.retiring")).is_file());
+    let planned_retry = preview.execute(CancellationToken::new());
+    assert!(planned_retry.ok, "{planned_retry:?}");
+    assert_eq!(planned_retry.data.unwrap()["plan"]["exists"], false);
+    assert!(planned_retry.summary.contains("unfinished snapshot record"));
+    let displaced = root.join("foreign-quarantine");
+    fs::rename(quarantined, &displaced).unwrap();
+
+    let result = drop.execute(CancellationToken::new());
+
+    assert!(result.ok, "{result:?}");
+    assert_eq!(result.data.unwrap()["removed"], false);
+    assert!(result.changed.is_empty());
+    assert!(result.summary.contains("no snapshot directory remained"));
+    assert_eq!(fs::read_dir(records).unwrap().count(), 0);
+    assert_eq!(fs::read(displaced.join("foreign.txt")).unwrap(), b"keep");
+    assert_eq!(
+        fs::read(displaced_stage.join("partial.txt")).unwrap(),
+        b"unfinished export"
     );
 }
 
@@ -964,6 +1077,7 @@ fn verify_ready_snapshot_cannot_be_dropped(root: &Path, stage: &Path) {
     let planned = preview.execute(CancellationToken::new());
     assert!(planned.ok, "{planned:?}");
     assert_eq!(planned.data.unwrap()["plan"]["exists"], false);
+    assert!(planned.summary.contains("unfinished snapshot record"));
 
     let drop = PreparedSourceExport::parse_fetch_drop(&drop_request(root, args, false)).unwrap();
     let cancellation = CancellationToken::new();
