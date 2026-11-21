@@ -3351,6 +3351,54 @@ mod typed_template_tests {
     }
 
     #[test]
+    fn external_data_source_creation_has_platform_identity_and_empty_child_objects() {
+        let kind = CreatableKind::parse("ExternalDataSource").unwrap();
+        for version in ["2.20", "2.21", "2.22"] {
+            let (xml, _) = minimal_metadata_xml(
+                kind,
+                "Warehouse",
+                version,
+                &context(),
+                metadata_fixture_uuid,
+            )
+            .unwrap();
+            let document = Document::parse(&xml).unwrap();
+            let root = document.root_element();
+            assert_eq!(root.attribute("version"), Some(version));
+            let source = root.children().find(roxmltree::Node::is_element).unwrap();
+            assert_eq!(source.tag_name().name(), "ExternalDataSource");
+            let child = |name| {
+                source
+                    .children()
+                    .find(|node| node.has_tag_name(name))
+                    .unwrap()
+            };
+            assert_eq!(
+                child("ChildObjects")
+                    .children()
+                    .filter(roxmltree::Node::is_element)
+                    .count(),
+                0
+            );
+            assert!(child("Properties").children().any(|node| {
+                node.has_tag_name("DataLockControlMode") && node.text() == Some("Automatic")
+            }));
+            let generated = child("InternalInfo")
+                .children()
+                .filter_map(|node| node.attribute("name"))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                generated,
+                [
+                    "ExternalDataSourceManager.Warehouse",
+                    "ExternalDataSourceTablesManager.Warehouse",
+                    "ExternalDataSourceCubesManager.Warehouse",
+                ]
+            );
+        }
+    }
+
+    #[test]
     fn typed_minimal_catalog_declares_mandatory_modules_and_auxiliary_resources() {
         assert_eq!(
             minimal_module_files(MetadataKind::Catalog),

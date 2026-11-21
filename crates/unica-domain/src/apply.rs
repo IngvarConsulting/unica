@@ -6,7 +6,7 @@ use unica_forms::operations::FormOperation;
 use unica_forms::{FormItemRole, FormObservation};
 
 use unica_metadata::event::EventOperation;
-use unica_metadata::MetadataKind;
+use unica_metadata::CreatableKind;
 use unica_metadata::{
     interface_operations::InterfaceOperation, subsystem_operations::SubsystemOperation,
 };
@@ -149,11 +149,10 @@ impl ApplyRequest {
                 let created = args.get("values").and_then(|value| {
                     let kind = match created_kind {
                         Some(kind) => kind,
-                        None => value.get("kind")?.as_str()?,
+                        None => CreatableKind::parse(value.get("kind")?.as_str()?)
+                            .ok()?
+                            .as_str(),
                     };
-                    if created_kind.is_none() {
-                        MetadataKind::parse(kind).ok()?;
-                    }
                     let object_name = value.get("name")?.as_str()?;
                     let object_name = if created_kind.is_some() {
                         unica_metadata::canonical_creation_identifier(object_name)?
