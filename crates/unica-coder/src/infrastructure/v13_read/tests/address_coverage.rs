@@ -1802,6 +1802,55 @@ fn check_native_configuration_form_and_command_modules(format: &str, evidence: &
         ],
         evidence,
     );
+    check_native_configuration_nested_modules(
+        format,
+        "register_family_module_roles",
+        [
+            (
+                "AccumulationRegister",
+                "Остатки",
+                "AccumulationRegisters",
+                "Form",
+                "AddressProbeAccumulationRegisterForm",
+            ),
+            (
+                "AccumulationRegister",
+                "Остатки",
+                "AccumulationRegisters",
+                "Command",
+                "AddressProbeAccumulationRegisterCommand",
+            ),
+            (
+                "AccountingRegister",
+                "Бухгалтерский",
+                "AccountingRegisters",
+                "Form",
+                "AddressProbeAccountingRegisterForm",
+            ),
+            (
+                "AccountingRegister",
+                "Бухгалтерский",
+                "AccountingRegisters",
+                "Command",
+                "AddressProbeAccountingRegisterCommand",
+            ),
+            (
+                "CalculationRegister",
+                "Начисления",
+                "CalculationRegisters",
+                "Form",
+                "AddressProbeCalculationRegisterForm",
+            ),
+            (
+                "CalculationRegister",
+                "Начисления",
+                "CalculationRegisters",
+                "Command",
+                "AddressProbeCalculationRegisterCommand",
+            ),
+        ],
+        evidence,
+    );
 }
 
 type NativeNestedModuleSample = (
