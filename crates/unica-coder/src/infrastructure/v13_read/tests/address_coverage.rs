@@ -1,5 +1,3 @@
-mod special_projections;
-
 use super::*;
 use crate::infrastructure::logical_tree::LogicalReader;
 use crate::infrastructure::v13_find::{LayoutFindSource, WorkspaceFindDirectoryBuilder};
@@ -18,8 +16,10 @@ use unica_source_designer::owner::MD_CLASSES_NS;
 use unica_source_designer::registration::platform_child_object_order;
 use unica_work_control::provider_deadline::ProviderDeadline;
 
-#[path = "address_coverage_recursive.rs"]
+#[path = "address_coverage/recursive_subsystems.rs"]
 mod recursive_subsystems;
+#[path = "address_coverage/special_projections.rs"]
+mod special_projections;
 
 // One sorted JSONL file per successful test, when explicitly requested. Use
 // an empty output directory per exact run; the caller verifies the test result.
