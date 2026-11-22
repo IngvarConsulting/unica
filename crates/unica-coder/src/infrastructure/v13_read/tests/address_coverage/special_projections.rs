@@ -1,3 +1,5 @@
+#[path = "special_projections/exchange_relations.rs"]
+mod exchange_relations;
 #[path = "special_projections/form_members.rs"]
 mod form_members;
 
@@ -137,6 +139,7 @@ impl NativeProjections<'_, '_> {
 /// rule: INV.SOURCE.MODULE-SUMMARY
 /// rule: INV.SOURCE.MODULE-REGION-INTERFACE
 /// rule: INV.SOURCE.FORM-OPERATION-TARGETS
+/// rule: INV.SOURCE.RELATIONS-ANSWER-IN-ONE-BRANCH
 #[test]
 fn native_special_projection_addresses_match_source() {
     let mut evidence = EvidenceRows::new(SHARD, SourceSetKind::Configuration);
@@ -168,6 +171,7 @@ fn native_special_projection_addresses_match_source() {
         };
         declarations(&mut native, &source);
         predefined(&mut native, &source, version);
+        exchange_relations::native_exchange_relations(&mut native, &source, version, line);
         native_module_slices(&mut native, &source, line);
         let common_form = source.join("CommonForms/MainA/Ext/Form.xml");
         direct_form_command_and_parameter(&mut native, "main:CommonForm.MainA", &common_form);
