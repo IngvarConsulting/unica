@@ -1640,6 +1640,158 @@ fn check_native_external_form_module(
     );
 }
 
+fn check_native_configuration_form_and_command_modules(format: &str, evidence: &mut EvidenceRows) {
+    let source = fixture_path(&format!(
+        "formats/platform_xml/{format}/nested_module_roles/src"
+    ));
+    let line = export_format_line(format).unwrap();
+    let profile = PlatformProfile::for_line(line).unwrap();
+    let cancellation = CancellationToken::new();
+    let authority = native_authority(&cancellation, &source, profile);
+    let root =
+        unica_workspace::read::open_source_directory(&source.canonicalize().unwrap()).unwrap();
+    let layout = [LayoutFindSource::new(
+        "main",
+        SourceSetKind::Configuration,
+        &root,
+    )];
+    let finder = WorkspaceFindDirectoryBuilder::default();
+    let registrations = root_registrations(&source, format);
+
+    let common = [
+        (
+            "Document",
+            "Orders",
+            "Documents",
+            "Form",
+            "AddressProbeDocumentForm",
+        ),
+        (
+            "Catalog",
+            "Валюты",
+            "Catalogs",
+            "Command",
+            "AddressProbeCatalogCommand",
+        ),
+        (
+            "DataProcessor",
+            "Обработка",
+            "DataProcessors",
+            "Command",
+            "AddressProbeProcessorCommand",
+        ),
+        (
+            "Report",
+            "АнализВерсийОбъектов",
+            "Reports",
+            "Form",
+            "AddressProbeReportForm",
+        ),
+    ];
+    let processor_form = (format != "2.20").then_some((
+        "DataProcessor",
+        "Обработка",
+        "DataProcessors",
+        "Form",
+        "Форма",
+    ));
+    for (kind, name, directory, role, child) in common.into_iter().chain(processor_form) {
+        assert_eq!(
+            registrations
+                .iter()
+                .filter(|(k, n)| k == kind && n == name)
+                .count(),
+            1,
+            "{kind}.{name}: native configuration registration"
+        );
+        let descriptor = source.join(format!("{directory}/{name}.xml"));
+        let xml = read_fixture_descriptor(&descriptor);
+        let document = parse_fixture_descriptor(&xml, &descriptor);
+        assert_eq!(document.root_element().attribute("version"), Some(format));
+        let native_owner = fixture_artifact(&document, kind, &descriptor);
+        assert_eq!(fixture_properties_name(native_owner), Some(name));
+        assert!(uuid::Uuid::parse_str(native_owner.attribute("uuid").unwrap()).is_ok());
+        let owner = format!("main:{kind}.{name}");
+
+        let (child_at, origin, relative) = if role == "Form" {
+            let form_descriptor =
+                native_registered_form_descriptor(native_owner, &descriptor, child, format);
+            let body = form_descriptor.with_extension("").join("Ext/Form.xml");
+            let raw = read_fixture_descriptor(&body);
+            let form = parse_fixture_descriptor(&raw, &body);
+            assert!(form.root_element().has_tag_name((NATIVE_FORM_NS, "Form")));
+            assert_eq!(form.root_element().attribute("version"), Some(format));
+            (
+                format!("{owner}.Form.{child}"),
+                fixture_origin(&form_descriptor),
+                format!("{directory}/{name}/Forms/{child}/Ext/Form/Module.bsl"),
+            )
+        } else {
+            let commands = native_command_owners(&owner, native_owner);
+            (
+                commands[child].clone(),
+                fixture_origin(&descriptor),
+                format!("{directory}/{name}/Commands/{child}/Ext/CommandModule.bsl"),
+            )
+        };
+        let group_at = format!("{child_at}.Module");
+        let module_at = format!("{group_at}.{role}");
+        let child_view = read(&authority, &child_at);
+        assert_eq!(child_view["kind"], role, "{child_at}");
+        let group = check_native_branch(
+            &authority,
+            &child_view,
+            &group_at,
+            &BTreeSet::from([module_at.clone()]),
+        );
+        assert_eq!(group["kind"], "Module", "{group_at}");
+        let member = &group["items"][0];
+        assert_eq!(member["kind"], "Module", "{module_at}");
+        assert_eq!(member["props"]["ownerKind"], kind, "{module_at}");
+        assert_eq!(member["props"]["role"], role, "{module_at}");
+        evidence.record(
+            line,
+            &child_at,
+            "Module",
+            None,
+            &origin,
+            AddressEvidence::Read(&group_at),
+        );
+
+        assert_eq!(read(&authority, &module_at)["kind"], "Module");
+        let module = QualifiedAddress::parse(&module_at).unwrap();
+        let module_path = source.join(&relative);
+        assert!(!read_fixture_descriptor(&module_path)
+            .trim_start_matches('\u{feff}')
+            .trim()
+            .is_empty());
+        assert_eq!(
+            authority.existing_export_path(&module, None).unwrap(),
+            relative
+        );
+        let located = finder
+            .locate_path(
+                &layout,
+                &relative,
+                ProviderDeadline::no_deadline(),
+                &cancellation,
+            )
+            .unwrap()
+            .unwrap_or_else(|| panic!("missing native module {relative}"));
+        assert_eq!(located.at(), module_at);
+        assert_eq!(located.kind(), "Module");
+        assert_eq!(located.placed_path(), Some(relative.as_str()));
+        evidence.record(
+            line,
+            &child_at,
+            "Module",
+            Some(role),
+            &fixture_origin(&module_path),
+            AddressEvidence::RoundTrip(&module_at),
+        );
+    }
+}
+
 fn check_native_html_processor_form_module(evidence: &mut EvidenceRows) {
     let format = "2.20";
     let source = fixture_path("formats/platform_xml/2.20/support-edit-bin-only/src");
@@ -4249,6 +4401,9 @@ fn native_registered_modules_match_profile_and_physical_paths() {
                 );
             }
         }
+    }
+    for format in ["2.20", "2.21", "2.22"] {
+        check_native_configuration_form_and_command_modules(format, &mut evidence);
     }
     evidence.finish();
 }
