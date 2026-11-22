@@ -1269,11 +1269,13 @@ fn native_form_and_template_addresses_follow_text_registrations() {
                 let descriptor = source.join(format!("{kind}s/{name}.xml"));
                 check_native_form_or_template(
                     &authority,
-                    &at,
-                    kind,
-                    name,
-                    xml,
-                    &descriptor,
+                    NativeFormOrTemplateSample {
+                        at: &at,
+                        kind,
+                        name,
+                        format: xml,
+                        descriptor: &descriptor,
+                    },
                     &verify_path,
                     &mut covered,
                     &mut evidence,
@@ -1349,11 +1351,13 @@ fn native_form_and_template_addresses_follow_text_registrations() {
                         .join(format!("{child_name}.xml"));
                     check_native_form_or_template(
                         &authority,
-                        &at,
-                        child_kind,
-                        child_name,
-                        xml,
-                        &descriptor,
+                        NativeFormOrTemplateSample {
+                            at: &at,
+                            kind: child_kind,
+                            name: child_name,
+                            format: xml,
+                            descriptor: &descriptor,
+                        },
                         &verify_path,
                         &mut covered,
                         &mut evidence,
@@ -1535,17 +1539,28 @@ fn check_native_html_processor_form_module(evidence: &mut EvidenceRows) {
     );
 }
 
+struct NativeFormOrTemplateSample<'a> {
+    at: &'a QualifiedAddress,
+    kind: &'a str,
+    name: &'a str,
+    format: &'a str,
+    descriptor: &'a Path,
+}
+
 fn check_native_form_or_template(
     authority: &LogicalViewReadAuthority<'_>,
-    at: &QualifiedAddress,
-    kind: &str,
-    name: &str,
-    format: &str,
-    descriptor: &Path,
+    sample: NativeFormOrTemplateSample<'_>,
     verify_path: &impl Fn(&QualifiedAddress, &Path),
     covered: &mut BTreeSet<String>,
     evidence: &mut EvidenceRows,
 ) {
+    let NativeFormOrTemplateSample {
+        at,
+        kind,
+        name,
+        format,
+        descriptor,
+    } = sample;
     let raw = read_fixture_descriptor(descriptor);
     let document = parse_fixture_descriptor(&raw, descriptor);
     let artifact = fixture_artifact(&document, kind, descriptor);
