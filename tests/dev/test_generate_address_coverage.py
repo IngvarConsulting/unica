@@ -329,6 +329,56 @@ class AddressCoverageReportTests(unittest.TestCase):
                     ):
                         GENERATOR.merge_shards(self.root, required_shards, native_only=native_only)
 
+    def test_native_subsystem_content_requires_exact_relation_and_collection_reads(self) -> None:
+        shard = GENERATOR.SUBSYSTEM_CONTENT_KEYS_SHARD
+        required = GENERATOR.native_subsystem_content_requirements(GENERATOR.REPO)
+        self.assertEqual(len(required), 12)
+        evidence = [
+            {
+                "schema_version": 1, "record_type": "evidence", "key": row["key"],
+                "witness": {
+                    "owner": o["owner"], "at": at, "origin": o["origin"],
+                    "level": "read", "reason": None, "test_case": METADATA_SHARD,
+                },
+            }
+            for row in required for o in row["requirement"]["observations"] for at in o["addresses"]
+        ]
+        self.assertEqual(len([row for row in evidence if row["key"]["branch"] == "Relation"]), 6)
+        self.assertEqual(len([row for row in evidence if row["key"]["branch"] == "Subsystem"]), 9)
+        relation = next(
+            row for row in evidence if row["key"]["line"] == "8.5.1" and row["key"]["branch"] == "Relation"
+            and len(row["key"]["owner_shape"]) == 2
+        )
+        collection_member = next(
+            row for row in evidence if row["key"]["line"] == "8.5.1"
+            and row["witness"]["at"].endswith(".Subsystem.БазоваяФункциональность")
+        )
+        self.assertTrue(any(
+            row != collection_member and row["key"] == collection_member["key"] for row in evidence
+        ))
+        wrong_line = relation["witness"]["origin"].replace("/2.21/", "/2.22/")
+        wrong_origin = collection_member["witness"]["origin"]
+        self.write_shard(shard, *required)
+        shards = frozenset({shard, METADATA_SHARD})
+        for native_only in (False, True):
+            with self.subTest(native_only=native_only):
+                self.write_shard(METADATA_SHARD, *evidence)
+                self.assertEqual(len(GENERATOR.merge_shards(self.root, shards, native_only=native_only)), 12)
+                for target, replacement in (
+                    (collection_member, {}),
+                    (relation, {"origin": wrong_line}),
+                    (relation, {"origin": wrong_origin}),
+                    (relation, {"level": "roundtrip"}),
+                ):
+                    rest = [row for row in evidence if row != target]
+                    if replacement:
+                        rest.append({**target, "witness": {**target["witness"], **replacement}})
+                    self.write_shard(METADATA_SHARD, *rest)
+                    with self.assertRaisesRegex(
+                        ValueError, r"(?s)missing required native subsystem content coverage.*\(8\.5\.1\)",
+                    ):
+                        GENERATOR.merge_shards(self.root, shards, native_only=native_only)
+
     def test_witnesses_for_one_shape_are_grouped_in_stable_order(self) -> None:
         first, second = root_witness("main"), root_witness("other")
         self.write_root_shard(second, first)

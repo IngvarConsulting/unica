@@ -42,16 +42,17 @@ SUBSYSTEM_INTERFACE_KEYS_SHARD = "required_native_subsystem_interface_keys"
 DCS_QUERY_KEYS_SHARD = "required_native_dcs_query_keys"
 ROLE_RIGHT_KEYS_SHARD = "required_native_role_right_keys"
 XDTO_KEYS_SHARD = "required_native_xdto_keys"
+SUBSYSTEM_CONTENT_KEYS_SHARD = "required_native_subsystem_content_keys"
 XDTO_OWNER_SHAPES = {
     "Namespace": {("XDTOPackage",)},
     "Type": {("XDTOPackage",)},
     "Property": {("XDTOPackage",), ("XDTOPackage", "Type"), ("XDTOPackage", "Type", "Property")},
 }
-XDTO_NAME = r"[^\W\d]\w*"
+NATIVE_ADDRESS_NAME = r"[^\W\d]\w*"
 REQUIRED_KEY_SHARDS = frozenset({
     ROOT_KEYS_SHARD, METADATA_CHILD_KEYS_SHARD, EXTERNAL_CHILD_KEYS_SHARD, MODULE_ROLE_KEYS_SHARD,
     EDS_MODULE_KEYS_SHARD, SUBSYSTEM_INTERFACE_KEYS_SHARD, DCS_QUERY_KEYS_SHARD, ROLE_RIGHT_KEYS_SHARD,
-    XDTO_KEYS_SHARD,
+    XDTO_KEYS_SHARD, SUBSYSTEM_CONTENT_KEYS_SHARD,
 })
 NATIVE_SCOPE = (
     "Configuration source sets and native Language registrations in extension source sets "
@@ -69,6 +70,7 @@ NATIVE_SCOPE = (
     " It also requires exact read witnesses for registered native Report and DataProcessor DCS queries"
     " and the role-right collection and members in native SalesReader fixtures."
     " Native XDTO requirements trace Namespace, Type and Property reads to registered Package.bin files."
+    " Registered subsystem descriptors independently require reads of Relation and Subsystem branches."
 )
 DAEMON_SCOPE = (
     "Read witnesses from the selected document and BSL coverage test of unica-daemon, "
@@ -254,38 +256,45 @@ def validate_required_record(record: object, shard: str) -> None:
             raise ValueError("duplicate required role right address")
         required_text(requirement["origin"], "origin")
         return
-    if shard == XDTO_KEYS_SHARD:
-        exact_fields(requirement, {"kind", "observations"}, "XDTO requirement")
+    if shard in {XDTO_KEYS_SHARD, SUBSYSTEM_CONTENT_KEYS_SHARD}:
+        family = "XDTO" if shard == XDTO_KEYS_SHARD else "subsystem content"
+        exact_fields(requirement, {"kind", "observations"}, f"{family} requirement")
         kinds = tuple(segment["kind"] for segment in shape)
+        branch_kind = key["branch"]
+        known_shape = (
+            kinds in XDTO_OWNER_SHAPES.get(branch_kind, set())
+            if shard == XDTO_KEYS_SHARD else
+            branch_kind in {"Relation", "Subsystem"} and all(kind == "Subsystem" for kind in kinds)
+        )
         if (
-            kinds not in XDTO_OWNER_SHAPES.get(key["branch"], set()) or key["role"] is not None
+            not known_shape or key["role"] is not None
             or any(not segment["named"] or segment["role"] is not None for segment in shape)
             or requirement["kind"] != "read"
         ):
-            raise ValueError("required XDTO key must name an XDTO read branch")
+            raise ValueError(f"required {family} key must name a supported read branch")
         observations = requirement["observations"]
         if not isinstance(observations, list) or not observations:
-            raise ValueError("expected nonempty required XDTO observations")
-        owner_pattern = "main:" + r"\.".join(kind + r"\." + XDTO_NAME for kind in kinds)
+            raise ValueError(f"expected nonempty required {family} observations")
+        owner_pattern = "main:" + r"\.".join(kind + r"\." + NATIVE_ADDRESS_NAME for kind in kinds)
         owners = set()
         for observation in observations:
-            exact_fields(observation, {"owner", "origin", "addresses"}, "XDTO observation")
-            owner = required_text(observation["owner"], "XDTO owner")
+            exact_fields(observation, {"owner", "origin", "addresses"}, f"{family} observation")
+            owner = required_text(observation["owner"], f"{family} owner")
             if not re.fullmatch(owner_pattern, owner) or owner in owners:
-                raise ValueError("required XDTO owner is invalid or duplicated")
+                raise ValueError(f"required {family} owner is invalid or duplicated")
             owners.add(owner)
             required_text(observation["origin"], "origin")
-            branch = f"{owner}.{key['branch']}"
+            branch = f"{owner}.{branch_kind}"
             addresses = observation["addresses"]
             if not isinstance(addresses, list) or not addresses or addresses[0] != branch:
-                raise ValueError("required XDTO addresses must include their branch")
+                raise ValueError(f"required {family} addresses must include their branch")
             for address in addresses[1:]:
-                if key["branch"] == "Namespace" or not re.fullmatch(
-                    rf"{re.escape(branch)}\.{XDTO_NAME}", required_text(address, "XDTO member address")
+                if branch_kind in {"Namespace", "Relation"} or not re.fullmatch(
+                    rf"{re.escape(branch)}\.{NATIVE_ADDRESS_NAME}", required_text(address, f"{family} member address")
                 ):
-                    raise ValueError("required XDTO member must belong to its branch")
+                    raise ValueError(f"required {family} member must belong to its branch")
             if len(addresses) != len(set(addresses)):
-                raise ValueError("duplicate required XDTO address")
+                raise ValueError(f"duplicate required {family} address")
         return
     if shard == EDS_MODULE_KEYS_SHARD:
         owner_kinds = tuple(segment["kind"] for segment in shape)
@@ -367,8 +376,11 @@ def check_required_keys(requirements: dict, groups: dict, *, native_only: bool) 
     missing_eds_modules = []
     missing_interfaces = []
     missing_queries = []
-    missing_role_rights = []
-    missing_xdto = []
+    metadata_read_errors = {
+        ROLE_RIGHT_KEYS_SHARD: ("Role.Right", []),
+        XDTO_KEYS_SHARD: ("XDTO", []),
+        SUBSYSTEM_CONTENT_KEYS_SHARD: ("subsystem content", []),
+    }
     diagnostics = []
     for key, (shard, record) in sorted(requirements.items()):
         witnesses = groups.get(key, {}).get("witnesses", ())
@@ -385,10 +397,10 @@ def check_required_keys(requirements: dict, groups: dict, *, native_only: bool) 
                     f"{requirement['at']} ({record['key']['line']}): expected read from {requirement['origin']}"
                 )
             continue
-        if shard in {ROLE_RIGHT_KEYS_SHARD, XDTO_KEYS_SHARD}:
+        if shard in metadata_read_errors:
             requirement = record["requirement"]
             observations = [requirement] if shard == ROLE_RIGHT_KEYS_SHARD else requirement["observations"]
-            missing_reads = missing_role_rights if shard == ROLE_RIGHT_KEYS_SHARD else missing_xdto
+            _, missing_reads = metadata_read_errors[shard]
             reads = {
                 (w["owner"], w["origin"], w["at"]) for w in witnesses
                 if w["test_case"] == METADATA_SHARD and w["reason"] is None and w["level"] == "read"
@@ -443,10 +455,9 @@ def check_required_keys(requirements: dict, groups: dict, *, native_only: bool) 
         )
     if missing_queries:
         errors.append("missing required native DCS Query coverage:\n" + "\n".join(missing_queries))
-    if missing_role_rights:
-        errors.append("missing required native Role.Right coverage:\n" + "\n".join(missing_role_rights))
-    if missing_xdto:
-        errors.append("missing required native XDTO coverage:\n" + "\n".join(missing_xdto))
+    for family, failures in metadata_read_errors.values():
+        if failures:
+            errors.append(f"missing required native {family} coverage:\n" + "\n".join(failures))
     if errors:
         raise ValueError("\n".join(errors))
 
@@ -751,7 +762,7 @@ def native_xdto_requirements(repo: Path) -> list[dict]:
 
     def name(value: str | None) -> str:
         text = required_text(value, "native XDTO name")
-        if not re.fullmatch(XDTO_NAME, text):
+        if not re.fullmatch(NATIVE_ADDRESS_NAME, text):
             raise ValueError(f"invalid native XDTO name {text}")
         return text
 
@@ -842,6 +853,85 @@ def native_xdto_requirements(repo: Path) -> list[dict]:
     return rows
 
 
+def native_subsystem_content_requirements(repo: Path) -> list[dict]:
+    """Require native Subsystem and Relation reads without implying resource resolution."""
+    md = "{http://v8.1c.ru/8.3/MDClasses}"
+    readable = "{http://v8.1c.ru/8.3/xcf/readable}"
+    root_name = "СтандартныеПодсистемы"
+    rows = []
+    for version, line in (("2.20", "8.3.27"), ("2.21", "8.5.1"), ("2.22", "8.5.4")):
+        source = repo / "tests/fixtures/formats/platform_xml" / version / "all_kinds/src"
+
+        def artifact(path, kind):
+            xml = ET.parse(path).getroot()
+            nodes = list(xml)
+            if (
+                xml.tag != md + "MetaDataObject" or xml.get("version") != version
+                or len(nodes) != 1 or nodes[0].tag != md + kind
+            ):
+                raise ValueError(f"native subsystem content: wrong descriptor {path}")
+            return nodes[0]
+
+        def descriptor(path, kind, name):
+            node = artifact(path, kind)
+            if node.findtext(f"{md}Properties/{md}Name") != name or not uuid.UUID(node.get("uuid", "")).int:
+                raise ValueError(f"native subsystem content: wrong descriptor identity in {path}")
+            return node
+
+        config = artifact(source / "Configuration.xml", "Configuration")
+        registrations = config.findall(md + "ChildObjects")
+        if len(registrations) != 1 or sum(
+            item.text == root_name for item in registrations[0].findall(md + "Subsystem")
+        ) != 1:
+            raise ValueError(f"native subsystem content: missing unique registration for {root_name}")
+        registrations = registrations[0]
+        branches = {}
+
+        def visit(path, name, owner, depth):
+            node = descriptor(path, "Subsystem", name)
+            child_objects = node.findall(md + "ChildObjects")
+            if len(child_objects) != 1:
+                raise ValueError(f"native subsystem content: missing unique ChildObjects in {path}")
+            children = []
+            for child in child_objects[0]:
+                if child.tag != md + "Subsystem" or not re.fullmatch(NATIVE_ADDRESS_NAME, child.text or ""):
+                    raise ValueError(f"native subsystem content: invalid child registration in {path}")
+                children.append(child.text)
+            if len(children) != len(set(children)):
+                raise ValueError(f"native subsystem content: duplicate child registration in {path}")
+            origin = path.relative_to(repo).as_posix()
+            collection = f"{owner}.Subsystem"
+            branches.setdefault((depth, "Subsystem"), []).append({
+                "owner": owner, "origin": origin, "addresses": [collection, *(f"{collection}.{c}" for c in children)],
+            })
+            contents = node.findall(f"{md}Properties/{md}Content")
+            if len(contents) > 1:
+                raise ValueError(f"native subsystem content: duplicate Content in {path}")
+            if contents and len(contents[0]):
+                for item in contents[0]:
+                    match = re.fullmatch(rf"CommonModule\.({NATIVE_ADDRESS_NAME})", item.text or "")
+                    if item.tag != readable + "Item" or not match or sum(
+                        module.text == match[1] for module in registrations.findall(md + "CommonModule")
+                    ) != 1:
+                        raise ValueError(f"native subsystem content: unexpected Content target in {path}")
+                    descriptor(source / "CommonModules" / f"{match[1]}.xml", "CommonModule", match[1])
+                branches.setdefault((depth, "Relation"), []).append({
+                    "owner": owner, "origin": origin, "addresses": [f"{owner}.Relation"],
+                })
+            for child in children:
+                visit(path.with_suffix("") / "Subsystems" / f"{child}.xml", child, f"{collection}.{child}", depth + 1)
+
+        visit(source / "Subsystems" / f"{root_name}.xml", root_name, f"main:Subsystem.{root_name}", 1)
+        for (depth, branch), observations in sorted(branches.items()):
+            rows.append({
+                "schema_version": SCHEMA_VERSION, "record_type": "required",
+                "key": {"line": line, "source_kind": "configuration", "branch": branch, "role": None,
+                        "owner_shape": [{"kind": "Subsystem", "named": True, "role": None} for _ in range(depth)]},
+                "requirement": {"kind": "read", "observations": observations},
+            })
+    return rows
+
+
 def generate_report(native_only: bool) -> dict:
     revision, status = git_state()
     cases = [("unica-coder", "address_coverage")]
@@ -867,6 +957,7 @@ def generate_report(native_only: bool) -> dict:
             (DCS_QUERY_KEYS_SHARD, native_dcs_query_requirements),
             (ROLE_RIGHT_KEYS_SHARD, native_role_right_requirements),
             (XDTO_KEYS_SHARD, native_xdto_requirements),
+            (SUBSYSTEM_CONTENT_KEYS_SHARD, native_subsystem_content_requirements),
         ):
             records = producer(REPO)
             path = Path(scratch) / f"{shard}.jsonl"
