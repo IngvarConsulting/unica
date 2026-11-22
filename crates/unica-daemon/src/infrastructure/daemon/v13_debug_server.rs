@@ -323,20 +323,25 @@ impl PreparedDebugServer {
         }
         command.extend(["debug-server".to_owned(), subcommand.to_owned()]);
         command.extend(args);
-        let output = runner
-            .run_staged(&ProcessCommand {
-                program: tool.program.clone(),
-                args: command,
-                cwd: self.context.workspace_root.clone(),
-                env: Vec::new(),
-                env_remove: Vec::new(),
-                capture_limits: Some((RUNNER_OUTPUT_LIMIT, RUNNER_OUTPUT_LIMIT)),
-                timeout: None,
-                cancellation: cancellation.linked_child().protect_process_on_spawn(),
-            })
-            .map_err(|error| {
-                runner_start_rejection(Some(operation.into()), &error, &tool.program)
-            })?;
+        let command = ProcessCommand {
+            program: tool.program.clone(),
+            args: command,
+            cwd: self.context.workspace_root.clone(),
+            env: Vec::new(),
+            env_remove: Vec::new(),
+            capture_limits: Some((RUNNER_OUTPUT_LIMIT, RUNNER_OUTPUT_LIMIT)),
+            timeout: None,
+            cancellation: cancellation.linked_child().protect_process_on_spawn(),
+        };
+        // On Windows a console process group on the launcher can keep dbgs
+        // alive after --ownerPID exits. This protected start already waits
+        // for its receipt and cleans up if cancellation wins at handoff.
+        let output = if subcommand == "start" && !dry_run {
+            runner.run_staged_without_windows_interrupt(&command)
+        } else {
+            runner.run_staged(&command)
+        }
+        .map_err(|error| runner_start_rejection(Some(operation.into()), &error, &tool.program))?;
         let invalid = || {
             failure(
                 operation,
@@ -408,26 +413,32 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
     use unica_execution::invocation_store::ToolIdentity;
-    use unica_process::runner::ProcessOutput;
+    use unica_process::runner::{ProcessOutput, ProcessStreamFailure};
 
     const SESSION: &str = "3640f748f9c24f728aebf81fbe891cb4";
 
     struct Provider {
-        calls: RefCell<Vec<Vec<String>>>,
+        calls: RefCell<Vec<(Vec<String>, bool)>>,
         results: RefCell<Vec<Value>>,
         cancel_during_reply: Option<CancellationToken>,
     }
 
-    impl ProcessRunner for Provider {
-        fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
-            self.calls.borrow_mut().push(command.args.clone());
+    impl Provider {
+        fn reply(
+            &self,
+            command: &ProcessCommand,
+            without_windows_interrupt: bool,
+        ) -> ProcessOutput {
+            self.calls
+                .borrow_mut()
+                .push((command.args.clone(), without_windows_interrupt));
             let value = self.results.borrow_mut().remove(0);
             if command.args.iter().any(|arg| arg == "start") {
                 if let Some(cancellation) = &self.cancel_during_reply {
                     cancellation.cancel();
                 }
             }
-            Ok(ProcessOutput {
+            ProcessOutput {
                 status_success: value["ok"] == true,
                 status: "provider fixture".into(),
                 stdout: value.to_string(),
@@ -438,7 +449,20 @@ mod tests {
                 stderr_had_invalid_utf8: false,
                 timed_out: false,
                 cancelled: false,
-            })
+            }
+        }
+    }
+
+    impl ProcessRunner for Provider {
+        fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
+            Ok(self.reply(command, false))
+        }
+
+        fn run_staged_without_windows_interrupt(
+            &self,
+            command: &ProcessCommand,
+        ) -> Result<ProcessOutput, ProcessStreamFailure> {
+            Ok(self.reply(command, true))
         }
     }
 
@@ -495,7 +519,10 @@ mod tests {
         };
         let result = prepared.start(&tool, &runner, &cancellation, 42, None);
         assert_eq!(result.data.unwrap()["url"], "http://127.0.0.1:12345");
-        assert_eq!(runner.calls.borrow().len(), 1);
+        let calls = runner.calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].1, "real start must avoid a Windows console group");
+        drop(calls);
         let cancellation = CancellationToken::new();
         let runner = Provider {
             calls: RefCell::default(),
@@ -504,11 +531,37 @@ mod tests {
         };
         let result = prepared.start(&tool, &runner, &cancellation, 42, None);
         assert_eq!(result.diagnostics[0]["code"], "cancelled");
-        assert!(runner.calls.borrow()[1].ends_with(&[
+        let calls = runner.calls.borrow();
+        assert!(
+            calls[0].1,
+            "cancel-at-handoff still used the protected start route"
+        );
+        assert!(!calls[1].1, "handoff cleanup keeps the existing stop route");
+        assert!(calls[1].0.ends_with(&[
             "debug-server".to_owned(),
             "stop".to_owned(),
             SESSION.to_owned()
         ]));
+    }
+
+    #[test]
+    fn debug_server_preview_keeps_the_existing_runner_route() {
+        let root = tempfile::tempdir().unwrap();
+        let (mut prepared, tool) = fixture(root.path());
+        prepared.dry_run = true;
+        let runner = Provider {
+            calls: RefCell::default(),
+            results: RefCell::new(vec![envelope(
+                "start",
+                json!({
+                    "ok":true,"action":"planned","owner":"runner","owner_pid":42
+                }),
+            )]),
+            cancel_during_reply: None,
+        };
+        let result = prepared.start(&tool, &runner, &CancellationToken::new(), 42, None);
+        assert_eq!(result.data.unwrap()["action"], "planned");
+        assert!(!runner.calls.borrow()[0].1);
     }
 
     #[test]
@@ -522,5 +575,6 @@ mod tests {
         };
         let result = prepared.stop(&tool, &runner, SESSION, false, &CancellationToken::new());
         assert_eq!(result.diagnostics[0]["code"], "invalid_result");
+        assert!(!runner.calls.borrow()[0].1);
     }
 }
