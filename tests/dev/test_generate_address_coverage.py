@@ -217,6 +217,74 @@ class AddressCoverageReportTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, r"missing required native DCS Query coverage"):
                     GENERATOR.merge_shards(self.root, required_shards, native_only=native_only)
 
+    def test_native_role_right_uses_registered_xml_objects(self) -> None:
+        cases = GENERATOR.native_role_right_requirements(GENERATOR.REPO)
+        self.assertEqual({row["key"]["line"] for row in cases}, {"8.3.27", "8.5.1", "8.5.4"})
+        for row in cases:
+            self.assertEqual(row["key"]["branch"], "Right")
+            self.assertEqual(row["requirement"]["owner"], "main:Role.SalesReader")
+            self.assertEqual(set(row["requirement"]["addresses"]), {
+                "main:Role.SalesReader.Right",
+                "main:Role.SalesReader.Right.Catalog_Валюты",
+                "main:Role.SalesReader.Right.Document_Orders",
+            })
+
+        role_file = GENERATOR.REPO / cases[-1]["requirement"]["origin"]
+        parse = ET.parse
+
+        def parse_with_one_rights_object(path: Path) -> ET.ElementTree:
+            document = parse(path)
+            if path == role_file:
+                rights = document.getroot()
+                namespace = rights.tag.removesuffix("Rights")
+                rights.remove(rights.findall(namespace + "object")[-1])
+            return document
+
+        with patch.object(GENERATOR.ET, "parse", side_effect=parse_with_one_rights_object):
+            filtered = GENERATOR.native_role_right_requirements(GENERATOR.REPO)
+        self.assertEqual(filtered[:-1], cases[:-1])
+        self.assertEqual(set(filtered[-1]["requirement"]["addresses"]), {
+            "main:Role.SalesReader.Right", "main:Role.SalesReader.Right.Catalog_Валюты",
+        })
+
+    def test_native_role_right_requires_exact_branch_and_members_with_other_witnesses_present(self) -> None:
+        shard = GENERATOR.ROLE_RIGHT_KEYS_SHARD
+        cases = GENERATOR.native_role_right_requirements(GENERATOR.REPO)
+        evidence = [
+            {
+                "schema_version": 1, "record_type": "evidence", "key": row["key"],
+                "witness": {
+                    "owner": row["requirement"]["owner"], "at": address, "level": "read", "reason": None,
+                    "origin": row["requirement"]["origin"], "test_case": METADATA_SHARD,
+                },
+            }
+            for row in cases for address in row["requirement"]["addresses"]
+        ]
+        lost = next(row for row in evidence if row["witness"]["at"].endswith(".Document_Orders"))
+        daemon = {
+            **lost, "witness": {
+                "owner": "main:Role.Reader", "at": "main:Role.Reader.Right",
+                "level": "read", "reason": None, "test_case": GENERATOR.DAEMON_SHARD,
+                "origin": "tests/fixtures/acceptance/workspace-role-comment-subsystem-help/src/Roles/Reader/Ext/Rights.xml",
+            },
+        }
+        rest = [row for row in evidence if row is not lost]
+        required_shards = frozenset({shard, METADATA_SHARD, GENERATOR.DAEMON_SHARD})
+        self.write_shard(shard, *cases)
+        self.write_shard(GENERATOR.DAEMON_SHARD, daemon)
+        for native_only in (False, True):
+            with self.subTest(native_only=native_only):
+                self.write_shard(METADATA_SHARD, *evidence)
+                self.assertEqual(len(GENERATOR.merge_shards(self.root, required_shards, native_only=native_only)), 3)
+                for replacement in (
+                    [],
+                    [{**lost, "witness": {**lost["witness"], "origin": cases[-1]["requirement"]["origin"]}}],
+                    [{**lost, "witness": {**lost["witness"], "level": "roundtrip"}}],
+                ):
+                    self.write_shard(METADATA_SHARD, *rest, *replacement)
+                    with self.assertRaisesRegex(ValueError, r"(?s)missing required native Role.Right coverage.*Document_Orders.*8\.3\.27"):
+                        GENERATOR.merge_shards(self.root, required_shards, native_only=native_only)
+
     def test_witnesses_for_one_shape_are_grouped_in_stable_order(self) -> None:
         first, second = root_witness("main"), root_witness("other")
         self.write_root_shard(second, first)

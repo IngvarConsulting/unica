@@ -10,6 +10,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import uuid
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -39,9 +40,10 @@ MODULE_ROLE_KEYS_SHARD = "required_configuration_module_role_keys"
 EDS_MODULE_KEYS_SHARD = "required_native_eds_module_keys"
 SUBSYSTEM_INTERFACE_KEYS_SHARD = "required_native_subsystem_interface_keys"
 DCS_QUERY_KEYS_SHARD = "required_native_dcs_query_keys"
+ROLE_RIGHT_KEYS_SHARD = "required_native_role_right_keys"
 REQUIRED_KEY_SHARDS = frozenset({
     ROOT_KEYS_SHARD, METADATA_CHILD_KEYS_SHARD, EXTERNAL_CHILD_KEYS_SHARD, MODULE_ROLE_KEYS_SHARD,
-    EDS_MODULE_KEYS_SHARD, SUBSYSTEM_INTERFACE_KEYS_SHARD, DCS_QUERY_KEYS_SHARD,
+    EDS_MODULE_KEYS_SHARD, SUBSYSTEM_INTERFACE_KEYS_SHARD, DCS_QUERY_KEYS_SHARD, ROLE_RIGHT_KEYS_SHARD,
 })
 NATIVE_SCOPE = (
     "Configuration source sets and native Language registrations in extension source sets "
@@ -56,7 +58,8 @@ NATIVE_SCOPE = (
     " The native report checks declaration closure for configuration roots and top-level metadata children."
     " It requires external Form, Template, and Command collections witnessed against native XML,"
     " and ExternalDataSource module collections and round-trips for the native files on each line."
-    " It also requires exact read witnesses for registered native Report and DataProcessor DCS queries."
+    " It also requires exact read witnesses for registered native Report and DataProcessor DCS queries"
+    " and the role-right collection and members in native SalesReader fixtures."
 )
 DAEMON_SCOPE = (
     "Read witnesses from the selected document and BSL coverage test of unica-daemon, "
@@ -219,6 +222,29 @@ def validate_required_record(record: object, shard: str) -> None:
             raise ValueError("required DCS query address must name the main source set")
         required_text(requirement["origin"], "origin")
         return
+    if shard == ROLE_RIGHT_KEYS_SHARD:
+        exact_fields(requirement, {"kind", "owner", "origin", "addresses"}, "role right requirement")
+        if (
+            key["branch"] != "Right" or key["role"] is not None
+            or shape != [{"kind": "Role", "named": True, "role": None}]
+            or requirement["kind"] != "read"
+        ):
+            raise ValueError("required role right key must name a Role.Right read")
+        owner = required_text(requirement["owner"], "role owner")
+        if not re.fullmatch(r"main:Role\.[^\W\d]\w*", owner):
+            raise ValueError("required role right owner must name a role in the main source set")
+        branch = f"{owner}.Right"
+        addresses = requirement["addresses"]
+        if not isinstance(addresses, list) or len(addresses) < 2 or addresses[0] != branch:
+            raise ValueError("required role right addresses must include the collection and members")
+        for address in addresses[1:]:
+            if not re.fullmatch(rf"{re.escape(branch)}\.[A-Za-z][A-Za-z0-9]*_[^\W\d]\w*",
+                                required_text(address, "right address")):
+                raise ValueError("required role right member must belong to the required collection")
+        if len(addresses) != len(set(addresses)):
+            raise ValueError("duplicate required role right address")
+        required_text(requirement["origin"], "origin")
+        return
     if shard == EDS_MODULE_KEYS_SHARD:
         owner_kinds = tuple(segment["kind"] for segment in shape)
         if (
@@ -299,6 +325,7 @@ def check_required_keys(requirements: dict, groups: dict, *, native_only: bool) 
     missing_eds_modules = []
     missing_interfaces = []
     missing_queries = []
+    missing_role_rights = []
     diagnostics = []
     for key, (shard, record) in sorted(requirements.items()):
         witnesses = groups.get(key, {}).get("witnesses", ())
@@ -314,6 +341,19 @@ def check_required_keys(requirements: dict, groups: dict, *, native_only: bool) 
                 missing_reads.append(
                     f"{requirement['at']} ({record['key']['line']}): expected read from {requirement['origin']}"
                 )
+            continue
+        if shard == ROLE_RIGHT_KEYS_SHARD:
+            requirement = record["requirement"]
+            addresses = {
+                w["at"] for w in witnesses
+                if w["test_case"] == METADATA_SHARD and w["reason"] is None and w["level"] == "read"
+                and w["owner"] == requirement["owner"] and w["origin"] == requirement["origin"]
+            }
+            for at in requirement["addresses"]:
+                if at not in addresses:
+                    missing_role_rights.append(
+                        f"{at} ({record['key']['line']}): expected read from {requirement['origin']}"
+                    )
             continue
         if shard == EDS_MODULE_KEYS_SHARD:
             level = record["requirement"]["kind"]
@@ -358,6 +398,8 @@ def check_required_keys(requirements: dict, groups: dict, *, native_only: bool) 
         )
     if missing_queries:
         errors.append("missing required native DCS Query coverage:\n" + "\n".join(missing_queries))
+    if missing_role_rights:
+        errors.append("missing required native Role.Right coverage:\n" + "\n".join(missing_role_rights))
     if errors:
         raise ValueError("\n".join(errors))
 
@@ -589,6 +631,70 @@ def native_dcs_query_requirements(repo: Path) -> list[dict]:
     return rows
 
 
+def native_role_right_requirements(repo: Path) -> list[dict]:
+    """Derive the required Role.Right reads from the registered native SalesReader role."""
+    md = "{http://v8.1c.ru/8.3/MDClasses}"
+    ns = "{http://v8.1c.ru/8.2/roles}"
+    name = "SalesReader"
+    owner = f"main:Role.{name}"
+    branch = f"{owner}.Right"
+    rows = []
+    for version, line in (("2.20", "8.3.27"), ("2.21", "8.5.1"), ("2.22", "8.5.4")):
+        source = repo / "tests/fixtures/formats/platform_xml" / version / "all_kinds/src"
+        configuration = ET.parse(source / "Configuration.xml").getroot()
+        descriptor_path = source / "Roles" / f"{name}.xml"
+        descriptor = ET.parse(descriptor_path).getroot()
+        origin = descriptor_path.with_suffix("") / "Ext/Rights.xml"
+        rights = ET.parse(origin).getroot()
+        if any(
+            node.tag != tag or node.get("version") != version
+            for node, tag in ((configuration, md + "MetaDataObject"),
+                              (descriptor, md + "MetaDataObject"), (rights, ns + "Rights"))
+        ):
+            raise ValueError(f"native Role.Right: wrong XML root or format in {source}")
+        registrations = configuration.find(f"{md}Configuration/{md}ChildObjects")
+        if registrations is None or sum(node.text == name for node in registrations.findall(f"{md}Role")) != 1:
+            raise ValueError(f"native Role.Right: expected one registration for {name} in {source}")
+        roles = descriptor.findall(f"{md}Role")
+        if len(roles) != 1 or roles[0].findtext(f"{md}Properties/{md}Name") != name:
+            raise ValueError(f"native Role.Right: wrong role descriptor {descriptor_path}")
+        try:
+            identity = uuid.UUID(roles[0].get("uuid", ""))
+        except ValueError as error:
+            raise ValueError(f"native Role.Right: invalid role UUID in {descriptor_path}") from error
+        if not identity.int:
+            raise ValueError(f"native Role.Right: nil role UUID in {descriptor_path}")
+
+        members = set()
+        for entry in rights.findall(f"{ns}object"):
+            target = required_text(entry.findtext(f"{ns}name"), "native role right target")
+            match = re.fullmatch(r"([A-Za-z][A-Za-z0-9]*)\.([^\W\d]\w*)", target)
+            if match is None:
+                raise ValueError(f"native Role.Right: invalid target {target} in {origin}")
+            kind, object_name = match.groups()
+            if kind == "Configuration":
+                registered = configuration.findtext(f"{md}Configuration/{md}Properties/{md}Name") == object_name
+            else:
+                registered = sum(node.text == object_name for node in registrations.findall(f"{md}{kind}")) == 1
+            if not registered:
+                raise ValueError(f"native Role.Right: unregistered target {target} in {origin}")
+            address = f"{branch}.{kind}_{object_name}"
+            if address in members or not entry.findall(f"{ns}right"):
+                raise ValueError(f"native Role.Right: duplicate or empty target {target} in {origin}")
+            members.add(address)
+        if not members:
+            raise ValueError(f"native Role.Right: no registered right targets in {origin}")
+        rows.append({
+            "schema_version": SCHEMA_VERSION, "record_type": "required",
+            "key": {"line": line, "source_kind": "configuration",
+                    "owner_shape": [{"kind": "Role", "named": True, "role": None}],
+                    "branch": "Right", "role": None},
+            "requirement": {"kind": "read", "owner": owner, "addresses": [branch, *sorted(members)],
+                            "origin": origin.relative_to(repo).as_posix()},
+        })
+    return rows
+
+
 def generate_report(native_only: bool) -> dict:
     revision, status = git_state()
     cases = [("unica-coder", "address_coverage")]
@@ -610,9 +716,13 @@ def generate_report(native_only: bool) -> dict:
                 stdout=sys.stderr,
                 check=True,
             )
-        records = native_dcs_query_requirements(REPO)
-        path = Path(scratch) / f"{DCS_QUERY_KEYS_SHARD}.jsonl"
-        path.write_text("".join(f"{canonical_json(row)}\n" for row in records), encoding="utf-8")
+        for shard, producer in (
+            (DCS_QUERY_KEYS_SHARD, native_dcs_query_requirements),
+            (ROLE_RIGHT_KEYS_SHARD, native_role_right_requirements),
+        ):
+            records = producer(REPO)
+            path = Path(scratch) / f"{shard}.jsonl"
+            path.write_text("".join(f"{canonical_json(row)}\n" for row in records), encoding="utf-8")
         if not native_only:
             records = native_subsystem_interface_requirements(REPO)
             path = Path(scratch) / f"{SUBSYSTEM_INTERFACE_KEYS_SHARD}.jsonl"
