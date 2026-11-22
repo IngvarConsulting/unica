@@ -2016,8 +2016,7 @@ fn check_native_configuration_nested_modules(
     let finder = WorkspaceFindDirectoryBuilder::default();
     let registrations = root_registrations(&source, format);
 
-    let check_exchange_inventory = fixture == "report_exchange_enum_module_roles";
-    let mut verified_exchange_children = BTreeSet::new();
+    let mut checked_modules = BTreeSet::new();
     for (kind, name, directory, role, child) in samples {
         assert_eq!(
             registrations
@@ -2112,79 +2111,110 @@ fn check_native_configuration_nested_modules(
             &module_origin,
             AddressEvidence::RoundTrip(&module_at),
         );
-        if check_exchange_inventory && kind == "ExchangePlan" && name == "Codes" {
-            let body = format!("{module_at}.Body");
-            check_native_bsl_body(
-                &authority,
-                &body,
-                module_text,
-                1,
-                module_text.lines().count(),
-            );
-            evidence.record(
-                line,
-                &module_at,
-                "Body",
-                None,
-                &module_origin,
-                AddressEvidence::Read(&body),
-            );
-            assert!(verified_exchange_children.insert(child_at));
-        }
-    }
-    if check_exchange_inventory {
-        let expected = native_exchange_plan_module_children(&source, format);
-        assert_eq!(
-            verified_exchange_children, expected,
-            "{format}: physical Form and Command module owners in native ExchangePlan.Codes"
+        let body = format!("{module_at}.Body");
+        check_native_bsl_body(
+            &authority,
+            &body,
+            module_text,
+            1,
+            module_text.lines().count(),
         );
+        evidence.record(
+            line,
+            &module_at,
+            "Body",
+            None,
+            &module_origin,
+            AddressEvidence::Read(&body),
+        );
+        assert!(checked_modules.insert((child_at, module_path)));
     }
+    let mut expected = native_nested_module_children(&source, format, &registrations);
+    // Borrowed payloads travel with their owner fixture. The Report form
+    // in the report/exchange/enum fixture is covered in nested_module_roles.
+    let borrowed: &[&str] = match fixture {
+        "nested_module_roles" => &[
+            "Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form/Module.bsl",
+            "Documents/Orders/Commands/Other/Ext/CommandModule.bsl",
+            "Documents/Orders/Commands/Probe/Ext/CommandModule.bsl",
+        ],
+        "report_exchange_enum_module_roles" => {
+            &["Reports/АнализВерсийОбъектов/Forms/AddressProbeReportForm/Ext/Form/Module.bsl"]
+        }
+        _ => &[],
+    };
+    for relative in borrowed {
+        let file = source.join(relative);
+        let count = expected.len();
+        expected.retain(|(_, path)| path != &file);
+        assert_eq!(expected.len() + 1, count, "{format}: borrowed {file:?}");
+    }
+    assert_eq!(
+        checked_modules, expected,
+        "{format}/{fixture}: physical Form and Command modules from native registrations"
+    );
 }
 
-fn native_exchange_plan_module_children(source: &Path, format: &str) -> BTreeSet<String> {
-    let owner = "main:ExchangePlan.Codes";
-    let descriptor = source.join("ExchangePlans/Codes.xml");
-    let raw = read_fixture_descriptor(&descriptor);
-    let document = parse_fixture_descriptor(&raw, &descriptor);
-    assert_eq!(document.root_element().attribute("version"), Some(format));
-    let artifact = fixture_artifact(&document, "ExchangePlan", &descriptor);
-    assert_eq!(fixture_properties_name(artifact), Some("Codes"));
-    assert!(uuid::Uuid::parse_str(artifact.attribute("uuid").unwrap()).is_ok());
-    let root = descriptor.with_extension("");
+fn native_nested_module_children(
+    source: &Path,
+    format: &str,
+    registrations: &[(String, String)],
+) -> BTreeSet<(String, PathBuf)> {
     let mut modules = BTreeSet::new();
-    for form in
-        native_child_objects(artifact).filter(|node| node.has_tag_name((MD_CLASSES_NS, "Form")))
-    {
-        let name = form
-            .text()
-            .map(str::trim)
-            .filter(|name| !name.is_empty())
-            .expect("native ExchangePlan Form name");
-        let form_descriptor =
-            native_registered_form_descriptor(artifact, &descriptor, name, format);
-        let module = form_descriptor
-            .with_extension("")
-            .join("Ext/Form/Module.bsl");
-        if native_inventory_has_module(&module) {
-            assert!(modules.insert(format!("{owner}.Form.{name}")));
+    for (kind, name) in registrations {
+        let Some(layout) = METADATA_LAYOUTS
+            .iter()
+            .find(|layout| layout.tag == kind.as_str())
+        else {
+            continue;
+        };
+        let descriptor = source.join(layout.directory).join(format!("{name}.xml"));
+        // These fixtures preserve Configuration.xml while selecting specific owners.
+        if !native_inventory_has_file(&descriptor) {
+            continue;
         }
-    }
-    for (name, at) in native_command_owners(owner, artifact) {
-        let module = root
-            .join("Commands")
-            .join(name)
-            .join("Ext/CommandModule.bsl");
-        if native_inventory_has_module(&module) {
-            assert!(modules.insert(at));
+        let raw = read_fixture_descriptor(&descriptor);
+        let document = parse_fixture_descriptor(&raw, &descriptor);
+        assert_eq!(document.root_element().attribute("version"), Some(format));
+        let artifact = fixture_artifact(&document, kind, &descriptor);
+        assert_eq!(fixture_properties_name(artifact), Some(name.as_str()));
+        assert!(uuid::Uuid::parse_str(artifact.attribute("uuid").unwrap()).is_ok());
+        let owner = format!("main:{kind}.{name}");
+        let root = descriptor.with_extension("");
+        for form in
+            native_child_objects(artifact).filter(|node| node.has_tag_name((MD_CLASSES_NS, "Form")))
+        {
+            let name = form
+                .text()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .expect("native Form name");
+            let module = root.join("Forms").join(name).join("Ext/Form/Module.bsl");
+            if native_inventory_has_file(&module) {
+                native_registered_form_descriptor(artifact, &descriptor, name, format);
+                assert!(modules.insert((format!("{owner}.Form.{name}"), module)));
+            }
+        }
+        if native_child_objects(artifact).any(|node| node.has_tag_name((MD_CLASSES_NS, "Command")))
+        {
+            for (name, at) in native_command_owners(&owner, artifact) {
+                let module = root
+                    .join("Commands")
+                    .join(name)
+                    .join("Ext/CommandModule.bsl");
+                if native_inventory_has_file(&module) {
+                    assert!(modules.insert((at, module)));
+                }
+            }
         }
     }
     modules
 }
 
-fn native_inventory_has_module(path: &Path) -> bool {
+fn native_inventory_has_file(path: &Path) -> bool {
     match fs::metadata(path) {
         Ok(metadata) => {
-            assert!(metadata.is_file(), "{path:?}: expected native BSL file");
+            assert!(metadata.is_file(), "{path:?}: expected native fixture file");
             true
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
