@@ -109,6 +109,14 @@ NATIVE_ONLY_MODULE_SCOPE = (
     "and skips their witness check because some roles depend on daemon fixtures."
 )
 SCOPE_BOUNDARY = "This slice is not the complete #484 map or the other #2958 evidence columns."
+ABSENCE_SCOPE = "Absence observations are limited to the captured cases. Other cases remain unverified."
+NATIVE_ABSENCE_FIXTURE = Path("tests/dev/fixtures/address-coverage-native-absence.json")
+NATIVE_ABSENCE_OWNERS = {
+    "main:Constant.Enabled": "Constant",
+    "main:DocumentNumerator.Sales": "DocumentNumerator",
+    "main:Sequence.Probe": "Sequence",
+}
+NATIVE_ABSENCE_CHILDREN = {"Form", "Command"}
 
 
 def exact_fields(value: object, fields: set[str], label: str) -> None:
@@ -120,6 +128,11 @@ def required_text(value: object, label: str) -> str:
     if not isinstance(value, str) or not value.strip() or "\r" in value or "\n" in value:
         raise ValueError(f"{label} must be a nonempty single-line string")
     return value
+
+
+def require_sha256(value: object, label: str) -> None:
+    if not re.fullmatch(r"[0-9a-f]{64}", required_text(value, label)):
+        raise ValueError(f"{label} must be a lowercase SHA-256")
 
 
 def token(value: object, label: str) -> None:
@@ -720,6 +733,152 @@ def mark_empty_branch_enumeration_gaps(rows: list[dict]) -> None:
         raise ValueError(f"missing native address evidence for #2224 branches: {labels}")
 
 
+def native_module_absence_observations(repo: Path) -> list[dict]:
+    """Verify the scope and outcome of the captured named platform attempts."""
+    fixture = json.loads((repo / NATIVE_ABSENCE_FIXTURE).read_bytes(), object_pairs_hook=json_object)
+    exact_fields(fixture, {
+        "scope", "native_receipt_sha256", "mcp_revision", "mcp_binary_sha256",
+        "qualification_sha256", "probes",
+    }, "native absence fixture")
+    required_text(fixture["scope"], "native absence scope")
+    if not re.fullmatch(r"[0-9a-f]{40}", required_text(fixture["mcp_revision"], "MCP revision")):
+        raise ValueError("native absence fixture needs an exact MCP revision")
+    for name in ("mcp_binary_sha256", "qualification_sha256"):
+        require_sha256(fixture[name], name)
+    captures = CFE_OWNERSHIP_CAPTURES
+    exact_fields(fixture["native_receipt_sha256"], {fmt for fmt, _ in captures.values()},
+                 "platform receipt pins")
+    for pin in fixture["native_receipt_sha256"].values():
+        require_sha256(pin, "platform receipt pin")
+    if not isinstance(fixture["probes"], list):
+        raise ValueError("native absence fixture needs a list of probes")
+    pending = {(line, owner, kind) for line in captures for owner in NATIVE_ABSENCE_OWNERS
+               for kind in NATIVE_ABSENCE_CHILDREN}
+    result = []
+    for probe in fixture["probes"]:
+        fields = {"line", "format", "platform", "owner", "child_kind", "child", "stages",
+                  "diagnostic", "owner_sha256", "import_log_sha256", "named_probes"}
+        if isinstance(probe, dict) and "export" in probe:
+            fields.add("export")
+        exact_fields(probe, fields, "native absence probe")
+        line = required_text(probe["line"], "native absence line")
+        owner = required_text(probe["owner"], "native absence owner")
+        child_kind = required_text(probe["child_kind"], "attempted child kind")
+        scope = line, owner, child_kind
+        if scope not in pending or captures[line] != (probe["format"], probe["platform"]):
+            raise ValueError(f"native absence probe is duplicate or outside its owner, child or line scope: {scope}")
+        pending.remove(scope)
+        owner_kind = NATIVE_ABSENCE_OWNERS[owner]
+        child = required_text(probe["child"], "attempted child")
+        if child != f"AddressProbe{owner_kind}{child_kind}":
+            raise ValueError(f"native absence probe has the wrong attempted child: {child}")
+        for key in ("owner_sha256", "import_log_sha256"):
+            require_sha256(probe[key], key)
+        if probe["named_probes"] != dict.fromkeys(
+            ("named_child", "module_group", "named_module", "resolve_address", "resolve_file_path"),
+            "not_found",
+        ):
+            raise ValueError("native absence needs exact named MCP refusals")
+        stages = probe["stages"]
+        if not isinstance(stages, dict) or any(type(code) is not int for code in stages.values()):
+            raise ValueError("native absence probe needs numeric platform exit codes")
+        diagnostic = required_text(probe["diagnostic"], "native import diagnostic")
+        if stages == {"import": 0, "apply": 0, "export": 0}:
+            expected = f"{child_kind} не был загружен поскольку не является подчиненным для объекта {owner_kind}."
+            if (
+                owner_kind != "Sequence" or not diagnostic.endswith(expected)
+                or probe.get("export") != {
+                    "owner_sha256": probe["owner_sha256"], "child_registration_count": 0,
+                    "child_files": [], "dump_entry_count": 0,
+                }
+            ):
+                raise ValueError("native absence evidence does not prove child subordination")
+            reason = {"kind": "not_subordinate"}
+        else:
+            if (
+                owner_kind == "Sequence" or stages != {"import": 4294967295}
+                or "export" in probe
+                or not diagnostic.endswith(f"Текущее ChildObjects, ожидаемое {owner_kind}.")
+            ):
+                raise ValueError("native absence evidence does not show a container import refusal")
+            reason = {"kind": "unverified", "observation": "owner_child_objects_rejected_on_import"}
+        evidence = {
+            **probe,
+            "origin": NATIVE_ABSENCE_FIXTURE.as_posix(),
+            "native_receipt_sha256": fixture["native_receipt_sha256"][probe["format"]],
+            "mcp_revision": fixture["mcp_revision"],
+            "mcp_binary_sha256": fixture["mcp_binary_sha256"],
+            "qualification_sha256": fixture["qualification_sha256"],
+        }
+        group = f"{owner}.{child_kind}.{child}.Module"
+        for role in (None, child_kind):
+            key = {
+                "line": line, "source_kind": "configuration", "branch": "Module", "role": role,
+                "owner_shape": [
+                    {"kind": kind, "named": True, "role": None} for kind in (owner_kind, child_kind)
+                ],
+            }
+            result.append({"key": key, "attempted_at": f"{group}.{role}" if role else group,
+                           "reason": reason, "evidence": evidence})
+    if pending:
+        raise ValueError(f"native absence fixture misses scoped probes: {sorted(pending)}")
+    return result
+
+
+def inherited_module_absence(repo: Path, key: dict, witness: dict) -> dict | None:
+    if witness["test_case"] != CFE_OWNERSHIP_SHARD or key["branch"] != "Metadata":
+        return None
+    version, platform = CFE_OWNERSHIP_CAPTURES[key["line"]]
+    fixture = Path("tests/fixtures/acceptance") / f"native-cfe-ownership-{version}"
+    inherited_root = fixture / "inherited"
+    origin = Path(witness["origin"])
+    if not origin.is_relative_to(inherited_root):
+        return None
+    if witness["at"] != f"{witness['owner']}.Metadata" or witness["level"] != "roundtrip":
+        raise ValueError("inherited Form needs a verified local Metadata address")
+    manifest = json.loads((repo / fixture / "manifest.json").read_bytes(), object_pairs_hook=json_object)
+    relative = origin.relative_to(fixture).as_posix()
+    raw = (repo / origin).read_bytes()
+    recorded = manifest["files"].get(relative)
+    if (
+        manifest["formatVersion"] != version or manifest["platformVersion"] != platform
+        or recorded != {"size": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
+        or (repo / origin.with_suffix("")).exists()
+    ):
+        raise ValueError("inherited Form descriptor or local companion differs from native capture")
+    receipt = manifest["inheritedCapture"]["receiptSha256"]
+    require_sha256(receipt, "inherited Form receipt pin")
+    return {
+        "key": {**key, "branch": "Module", "role": "Form"},
+        "attempted_at": f"{witness['owner']}.Module.Form",
+        "reason": {"kind": "no_local_content"},
+        "evidence": {
+            "origin": origin.as_posix(), "platform": platform, "format": version,
+            "native_receipt_sha256": receipt, "declaration": witness["at"],
+            "absent_local_file": (origin.with_suffix("") / "Ext/Form.xml").as_posix(),
+        },
+    }
+
+
+def address_absence_observations(repo: Path, rows: list[dict]) -> list[dict]:
+    """Extend the internal report without modifying address evidence or shard validation."""
+    observations = native_module_absence_observations(repo)
+    for group in rows:
+        key = group["key"]
+        for witness in group["witnesses"]:
+            if witness["reason"] is not None:
+                observations.append({
+                    "key": key, "reason": witness["reason"],
+                    "evidence": {field: witness[field] for field in ("owner", "origin", "test_case")},
+                })
+            elif inherited := inherited_module_absence(repo, key, witness):
+                observations.append(inherited)
+        if gap := group.get("enumeration_gap"):
+            observations.append({"key": key, "reason": {"kind": "enumeration_gap", **gap},
+                                 "evidence": {"direct_read": True}})
+    return sorted(observations, key=lambda case: (structural_key(case["key"]), canonical_json(case)))
+
+
 def render_markdown(report: dict) -> str:
     def cell(value: str) -> str:
         return value.replace("|", r"\|")
@@ -751,6 +910,39 @@ def render_markdown(report: dict) -> str:
             witnesses.append(f"Empty branch enumeration: [#{gap['issue']}]({gap['url']})")
         cells = map(cell, (key["line"], key["source_kind"], shape, branch, "<br>".join(witnesses)))
         rows.append("| " + " | ".join(cells) + " |")
+    if absence_observations := report.get("absence_observations"):
+        rows.extend((
+            "",
+            "## Address absence observations",
+            "",
+            "Named observations apply to the capture shown. Cases without evidence remain unverified.",
+            "",
+            "| Line | Subject | Reason | Evidence |",
+            "| --- | --- | --- | --- |",
+        ))
+        for case in absence_observations:
+            key, reason, evidence = (case[field] for field in ("key", "reason", "evidence"))
+            kind = reason["kind"]
+            subject = case.get("attempted_at") or ".".join(
+                [*(segment["kind"] for segment in key["owner_shape"]), key["branch"]]
+            )
+            if kind == "introduced_in":
+                outcome = f"Introduced in {reason['line']}"
+                note = f"{evidence['origin']} ({evidence['test_case']})"
+            elif kind == "enumeration_gap":
+                outcome = f"Owner enumeration gap [#{reason['issue']}]({reason['url']})"
+                note = "Direct branch read is witnessed in the address table."
+            elif kind == "no_local_content":
+                outcome = "No local content in the inherited form"
+                note = f"{evidence['platform']} · {evidence['origin']} · declaration {evidence['declaration']}"
+            else:
+                outcome = (
+                    "Child not subordinate in this native import"
+                    if kind == "not_subordinate" else "Role unverified after container import refusal"
+                )
+                note = f"{evidence['platform']} · {evidence['diagnostic']} · named MCP probes: not_found"
+            cells = map(cell, (key["line"], subject, outcome, note))
+            rows.append("| " + " | ".join(cells) + " |")
     return "\n".join(rows)
 
 
@@ -1620,10 +1812,12 @@ def generate_report(native_only: bool) -> dict:
             path.write_text("".join(f"{canonical_json(row)}\n" for row in records), encoding="utf-8")
         rows = merge_shards(Path(scratch), required_shards, native_only=native_only)
         mark_empty_branch_enumeration_gaps(rows)
+        absence_observations = address_absence_observations(REPO, rows)
     if git_state() != (revision, status):
         raise ValueError("Git revision or worktree status changed during the address coverage run")
     return {"schema_version": SCHEMA_VERSION, "revision": revision, "dirty": bool(status),
-            "scope": f"{scope} {SCOPE_BOUNDARY}", "rows": rows}
+            "scope": f"{scope} {SCOPE_BOUNDARY} {ABSENCE_SCOPE}", "rows": rows,
+            "absence_observations": absence_observations}
 
 
 def main() -> int:

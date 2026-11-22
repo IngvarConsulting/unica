@@ -86,6 +86,63 @@ class AddressCoverageReportTests(unittest.TestCase):
     def write_root_shard(self, *records: dict) -> None:
         self.write_shard(ROOT_SHARD, *records)
 
+    def test_address_absence_keeps_named_probes_out_of_positive_rows(self) -> None:
+        rows = [{"key": root_witness("main", introduced_in="8.5.1")["key"],
+                 "witnesses": [root_witness("main", introduced_in="8.5.1")["witness"]]}]
+        before = json.dumps(rows, ensure_ascii=False)
+        observations = GENERATOR.address_absence_observations(GENERATOR.REPO, rows)
+        self.assertEqual(json.dumps(rows, ensure_ascii=False), before)
+        counts = {}
+        for case in observations:
+            reason = case["reason"]["kind"]
+            counts[reason] = counts.get(reason, 0) + 1
+            if reason == "not_subordinate":
+                self.assertEqual(case["key"]["owner_shape"][0]["kind"], "Sequence")
+                self.assertEqual(case["evidence"]["named_probes"]["named_module"], "not_found")
+            if reason == "unverified":
+                self.assertIn(case["key"]["owner_shape"][0]["kind"], {"Constant", "DocumentNumerator"})
+                self.assertIn("ChildObjects", case["evidence"]["diagnostic"])
+            self.assertNotIn("at", case)
+        self.assertEqual(counts, {"introduced_in": 1, "not_subordinate": 12, "unverified": 24})
+
+    def test_container_refusal_cannot_be_promoted_to_proven_nonsubordination(self) -> None:
+        source = GENERATOR.REPO / GENERATOR.NATIVE_ABSENCE_FIXTURE
+        fixture = self.root / GENERATOR.NATIVE_ABSENCE_FIXTURE
+        fixture.parent.mkdir(parents=True)
+        data = json.loads(source.read_text(encoding="utf-8"))
+        case = next(case for case in data["probes"] if case["owner"].startswith("main:Constant."))
+        case["stages"] = {"import": 0, "apply": 0, "export": 0}
+        case["export"] = next(case["export"] for case in data["probes"] if "export" in case)
+        fixture.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "child subordination"):
+            GENERATOR.address_absence_observations(self.root, [])
+
+    def test_local_form_companion_absence_keeps_the_declaration_proof(self) -> None:
+        required = GENERATOR.native_cfe_ownership_requirements(GENERATOR.REPO)
+        rows = []
+        for case in required:
+            witnesses = [
+                {"owner": obs["owner"], "at": obs["addresses"][0], "origin": obs["origin"],
+                 "level": obs["level"], "test_case": GENERATOR.CFE_OWNERSHIP_SHARD, "reason": None}
+                for obs in case["requirement"]["observations"]
+            ]
+            rows.append({"key": case["key"], "witnesses": witnesses})
+        before = json.dumps(rows, ensure_ascii=False)
+        cases = GENERATOR.address_absence_observations(GENERATOR.REPO, rows)
+        inherited = [case for case in cases if case["reason"]["kind"] == "no_local_content"]
+        self.assertEqual(len(inherited), 3)
+        for case in inherited:
+            self.assertEqual(case["key"]["role"], "Form")
+            self.assertEqual(case["evidence"]["declaration"], "ext:Catalog.CorpusCatalog.Form.CorpusForm.Metadata")
+            self.assertTrue(case["evidence"]["absent_local_file"].endswith("/Ext/Form.xml"))
+        self.assertEqual(json.dumps(rows, ensure_ascii=False), before)
+        markdown = GENERATOR.render_markdown({
+            "revision": "test", "dirty": False, "scope": "", "rows": rows, "absence_observations": cases,
+        })
+        self.assertIn("Address absence observations", markdown)
+        self.assertIn("No local content", markdown)
+        self.assertIn("ext:Catalog.CorpusCatalog.Form.CorpusForm.Metadata (roundtrip)", markdown)
+
     def test_empty_branch_gap_requires_direct_reads_without_claiming_tree_enumeration(self) -> None:
         pairs = (
             ("FilterCriterion", "Form"), ("FilterCriterion", "Command"),
@@ -112,9 +169,16 @@ class AddressCoverageReportTests(unittest.TestCase):
         for row in rows:
             self.assertEqual(row["enumeration_gap"]["issue"], 2224)
             self.assertEqual(row["witnesses"][0]["level"], "read")
-        report = GENERATOR.render_markdown({"revision": "test", "dirty": False, "scope": "", "rows": rows})
+        observations = GENERATOR.address_absence_observations(GENERATOR.REPO, rows)
+        gaps = [case for case in observations if case["reason"]["kind"] == "enumeration_gap"]
+        self.assertEqual(len(gaps), 18)
+        self.assertTrue(all(case["evidence"]["direct_read"] for case in gaps))
+        report = GENERATOR.render_markdown({
+            "revision": "test", "dirty": False, "scope": "", "rows": rows, "absence_observations": observations,
+        })
         self.assertIn("main:FilterCriterion.Probe.Form (read)", report)
         self.assertIn("Empty branch enumeration", report)
+        self.assertIn("Owner enumeration gap [#2224]", report)
 
         missing, others = records[0], records[1:]
         self.write_shard(METADATA_SHARD, *others)
