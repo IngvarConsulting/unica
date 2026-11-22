@@ -1759,6 +1759,49 @@ fn check_native_configuration_form_and_command_modules(format: &str, evidence: &
         ],
         evidence,
     );
+    check_native_configuration_nested_modules(
+        format,
+        "business_process_task_journal_module_roles",
+        [
+            (
+                "BusinessProcess",
+                "Approval",
+                "BusinessProcesses",
+                "Form",
+                "AddressProbeBusinessProcessForm",
+            ),
+            (
+                "BusinessProcess",
+                "Approval",
+                "BusinessProcesses",
+                "Command",
+                "AddressProbeBusinessProcessCommand",
+            ),
+            ("Task", "Work", "Tasks", "Form", "AddressProbeTaskForm"),
+            (
+                "Task",
+                "Work",
+                "Tasks",
+                "Command",
+                "AddressProbeTaskCommand",
+            ),
+            (
+                "DocumentJournal",
+                "Entries",
+                "DocumentJournals",
+                "Form",
+                "AddressProbeJournalForm",
+            ),
+            (
+                "DocumentJournal",
+                "Entries",
+                "DocumentJournals",
+                "Command",
+                "AddressProbeJournalCommand",
+            ),
+        ],
+        evidence,
+    );
 }
 
 type NativeNestedModuleSample = (

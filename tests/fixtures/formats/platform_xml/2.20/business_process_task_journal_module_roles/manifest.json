@@ -1,0 +1,389 @@
+{
+  "formatVersion": "2.20",
+  "platformVersion": "8.3.27.2342",
+  "source": "Byte-identical file selection from one native ibcmd configuration export.",
+  "seed": "A retained settings-export of the same native platform build.",
+  "configurationSha256": "2ce1483b4af352aa5f759130cbab4a8c198fa7f2f1103191ccbd4a76a551e97d",
+  "native": {
+    "ibcmdSha256": "38f37715535cea530e58d5ba2e7e072c184b61b12f3e903ac290b299cf39fd38",
+    "receiptSha256": "d955297906dedb0fcfd27cbbc2c116ec97ef9b4d41c3a392150383a16baeb20d",
+    "packageSha256": "3aa37491f5bddc01a97a8580845ca8954bddc5c7e8372468440c9010697cb338",
+    "commands": [
+      {
+        "stage": "platform-version",
+        "argv": [
+          "C:\\Program Files\\1cv8\\8.3.27.2342\\bin\\ibcmd.exe",
+          "--version"
+        ],
+        "log": "platform-version.log",
+        "free_before": {
+          "C": 4571029504,
+          "E": 22637334528
+        },
+        "pid": 17904,
+        "exit": 0,
+        "seconds": 0.28,
+        "log_identity": {
+          "bytes": 13,
+          "sha256": "fa145cf414af61e30a59f93b3f733dd23645bacefcd50bc80371a95c54245117"
+        }
+      },
+      {
+        "stage": "nested-modules-import",
+        "argv": [
+          "C:\\Program Files\\1cv8\\8.3.27.2342\\bin\\ibcmd.exe",
+          "config",
+          "--db-path=E:\\tmp\\u484-native-child-export-83-core\\round2-ib\\db",
+          "--data=E:\\tmp\\u484-native-child-export-83-core\\round2-ib\\data",
+          "--temp=E:\\tmp\\u484-native-bp-task-journal-plan-d3616977\\2.20-a6c9or5u\\nested-modules-tmp",
+          "--users-data=E:\\tmp\\u484-native-child-export-83-core\\round2-ib\\users",
+          "--session-data=E:\\tmp\\u484-native-child-export-83-core\\round2-ib\\session",
+          "--log-data=E:\\tmp\\u484-native-child-export-83-core\\round2-ib\\log",
+          "import",
+          "E:\\tmp\\u484-native-bp-task-journal-plan-d3616977\\2.20-a6c9or5u\\nested-modules-input"
+        ],
+        "log": "nested-modules-import.log",
+        "free_before": {
+          "C": 4571029504,
+          "E": 22636675072
+        },
+        "pid": 17400,
+        "exit": 0,
+        "seconds": 2.02,
+        "log_identity": {
+          "bytes": 145,
+          "sha256": "3ba44e987e5a37fdb6e3fa001dd33118b81fb3ca3a099d288911c58d99594096"
+        }
+      },
+      {
+        "stage": "nested-modules-apply",
+        "argv": [
+          "C:\\Program Files\\1cv8\\8.3.27.2342\\bin\\ibcmd.exe",
+          "config",
+          "--db-path=E:\\tmp\\u484-native-child-export-83-core\\round2-ib\\db",
+          "--data=E:\\tmp\\u484-native-child-export-83-core\\round2-ib\\data",
+          "--temp=E:\\tmp\\u484-native-bp-task-journal-plan-d3616977\\2.20-a6c9or5u\\nested-modules-tmp",
+          "--users-data=E:\\tmp\\u484-native-child-export-83-core\\round2-ib\\users",
+          "--session-data=E:\\tmp\\u484-native-child-export-83-core\\round2-ib\\session",
+          "--log-data=E:\\tmp\\u484-native-child-export-83-core\\round2-ib\\log",
+          "apply",
+          "--force"
+        ],
+        "log": "nested-modules-apply.log",
+        "free_before": {
+          "C": 4571029504,
+          "E": 22636646400
+        },
+        "pid": 3980,
+        "exit": 0,
+        "seconds": 1.75,
+        "log_identity": {
+          "bytes": 705,
+          "sha256": "a196d44b775c9d6222652b01c4f26116f693cc8acd47ba3e0d99a044d310819e"
+        }
+      },
+      {
+        "stage": "nested-modules-export",
+        "argv": [
+          "C:\\Program Files\\1cv8\\8.3.27.2342\\bin\\ibcmd.exe",
+          "config",
+          "--db-path=E:\\tmp\\u484-native-child-export-83-core\\round2-ib\\db",
+          "--data=E:\\tmp\\u484-native-child-export-83-core\\round2-ib\\data",
+          "--temp=E:\\tmp\\u484-native-bp-task-journal-plan-d3616977\\2.20-a6c9or5u\\nested-modules-tmp",
+          "--users-data=E:\\tmp\\u484-native-child-export-83-core\\round2-ib\\users",
+          "--session-data=E:\\tmp\\u484-native-child-export-83-core\\round2-ib\\session",
+          "--log-data=E:\\tmp\\u484-native-child-export-83-core\\round2-ib\\log",
+          "export",
+          "E:\\tmp\\u484-native-bp-task-journal-plan-d3616977\\2.20-a6c9or5u\\nested-modules-export"
+        ],
+        "log": "nested-modules-export.log",
+        "free_before": {
+          "C": 4571029504,
+          "E": 22636638208
+        },
+        "pid": 18044,
+        "exit": 0,
+        "seconds": 1.78,
+        "log_identity": {
+          "bytes": 145,
+          "sha256": "2776a981f0670d938da7c8846e4a3b0ff033681900056ac579e9359086c63500"
+        }
+      }
+    ]
+  },
+  "mcp": {
+    "revision": "ec4aac54df2825e075a0d7c292b92dbcfec9ce45",
+    "binarySha256": "641d7dd01731d74f49d8258864e47621650bde9ca44c7274f5661e5cf32916c4",
+    "receiptSha256": "cb87273560b48942d1c82764a586d2987e506ce397da9267fe5692c7a28d0445",
+    "successfulCalls": 30,
+    "slices": [
+      {
+        "batch": "nested-modules",
+        "files": 19,
+        "sha256ByFile": {
+          "BusinessProcesses/Approval/Commands/AddressProbeBusinessProcessCommand/Ext/CommandModule.bsl": "3a344a697ebf5de3df13d432d5e3dde02aa20e64dee63551b0f57ce669c80e92",
+          "BusinessProcesses/Approval/Ext/Flowchart.xml": "3f11b264f3ebf008fd08f6c6423800e83e68d4a4c104d7f518547ce7b89a6202",
+          "BusinessProcesses/Approval/Ext/ObjectModule.bsl": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5",
+          "BusinessProcesses/Approval/Forms/AddressProbeBusinessProcessForm/Ext/Form/Module.bsl": "e9e1702fb0559919be63900495625993745a35e689f10a97a8e0875af1ea6d55",
+          "BusinessProcesses/Approval/Forms/AddressProbeBusinessProcessForm/Ext/Form.xml": "5b41789cb5897021d289fab07d70087696d968973b64fd2b69f9e6df9115973e",
+          "BusinessProcesses/Approval/Forms/AddressProbeBusinessProcessForm.xml": "fdf643d844abe7fcb4f2e645811fd12ebd44588efea139ee0e1401e6624d21a5",
+          "Configuration.xml": "2ce1483b4af352aa5f759130cbab4a8c198fa7f2f1103191ccbd4a76a551e97d",
+          "BusinessProcesses/Approval.xml": "c5e0fc230071507574c23a88f608af9b0d9f92bb7719e0675056565aa3749a46",
+          "Tasks/Work/Commands/AddressProbeTaskCommand/Ext/CommandModule.bsl": "9f1c0909e5ef6452f4cddcdecf778957fc6d4d91bacf256122e45de1e857b2f6",
+          "Tasks/Work/Ext/ObjectModule.bsl": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5",
+          "Tasks/Work/Forms/AddressProbeTaskForm/Ext/Form/Module.bsl": "176ec7b45ad3ee1b225b898299f8ed4c0e0543dd2629577239325d394f04d1ee",
+          "Tasks/Work/Forms/AddressProbeTaskForm/Ext/Form.xml": "5b41789cb5897021d289fab07d70087696d968973b64fd2b69f9e6df9115973e",
+          "Tasks/Work/Forms/AddressProbeTaskForm.xml": "8a626e125e2344b48b9e9ff503485d6343e5dda8d3cd48b9a039ee54974659ab",
+          "Tasks/Work.xml": "dd4c1368de566544f78e9b235e4a5bf572b3c5170236c78e865288798db40c3d",
+          "DocumentJournals/Entries/Commands/AddressProbeJournalCommand/Ext/CommandModule.bsl": "10cbe48a29fa970a092eaf3d9a501d3bd509bcdeb317f7568fb24262697d15a7",
+          "DocumentJournals/Entries/Forms/AddressProbeJournalForm/Ext/Form/Module.bsl": "6e808514c12c4d043447ae10912c36127453d4eec04e4a58a5fdb23be6cbca10",
+          "DocumentJournals/Entries/Forms/AddressProbeJournalForm/Ext/Form.xml": "5b41789cb5897021d289fab07d70087696d968973b64fd2b69f9e6df9115973e",
+          "DocumentJournals/Entries/Forms/AddressProbeJournalForm.xml": "6143f6236d00c7662b73f1655e4821cd7ea3b0c38e345de58a79d7c8b42dfc05",
+          "DocumentJournals/Entries.xml": "ef4941b741ddb720132cd3f2153013576c094b1516bb47d18d0c7eecccec9cef"
+        }
+      }
+    ]
+  },
+  "samples": [
+    {
+      "owner": "main:BusinessProcess.Approval.Form.AddressProbeBusinessProcessForm",
+      "owner_uuid": "69af0580-714f-5ca4-9c3a-94389fdd1b56",
+      "child_kind": "Form",
+      "child_uuid": "702734d0-538f-5912-88d2-1ef458d4f007",
+      "bsl": "BusinessProcesses/Approval/Forms/AddressProbeBusinessProcessForm/Ext/Form/Module.bsl",
+      "marker": "Unica484BusinessProcessForm_2_20",
+      "bsl_matches_input": true,
+      "files": {
+        "Configuration.xml": {
+          "bytes": 12881,
+          "sha256": "2ce1483b4af352aa5f759130cbab4a8c198fa7f2f1103191ccbd4a76a551e97d"
+        },
+        "BusinessProcesses/Approval.xml": {
+          "bytes": 12108,
+          "sha256": "c5e0fc230071507574c23a88f608af9b0d9f92bb7719e0675056565aa3749a46"
+        },
+        "BusinessProcesses/Approval/Forms/AddressProbeBusinessProcessForm.xml": {
+          "bytes": 1451,
+          "sha256": "fdf643d844abe7fcb4f2e645811fd12ebd44588efea139ee0e1401e6624d21a5"
+        },
+        "BusinessProcesses/Approval/Forms/AddressProbeBusinessProcessForm/Ext/Form.xml": {
+          "bytes": 1388,
+          "sha256": "5b41789cb5897021d289fab07d70087696d968973b64fd2b69f9e6df9115973e"
+        },
+        "BusinessProcesses/Approval/Forms/AddressProbeBusinessProcessForm/Ext/Form/Module.bsl": {
+          "bytes": 144,
+          "sha256": "e9e1702fb0559919be63900495625993745a35e689f10a97a8e0875af1ea6d55"
+        }
+      }
+    },
+    {
+      "owner": "main:BusinessProcess.Approval.Command.AddressProbeBusinessProcessCommand",
+      "owner_uuid": "69af0580-714f-5ca4-9c3a-94389fdd1b56",
+      "child_kind": "Command",
+      "child_uuid": "f37e6cbe-9a93-526b-8a96-2487d11a589a",
+      "bsl": "BusinessProcesses/Approval/Commands/AddressProbeBusinessProcessCommand/Ext/CommandModule.bsl",
+      "marker": "Unica484BusinessProcessCommand_2_20",
+      "bsl_matches_input": true,
+      "files": {
+        "Configuration.xml": {
+          "bytes": 12881,
+          "sha256": "2ce1483b4af352aa5f759130cbab4a8c198fa7f2f1103191ccbd4a76a551e97d"
+        },
+        "BusinessProcesses/Approval.xml": {
+          "bytes": 12108,
+          "sha256": "c5e0fc230071507574c23a88f608af9b0d9f92bb7719e0675056565aa3749a46"
+        },
+        "BusinessProcesses/Approval/Commands/AddressProbeBusinessProcessCommand/Ext/CommandModule.bsl": {
+          "bytes": 234,
+          "sha256": "3a344a697ebf5de3df13d432d5e3dde02aa20e64dee63551b0f57ce669c80e92"
+        }
+      }
+    },
+    {
+      "owner": "main:Task.Work.Form.AddressProbeTaskForm",
+      "owner_uuid": "160265e6-85f9-5308-b915-a18969251420",
+      "child_kind": "Form",
+      "child_uuid": "1349b3d7-e1c6-577d-b48e-c9f244f4a410",
+      "bsl": "Tasks/Work/Forms/AddressProbeTaskForm/Ext/Form/Module.bsl",
+      "marker": "Unica484TaskForm_2_20",
+      "bsl_matches_input": true,
+      "files": {
+        "Configuration.xml": {
+          "bytes": 12881,
+          "sha256": "2ce1483b4af352aa5f759130cbab4a8c198fa7f2f1103191ccbd4a76a551e97d"
+        },
+        "Tasks/Work.xml": {
+          "bytes": 12851,
+          "sha256": "dd4c1368de566544f78e9b235e4a5bf572b3c5170236c78e865288798db40c3d"
+        },
+        "Tasks/Work/Forms/AddressProbeTaskForm.xml": {
+          "bytes": 1429,
+          "sha256": "8a626e125e2344b48b9e9ff503485d6343e5dda8d3cd48b9a039ee54974659ab"
+        },
+        "Tasks/Work/Forms/AddressProbeTaskForm/Ext/Form.xml": {
+          "bytes": 1388,
+          "sha256": "5b41789cb5897021d289fab07d70087696d968973b64fd2b69f9e6df9115973e"
+        },
+        "Tasks/Work/Forms/AddressProbeTaskForm/Ext/Form/Module.bsl": {
+          "bytes": 133,
+          "sha256": "176ec7b45ad3ee1b225b898299f8ed4c0e0543dd2629577239325d394f04d1ee"
+        }
+      }
+    },
+    {
+      "owner": "main:Task.Work.Command.AddressProbeTaskCommand",
+      "owner_uuid": "160265e6-85f9-5308-b915-a18969251420",
+      "child_kind": "Command",
+      "child_uuid": "edbbf343-86e7-5c68-9ce9-0db453f2e489",
+      "bsl": "Tasks/Work/Commands/AddressProbeTaskCommand/Ext/CommandModule.bsl",
+      "marker": "Unica484TaskCommand_2_20",
+      "bsl_matches_input": true,
+      "files": {
+        "Configuration.xml": {
+          "bytes": 12881,
+          "sha256": "2ce1483b4af352aa5f759130cbab4a8c198fa7f2f1103191ccbd4a76a551e97d"
+        },
+        "Tasks/Work.xml": {
+          "bytes": 12851,
+          "sha256": "dd4c1368de566544f78e9b235e4a5bf572b3c5170236c78e865288798db40c3d"
+        },
+        "Tasks/Work/Commands/AddressProbeTaskCommand/Ext/CommandModule.bsl": {
+          "bytes": 223,
+          "sha256": "9f1c0909e5ef6452f4cddcdecf778957fc6d4d91bacf256122e45de1e857b2f6"
+        }
+      }
+    },
+    {
+      "owner": "main:DocumentJournal.Entries.Form.AddressProbeJournalForm",
+      "owner_uuid": "1c26280f-efcf-5e34-9cb2-cde5103e7c7a",
+      "child_kind": "Form",
+      "child_uuid": "7446d16f-8cdd-5d9e-9125-64fe68b966fc",
+      "bsl": "DocumentJournals/Entries/Forms/AddressProbeJournalForm/Ext/Form/Module.bsl",
+      "marker": "Unica484JournalForm_2_20",
+      "bsl_matches_input": true,
+      "files": {
+        "Configuration.xml": {
+          "bytes": 12881,
+          "sha256": "2ce1483b4af352aa5f759130cbab4a8c198fa7f2f1103191ccbd4a76a551e97d"
+        },
+        "DocumentJournals/Entries.xml": {
+          "bytes": 3796,
+          "sha256": "ef4941b741ddb720132cd3f2153013576c094b1516bb47d18d0c7eecccec9cef"
+        },
+        "DocumentJournals/Entries/Forms/AddressProbeJournalForm.xml": {
+          "bytes": 1435,
+          "sha256": "6143f6236d00c7662b73f1655e4821cd7ea3b0c38e345de58a79d7c8b42dfc05"
+        },
+        "DocumentJournals/Entries/Forms/AddressProbeJournalForm/Ext/Form.xml": {
+          "bytes": 1388,
+          "sha256": "5b41789cb5897021d289fab07d70087696d968973b64fd2b69f9e6df9115973e"
+        },
+        "DocumentJournals/Entries/Forms/AddressProbeJournalForm/Ext/Form/Module.bsl": {
+          "bytes": 136,
+          "sha256": "6e808514c12c4d043447ae10912c36127453d4eec04e4a58a5fdb23be6cbca10"
+        }
+      }
+    },
+    {
+      "owner": "main:DocumentJournal.Entries.Command.AddressProbeJournalCommand",
+      "owner_uuid": "1c26280f-efcf-5e34-9cb2-cde5103e7c7a",
+      "child_kind": "Command",
+      "child_uuid": "72078d4b-9100-52c5-b95b-da14bd669728",
+      "bsl": "DocumentJournals/Entries/Commands/AddressProbeJournalCommand/Ext/CommandModule.bsl",
+      "marker": "Unica484JournalCommand_2_20",
+      "bsl_matches_input": true,
+      "files": {
+        "Configuration.xml": {
+          "bytes": 12881,
+          "sha256": "2ce1483b4af352aa5f759130cbab4a8c198fa7f2f1103191ccbd4a76a551e97d"
+        },
+        "DocumentJournals/Entries.xml": {
+          "bytes": 3796,
+          "sha256": "ef4941b741ddb720132cd3f2153013576c094b1516bb47d18d0c7eecccec9cef"
+        },
+        "DocumentJournals/Entries/Commands/AddressProbeJournalCommand/Ext/CommandModule.bsl": {
+          "bytes": 226,
+          "sha256": "10cbe48a29fa970a092eaf3d9a501d3bd509bcdeb317f7568fb24262697d15a7"
+        }
+      }
+    }
+  ],
+  "files": {
+    "src/BusinessProcesses/Approval.xml": {
+      "size": 12108,
+      "sha256": "c5e0fc230071507574c23a88f608af9b0d9f92bb7719e0675056565aa3749a46"
+    },
+    "src/BusinessProcesses/Approval/Commands/AddressProbeBusinessProcessCommand/Ext/CommandModule.bsl": {
+      "size": 234,
+      "sha256": "3a344a697ebf5de3df13d432d5e3dde02aa20e64dee63551b0f57ce669c80e92"
+    },
+    "src/BusinessProcesses/Approval/Ext/Flowchart.xml": {
+      "size": 977,
+      "sha256": "3f11b264f3ebf008fd08f6c6423800e83e68d4a4c104d7f518547ce7b89a6202"
+    },
+    "src/BusinessProcesses/Approval/Ext/ObjectModule.bsl": {
+      "size": 3,
+      "sha256": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+    },
+    "src/BusinessProcesses/Approval/Forms/AddressProbeBusinessProcessForm.xml": {
+      "size": 1451,
+      "sha256": "fdf643d844abe7fcb4f2e645811fd12ebd44588efea139ee0e1401e6624d21a5"
+    },
+    "src/BusinessProcesses/Approval/Forms/AddressProbeBusinessProcessForm/Ext/Form.xml": {
+      "size": 1388,
+      "sha256": "5b41789cb5897021d289fab07d70087696d968973b64fd2b69f9e6df9115973e"
+    },
+    "src/BusinessProcesses/Approval/Forms/AddressProbeBusinessProcessForm/Ext/Form/Module.bsl": {
+      "size": 144,
+      "sha256": "e9e1702fb0559919be63900495625993745a35e689f10a97a8e0875af1ea6d55"
+    },
+    "src/Configuration.xml": {
+      "size": 12881,
+      "sha256": "2ce1483b4af352aa5f759130cbab4a8c198fa7f2f1103191ccbd4a76a551e97d"
+    },
+    "src/DocumentJournals/Entries.xml": {
+      "size": 3796,
+      "sha256": "ef4941b741ddb720132cd3f2153013576c094b1516bb47d18d0c7eecccec9cef"
+    },
+    "src/DocumentJournals/Entries/Commands/AddressProbeJournalCommand/Ext/CommandModule.bsl": {
+      "size": 226,
+      "sha256": "10cbe48a29fa970a092eaf3d9a501d3bd509bcdeb317f7568fb24262697d15a7"
+    },
+    "src/DocumentJournals/Entries/Forms/AddressProbeJournalForm.xml": {
+      "size": 1435,
+      "sha256": "6143f6236d00c7662b73f1655e4821cd7ea3b0c38e345de58a79d7c8b42dfc05"
+    },
+    "src/DocumentJournals/Entries/Forms/AddressProbeJournalForm/Ext/Form.xml": {
+      "size": 1388,
+      "sha256": "5b41789cb5897021d289fab07d70087696d968973b64fd2b69f9e6df9115973e"
+    },
+    "src/DocumentJournals/Entries/Forms/AddressProbeJournalForm/Ext/Form/Module.bsl": {
+      "size": 136,
+      "sha256": "6e808514c12c4d043447ae10912c36127453d4eec04e4a58a5fdb23be6cbca10"
+    },
+    "src/Tasks/Work.xml": {
+      "size": 12851,
+      "sha256": "dd4c1368de566544f78e9b235e4a5bf572b3c5170236c78e865288798db40c3d"
+    },
+    "src/Tasks/Work/Commands/AddressProbeTaskCommand/Ext/CommandModule.bsl": {
+      "size": 223,
+      "sha256": "9f1c0909e5ef6452f4cddcdecf778957fc6d4d91bacf256122e45de1e857b2f6"
+    },
+    "src/Tasks/Work/Ext/ObjectModule.bsl": {
+      "size": 3,
+      "sha256": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+    },
+    "src/Tasks/Work/Forms/AddressProbeTaskForm.xml": {
+      "size": 1429,
+      "sha256": "8a626e125e2344b48b9e9ff503485d6343e5dda8d3cd48b9a039ee54974659ab"
+    },
+    "src/Tasks/Work/Forms/AddressProbeTaskForm/Ext/Form.xml": {
+      "size": 1388,
+      "sha256": "5b41789cb5897021d289fab07d70087696d968973b64fd2b69f9e6df9115973e"
+    },
+    "src/Tasks/Work/Forms/AddressProbeTaskForm/Ext/Form/Module.bsl": {
+      "size": 133,
+      "sha256": "176ec7b45ad3ee1b225b898299f8ed4c0e0543dd2629577239325d394f04d1ee"
+    }
+  }
+}
