@@ -2504,9 +2504,12 @@ fn stage_descriptor_properties(
                 )
                 .at_path(at_path.clone())
             };
+            let contains_mobile_list = changes
+                .iter()
+                .any(|(_, value)| matches!(value, DescriptorPropertyValue::Mobile(_)));
             for (property, value) in changes {
                 let tag = property.names()[0];
-                text = match value {
+                let updated = match value {
                     DescriptorPropertyValue::Languages(items) => {
                         set_localized_property(&text, tag, "\t\t\t", items)
                     }
@@ -2522,6 +2525,13 @@ fn stage_descriptor_properties(
                     }
                     DescriptorPropertyValue::Parts(parts) => set_property_parts(&text, tag, parts),
                     DescriptorPropertyValue::List(_) => return Err(missing(tag)),
+                    DescriptorPropertyValue::Mobile(value) => Some(
+                        crate::configuration_mobile_lists::replace(&text, *property, value)
+                            .map_err(|message| {
+                                ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                                    .at_path(format!("ops[{op_index}].args.values.{tag}"))
+                            })?,
+                    ),
                     DescriptorPropertyValue::References(references) => {
                         let path = format!("ops[{op_index}].args.values.{tag}");
                         let references = plan_configuration_references(
@@ -2546,6 +2556,13 @@ fn stage_descriptor_properties(
                     }
                 }
                 .ok_or_else(|| missing(tag))?;
+                text = if contains_mobile_list
+                    && !matches!(value, DescriptorPropertyValue::Mobile(_))
+                {
+                    unica_xml_format::text::preserve_inserted_line_endings(&text, &updated)
+                } else {
+                    updated
+                };
             }
             (NodeKind::Configuration, text)
         }
@@ -2561,7 +2578,8 @@ fn stage_descriptor_properties(
             | DescriptorPropertyChanges::WSReference(_)
     ) || matches!(changes, DescriptorPropertyChanges::FunctionalOption(values) if values.comment.is_some())
         || matches!(changes, DescriptorPropertyChanges::Configuration(configuration)
-            if configuration.changes.iter().all(|(_, value)| matches!(value, DescriptorPropertyValue::References(_))))
+            if configuration.changes.iter().any(|(_, value)| matches!(value, DescriptorPropertyValue::Mobile(_)))
+                || configuration.changes.iter().all(|(_, value)| matches!(value, DescriptorPropertyValue::References(_))))
     {
         let mut image = preimage[..preimage.len() - source.len()].to_vec();
         image.extend_from_slice(postimage_text.as_bytes());

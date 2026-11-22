@@ -966,6 +966,7 @@ pub(super) fn read_configuration_root(
         mut property_limits,
         ..
     } = state;
+    property_limits.extend(purpose.mobile_list_limits);
     property_limits.extend(purpose.reference_list_limits);
     let mut counts = BTreeMap::<String, usize>::new();
     registrations.for_each_unique(checkpoint, |kind, _name| {
@@ -1025,7 +1026,6 @@ pub(super) fn read_configuration_root(
             "defaultRoles": purpose.default_roles,
             "additionalFullTextSearchDictionaries": purpose.additional_full_text_search_dictionaries,
             "standaloneConfigurationRestrictionRoles": purpose.standalone_configuration_restriction_roles,
-            "usedMobileApplicationFunctionalities": purpose.used_mobile_application_functionalities,
             "includeHelpInContents": purpose.include_help_in_contents,
             "compatibilityMode": optional("CompatibilityMode"),
             "defaultRunMode": optional("DefaultRunMode"),
@@ -1061,6 +1061,11 @@ pub(super) fn read_configuration_root(
         "interface": interface,
         "panels": panels,
     });
+    payload["properties"]["mobileApplicationURLs"] = json!(purpose.mobile_application_urls);
+    payload["properties"]["allowedIncomingShareRequestTypes"] =
+        json!(purpose.allowed_incoming_share_request_types);
+    payload["properties"]["usedMobileApplicationFunctionalities"] =
+        json!(purpose.used_mobile_application_functionalities);
     if !property_limits.is_empty() {
         payload["propertyLimits"] = json!(property_limits);
     }
@@ -1222,6 +1227,7 @@ fn parse_configuration_owner(
                 && matches!(state.stack.last().map(|frame| &frame.role), Some(FrameRole::Properties))
                 && name.namespace.as_deref() == Some(MD_NS)
                 && matches!(name.local_name.as_str(), "UsePurposes" | "DefaultRoles" | "UsedMobileApplicationFunctionalities" | "IncludeHelpInContents"
+                    | "MobileApplicationURLs" | "AllowedIncomingShareRequestTypes"
                     | "AdditionalFullTextSearchDictionaries" | "StandaloneConfigurationRestrictionRoles"));
         if purpose_depth != 0 || starts_purpose {
             if let Some(writer_event) = event.as_writer_event() {
@@ -1830,6 +1836,41 @@ mod tests {
         source.push(0xff);
         source.extend_from_slice(b"</Ignored><ChildObjects/></Configuration></MetaDataObject>");
         assert!(parsed(&source, &|| Ok(())).is_err());
+    }
+
+    #[test]
+    fn streamed_mobile_lists_preserve_urls_when_a_share_type_is_incomplete() {
+        let source = format!(
+            r#"<MetaDataObject xmlns="{MD_NS}" xmlns:d="http://v8.1c.ru/8.1/data/core"
+                      xmlns:s="http://www.w3.org/2001/XMLSchema-instance"
+                      xmlns:t="http://www.w3.org/2001/XMLSchema"
+                      xmlns:m="http://v8.1c.ru/8.2/managed-application/core" version="2.20">
+                <Configuration>
+                    <Properties>
+                        <Name>Demo</Name>
+                        <MobileApplicationURLs>
+                            <d:Value s:type="t:string">https://one.example</d:Value>
+                            <d:Value s:type="t:string">https://two.example</d:Value>
+                        </MobileApplicationURLs>
+                        <AllowedIncomingShareRequestTypes>
+                            <d:Value s:type="m:AllowedIncomingShareRequestType"><m:mime>text/plain</m:mime></d:Value>
+                        </AllowedIncomingShareRequestTypes>
+                    </Properties>
+                    <ChildObjects/>
+                </Configuration>
+            </MetaDataObject>"#
+        );
+        let result = parsed(source.as_bytes(), &|| Ok(())).unwrap();
+        assert_eq!(result.payload["name"], "Demo");
+        assert_eq!(
+            result.payload["properties"]["mobileApplicationURLs"],
+            json!(["https://one.example", "https://two.example"])
+        );
+        assert!(result.payload["properties"]["allowedIncomingShareRequestTypes"].is_null());
+        assert!(result.payload["propertyLimits"][0]
+            .as_str()
+            .unwrap()
+            .contains("AllowedIncomingShareRequestTypes"));
     }
 
     #[test]
