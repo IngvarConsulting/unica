@@ -1698,9 +1698,211 @@ fn native_form_and_template_addresses_follow_text_registrations() {
             );
         }
     }
+    check_native_mxl_areas(&mut evidence);
     check_native_html_processor_form_module(&mut evidence);
     check_native_command_and_bound_events(&mut evidence);
     evidence.finish();
+}
+
+const MXL_NS: &str = "http://v8.1c.ru/8.2/data/spreadsheet";
+
+fn check_native_mxl_areas(evidence: &mut EvidenceRows) {
+    const OWNER: &str = "main:Report.АнализВерсийОбъектов.Template.МакетОтчета";
+    const RESOURCE: &str = "Reports/АнализВерсийОбъектов/Templates/МакетОтчета/Ext/Template.xml";
+    const REPORT: &str = "Reports/АнализВерсийОбъектов.xml";
+    for xml in ["2.21", "2.22"] {
+        let source = fixture_path(&format!("formats/platform_xml/{xml}/all_kinds/src"));
+        let native = fixture_path(&format!("formats/platform_xml/{xml}/mxl-areas/{RESOURCE}"));
+        let report = source.join(REPORT);
+        let raw = read_fixture_descriptor(&report);
+        let document = parse_fixture_descriptor(&raw, &report);
+        let artifact = fixture_artifact(&document, "Report", &report);
+
+        // Keep the original all_kinds export intact. Reading the template owner
+        // also validates the other template descriptors registered in this report.
+        let overlay = tempfile::tempdir().unwrap();
+        let copy = |from: &Path, relative: &Path| {
+            let to = overlay.path().join(relative);
+            fs::create_dir_all(to.parent().unwrap()).unwrap();
+            fs::copy(from, to).unwrap();
+        };
+        for relative in ["Configuration.xml", REPORT] {
+            copy(&source.join(relative), Path::new(relative));
+        }
+        for child in native_child_objects(artifact)
+            .filter(|node| node.has_tag_name((MD_CLASSES_NS, "Template")))
+        {
+            let name = child.text().unwrap();
+            let relative = Path::new(REPORT)
+                .with_extension("")
+                .join("Templates")
+                .join(format!("{name}.xml"));
+            copy(&source.join(&relative), &relative);
+        }
+        copy(&native, Path::new(RESOURCE));
+
+        let cancellation = CancellationToken::new();
+        let line = export_format_line(xml).unwrap();
+        let profile = PlatformProfile::for_line(line).unwrap();
+        let authority = native_authority(&cancellation, overlay.path(), profile);
+        let origin = fixture_origin(&native);
+        let raw = read_fixture_descriptor(&native);
+        let document = parse_fixture_descriptor(&raw, &native);
+        let root = document.root_element();
+        assert!(root.has_tag_name((MXL_NS, "document")));
+        let areas: BTreeMap<_, _> = root
+            .children()
+            .filter(|node| node.has_tag_name((MXL_NS, "namedItem")))
+            .map(|node| {
+                assert_eq!(
+                    node.attribute(("http://www.w3.org/2001/XMLSchema-instance", "type")),
+                    Some("NamedItemCells")
+                );
+                (
+                    mxl_child(node, "name").unwrap().text().unwrap(),
+                    mxl_child(node, "area").unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            areas.keys().copied().collect::<BTreeSet<_>>(),
+            BTreeSet::from(["Колонки", "Подвал", "Строка", "Угол", "Шапка"])
+        );
+        let branch = QualifiedAddress::parse(&format!("{OWNER}.Area")).unwrap();
+        let expected = areas
+            .keys()
+            .map(|name| branch.member(name).unwrap().to_string())
+            .collect();
+        let branch_at = branch.to_string();
+        let collection =
+            check_native_branch(&authority, &read(&authority, OWNER), &branch_at, &expected);
+        assert_eq!(collection["kind"], "Area", "{branch_at}");
+        evidence.record(
+            line,
+            OWNER,
+            "Area",
+            None,
+            &origin,
+            AddressEvidence::Read(&branch_at),
+        );
+
+        for name in ["Подвал", "Строка", "Шапка"] {
+            let area = areas[name];
+            let value = |tag| mxl_child(area, tag).and_then(|node| node.text()).unwrap();
+            assert_eq!(value("type"), "Rows", "{name}");
+            let range =
+                value("beginRow").parse::<usize>().unwrap()..=value("endRow").parse().unwrap();
+            let at = branch.member(name).unwrap().to_string();
+            let area_view = read(&authority, &at);
+            assert_eq!(area_view["kind"], "Area", "{at}");
+            let parameter_at = QualifiedAddress::parse(&format!("{at}.Parameter")).unwrap();
+            let (body, parameters) = native_mxl_rows(root, range, &parameter_at);
+            assert!(
+                !body.is_empty() && !parameters.is_empty(),
+                "{at}: populated row area"
+            );
+            for (kind, items) in [("Body", body), ("Parameter", parameters)] {
+                let address = format!("{at}.{kind}");
+                check_native_branch_count(&area_view, &address, items.len());
+                let observed = read(&authority, &address);
+                assert_eq!(observed["kind"], kind, "{address}");
+                assert_eq!(observed["items"], serde_json::json!(items), "{address}");
+                if kind == "Parameter" && name == "Строка" {
+                    assert_eq!(
+                        observed["items"].as_array().unwrap().last().unwrap(),
+                        &serde_json::json!({"kind": "Parameter", "title": "Сумма [tpl]", "addressable": false})
+                    );
+                }
+                evidence.record(
+                    line,
+                    &at,
+                    kind,
+                    None,
+                    &origin,
+                    AddressEvidence::Read(&address),
+                );
+            }
+        }
+    }
+}
+
+fn mxl_child<'a, 'input>(
+    parent: roxmltree::Node<'a, 'input>,
+    tag: &str,
+) -> Option<roxmltree::Node<'a, 'input>> {
+    parent
+        .children()
+        .find(|node| node.has_tag_name((MXL_NS, tag)))
+}
+
+fn native_mxl_rows(
+    root: roxmltree::Node<'_, '_>,
+    range: std::ops::RangeInclusive<usize>,
+    parameter_at: &QualifiedAddress,
+) -> (Vec<Value>, Vec<Value>) {
+    const CORE: &str = "http://v8.1c.ru/8.1/data/core";
+    assert!(!range.is_empty());
+    let mut rows = BTreeMap::new();
+    for item in root
+        .children()
+        .filter(|node| node.has_tag_name((MXL_NS, "rowsItem")))
+    {
+        let index = mxl_child(item, "index")
+            .unwrap()
+            .text()
+            .unwrap()
+            .parse::<usize>()
+            .unwrap();
+        assert!(
+            rows.insert(index, mxl_child(item, "row").unwrap())
+                .is_none(),
+            "duplicate MXL row {index}"
+        );
+    }
+    let mut body = Vec::new();
+    let mut parameters = Vec::new();
+    for (_, row) in rows.range(range) {
+        for group in row
+            .children()
+            .filter(|node| node.has_tag_name((MXL_NS, "c")))
+        {
+            let cell = mxl_child(group, "c").unwrap();
+            if let Some(name) = mxl_child(cell, "parameter").and_then(|node| node.text()) {
+                parameters.push(serde_json::json!({
+                    "at": parameter_at.member(name).unwrap().to_string(),
+                    "kind": "Parameter",
+                    "title": name,
+                }));
+            }
+            let Some(text) = mxl_child(cell, "tl")
+                .and_then(|label| {
+                    label
+                        .children()
+                        .find(|node| node.has_tag_name((CORE, "item")))
+                })
+                .and_then(|item| {
+                    item.children()
+                        .find(|node| node.has_tag_name((CORE, "content")))
+                })
+                .and_then(|node| node.text())
+                .filter(|text| !text.is_empty())
+            else {
+                continue;
+            };
+            let template = text.contains("[Сумма]");
+            if template {
+                parameters.push(serde_json::json!({
+                    "kind": "Parameter",
+                    "title": "Сумма [tpl]",
+                    "addressable": false,
+                }));
+            }
+            body.push(
+                serde_json::json!({"index": body.len() + 1, "template": template, "text": text}),
+            );
+        }
+    }
+    (body, parameters)
 }
 
 #[allow(clippy::too_many_arguments)]
