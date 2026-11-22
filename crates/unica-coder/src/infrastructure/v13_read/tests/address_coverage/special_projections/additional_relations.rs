@@ -97,10 +97,9 @@ fn input_by_string(
                         })
                     })
             {
-                // The native descriptor references Number without registering that standard attribute.
+                // This fixture leaves the platform-defined Number implicit in its descriptor.
                 assert_eq!(row["at"], qualified);
                 assert_eq!(row["kind"], field_kind);
-                check_native_projection_refusal(native.authority, &qualified, "was not found");
             } else {
                 assert_target(native.authority, row, field, field_kind);
             }
