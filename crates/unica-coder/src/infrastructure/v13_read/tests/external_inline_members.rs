@@ -38,7 +38,7 @@ fn authority<'a>(
     )
 }
 
-fn expected_variant(name: &str) -> Option<Value> {
+pub(super) fn expected_variant(name: &str) -> Option<Value> {
     Some(match name {
         "TextValue" => json!({"kind":"string","length":50,"allowedLength":"variable"}),
         "Amount" => json!({"kind":"number","digits":15,"fraction":2,"sign":"any"}),

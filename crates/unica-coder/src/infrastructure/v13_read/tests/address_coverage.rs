@@ -1974,25 +1974,19 @@ fn check_native_external_inline<'a, 'input: 'a>(
     descriptor: &Path,
     evidence: &mut EvidenceRows,
 ) {
+    const READABLE_NS: &str = "http://v8.1c.ru/8.3/xcf/readable";
+
     let origin = fixture_origin(descriptor);
-    let mut check = |owner: &str, branch: &str, node: roxmltree::Node<'a, 'input>| {
+    let mut check = |owner: &str,
+                     branch: &str,
+                     members: &[(String, roxmltree::Node<'a, 'input>)]| {
         let at = format!("{owner}.{branch}");
         let address = QualifiedAddress::parse(&at).unwrap();
-        let members: Vec<_> = native_child_objects(node)
-            .filter(|child| child.has_tag_name((MD_CLASSES_NS, branch)))
-            .map(|child| {
-                let name = fixture_properties_name(child).expect("inline child Properties.Name");
-                (address.member(name).unwrap().to_string(), child)
-            })
-            .collect();
-        assert!(
-            !members.is_empty(),
-            "{at}: expected native inline registrations"
-        );
-        let expected = members
+        let member_addresses: Vec<_> = members
             .iter()
-            .map(|(at, _)| at.clone())
-            .collect::<BTreeSet<_>>();
+            .map(|(name, _)| address.member(name).unwrap().to_string())
+            .collect();
+        let expected: BTreeSet<_> = member_addresses.iter().cloned().collect();
         assert_eq!(
             expected.len(),
             members.len(),
@@ -2007,17 +2001,12 @@ fn check_native_external_inline<'a, 'input: 'a>(
             .collect();
         assert_eq!(
             order,
-            members
+            member_addresses
                 .iter()
-                .map(|(at, _)| at.as_str())
+                .map(String::as_str)
                 .collect::<Vec<_>>(),
             "{at}: inline registration order"
         );
-        for (member, _) in &members {
-            let detail = read(authority, member);
-            assert_eq!(detail["at"], member.as_str());
-            assert_eq!(detail["kind"], branch);
-        }
         evidence.record_for_source(
             source,
             owner,
@@ -2026,12 +2015,84 @@ fn check_native_external_inline<'a, 'input: 'a>(
             &origin,
             AddressEvidence::Read(&at),
         );
-        members
+        for ((name, node), member) in members.iter().zip(&member_addresses) {
+            let detail = read(authority, member);
+            assert_eq!(detail["at"], member.as_str());
+            assert_eq!(detail["kind"], branch);
+            match branch {
+                "Attribute" => {
+                    let variant = super::external_inline_members::expected_variant(name)
+                        .expect("native applied attribute type");
+                    assert_eq!(
+                        detail["props"]["type"]["variants"],
+                        json!([variant]),
+                        "{member}"
+                    );
+                }
+                "StandardAttribute" => {
+                    let fill_checking = node
+                        .children()
+                        .find(|child| child.has_tag_name((READABLE_NS, "FillChecking")))
+                        .and_then(|child| child.text())
+                        .expect("native standard attribute FillChecking");
+                    assert_eq!(detail["props"]["FillChecking"], fill_checking, "{member}");
+                }
+                "TabularSection" => {}
+                _ => unreachable!("not an external inline member family"),
+            }
+            evidence.record_for_source(
+                source,
+                owner,
+                branch,
+                None,
+                &origin,
+                AddressEvidence::Read(member),
+            );
+        }
     };
 
-    check(owner, "Attribute", artifact);
-    for (section, node) in check(owner, "TabularSection", artifact) {
-        check(&section, "Attribute", node);
+    let named_children = |node, branch| {
+        native_child_objects(node)
+            .filter(|child| child.has_tag_name((MD_CLASSES_NS, branch)))
+            .map(|child| {
+                let name = fixture_properties_name(child).expect("inline child Properties.Name");
+                (name.to_owned(), child)
+            })
+            .collect::<Vec<_>>()
+    };
+    check(owner, "Attribute", &named_children(artifact, "Attribute"));
+    let tables = named_children(artifact, "TabularSection");
+    check(owner, "TabularSection", &tables);
+    for (name, table) in tables {
+        let section_at = format!("{owner}.TabularSection.{name}");
+        check(
+            &section_at,
+            "Attribute",
+            &named_children(table, "Attribute"),
+        );
+        let standard = table
+            .children()
+            .find(|child| child.has_tag_name((MD_CLASSES_NS, "Properties")))
+            .and_then(|properties| {
+                properties
+                    .children()
+                    .find(|child| child.has_tag_name((MD_CLASSES_NS, "StandardAttributes")))
+            })
+            .expect("native tabular section Properties.StandardAttributes");
+        let standards: Vec<_> = standard
+            .children()
+            .filter(|child| child.has_tag_name((READABLE_NS, "StandardAttribute")))
+            .map(|child| {
+                (
+                    child
+                        .attribute("name")
+                        .expect("standard attribute name")
+                        .to_owned(),
+                    child,
+                )
+            })
+            .collect();
+        check(&section_at, "StandardAttribute", &standards);
     }
 }
 

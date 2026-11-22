@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import tempfile
@@ -567,7 +568,7 @@ class AddressCoverageReportTests(unittest.TestCase):
         shard = GENERATOR.EXTERNAL_INLINE_KEYS_SHARD
         producer = GENERATOR.EXTERNAL_ROOT_SHARD
         required = GENERATOR.native_external_inline_requirements(GENERATOR.REPO)
-        self.assertEqual(len(required), 18)
+        self.assertEqual(len(required), 24)
         self.assertEqual(
             {(row["key"]["line"], row["key"]["source_kind"], row["key"]["branch"],
               tuple(segment["kind"] for segment in row["key"]["owner_shape"])) for row in required},
@@ -576,44 +577,93 @@ class AddressCoverageReportTests(unittest.TestCase):
              for source, kind in (("external_processor", "ExternalDataProcessor"),
                                   ("external_report", "ExternalReport"))
              for branch, shape in (("Attribute", (kind,)), ("TabularSection", (kind,)),
-                                   ("Attribute", (kind, "TabularSection")))},
+                                   ("Attribute", (kind, "TabularSection")),
+                                   ("StandardAttribute", (kind, "TabularSection")))},
         )
-        evidence = []
-        for row in required:
-            obs, = row["requirement"]["observations"]
-            at, = obs["addresses"]
-            evidence.append({
-                "schema_version": 1, "record_type": "evidence", "key": row["key"],
-                "witness": {"owner": obs["owner"], "at": at, "origin": obs["origin"],
-                            "level": "read", "test_case": producer, "reason": None},
-            })
-        expected_at = "erf:ExternalReport.SyntheticReport.TabularSection.Lines.Attribute"
+        evidence = self.external_inline_evidence(required)
+        self.assertEqual(len(evidence), 72)
+        expected_at = "erf:ExternalReport.SyntheticReport.TabularSection.Lines.StandardAttribute.LineNumber"
         target = next(item for item in evidence if item["key"]["line"] == "8.5.1"
                       and item["witness"]["at"] == expected_at)
         witness = target["witness"]
         alternate = {**target, "witness": {**witness, "test_case": GENERATOR.DAEMON_SHARD}}
+        false_roundtrip = {**target, "witness": {**witness, "level": "roundtrip"}}
         self.write_shard(shard, *required)
         self.write_shard(GENERATOR.DAEMON_SHARD, alternate)
         shards = frozenset({shard, producer, GENERATOR.DAEMON_SHARD})
+        missing = [item for item in evidence if item is not target]
         for native_only in (False, True):
             self.write_shard(producer, *evidence)
-            self.assertEqual(len(GENERATOR.merge_shards(self.root, shards, native_only=native_only)), 18)
-            for changes in ({}, {"origin": witness["origin"].replace("/2.21/", "/2.22/")},
-                            {"level": "roundtrip"},
-                            {"owner": witness["owner"].replace(".Lines", ".Other")}):
-                with self.subTest(native_only=native_only, changes=changes):
-                    remaining = [item for item in evidence if item is not target]
-                    if changes:
-                        remaining.append({**target, "witness": {**witness, **changes}})
-                    self.write_shard(producer, *remaining)
+            self.assertEqual(len(GENERATOR.merge_shards(self.root, shards, native_only=native_only)), 24)
+            for records, error in (
+                (missing, "expected read"),
+                ([*missing, {**target, "witness": {**witness, "origin": witness["origin"].replace("/2.21/", "/2.22/")}}],
+                 "expected read"),
+                ([*missing, {**target, "witness": {**witness, "owner": witness["owner"].replace(".Lines", ".Other")}}],
+                 "expected read"),
+                ([*missing, false_roundtrip], "inline resource cannot round-trip"),
+                ([*evidence, false_roundtrip], "inline resource cannot round-trip"),
+            ):
+                with self.subTest(native_only=native_only, error=error):
+                    self.write_shard(producer, *records)
                     with self.assertRaisesRegex(
                         ValueError,
                         r"(?s)missing required native external inline coverage.*"
-                        r"Lines\.Attribute \(8\.5\.1\): expected read",
+                        rf"StandardAttribute\.LineNumber \(8\.5\.1\): {error}",
                     ):
                         GENERATOR.merge_shards(self.root, shards, native_only=native_only)
 
+    @staticmethod
+    def external_inline_evidence(required: list[dict]) -> list[dict]:
+        return [
+            {
+                "schema_version": 1, "record_type": "evidence", "key": row["key"],
+                "witness": {"owner": obs["owner"], "at": at, "origin": obs["origin"],
+                            "level": "read", "test_case": GENERATOR.EXTERNAL_ROOT_SHARD, "reason": None},
+            }
+            for row in required for obs in row["requirement"]["observations"] for at in obs["addresses"]
+        ]
 
+    def test_external_inline_new_registration_cannot_be_hidden_by_collection_read(self) -> None:
+        producer = GENERATOR.EXTERNAL_ROOT_SHARD
+        shard = GENERATOR.EXTERNAL_INLINE_KEYS_SHARD
+        required = GENERATOR.native_external_inline_requirements(GENERATOR.REPO)
+        for origin in {
+            Path(obs["origin"]) for row in required for obs in row["requirement"]["observations"]
+        }:
+            for path in (origin, origin.parents[1] / "manifest.json"):
+                copy = self.root / path
+                copy.parent.mkdir(parents=True, exist_ok=True)
+                copy.write_bytes((GENERATOR.REPO / path).read_bytes())
+
+        # Alter only a provisional test copy. The real expected registrations
+        # always come from the previously authenticated, versioned native files.
+        parent = self.root / "tests/fixtures/formats/platform_xml/2.22/external_artifacts"
+        descriptor = parent / "epf/SyntheticProcessor.xml"
+        data = descriptor.read_bytes().replace(b"<Name>Item</Name>", b"<Name>GateProbe</Name>", 1)
+        descriptor.write_bytes(data)
+        with self.assertRaisesRegex(ValueError, "unexpected descriptor bytes"):
+            GENERATOR.native_external_inline_requirements(self.root)
+        manifest_path = parent / "manifest.json"
+        manifest = json.loads(manifest_path.read_bytes())
+        manifest["files"]["epf/SyntheticProcessor.xml"] = {
+            "sha256": hashlib.sha256(data).hexdigest(), "size": len(data),
+        }
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        mutated = GENERATOR.native_external_inline_requirements(self.root)
+        evidence = self.external_inline_evidence(required)
+        shard_root = self.root / "shards"
+        shard_root.mkdir()
+        for name, records in ((producer, evidence), (shard, mutated)):
+            (shard_root / f"{name}.jsonl").write_text(
+                "".join(f"{json.dumps(record, ensure_ascii=False)}\n" for record in records),
+                encoding="utf-8",
+            )
+        with self.assertRaisesRegex(
+            ValueError,
+            r"(?s)external inline coverage.*TabularSection\.Lines\.Attribute\.GateProbe \(8\.5\.4\): expected read",
+        ):
+            GENERATOR.merge_shards(self.root / "shards", frozenset({producer, shard}))
 
     def test_witnesses_for_one_shape_are_grouped_in_stable_order(self) -> None:
         first, second = root_witness("main"), root_witness("other")

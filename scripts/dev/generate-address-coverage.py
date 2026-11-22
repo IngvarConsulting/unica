@@ -76,7 +76,7 @@ NATIVE_SCOPE = (
     "and establish neither write support nor a match with the runtime profile."
     " The native report checks declaration closure for configuration roots and top-level metadata children."
     " It requires external Form, Template, and Command collections witnessed against native XML,"
-    " exact reads of external inline attributes, tabular sections and their columns,"
+    " exact reads of external inline attributes, tabular sections, columns and standard attributes,"
     " and ExternalDataSource module collections and round-trips for the native files on each line."
     " It also requires exact read witnesses for registered native Report and DataProcessor DCS queries"
     " and the role-right collection and members in native SalesReader fixtures."
@@ -292,7 +292,8 @@ def validate_required_record(record: object, shard: str) -> None:
         elif shard == EXTERNAL_INLINE_KEYS_SHARD:
             known_shape = (
                 (branch_kind in {"Attribute", "TabularSection"} and kinds == (owner_kind,))
-                or (branch_kind == "Attribute" and kinds == (owner_kind, "TabularSection"))
+                or (branch_kind in {"Attribute", "StandardAttribute"}
+                    and kinds == (owner_kind, "TabularSection"))
             )
         elif shard == MXL_KEYS_SHARD:
             known_shape = (
@@ -338,7 +339,7 @@ def validate_required_record(record: object, shard: str) -> None:
             if not isinstance(addresses, list) or not addresses or addresses[0] != branch:
                 raise ValueError(f"required {family} addresses must include their branch")
             for address in addresses[1:]:
-                if (shard in {MXL_KEYS_SHARD, EXTERNAL_INLINE_KEYS_SHARD}
+                if (shard == MXL_KEYS_SHARD
                     or branch_kind in {"Namespace", "Relation", "Definition", "Schedule"}
                     or not re.fullmatch(
                     rf"{re.escape(branch)}\.{NATIVE_ADDRESS_NAME}", required_text(address, f"{family} member address")
@@ -466,12 +467,20 @@ def check_required_keys(requirements: dict, groups: dict, *, native_only: bool) 
                 (w["level"], w["owner"], w["origin"], w["at"]) for w in witnesses
                 if w["test_case"] == emitter and w["reason"] is None
             }
+            inline_roundtrips = (
+                {w["at"] for w in witnesses if w["level"] == "roundtrip"}
+                if shard == EXTERNAL_INLINE_KEYS_SHARD else set()
+            )
             for observation in observations:
                 expected = [(level, observation["origin"])]
                 if shard == SCHEDULE_KEYS_SHARD:
                     expected.append(("read", observation["descriptor_origin"]))
                 for evidence_level, origin in expected:
                     for at in observation["addresses"]:
+                        if at in inline_roundtrips:
+                            missing_witnesses.append(
+                                f"{at} ({record['key']['line']}): inline resource cannot round-trip independently"
+                            )
                         if (evidence_level, observation["owner"], origin, at) not in observed:
                             missing_witnesses.append(
                                 f"{at} ({record['key']['line']}): expected {evidence_level} from {origin}"
@@ -1190,6 +1199,7 @@ def native_schedule_requirements(repo: Path) -> list[dict]:
 
 def native_external_inline_requirements(repo: Path) -> list[dict]:
     md = "{http://v8.1c.ru/8.3/MDClasses}"
+    xr = "{http://v8.1c.ru/8.3/xcf/readable}"
     export_root = repo / "tests/fixtures/formats/platform_xml"
     rows = []
     for version, line in (("2.20", "8.3.27"), ("2.21", "8.5.1"), ("2.22", "8.5.4")):
@@ -1216,25 +1226,45 @@ def native_external_inline_requirements(repo: Path) -> list[dict]:
             artifact = root[0]
             owner = f"{alias}:{kind}.{relative.stem}"
             child_path = f"{md}ChildObjects"
-            attributes = artifact.findall(f"{child_path}/{md}Attribute")
+            property_name = f"{md}Properties/{md}Name"
+
+            def observation(parent: str, branch: str, names: list[str]) -> dict:
+                if len(names) != len(set(names)) or any(not re.fullmatch(NATIVE_ADDRESS_NAME, name) for name in names):
+                    raise ValueError(f"native external inline: invalid or duplicate {branch} members in {origin}")
+                at = f"{parent}.{branch}"
+                return {"owner": parent, "origin": origin.relative_to(repo).as_posix(),
+                        "addresses": [at, *(f"{at}.{name}" for name in names)]}
+
+            def named_children(node: ET.Element, kind: str) -> list[str]:
+                return [required_text(item.findtext(property_name), kind)
+                        for item in node.findall(f"{child_path}/{md}{kind}")]
+
             tables = artifact.findall(f"{child_path}/{md}TabularSection")
-            table_names = [required_text(node.findtext(f"{md}Properties/{md}Name"), "table name")
-                           for node in tables]
-            if not attributes or not tables or any(not table.findall(f"{child_path}/{md}Attribute") for table in tables):
-                raise ValueError(f"native external inline: expected attributes, tables and columns in {origin}")
-            for branch, kinds, owners in (
-                ("Attribute", (kind,), [owner]),
-                ("TabularSection", (kind,), [owner]),
-                ("Attribute", (kind, "TabularSection"), [f"{owner}.TabularSection.{name}" for name in table_names]),
+            table_names = named_children(artifact, "TabularSection")
+            columns = []
+            standards = []
+            for table, name in zip(tables, table_names, strict=True):
+                table_at = f"{owner}.TabularSection.{name}"
+                columns.append(observation(table_at, "Attribute", named_children(table, "Attribute")))
+                declared = table.find(f"{md}Properties/{md}StandardAttributes")
+                if declared is not None:
+                    standards.append(observation(table_at, "StandardAttribute", [
+                        required_text(item.get("name"), "standard attribute name")
+                        for item in declared.findall(f"{xr}StandardAttribute")
+                    ]))
+            for branch, kinds, observations in (
+                ("Attribute", (kind,), [observation(owner, "Attribute", named_children(artifact, "Attribute"))]),
+                ("TabularSection", (kind,), [observation(owner, "TabularSection", table_names)]),
+                ("Attribute", (kind, "TabularSection"), columns),
+                ("StandardAttribute", (kind, "TabularSection"), standards),
             ):
+                if not observations:
+                    continue
                 rows.append({
                     "schema_version": SCHEMA_VERSION, "record_type": "required",
                     "key": {"line": line, "source_kind": source_kind, "branch": branch, "role": None,
                             "owner_shape": [{"kind": item, "named": True, "role": None} for item in kinds]},
-                    "requirement": {"kind": "read", "observations": [
-                        {"owner": at, "origin": origin.relative_to(repo).as_posix(),
-                         "addresses": [f"{at}.{branch}"]} for at in owners
-                    ]},
+                    "requirement": {"kind": "read", "observations": observations},
                 })
     return rows
 
