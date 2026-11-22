@@ -385,6 +385,15 @@ fn native_configuration_root_address_table_matches_published_branches() {
         assert_eq!(native_kinds, admitted, "XML {xml}: registered root kinds");
 
         let published = read(&authority, "main:Configuration");
+        check_native_named_configuration_roots(
+            &authority,
+            &cancellation,
+            &source,
+            xml,
+            &published,
+            &registrations,
+            &mut evidence,
+        );
         let mut branches = addresses(&published, "branches");
         assert!(
             branches.remove("main:Module"),
@@ -395,7 +404,6 @@ fn native_configuration_root_address_table_matches_published_branches() {
             let &kind = admitted
                 .get(spelling)
                 .unwrap_or_else(|| panic!("{line}: unexpected root branch {at}"));
-            read(&authority, &at);
             evidence.record(
                 line,
                 "main:Configuration",
@@ -503,6 +511,137 @@ fn native_configuration_root_address_table_matches_published_branches() {
         println!("| {line} | Configuration | {role} | {at} |");
     }
     evidence.finish();
+}
+
+fn check_native_named_configuration_roots(
+    authority: &LogicalViewReadAuthority<'_>,
+    cancellation: &CancellationToken,
+    source: &Path,
+    format: &str,
+    configuration: &Value,
+    registrations: &[(String, String)],
+    evidence: &mut EvidenceRows,
+) {
+    let root =
+        unica_workspace::read::open_source_directory(&source.canonicalize().unwrap()).unwrap();
+    let source_kind = SourceSetKind::Configuration;
+    let layout = [LayoutFindSource::new("main", source_kind, &root)];
+    let finder = WorkspaceFindDirectoryBuilder::default();
+    let check_reverse = |at: &str, kind: &str, relative: &str| {
+        let located = finder
+            .locate_path(
+                &layout,
+                relative,
+                ProviderDeadline::no_deadline(),
+                cancellation,
+            )
+            .unwrap()
+            .unwrap_or_else(|| panic!("{format}: no registered source at {relative}"));
+        assert_eq!(located.at(), at, "{format}: {relative}");
+        assert_eq!(located.kind(), kind, "{format}: {relative}");
+        assert_eq!(located.placed_path(), Some(relative));
+    };
+    let mut members = BTreeMap::<String, BTreeSet<String>>::new();
+    for (kind, name) in registrations {
+        let branch = QualifiedAddress::parse(&format!("main:{kind}")).unwrap();
+        let at = branch.member(name).unwrap();
+        let at_text = at.to_string();
+        assert!(
+            members
+                .entry(branch.to_string())
+                .or_default()
+                .insert(at_text.clone()),
+            "{format}: duplicate native registration {at}"
+        );
+
+        let directory = METADATA_LAYOUTS
+            .iter()
+            .find(|layout| layout.tag == kind)
+            .unwrap()
+            .directory;
+        let descriptor = format!("{directory}/{name}.xml");
+        let path = source.join(&descriptor);
+        let raw = read_fixture_descriptor(&path);
+        let document = parse_fixture_descriptor(&raw, &path);
+        assert_eq!(
+            document.root_element().attribute("version"),
+            Some(format),
+            "{at}"
+        );
+        let artifact = fixture_artifact(&document, kind, &path);
+        assert_eq!(
+            fixture_properties_name(artifact),
+            Some(name.as_str()),
+            "{at}"
+        );
+        assert!(
+            uuid::Uuid::parse_str(artifact.attribute("uuid").unwrap()).is_ok(),
+            "{at}"
+        );
+
+        // The descriptor location is the forward metadata point used by resolve.
+        let target =
+            unica_address::source_target::MetadataAddress::parse_logical(&at.logical_path())
+                .unwrap();
+        let forward =
+            unica_source_designer::layout::metadata_descriptor_relative(&target, source_kind)
+                .unwrap();
+        assert_eq!(
+            forward.to_str().unwrap().replace('\\', "/"),
+            descriptor,
+            "{at}"
+        );
+
+        let view_kind = match kind.as_str() {
+            "CommonForm" => "Form",
+            "CommonModule" => "Module",
+            kind => kind,
+        };
+        let view = read(authority, &at_text);
+        assert_eq!(view["at"], at_text);
+        assert_eq!(view["kind"], view_kind, "{at}");
+
+        let resource = if kind == "CommonForm" {
+            let metadata = format!("{at}.Metadata");
+            let metadata_at = QualifiedAddress::parse(&metadata).unwrap();
+            assert_eq!(read(authority, &metadata)["kind"], "Metadata", "{metadata}");
+            assert_eq!(
+                authority.existing_export_path(&metadata_at, None).unwrap(),
+                descriptor
+            );
+            check_reverse(&metadata, "Metadata", &descriptor);
+            let resource = format!("{directory}/{name}/Ext/Form.xml");
+            let form_path = source.join(&resource);
+            let raw = read_fixture_descriptor(&form_path);
+            let form = parse_fixture_descriptor(&raw, &form_path);
+            assert!(
+                form.root_element().has_tag_name((NATIVE_FORM_NS, "Form")),
+                "{at}"
+            );
+            assert_eq!(
+                form.root_element().attribute("version"),
+                Some(format),
+                "{at}"
+            );
+            assert_eq!(authority.existing_export_path(&at, None).unwrap(), resource);
+            check_reverse(&at_text, view_kind, &resource);
+            resource
+        } else {
+            check_reverse(&at_text, kind, &descriptor);
+            descriptor
+        };
+        evidence.record(
+            authority.platform_profile().line(),
+            "main:Configuration",
+            kind,
+            None,
+            &fixture_origin(&source.join(resource)),
+            AddressEvidence::RoundTrip(&at_text),
+        );
+    }
+    for (branch, expected) in members {
+        check_native_branch(authority, configuration, &branch, &expected);
+    }
 }
 
 fn check_native_configuration_root_module_paths(
