@@ -4746,8 +4746,9 @@ fn check_registered_module_read(
     let group = check_native_branch(authority, &parent, &branch.to_string(), &expected);
     if named_module {
         assert_eq!(group["kind"], "Module", "{branch}");
-        assert_eq!(group["total"], 1, "{branch}");
-        let item = &group["items"][0];
+        let [item] = group["items"].as_array().unwrap().as_slice() else {
+            panic!("{branch}: expected one module member");
+        };
         assert_eq!(item["kind"], "Module", "{at}");
         assert_eq!(item["props"]["ownerKind"], kind.as_str(), "{at}");
         assert_eq!(item["props"]["role"], role, "{at}");
