@@ -20,12 +20,13 @@ SCHEMA_VERSION = 1
 EXTENSION_LANGUAGE_SHARD = "native_extension_root_language_matches_registration"
 EXTERNAL_ROOT_SHARD = "native_external_root_descriptors_match_published_addresses"
 METADATA_SHARD = "native_metadata_address_table_matches_declared_and_observed_child_branches"
+FORM_TEMPLATE_SHARD = "native_form_and_template_addresses_follow_text_registrations"
 NATIVE_SHARDS = frozenset({
     "native_configuration_root_address_table_matches_published_branches",
     "native_ordinary_interface_has_a_registration_only_root_branch",
     "native_recalculation_module_address_table_matches_registered_owner",
     METADATA_SHARD,
-    "native_form_and_template_addresses_follow_text_registrations",
+    FORM_TEMPLATE_SHARD,
     "native_registered_modules_match_profile_and_physical_paths",
     EXTENSION_LANGUAGE_SHARD,
     EXTERNAL_ROOT_SHARD,
@@ -37,9 +38,10 @@ EXTERNAL_CHILD_KEYS_SHARD = "required_native_external_child_keys"
 MODULE_ROLE_KEYS_SHARD = "required_configuration_module_role_keys"
 EDS_MODULE_KEYS_SHARD = "required_native_eds_module_keys"
 SUBSYSTEM_INTERFACE_KEYS_SHARD = "required_native_subsystem_interface_keys"
+DCS_QUERY_KEYS_SHARD = "required_native_dcs_query_keys"
 REQUIRED_KEY_SHARDS = frozenset({
     ROOT_KEYS_SHARD, METADATA_CHILD_KEYS_SHARD, EXTERNAL_CHILD_KEYS_SHARD, MODULE_ROLE_KEYS_SHARD,
-    EDS_MODULE_KEYS_SHARD, SUBSYSTEM_INTERFACE_KEYS_SHARD,
+    EDS_MODULE_KEYS_SHARD, SUBSYSTEM_INTERFACE_KEYS_SHARD, DCS_QUERY_KEYS_SHARD,
 })
 NATIVE_SCOPE = (
     "Configuration source sets and native Language registrations in extension source sets "
@@ -54,6 +56,7 @@ NATIVE_SCOPE = (
     " The native report checks declaration closure for configuration roots and top-level metadata children."
     " It requires external Form, Template, and Command collections witnessed against native XML,"
     " and ExternalDataSource module collections and round-trips for the native files on each line."
+    " It also requires exact read witnesses for registered native Report and DataProcessor DCS queries."
 )
 DAEMON_SCOPE = (
     "Read witnesses from the selected document and BSL coverage test of unica-daemon, "
@@ -202,6 +205,20 @@ def validate_required_record(record: object, shard: str) -> None:
             raise ValueError("required subsystem interface address must name the main source set")
         required_text(requirement["origin"], "origin")
         return
+    if shard == DCS_QUERY_KEYS_SHARD:
+        exact_fields(requirement, {"kind", "at", "origin"}, "DCS query requirement")
+        owner_kinds = tuple(segment["kind"] for segment in shape)
+        if (
+            key["branch"] != "Query" or key["role"] is not None
+            or owner_kinds not in {("DataProcessor", "Template", "DataSet"), ("Report", "Template", "DataSet")}
+            or any(not segment["named"] or segment["role"] is not None for segment in shape)
+            or requirement["kind"] != "read"
+        ):
+            raise ValueError("required DCS query key must name a dataset Query read")
+        if source_prefix(requirement["at"], "address") != "main":
+            raise ValueError("required DCS query address must name the main source set")
+        required_text(requirement["origin"], "origin")
+        return
     if shard == EDS_MODULE_KEYS_SHARD:
         owner_kinds = tuple(segment["kind"] for segment in shape)
         if (
@@ -281,17 +298,20 @@ def check_required_keys(requirements: dict, groups: dict, *, native_only: bool) 
     missing_module_roles = []
     missing_eds_modules = []
     missing_interfaces = []
+    missing_queries = []
     diagnostics = []
     for key, (shard, record) in sorted(requirements.items()):
         witnesses = groups.get(key, {}).get("witnesses", ())
-        if shard == SUBSYSTEM_INTERFACE_KEYS_SHARD:
+        if shard in {SUBSYSTEM_INTERFACE_KEYS_SHARD, DCS_QUERY_KEYS_SHARD}:
             requirement = record["requirement"]
+            emitter = DAEMON_SHARD if shard == SUBSYSTEM_INTERFACE_KEYS_SHARD else FORM_TEMPLATE_SHARD
+            missing_reads = missing_interfaces if shard == SUBSYSTEM_INTERFACE_KEYS_SHARD else missing_queries
             if not any(
-                w["test_case"] == DAEMON_SHARD and w["reason"] is None and w["level"] == "read"
+                w["test_case"] == emitter and w["reason"] is None and w["level"] == "read"
                 and w["at"] == requirement["at"] and w["origin"] == requirement["origin"]
                 for w in witnesses
             ):
-                missing_interfaces.append(
+                missing_reads.append(
                     f"{requirement['at']} ({record['key']['line']}): expected read from {requirement['origin']}"
                 )
             continue
@@ -336,6 +356,8 @@ def check_required_keys(requirements: dict, groups: dict, *, native_only: bool) 
         errors.append(
             "missing required native subsystem interface coverage:\n" + "\n".join(missing_interfaces)
         )
+    if missing_queries:
+        errors.append("missing required native DCS Query coverage:\n" + "\n".join(missing_queries))
     if errors:
         raise ValueError("\n".join(errors))
 
@@ -511,6 +533,62 @@ def native_subsystem_interface_requirements(repo: Path) -> list[dict]:
     return rows
 
 
+def native_dcs_query_requirements(repo: Path) -> list[dict]:
+    """Pick a native registered Query witness per covered owner shape and export line."""
+    md = "{http://v8.1c.ru/8.3/MDClasses}"
+    dcs = "{http://v8.1c.ru/8.1/data-composition-system/schema}"
+    xsi_type = "{http://www.w3.org/2001/XMLSchema-instance}type"
+    rows = []
+    for version, line in (("2.20", "8.3.27"), ("2.21", "8.5.1"), ("2.22", "8.5.4")):
+        source = repo / "tests/fixtures/formats/platform_xml" / version / "all_kinds/src"
+        configuration = ET.parse(source / "Configuration.xml").getroot()
+        if configuration.tag != f"{md}MetaDataObject" or configuration.get("version") != version:
+            raise ValueError(f"native DCS Query: wrong configuration format in {source}")
+        for kind, directory in (("DataProcessor", "DataProcessors"), ("Report", "Reports")):
+            queries = []
+            for registration in configuration.findall(f"{md}Configuration/{md}ChildObjects/{md}{kind}"):
+                owner = required_text(registration.text, "registered DCS owner")
+                descriptor = source / directory / f"{owner}.xml"
+                artifact = ET.parse(descriptor).getroot().find(f"{md}{kind}")
+                if artifact is None or artifact.findtext(f"{md}Properties/{md}Name") != owner:
+                    raise ValueError(f"native DCS Query: wrong registered owner {descriptor}")
+                for template in artifact.findall(f"{md}ChildObjects/{md}Template"):
+                    name = required_text(template.text, "registered DCS template")
+                    root = descriptor.with_suffix("") / "Templates"
+                    template_descriptor = ET.parse(root / f"{name}.xml").getroot()
+                    properties = template_descriptor.find(f"{md}Template/{md}Properties")
+                    if properties is None or properties.findtext(f"{md}Name") != name:
+                        raise ValueError(f"native DCS Query: wrong template registration {name}")
+                    if properties.findtext(f"{md}TemplateType") != "DataCompositionSchema":
+                        continue
+                    origin = root / name / "Ext/Template.xml"
+                    schema = ET.parse(origin).getroot()
+                    if schema.tag != f"{dcs}DataCompositionSchema":
+                        raise ValueError(f"native DCS Query: wrong XML root {origin}")
+                    for dataset in schema.findall(f"{dcs}dataSet"):
+                        statements = dataset.findall(f"{dcs}query")
+                        if not statements:
+                            continue
+                        if (
+                            dataset.get(xsi_type) != "DataSetQuery" or len(statements) != 1
+                            or not (statements[0].text or "").strip()
+                        ):
+                            raise ValueError(f"native DCS Query: invalid query {origin}")
+                        dataset_name = required_text(dataset.findtext(f"{dcs}name"), "DCS dataset name")
+                        at = f"main:{kind}.{owner}.Template.{name}.DataSet.{dataset_name}.Query"
+                        queries.append((at, origin.relative_to(repo).as_posix()))
+            if queries:
+                at, origin = min(queries)
+                shape = [{"kind": part, "named": True, "role": None} for part in (kind, "Template", "DataSet")]
+                rows.append({
+                    "schema_version": SCHEMA_VERSION, "record_type": "required",
+                    "key": {"line": line, "source_kind": "configuration", "owner_shape": shape,
+                            "branch": "Query", "role": None},
+                    "requirement": {"kind": "read", "at": at, "origin": origin},
+                })
+    return rows
+
+
 def generate_report(native_only: bool) -> dict:
     revision, status = git_state()
     cases = [("unica-coder", "address_coverage")]
@@ -532,6 +610,9 @@ def generate_report(native_only: bool) -> dict:
                 stdout=sys.stderr,
                 check=True,
             )
+        records = native_dcs_query_requirements(REPO)
+        path = Path(scratch) / f"{DCS_QUERY_KEYS_SHARD}.jsonl"
+        path.write_text("".join(f"{canonical_json(row)}\n" for row in records), encoding="utf-8")
         if not native_only:
             records = native_subsystem_interface_requirements(REPO)
             path = Path(scratch) / f"{SUBSYSTEM_INTERFACE_KEYS_SHARD}.jsonl"

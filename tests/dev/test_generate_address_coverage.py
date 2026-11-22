@@ -8,6 +8,7 @@ import tempfile
 import unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from unittest.mock import patch
 
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts/dev/generate-address-coverage.py"
@@ -164,6 +165,57 @@ class AddressCoverageReportTests(unittest.TestCase):
             [row for row in cases if row["key"]["line"] == "8.5.1" and row["key"]["branch"] == "Subsystem"],
         )
 
+
+    def test_registered_native_query_requires_exact_read_evidence_in_both_modes(self) -> None:
+        shard = GENERATOR.DCS_QUERY_KEYS_SHARD
+        emitter = GENERATOR.FORM_TEMPLATE_SHARD
+        cases = GENERATOR.native_dcs_query_requirements(GENERATOR.REPO)
+        self.assertEqual(
+            {(case["key"]["line"], case["key"]["owner_shape"][0]["kind"]) for case in cases},
+            {(line, kind) for line in ("8.3.27", "8.5.1", "8.5.4") for kind in ("DataProcessor", "Report")},
+        )
+        self.assertEqual(len(cases), 6)
+        evidence = [
+            {
+                "schema_version": 1, "record_type": "evidence", "key": case["key"],
+                "witness": {
+                    "owner": case["requirement"]["at"].rsplit(".", 1)[0],
+                    "at": case["requirement"]["at"], "level": "read", "reason": None,
+                    "origin": case["requirement"]["origin"], "test_case": emitter,
+                },
+            }
+            for case in cases
+        ]
+        query_origin = GENERATOR.REPO / cases[-1]["requirement"]["origin"]
+        parse = ET.parse
+
+        def parse_without_last_query(path: Path) -> ET.ElementTree:
+            document = parse(path)
+            if path == query_origin:
+                root = document.getroot()
+                namespace = root.tag.removesuffix("DataCompositionSchema")
+                dataset = root.find(namespace + "dataSet")
+                dataset.remove(dataset.find(namespace + "query"))
+            return document
+
+        with patch.object(GENERATOR.ET, "parse", side_effect=parse_without_last_query):
+            before_query = GENERATOR.native_dcs_query_requirements(GENERATOR.REPO)
+        self.assertEqual(before_query, cases[:-1])
+        required_shards = frozenset({shard, emitter})
+        for native_only in (False, True):
+            with self.subTest(native_only=native_only):
+                self.write_shard(shard, *before_query)
+                self.write_shard(emitter, *evidence[:-1])
+                self.assertEqual(len(GENERATOR.merge_shards(self.root, required_shards, native_only=native_only)), 5)
+                self.write_shard(shard, *cases)
+                with self.assertRaisesRegex(ValueError, r"missing required native DCS Query coverage"):
+                    GENERATOR.merge_shards(self.root, required_shards, native_only=native_only)
+                self.write_shard(emitter, *evidence)
+                self.assertEqual(len(GENERATOR.merge_shards(self.root, required_shards, native_only=native_only)), 6)
+                wrong = {**evidence[-1], "witness": {**evidence[-1]["witness"], "level": "roundtrip"}}
+                self.write_shard(emitter, *evidence[:-1], wrong)
+                with self.assertRaisesRegex(ValueError, r"missing required native DCS Query coverage"):
+                    GENERATOR.merge_shards(self.root, required_shards, native_only=native_only)
 
     def test_witnesses_for_one_shape_are_grouped_in_stable_order(self) -> None:
         first, second = root_witness("main"), root_witness("other")

@@ -2768,6 +2768,35 @@ fn check_native_dcs_groups(
     let datasets = QualifiedAddress::parse(&format!("{owner}.DataSet")).unwrap();
     for dataset in native_dcs_children(root, "dataSet") {
         let at = datasets.member(native_dcs_text(dataset, "name")).unwrap();
+        if owner.starts_with("main:DataProcessor.") || owner.starts_with("main:Report.") {
+            let queries: Vec<_> = native_dcs_children(dataset, "query").collect();
+            if let [query] = queries.as_slice() {
+                let statement = query.text().expect("native nonempty query");
+                assert!(!statement.trim().is_empty(), "{path:?}: empty query");
+                let query_at = format!("{at}.Query");
+                let view = read(authority, &at.to_string());
+                assert!(addresses(&view, "branches").contains(&query_at), "{at}");
+                let observed = read(authority, &query_at);
+                let expected: Vec<_> = statement
+                    .lines()
+                    .enumerate()
+                    .map(|(index, text)| serde_json::json!({"line": index + 1, "text": text}))
+                    .collect();
+                assert_eq!(observed["kind"], "Query");
+                assert_eq!(observed["at"], query_at);
+                assert_eq!(observed["items"], serde_json::json!(expected), "{query_at}");
+                evidence.record_for_source(
+                    source,
+                    &at.to_string(),
+                    "Query",
+                    None,
+                    &origin,
+                    AddressEvidence::Read(&query_at),
+                );
+            } else {
+                assert!(queries.is_empty(), "{path:?}: duplicate query elements");
+            }
+        }
         let fields = native_dcs_children(dataset, "field").map(|node| {
             let path = native_dcs_text(node, "dataPath");
             (path, vec![("field", native_dcs_text(node, "field"))])
