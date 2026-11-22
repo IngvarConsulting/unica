@@ -557,6 +557,36 @@ fn native_ordinary_interface_has_a_registration_only_root_branch() {
         );
         println!("| 8.3.27 | OrdinaryInterface | Member | {item} |");
     }
+    for (format, line) in [
+        ("2.21", PlatformLine::new(8, 5, 1)),
+        ("2.22", PlatformLine::new(8, 5, 4)),
+    ] {
+        let source = fixture_path(&format!("formats/platform_xml/{format}/all_kinds/src"));
+        assert!(!root_registrations(&source, format)
+            .iter()
+            .any(|(kind, _)| kind == "Interface"));
+        let authority = native_authority(
+            &cancellation,
+            &source,
+            PlatformProfile::for_line_or_base(Some(line)),
+        );
+        let view = read(&authority, at);
+        assert_eq!(view["kind"], "OrdinaryInterface");
+        assert!(view["items"].as_array().unwrap().is_empty(), "{line}: {at}");
+        check_native_projection_refusal(
+            &authority,
+            "main:OrdinaryInterface.CovSwitchable_false",
+            "ordinary application interface `CovSwitchable_false` is not registered",
+        );
+        evidence.record(
+            line,
+            "main:Configuration",
+            "OrdinaryInterface",
+            None,
+            &fixture_origin(&source.join("Configuration.xml")),
+            AddressEvidence::Read(at),
+        );
+    }
     evidence.finish();
 }
 
@@ -1062,6 +1092,14 @@ fn native_metadata_address_table_matches_declared_and_observed_child_branches() 
         let line = profile.line();
         let cancellation = CancellationToken::new();
         let authority = native_authority(&cancellation, &source, profile);
+        check_native_declaration_projections(&authority, &source, &registrations, &mut evidence);
+        check_native_projection_companions(
+            &authority,
+            &source,
+            &registrations,
+            &cancellation,
+            &mut evidence,
+        );
         let mut verified = BTreeSet::new();
         for (kind, name) in registrations {
             let at = QualifiedAddress::parse(&format!("main:{kind}.{name}")).unwrap();
@@ -2829,6 +2867,20 @@ fn check_native_subsystem(
         let origin = fixture_origin(descriptor);
         let view = read(authority, at);
         assert_eq!(view["kind"], "Subsystem");
+        if at == &parent && matches!(format, "2.21" | "2.22") {
+            assert_native_projection_file_absent(
+                &parent_descriptor
+                    .with_extension("")
+                    .join("Ext/CommandInterface.xml"),
+            );
+            let interface = format!("{at}.Interface");
+            assert!(!addresses(&view, "branches").contains(&interface));
+            check_native_projection_refusal(
+                authority,
+                &interface,
+                "subsystem has no command interface document",
+            );
+        }
         let relation = format!("{at}.Relation");
         let target = format!("main:{}", refs[0]);
         check_native_branch(
@@ -2886,6 +2938,319 @@ fn check_native_subsystem(
             &origin,
             AddressEvidence::Read(&subsystem),
         );
+    }
+}
+
+fn check_native_projection_refusal(
+    authority: &LogicalViewReadAuthority<'_>,
+    address: &str,
+    reason: &str,
+) {
+    let at = QualifiedAddress::parse(address).unwrap();
+    let admitted = authority.snapshot(&at).unwrap();
+    let error = authority
+        .read_exact(&at, &admitted)
+        .err()
+        .unwrap_or_else(|| panic!("{at}: expected not_found"));
+    assert_eq!(error.code(), unica_refusal::RefusalCode::NotFound, "{at}");
+    assert!(error.to_string().contains(reason), "{at}: {error}");
+}
+
+fn native_named_declaration_members(
+    container: roxmltree::Node<'_, '_>,
+    branch: &str,
+    kind: &str,
+) -> BTreeSet<String> {
+    const READABLE_NS: &str = "http://v8.1c.ru/8.3/xcf/readable";
+    let collection = QualifiedAddress::parse(branch).unwrap();
+    let mut members = BTreeSet::new();
+    for member in container.children().filter(roxmltree::Node::is_element) {
+        assert!(
+            member.has_tag_name((READABLE_NS, kind)),
+            "{branch}: {member:?}"
+        );
+        let name = member.attribute("name").expect("native declaration name");
+        let at = collection.member(name).unwrap().to_string();
+        assert!(members.insert(at), "{branch}: duplicate {name}");
+    }
+    assert!(
+        !members.is_empty(),
+        "{branch}: native fixture must have members"
+    );
+    members
+}
+
+fn check_native_named_declarations(
+    authority: &LogicalViewReadAuthority<'_>,
+    owner: &str,
+    kind: &str,
+    expected: &BTreeSet<String>,
+    origin: &str,
+    evidence: &mut EvidenceRows,
+) {
+    let branch = format!("{owner}.{kind}");
+    check_native_branch(authority, &read(authority, owner), &branch, expected);
+    for at in expected {
+        assert_eq!(read(authority, at)["kind"], kind, "{at}");
+    }
+    evidence.record(
+        authority.platform_profile().line(),
+        owner,
+        kind,
+        None,
+        origin,
+        AddressEvidence::Read(&branch),
+    );
+}
+
+fn check_native_declaration_projections(
+    authority: &LogicalViewReadAuthority<'_>,
+    source: &Path,
+    registrations: &[(String, String)],
+    evidence: &mut EvidenceRows,
+) {
+    const READABLE_NS: &str = "http://v8.1c.ru/8.3/xcf/readable";
+    let line = authority.platform_profile().line();
+    for (kind, name, relative) in [
+        ("Catalog", "Валюты", "Catalogs/Валюты.xml"),
+        (
+            "ChartOfAccounts",
+            "Хозрасчетный",
+            "ChartsOfAccounts/Хозрасчетный.xml",
+        ),
+    ] {
+        assert!(registrations
+            .iter()
+            .any(|(tag, item)| tag == kind && item == name));
+        let owner = format!("main:{kind}.{name}");
+        let descriptor = source.join(relative);
+        let origin = fixture_origin(&descriptor);
+        let xml = read_fixture_descriptor(&descriptor);
+        let document = parse_fixture_descriptor(&xml, &descriptor);
+        let artifact = fixture_artifact(&document, kind, &descriptor);
+        assert_eq!(fixture_properties_name(artifact), Some(name));
+        let properties = artifact
+            .children()
+            .find(|node| node.has_tag_name((MD_CLASSES_NS, "Properties")))
+            .unwrap();
+        let sections = properties
+            .children()
+            .find(|node| node.has_tag_name((MD_CLASSES_NS, "StandardTabularSections")));
+        if kind == "Catalog" {
+            let attributes = properties
+                .children()
+                .find(|node| node.has_tag_name((MD_CLASSES_NS, "StandardAttributes")))
+                .unwrap();
+            let branch = format!("{owner}.StandardAttribute");
+            let members =
+                native_named_declaration_members(attributes, &branch, "StandardAttribute");
+            check_native_named_declarations(
+                authority,
+                &owner,
+                "StandardAttribute",
+                &members,
+                &origin,
+                evidence,
+            );
+            let characteristics = properties
+                .children()
+                .find(|node| node.has_tag_name((MD_CLASSES_NS, "Characteristics")))
+                .unwrap();
+            assert!(!characteristics.children().any(|node| node.is_element()));
+            assert_native_projection_file_absent(
+                &source.join("Catalogs/Валюты/Ext/Predefined.xml"),
+            );
+            for (kind, rejected_suffix, reason) in [
+                (
+                    "Characteristic",
+                    "Any",
+                    "a characteristic carries no applied name",
+                ),
+                (
+                    "PredefinedItem",
+                    "Absent",
+                    "metadata node `Absent` was not found",
+                ),
+            ] {
+                let branch = format!("{owner}.{kind}");
+                let view = read(authority, &branch);
+                assert_eq!(view["kind"], kind);
+                assert!(view["items"].as_array().unwrap().is_empty(), "{branch}");
+                check_native_projection_refusal(
+                    authority,
+                    &format!("{branch}.{rejected_suffix}"),
+                    reason,
+                );
+                evidence.record(
+                    line,
+                    &owner,
+                    kind,
+                    None,
+                    &origin,
+                    AddressEvidence::Read(&branch),
+                );
+            }
+            assert!(
+                sections.is_none(),
+                "{owner}: fixture has no StandardTabularSections"
+            );
+            for suffix in [
+                "StandardTabularSection",
+                "StandardTabularSection.ExtDimensionTypes.StandardAttribute",
+            ] {
+                check_native_projection_refusal(
+                    authority,
+                    &format!("{owner}.{suffix}"),
+                    "metadata has no StandardTabularSection collection",
+                );
+            }
+        } else {
+            let sections = sections.unwrap();
+            let branch = format!("{owner}.StandardTabularSection");
+            let members =
+                native_named_declaration_members(sections, &branch, "StandardTabularSection");
+            check_native_named_declarations(
+                authority,
+                &owner,
+                "StandardTabularSection",
+                &members,
+                &origin,
+                evidence,
+            );
+            for section in sections.children().filter(roxmltree::Node::is_element) {
+                let name = section.attribute("name").unwrap();
+                let member = QualifiedAddress::parse(&branch)
+                    .unwrap()
+                    .member(name)
+                    .unwrap()
+                    .to_string();
+                let attributes = section
+                    .children()
+                    .find(|node| node.has_tag_name((READABLE_NS, "StandardAttributes")))
+                    .unwrap();
+                let branch = format!("{member}.StandardAttribute");
+                let members =
+                    native_named_declaration_members(attributes, &branch, "StandardAttribute");
+                check_native_named_declarations(
+                    authority,
+                    &member,
+                    "StandardAttribute",
+                    &members,
+                    &origin,
+                    evidence,
+                );
+            }
+        }
+    }
+}
+
+fn assert_native_projection_file_absent(path: &Path) {
+    let error = fs::symlink_metadata(path).expect_err("native fixture path must be absent");
+    assert_eq!(error.kind(), std::io::ErrorKind::NotFound, "{path:?}");
+}
+
+fn check_native_projection_companions(
+    authority: &LogicalViewReadAuthority<'_>,
+    source: &Path,
+    registrations: &[(String, String)],
+    cancellation: &CancellationToken,
+    evidence: &mut EvidenceRows,
+) {
+    let line = authority.platform_profile().line();
+    let root =
+        unica_workspace::read::open_source_directory(&source.canonicalize().unwrap()).unwrap();
+    let find_sources = [LayoutFindSource::new(
+        "main",
+        SourceSetKind::Configuration,
+        &root,
+    )];
+    let finder = WorkspaceFindDirectoryBuilder::default();
+    for (kind, name, branch, owner_file, companion) in [
+        (
+            "ScheduledJob",
+            "KeyProbe",
+            "Schedule",
+            "ScheduledJobs/KeyProbe.xml",
+            "ScheduledJobs/KeyProbe/Ext/Schedule.xml",
+        ),
+        (
+            "WSReference",
+            "Probe",
+            "Definition",
+            "WSReferences/Probe.xml",
+            "WSReferences/Probe/Ext/WSDefinition.xml",
+        ),
+    ] {
+        assert!(registrations
+            .iter()
+            .any(|(tag, item)| tag == kind && item == name));
+        let owner = format!("main:{kind}.{name}");
+        let descriptor = source.join(owner_file);
+        let xml = read_fixture_descriptor(&descriptor);
+        let document = parse_fixture_descriptor(&xml, &descriptor);
+        let artifact = fixture_artifact(&document, kind, &descriptor);
+        assert_eq!(fixture_properties_name(artifact), Some(name));
+        let address = format!("{owner}.{branch}");
+        let at = QualifiedAddress::parse(&address).unwrap();
+        let view = read(authority, &address);
+        assert_eq!(view["kind"], branch);
+        let resource = source.join(companion);
+        let find_path = || {
+            finder
+                .locate_path(
+                    &find_sources,
+                    companion,
+                    ProviderDeadline::no_deadline(),
+                    cancellation,
+                )
+                .unwrap()
+        };
+        let (origin, witness) = if branch == "Schedule" {
+            assert_native_projection_file_absent(&resource);
+            assert_eq!(view["props"], serde_json::json!({"state": "absent"}));
+            let error = authority.existing_export_path(&at, None).unwrap_err();
+            assert_eq!(
+                error.code(),
+                unica_refusal::RefusalCode::NotFound,
+                "{address}"
+            );
+            assert!(find_path().is_none(), "{companion}");
+            (fixture_origin(&descriptor), AddressEvidence::Read(&address))
+        } else {
+            let wsdl = read_fixture_descriptor(&resource);
+            let document = parse_fixture_descriptor(&wsdl, &resource);
+            let definition = document.root_element();
+            assert!(definition.has_tag_name(("http://schemas.xmlsoap.org/wsdl/", "definitions")));
+            let rows = view["items"].as_array().unwrap();
+            assert!(rows.len() > 1, "{address}: expected declaration rows");
+            assert_eq!(rows[0]["kind"], "definitions");
+            assert_eq!(rows[0]["name"].as_str(), definition.attribute("name"));
+            assert_eq!(
+                rows[0]["targetNamespace"].as_str(),
+                definition.attribute("targetNamespace")
+            );
+            for (index, row) in rows.iter().enumerate() {
+                assert!(
+                    row.get("at").is_none(),
+                    "{address}: a WSDL row has no address"
+                );
+                assert_eq!(row["sourceOrder"].as_u64(), Some((index + 1) as u64));
+            }
+            assert_eq!(
+                authority.existing_export_path(&at, None).unwrap(),
+                companion
+            );
+            let located =
+                find_path().unwrap_or_else(|| panic!("missing WSDL source identity {companion}"));
+            assert_eq!(located.at(), address);
+            assert_eq!(located.kind(), branch);
+            assert_eq!(located.placed_path(), Some(companion));
+            (
+                fixture_origin(&resource),
+                AddressEvidence::RoundTrip(&address),
+            )
+        };
+        evidence.record(line, &owner, branch, None, &origin, witness);
     }
 }
 
