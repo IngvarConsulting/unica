@@ -1,0 +1,116 @@
+{
+  "id": "S-484-websocket-module-resolve",
+  "issue": 484,
+  "area": "Навигация по исходникам",
+  "task": "Сопоставить адрес модуля WebSocket-клиента с его файлом в обе стороны на нативной выгрузке.",
+  "workspace": "tests/fixtures/acceptance/workspace-all-kinds",
+  "wire": [
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "at": "main:WebSocketClient.AllKindsWebSocketClient.Module.WebSocketClient"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:WebSocketClient.AllKindsWebSocketClient.Module.WebSocketClient"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Module"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "WebSocketClients/AllKindsWebSocketClient/Ext/Module.bsl"
+        }
+      ],
+      "captures": {
+        "modulePath": {
+          "pointer": "/data/path"
+        }
+      }
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "$capture.modulePath"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:WebSocketClient.AllKindsWebSocketClient.Module.WebSocketClient"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Module"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "WebSocketClients/AllKindsWebSocketClient/Ext/Module.bsl"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "src/WebSocketClients/AllKindsWebSocketClient/Ext/Module.bsl"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:WebSocketClient.AllKindsWebSocketClient.Module.WebSocketClient"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Module"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "WebSocketClients/AllKindsWebSocketClient/Ext/Module.bsl"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "$workspace/src/WebSocketClients/AllKindsWebSocketClient/Ext/Module.bsl"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:WebSocketClient.AllKindsWebSocketClient.Module.WebSocketClient"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Module"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "WebSocketClients/AllKindsWebSocketClient/Ext/Module.bsl"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "src/WebSocketClients/MissingWebSocketClient/Ext/Module.bsl"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: no admitted source set places `src/WebSocketClients/MissingWebSocketClient/Ext/Module.bsl`"
+    }
+  ]
+}

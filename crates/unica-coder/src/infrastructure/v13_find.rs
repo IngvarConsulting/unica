@@ -156,6 +156,7 @@ impl AttachedPathResource {
             };
         }
         match parts {
+            ["websocketclients", _, "ext", "module.bsl"] => Some(Self::RoleModule),
             ["wsreferences", _, "ext", "wsdefinition.xml"] => Some(Self::WsDefinition),
             ["commonforms", _, "ext", "form.xml"] => Some(Self::Form),
             ["commonforms", _, "ext", "form", "module.bsl"] => Some(Self::FormModule),
