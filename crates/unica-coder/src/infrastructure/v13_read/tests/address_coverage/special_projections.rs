@@ -172,6 +172,7 @@ fn native_special_projection_addresses_match_source() {
         direct_form_command_and_parameter(&mut native, "main:CommonForm.MainA", &common_form);
         native_named_form_parameter(&mut evidence, &mut required, version, line);
         external_form_command_and_parameter(&mut evidence, &mut required, version, line);
+        form_members::native_columns(&mut evidence, &mut required, version, line);
         native_form_requirements(&mut required, &source, line, &registrations);
         native_module_requirements(&mut required, &source, line, &registrations);
     }
