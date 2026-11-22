@@ -34,6 +34,7 @@ pub(super) fn native_additional_relations(
         &source,
         PlatformProfile::for_line(line).unwrap(),
     );
+    check_explicit_document_number(&authority, &source, &registrations);
     let branch = relation(&authority, calculation);
     let rows = relation_rows(&branch, "baseCalculationType");
     assert_eq!(rows.len(), expected.len());
@@ -86,22 +87,32 @@ fn input_by_string(
             let address = QualifiedAddress::parse(&qualified).unwrap();
             let field_kind = address.segments().last().unwrap().kind().as_str();
             assert_eq!(address.to_string(), qualified);
-            if field == "Document.Orders.StandardAttribute.Number"
-                && !properties
+            assert_target(native.authority, row, field, field_kind);
+            if field == "Document.Orders.StandardAttribute.Number" {
+                assert!(!properties
                     .children()
-                    .find(|node| node.has_tag_name((MD_CLASSES_NS, "StandardAttributes")))
-                    .is_some_and(|attributes| {
-                        attributes.children().any(|attribute| {
-                            attribute.has_tag_name((READABLE_NS, "StandardAttribute"))
-                                && attribute.attribute("name") == Some("Number")
-                        })
-                    })
-            {
-                // This fixture leaves the platform-defined Number implicit in its descriptor.
-                assert_eq!(row["at"], qualified);
-                assert_eq!(row["kind"], field_kind);
-            } else {
-                assert_target(native.authority, row, field, field_kind);
+                    .any(|node| node.has_tag_name((MD_CLASSES_NS, "StandardAttributes"))));
+                let at = "main:Document.Orders";
+                let collection = format!("{at}.StandardAttribute");
+                let (view, kind) = (read(native.authority, &qualified), "StandardAttribute");
+                assert_eq!(view["kind"], kind);
+                assert!(
+                    view["props"]
+                        .as_object()
+                        .is_none_or(serde_json::Map::is_empty),
+                    "{qualified}: {view}"
+                );
+                check_native_projection_refusal(
+                    native.authority,
+                    &format!("{collection}.Unregistered"),
+                    "was not found",
+                );
+                native.collection(
+                    at,
+                    kind,
+                    &fixture_origin(&path),
+                    BTreeSet::from([qualified]),
+                );
             }
         }
         // RegisterRecords and InputByString in the same descriptor prove one Relation address.
@@ -109,6 +120,31 @@ fn input_by_string(
             record(native, &owner, &path);
         }
     }
+}
+
+fn check_explicit_document_number(
+    authority: &LogicalViewReadAuthority<'_>,
+    source: &Path,
+    registrations: &[(String, String)],
+) {
+    let name = "Приход";
+    assert_registered(registrations, &format!("Document.{name}"));
+    let path = source.join(format!("Documents/{name}.xml"));
+    let raw = read_fixture_descriptor(&path);
+    let xml = parse_fixture_descriptor(&raw, &path);
+    let properties = fixture_properties(&xml, "Document", name, &path);
+    let standard = child(properties, MD_CLASSES_NS, "StandardAttributes");
+    let collection = format!("main:Document.{name}.StandardAttribute");
+    let expected = native_named_declaration_members(standard, &collection, "StandardAttribute");
+    let number = format!("{collection}.Number");
+    assert!(expected.contains(&number));
+    check_native_branch(
+        authority,
+        &read(authority, &format!("main:Document.{name}")),
+        &collection,
+        &expected,
+    );
+    assert_eq!(read(authority, &number)["kind"], "StandardAttribute");
 }
 
 fn data_lock_fields(native: &mut NativeProjections<'_, '_>, line: PlatformLine) {
