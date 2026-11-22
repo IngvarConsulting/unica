@@ -1334,6 +1334,7 @@ fn native_metadata_address_table_matches_declared_and_observed_child_branches() 
             &cancellation,
             &mut evidence,
         );
+        check_native_job_schedule_roundtrip(&source, xml, profile, &cancellation, &mut evidence);
         let mut verified = BTreeSet::new();
         for (kind, name) in registrations {
             let at = QualifiedAddress::parse(&format!("main:{kind}.{name}")).unwrap();
@@ -4432,6 +4433,79 @@ fn check_native_projection_companions(
         };
         evidence.record(line, &owner, branch, None, &origin, witness);
     }
+}
+
+fn check_native_job_schedule_roundtrip(
+    source: &Path,
+    format: &str,
+    profile: PlatformProfile,
+    cancellation: &CancellationToken,
+    evidence: &mut EvidenceRows,
+) {
+    const OWNER: &str = "main:ScheduledJob.KeyProbe";
+    const ADDRESS: &str = "main:ScheduledJob.KeyProbe.Schedule";
+    const COMPANION: &str = "ScheduledJobs/KeyProbe/Ext/Schedule.xml";
+    const NS: &str = "http://v8.1c.ru/8.3/xcf/extrnprops";
+    let native = fixture_path(&format!(
+        "acceptance/native-scheduled-job-schedule/{format}/Schedule.xml"
+    ));
+    let overlay = tempfile::tempdir().unwrap();
+    let resource = overlay.path().join(COMPANION);
+    fs::create_dir_all(resource.parent().unwrap()).unwrap();
+    for relative in ["Configuration.xml", "ScheduledJobs/KeyProbe.xml"] {
+        fs::copy(source.join(relative), overlay.path().join(relative)).unwrap();
+    }
+    fs::copy(&native, resource).unwrap();
+
+    let raw = read_fixture_descriptor(&native);
+    let document = parse_fixture_descriptor(&raw, &native);
+    let root = document.root_element();
+    assert!(root.has_tag_name((NS, "JobSchedule")));
+    assert_eq!(root.attribute("version"), Some(format));
+    let schedule = root
+        .children()
+        .find(|node| node.has_tag_name((NS, "Schedule")))
+        .unwrap();
+    let authority = native_authority(cancellation, overlay.path(), profile);
+    let view = read(&authority, ADDRESS);
+    assert_eq!(view["kind"], "Schedule");
+    assert_eq!(
+        view["props"]["BeginTime"].as_str().unwrap(),
+        schedule.attribute("BeginTime").unwrap()
+    );
+
+    let at = QualifiedAddress::parse(ADDRESS).unwrap();
+    assert_eq!(
+        authority.existing_export_path(&at, None).unwrap(),
+        COMPANION
+    );
+    let root =
+        unica_workspace::read::open_source_directory(&overlay.path().canonicalize().unwrap())
+            .unwrap();
+    let found = WorkspaceFindDirectoryBuilder::default()
+        .locate_path(
+            &[LayoutFindSource::new(
+                "main",
+                SourceSetKind::Configuration,
+                &root,
+            )],
+            COMPANION,
+            ProviderDeadline::no_deadline(),
+            cancellation,
+        )
+        .unwrap()
+        .unwrap_or_else(|| panic!("missing job schedule source identity {COMPANION}"));
+    assert_eq!(found.at(), ADDRESS);
+    assert_eq!(found.kind(), "Schedule");
+    assert_eq!(found.placed_path(), Some(COMPANION));
+    evidence.record(
+        profile.line(),
+        OWNER,
+        "Schedule",
+        None,
+        &fixture_origin(&native),
+        AddressEvidence::RoundTrip(ADDRESS),
+    );
 }
 
 fn read_fixture_descriptor(path: &Path) -> String {
