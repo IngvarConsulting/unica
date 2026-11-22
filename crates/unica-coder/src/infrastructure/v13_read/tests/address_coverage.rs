@@ -906,6 +906,22 @@ fn native_external_root_descriptors_match_published_addresses() {
             );
         }
     }
+    for format in ["2.21", "2.22"] {
+        for (source_kind, artifact) in [
+            (
+                SourceSetKind::ExternalProcessor,
+                "epf/SyntheticProcessor.xml",
+            ),
+            (SourceSetKind::ExternalReport, "erf/SyntheticReport.xml"),
+        ] {
+            check_native_external_form_module(
+                format,
+                source_kind,
+                &format!("formats/platform_xml/{format}/external_artifacts/{artifact}"),
+                &mut evidence,
+            );
+        }
+    }
     required.finish();
     evidence.finish();
 }
@@ -1526,6 +1542,102 @@ fn record_native_form_module_group(
         AddressEvidence::Read(&branch),
     );
     QualifiedAddress::parse(&module).unwrap()
+}
+
+fn check_native_external_form_module(
+    format: &str,
+    source_kind: SourceSetKind,
+    relative: &str,
+    evidence: &mut EvidenceRows,
+) {
+    use unica_workspace::source_profile::platform_xml_source_profile;
+
+    let (alias, kind) = match source_kind {
+        SourceSetKind::ExternalProcessor => ("epf", "ExternalDataProcessor"),
+        SourceSetKind::ExternalReport => ("erf", "ExternalReport"),
+        _ => unreachable!("external form fixture uses an external source kind"),
+    };
+    let descriptor_path = fixture_path(relative);
+    let raw = read_fixture_descriptor(&descriptor_path);
+    let document = parse_fixture_descriptor(&raw, &descriptor_path);
+    assert_eq!(document.root_element().attribute("version"), Some(format));
+    let owner = fixture_artifact(&document, kind, &descriptor_path);
+    let owner_name = fixture_properties_name(owner).expect("external owner name");
+    assert_eq!(
+        descriptor_path.file_stem().unwrap().to_str(),
+        Some(owner_name)
+    );
+    let form_descriptor =
+        native_registered_form_descriptor(owner, &descriptor_path, "Main", format);
+    let form_body = form_descriptor.with_extension("").join("Ext/Form.xml");
+    let body = read_fixture_descriptor(&form_body);
+    let body_xml = parse_fixture_descriptor(&body, &form_body);
+    let body = body_xml.root_element();
+    assert!(body.has_tag_name(("http://v8.1c.ru/8.3/xcf/logform", "Form")));
+    assert_eq!(body.attribute("version"), Some(format));
+
+    let source = descriptor_path.parent().unwrap().canonicalize().unwrap();
+    let admitted = platform_xml_source_profile(source_kind, &source);
+    let profile = PlatformProfile::for_line_or_base(admitted.semantic_line());
+    let root = Arc::new(unica_workspace::read::open_source_directory(&source).unwrap());
+    let cancellation = CancellationToken::new();
+    let authority = LogicalViewReadAuthority::new(
+        &cancellation,
+        alias,
+        "address-coverage-native-external-form",
+        source_kind,
+        Arc::clone(&root),
+        profile,
+    );
+    let owner = format!("{alias}:{kind}.{owner_name}");
+    let branch = format!("{owner}.Form");
+    let at = QualifiedAddress::parse(&format!("{branch}.Main")).unwrap();
+    let owner_view = read(&authority, &owner);
+    assert_eq!(owner_view["kind"], kind);
+    assert!(addresses(&owner_view, "branches").contains(&branch));
+    assert!(addresses(&read(&authority, &branch), "items").contains(&at.to_string()));
+
+    let export_line = export_format_line(format).unwrap();
+    let module = record_native_form_module_group(
+        &authority,
+        (export_line, source_kind),
+        &at,
+        &form_descriptor,
+        evidence,
+    );
+    let module_at = module.to_string();
+    assert_eq!(read(&authority, &module_at)["kind"], "Module");
+    let module_path = format!("{owner_name}/Forms/Main/Ext/Form/Module.bsl");
+    let native_module = descriptor_path.parent().unwrap().join(&module_path);
+    assert!(!read_fixture_descriptor(&native_module)
+        .trim_start_matches('\u{feff}')
+        .trim()
+        .is_empty());
+    assert_eq!(
+        authority.existing_export_path(&module, None).unwrap(),
+        module_path
+    );
+    let layout = [LayoutFindSource::new(alias, source_kind, &root)];
+    let located = WorkspaceFindDirectoryBuilder::default()
+        .locate_path(
+            &layout,
+            &module_path,
+            ProviderDeadline::no_deadline(),
+            &cancellation,
+        )
+        .unwrap()
+        .unwrap_or_else(|| panic!("missing external form module {module_path}"));
+    assert_eq!(located.at(), module_at);
+    assert_eq!(located.kind(), "Module");
+    assert_eq!(located.placed_path(), Some(module_path.as_str()));
+    evidence.record_for_source(
+        (export_line, source_kind),
+        &at.to_string(),
+        "Module",
+        Some("Form"),
+        &fixture_origin(&native_module),
+        AddressEvidence::RoundTrip(&module_at),
+    );
 }
 
 fn check_native_html_processor_form_module(evidence: &mut EvidenceRows) {
