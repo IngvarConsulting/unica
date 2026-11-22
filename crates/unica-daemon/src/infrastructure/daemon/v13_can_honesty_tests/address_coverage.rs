@@ -3,6 +3,8 @@ use super::*;
 use crate::infrastructure::daemon::v13_call_graph::call_graph_support;
 use unica_source_contract::format_identity::export_format_line;
 
+mod bsl;
+
 const EVIDENCE_TEST_CASE: &str =
     "medium_published_document_and_bsl_branches_have_canonical_addresses";
 const MD_CLASSES_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
@@ -45,6 +47,21 @@ impl EvidenceRows {
     }
 
     fn record_evidence(&mut self, fixture: &Fixture, origin: (&str, &str), evidence: Evidence<'_>) {
+        self.record_fixture_evidence(
+            fixture,
+            &format!("tests/fixtures/acceptance/{}", origin.0),
+            origin.1,
+            evidence,
+        );
+    }
+
+    fn record_fixture_evidence(
+        &mut self,
+        fixture: &Fixture,
+        fixture_path: &str,
+        relative: &str,
+        evidence: Evidence<'_>,
+    ) {
         if self.directory.is_none() {
             return;
         }
@@ -105,32 +122,14 @@ impl EvidenceRows {
         let format = descriptor.root_element().attribute("version").unwrap();
         let line = export_format_line(format).expect("fixture export format");
         let source = root.strip_prefix(&fixture.workspace).unwrap();
-        let origin_path = source.join(origin.1).to_string_lossy().replace('\\', "/");
-        let origin = format!("tests/fixtures/acceptance/{}/{origin_path}", origin.0);
-        let owner_shape: Vec<_> = owner
-            .segments()
-            .iter()
-            .map(|segment| {
-                json!({
-                    "kind": segment.kind().as_str(),
-                    "named": segment.name().is_some(),
-                    "role": matches!(segment.kind(), NodeKind::Interface | NodeKind::Module)
-                        .then_some(segment.name())
-                        .flatten(),
-                })
-            })
-            .collect();
+        let origin_path = source.join(relative).to_string_lossy().replace('\\', "/");
+        let origin = format!("{fixture_path}/{origin_path}");
+        let key = evidence_key(&owner, branch_kind, role, &line.to_string(), source_kind);
         self.lines.push(
             json!({
                 "schema_version": 1,
                 "record_type": "evidence",
-                "key": {
-                    "line": line.to_string(),
-                    "source_kind": source_kind,
-                    "owner_shape": owner_shape,
-                    "branch": branch_kind.as_str(),
-                    "role": role,
-                },
+                "key": key,
                 "witness": {
                     "owner": owner.to_string(),
                     "at": at,
@@ -146,17 +145,52 @@ impl EvidenceRows {
 
     fn finish(mut self) {
         if let Some(directory) = self.directory {
-            use std::io::Write;
             self.lines.sort_unstable();
-            let output = directory.join(format!("{EVIDENCE_TEST_CASE}.jsonl"));
-            let mut file = std::fs::File::create_new(&output)
-                .unwrap_or_else(|error| panic!("address evidence {}: {error}", output.display()));
-            for line in self.lines {
-                writeln!(file, "{line}").unwrap_or_else(|error| {
-                    panic!("address evidence {}: {error}", output.display())
-                });
-            }
+            write_shard(
+                &directory.join(format!("{EVIDENCE_TEST_CASE}.jsonl")),
+                self.lines,
+            );
+            bsl::write_requirements(&directory);
         }
+    }
+}
+
+fn evidence_key(
+    owner: &QualifiedAddress,
+    branch: NodeKind,
+    role: Option<&str>,
+    line: &str,
+    source_kind: SourceSetKind,
+) -> Value {
+    let owner_shape: Vec<_> = owner
+        .segments()
+        .iter()
+        .map(|segment| {
+            json!({
+                "kind": segment.kind().as_str(),
+                "named": segment.name().is_some(),
+                "role": matches!(segment.kind(), NodeKind::Interface | NodeKind::Module)
+                    .then_some(segment.name())
+                    .flatten(),
+            })
+        })
+        .collect();
+    json!({
+        "line": line,
+        "source_kind": source_kind,
+        "owner_shape": owner_shape,
+        "branch": branch.as_str(),
+        "role": role,
+    })
+}
+
+fn write_shard(output: &Path, lines: impl IntoIterator<Item = String>) {
+    use std::io::Write;
+    let mut file = std::fs::File::create_new(output)
+        .unwrap_or_else(|error| panic!("address evidence {}: {error}", output.display()));
+    for line in lines {
+        writeln!(file, "{line}")
+            .unwrap_or_else(|error| panic!("address evidence {}: {error}", output.display()));
     }
 }
 
@@ -1015,6 +1049,12 @@ fn check_module_variables_fixture(
         }
         assert_eq!(variables[name]["props"], props, "{name}");
     }
+    bsl::check_refusal(
+        runtime,
+        &fixture.workspace,
+        &format!("{BRANCH}.Локальная"),
+        "not_found",
+    );
     evidence.record(fixture, ORIGIN, BRANCH);
 }
 
@@ -1069,11 +1109,13 @@ fn check_notification_binding_fixture(
     assert_eq!(view["kind"], "Binding");
     assert_eq!(rows.len(), expected_ranges.len());
     for (row, range) in rows.iter().zip(expected_ranges) {
-        // at points to the containing method, not to a notification node.
         assert_eq!(row["at"], start);
         assert_eq!(row["kind"], "Method");
         assert_eq!(row["binding"], "notifyDescription");
         assert_eq!(row["range"], range);
+        let first = range["start"]["line"].as_u64().unwrap() + 1;
+        let last = range["end"]["line"].as_u64().unwrap() + 1;
+        assert_eq!(row["sourceAt"], format!("{start}.Body#L{first}-L{last}"));
     }
     assert!(view["limits"].as_array().unwrap().iter().any(|limit| {
         limit
@@ -1082,6 +1124,12 @@ fn check_notification_binding_fixture(
     }));
     let (origin, _) = read_view(runtime, &fixture.workspace, &start);
     assert_eq!(origin["kind"], "Method");
+    bsl::check_refusal(
+        runtime,
+        &fixture.workspace,
+        &format!("{binding}.Invented"),
+        "bad_value",
+    );
     evidence.record(fixture, ORIGIN, &binding);
 }
 
@@ -1614,6 +1662,7 @@ fn medium_published_document_and_bsl_branches_have_canonical_addresses() {
         );
         check_native_subsystem_interface(&runtime, &fixture, name, format, &mut evidence);
     }
+    bsl::check_native_empty_variables(&mut evidence);
     println!("| Kind | Branch | Canonical address | Evidence |");
     println!("| --- | --- | --- | --- |");
     for (kind, branch, at, evidence) in table {
