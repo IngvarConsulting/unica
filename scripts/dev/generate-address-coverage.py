@@ -38,6 +38,11 @@ DAEMON_SHARD = "medium_published_document_and_bsl_branches_have_canonical_addres
 ROOT_KEYS_SHARD = "required_configuration_root_keys"
 EXTENSION_LANGUAGE_KEYS_SHARD = "required_native_adopted_extension_language_keys"
 CFE_OWNERSHIP_KEYS_SHARD = "required_native_cfe_ownership_keys"
+CFE_OWNERSHIP_CAPTURES = {
+    "8.3.27": ("2.20", "8.3.27.2342"),
+    "8.5.1": ("2.21", "8.5.1.1529"),
+    "8.5.4": ("2.22", "8.5.4.2028"),
+}
 METADATA_CHILD_KEYS_SHARD = "required_native_metadata_child_keys"
 EXTERNAL_CHILD_KEYS_SHARD = "required_native_external_child_keys"
 EXTERNAL_INLINE_KEYS_SHARD = "required_native_external_inline_keys"
@@ -89,7 +94,7 @@ NATIVE_SCOPE = (
     " Registered native WSDL companions require exact WSReference.Definition round-trips."
     " Native spreadsheet companions require registered Area reads and row Body and Parameter reads."
     " Registered ScheduledJob.Schedule keeps descriptor-only reads and requires companion round-trips."
-    " Native XML 2.20 CFE fixtures require adopted Catalog/Form and own CommonModule witnesses."
+    " Native XML 2.20–2.22 CFE fixtures require adopted Catalog/Form and own CommonModule witnesses."
 )
 DAEMON_SCOPE = (
     "Read witnesses from the selected document and BSL coverage test of unica-daemon, "
@@ -234,15 +239,18 @@ def validate_required_record(record: object, shard: str) -> None:
             ("Catalog", "Form", "Module"): {("Body", None)},
             ("CommonModule",): {("Body", None)},
         }
+        capture = CFE_OWNERSHIP_CAPTURES.get(key["line"])
         if (
-            key["source_kind"] != "extension" or key["line"] != "8.3.27" or requirement["kind"] != "exact"
+            key["source_kind"] != "extension" or capture is None or requirement["kind"] != "exact"
             or (branch, role) not in permitted.get(kinds, set())
             or shape != [
                 {"kind": kind, "named": kind != "Configuration", "role": "Form" if kind == "Module" else None}
                 for kind in kinds
             ]
         ):
-            raise ValueError("required native CFE ownership key is outside the captured XML 2.20 scope")
+            raise ValueError("required native CFE ownership key is outside the captured XML 2.20–2.22 scope")
+        format_version, _ = capture
+        fixture_prefix = f"tests/fixtures/acceptance/native-cfe-ownership-{format_version}/"
         observations = requirement["observations"]
         if not isinstance(observations, list) or not observations:
             raise ValueError("required native CFE ownership key needs observations")
@@ -266,6 +274,7 @@ def validate_required_record(record: object, shard: str) -> None:
                 not re.fullmatch(pattern, owner) or not isinstance(addresses, list) or len(addresses) != 1
                 or not re.fullmatch(address_pattern, required_text(addresses[0], "address"))
                 or obs["level"] not in {"read", "roundtrip"}
+                or not origin.startswith(fixture_prefix)
                 or (branch in {"CommonModule", "Body"} and obs["level"] != "read")
                 or (addresses[0], origin, obs["level"]) in seen
             ):
@@ -1283,10 +1292,18 @@ def native_schedule_requirements(repo: Path) -> list[dict]:
 
 
 def native_cfe_ownership_requirements(repo: Path) -> list[dict]:
-    """Read registrations and physical resource pins from the two XML 2.20 native captures."""
-    fixture = Path("tests/fixtures/acceptance/native-cfe-ownership-2.20")
+    """Read registrations and resource pins from native extension exports."""
+    return [
+        row
+        for line, (version, platform) in CFE_OWNERSHIP_CAPTURES.items()
+        for row in native_cfe_ownership_line_requirements(repo, line, version, platform)
+    ]
+
+
+def native_cfe_ownership_line_requirements(repo: Path, line: str, version: str, platform: str) -> list[dict]:
+    fixture = Path("tests/fixtures/acceptance") / f"native-cfe-ownership-{version}"
     manifest = json.loads((repo / fixture / "manifest.json").read_bytes())
-    if manifest["formatVersion"] != "2.20" or manifest["platformVersion"] != "8.3.27.2342":
+    if manifest["formatVersion"] != version or manifest["platformVersion"] != platform:
         raise ValueError("native CFE ownership fixture provenance is outside the captured line")
     for name, pin in manifest["files"].items():
         raw = (repo / fixture / name).read_bytes()
@@ -1304,7 +1321,7 @@ def native_cfe_ownership_requirements(repo: Path) -> list[dict]:
 
     def descriptor(path: str, kind: str, name: str | None = None) -> ET.Element:
         root = ET.parse(repo / pin_path(path)).getroot()
-        if (root.tag != f"{md}MetaDataObject" or root.get("version") != "2.20"
+        if (root.tag != f"{md}MetaDataObject" or root.get("version") != version
                 or len(root) != 1 or root[0].tag != f"{md}{kind}"
                 or (name is not None and prop(root[0], "Name") != name)
                 or not uuid.UUID(root[0].attrib["uuid"]).int):
@@ -1344,7 +1361,11 @@ def native_cfe_ownership_requirements(repo: Path) -> list[dict]:
             descriptor(f"cf/{form_path}.xml", "Form", form))
     local_form = f"adopted/{form_path}/Ext/Form.xml"
     body = ET.parse(repo / pin_path(local_form)).getroot()
-    if body.tag != f"{lf}Form" or body.get("version") != "2.20" or body.find(f"{lf}BaseForm") is None:
+    base_form = body.find(f"{lf}BaseForm")
+    if (
+        body.tag != f"{lf}Form" or body.get("version") != version
+        or base_form is None or base_form.get("version") != version
+    ):
         raise ValueError("native CFE ownership: local adopted Form companion is missing or invalid")
     common = registration(own, "CommonModule")
     common_path = f"own/CommonModules/{common}"
@@ -1375,7 +1396,7 @@ def native_cfe_ownership_requirements(repo: Path) -> list[dict]:
     ):
         rows.append({
             "schema_version": SCHEMA_VERSION, "record_type": "required",
-            "key": {"line": "8.3.27", "source_kind": "extension", "branch": branch, "role": role,
+            "key": {"line": line, "source_kind": "extension", "branch": branch, "role": role,
                     "owner_shape": [{"kind": kind, "named": kind != "Configuration",
                                      "role": "Form" if kind == "Module" else None} for kind in shape]},
             "requirement": {"kind": "exact", "observations": [

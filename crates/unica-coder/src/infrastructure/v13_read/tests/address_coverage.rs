@@ -896,6 +896,17 @@ fn native_extension_root_language_matches_registration() {
 /// rule: INV.SOURCE.RESOLVED-RESOURCE-IDENTITY
 #[test]
 fn native_cfe_ownership_addresses_follow_the_exported_registrations() {
+    let mut evidence = EvidenceRows::new(
+        "native_cfe_ownership_addresses_follow_the_exported_registrations",
+        SourceSetKind::Extension,
+    );
+    for version in ["2.20", "2.21", "2.22"] {
+        check_native_cfe_ownership(version, &mut evidence);
+    }
+    evidence.finish();
+}
+
+fn check_native_cfe_ownership(version: &str, evidence: &mut EvidenceRows) {
     use unica_workspace::source_profile::platform_xml_source_profile;
     use unica_workspace::test_support::tree_snapshot;
 
@@ -909,17 +920,13 @@ fn native_cfe_ownership_addresses_follow_the_exported_registrations() {
     const CATALOG: &str = "ext:Catalog.CorpusCatalog";
     const FORM: &str = "ext:Catalog.CorpusCatalog.Form.CorpusForm";
     const OWN: &str = "ext:CommonModule.CorpusExtension_OwnProbe";
-    let line = export_format_line("2.20").unwrap();
+    let line = export_format_line(version).unwrap();
     let profile = PlatformProfile::for_line(line).unwrap();
     let kind = SourceSetKind::Extension;
-    let fixtures = fixture_path("acceptance/native-cfe-ownership-2.20");
+    let fixtures = fixture_path(&format!("acceptance/native-cfe-ownership-{version}"));
     let before = tree_snapshot(&fixtures);
     let cancellation = CancellationToken::new();
     let base = native_authority(&cancellation, &fixtures.join("cf"), profile);
-    let mut evidence = EvidenceRows::new(
-        "native_cfe_ownership_addresses_follow_the_exported_registrations",
-        kind,
-    );
     for (case, root_branch, named_address) in [
         ("adopted", "Catalog", CATALOG),
         ("own", "CommonModule", OWN),
@@ -928,7 +935,7 @@ fn native_cfe_ownership_addresses_follow_the_exported_registrations() {
         let canonical = fs::canonicalize(&source).unwrap();
         assert_eq!(
             platform_xml_source_profile(kind, &canonical).serialization_format(),
-            Some("2.20"),
+            Some(version),
         );
         let directory = Arc::new(unica_workspace::read::open_source_directory(&canonical).unwrap());
         let authority = LogicalViewReadAuthority::new(
@@ -1025,7 +1032,7 @@ fn native_cfe_ownership_addresses_follow_the_exported_registrations() {
             let form_view = read(&authority, FORM);
             assert_eq!(form_view["kind"], "Form");
             assert_eq!(form_view["props"]["isExtension"], true);
-            assert_eq!(form_view["props"]["baseFormVersion"], "2.20");
+            assert_eq!(form_view["props"]["baseFormVersion"], version);
             roundtrip(FORM, FORM_BODY, "Form");
             record(
                 CATALOG,
@@ -1109,7 +1116,6 @@ fn native_cfe_ownership_addresses_follow_the_exported_registrations() {
         }
     }
     assert_eq!(tree_snapshot(&fixtures), before);
-    evidence.finish();
 }
 
 /// rule: INV.SOURCE.EXTERNAL-ARTIFACT-ROOTS
