@@ -126,7 +126,7 @@ fn native_dcs_named_structure_follows_the_exported_names() {
         check_native_projection_refusal(
             &authority,
             &format!("{fields}.MissingCalculatedField"),
-            "was not found",
+            "no CalculatedField named MissingCalculatedField",
         );
     }
     evidence.finish();
