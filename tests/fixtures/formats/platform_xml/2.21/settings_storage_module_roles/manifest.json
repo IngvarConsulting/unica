@@ -1,0 +1,90 @@
+{
+  "formatVersion": "2.21",
+  "platformVersion": "8.5.1.1529",
+  "source": "Byte-identical selection from a native ibcmd configuration export of a registered SettingsStorage form.",
+  "seed": {
+    "revision": "93df0feeea38b3303c5f237930980e0960b7461a",
+    "path": "tests/fixtures/formats/platform_xml/2.21/all_kinds/src"
+  },
+  "derivation": {
+    "platformStages": [
+      {
+        "stage": "version",
+        "exit": 0
+      },
+      {
+        "stage": "import",
+        "exit": 0
+      },
+      {
+        "stage": "apply",
+        "exit": 0
+      },
+      {
+        "stage": "export",
+        "exit": 0
+      }
+    ],
+    "platformReceiptSha256": "55664df0edabe068700d912784341a434eeeca4a69cd3f86f80afdb655170d58",
+    "previousNativeExportsPreserved": {
+      "round1-export": {
+        "files": 123,
+        "directories": 152,
+        "manifest_sha256": "3df9e5b4fec06d54983331c5cce36d30ce8fddac221901526ee4fd5e4ab9e6e0"
+      },
+      "round2-export": {
+        "files": 123,
+        "directories": 152,
+        "manifest_sha256": "ede80125f8f4b43053ac191ce97c1bfd54fde0d3f3be5bef5f9180262d74f4cf"
+      },
+      "extended-export": {
+        "files": 0,
+        "directories": 0,
+        "manifest_sha256": "9ea750aaf204bf1798635a8b5f274a06b6dad6cc93b3d69a930b312704082a3c"
+      },
+      "register-export": {
+        "files": 127,
+        "directories": 160,
+        "manifest_sha256": "9b5e030e693cb039c2a6a7b766e3e4678f5f9102b4d945af161ad415029e31e9"
+      }
+    },
+    "description": "Import, apply, and export in the previously isolated file infobase. The registered form BSL equals the prepared input bytes."
+  },
+  "mcp": {
+    "revision": "ec4aac54df2825e075a0d7c292b92dbcfec9ce45",
+    "binarySha256": "641d7dd01731d74f49d8258864e47621650bde9ca44c7274f5661e5cf32916c4",
+    "receiptSha256": "d11415ae09fec2e207fe83cd44eb31713d6a57c1de5852fe3bf0cf1e504025cf",
+    "successfulCalls": 5
+  },
+  "selection": "Preserves the configuration registration, complete SettingsStorage descriptor, form descriptor, form body, and native BSL file.",
+  "samples": [
+    {
+      "owner": "main:SettingsStorage.Probe.Form.AddressProbeSettingsStorageForm",
+      "role": "Form",
+      "childUuid": "9f776cd5-9a1f-5f6f-a5c2-0369de8f826d",
+      "bsl": "src/SettingsStorages/Probe/Forms/AddressProbeSettingsStorageForm/Ext/Form/Module.bsl"
+    }
+  ],
+  "files": {
+    "src/Configuration.xml": {
+      "size": 13678,
+      "sha256": "c17f7efd779038626b995904b1f46239e86f52dd412ac402f1481e3d419624b8"
+    },
+    "src/SettingsStorages/Probe.xml": {
+      "size": 1756,
+      "sha256": "1469126338de681dcab8cc7da3ef0f69fa127b4af2a1c82e40b140e1d9f7ff8b"
+    },
+    "src/SettingsStorages/Probe/Forms/AddressProbeSettingsStorageForm.xml": {
+      "size": 1581,
+      "sha256": "3a7248fa8464bc64bb1d6b79a2c9811ea2a964d1a1ba103335c7d88c450c0e44"
+    },
+    "src/SettingsStorages/Probe/Forms/AddressProbeSettingsStorageForm/Ext/Form.xml": {
+      "size": 1443,
+      "sha256": "80315b737112328c821a684c840e00306733f14ecc41cc1b9b70635a7bbef97c"
+    },
+    "src/SettingsStorages/Probe/Forms/AddressProbeSettingsStorageForm/Ext/Form/Module.bsl": {
+      "size": 139,
+      "sha256": "42ea99728511b33fa0ffc963fab6b8e18a5a9fad8fab24b1e9e05b5284520693"
+    }
+  }
+}

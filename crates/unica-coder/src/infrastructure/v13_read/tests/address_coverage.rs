@@ -1705,6 +1705,18 @@ fn check_native_configuration_form_and_command_modules(format: &str, evidence: &
         ],
         evidence,
     );
+    check_native_configuration_nested_modules(
+        format,
+        "settings_storage_module_roles",
+        [(
+            "SettingsStorage",
+            "Probe",
+            "SettingsStorages",
+            "Form",
+            "AddressProbeSettingsStorageForm",
+        )],
+        evidence,
+    );
 }
 
 type NativeNestedModuleSample = (
