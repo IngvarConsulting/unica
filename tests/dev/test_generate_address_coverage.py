@@ -564,6 +564,71 @@ class AddressCoverageReportTests(unittest.TestCase):
 
 
 
+    def test_native_cfe_ownership_requires_exact_read_and_physical_roundtrip_evidence(self) -> None:
+        producer = GENERATOR.CFE_OWNERSHIP_SHARD
+        shard = GENERATOR.CFE_OWNERSHIP_KEYS_SHARD
+        required = GENERATOR.native_cfe_ownership_requirements(GENERATOR.REPO)
+        self.assertEqual(len(required), 8)
+        evidence = [
+            {
+                "schema_version": 1, "record_type": "evidence", "key": row["key"],
+                "witness": {"owner": obs["owner"], "origin": obs["origin"], "at": at,
+                            "level": obs["level"], "reason": None, "test_case": producer},
+            }
+            for row in required for obs in row["requirement"]["observations"] for at in obs["addresses"]
+        ]
+        self.assertEqual(len(evidence), 11)
+        own_body = next(item for item in evidence if item["witness"]["at"].endswith("OwnProbe.Body"))
+        adopted = next(item for item in evidence if item["witness"]["at"].endswith("CorpusForm.Metadata"))
+        self.write_shard(shard, *required)
+        shards = frozenset({producer, shard})
+        for native_only in (False, True):
+            self.write_shard(producer, *evidence)
+            self.assertEqual(len(GENERATOR.merge_shards(self.root, shards, native_only=native_only)), 8)
+            for target, mutation, error in (
+                (own_body, None, "OwnProbe.Body.*expected read"),
+                (own_body, {"level": "roundtrip"}, "OwnProbe.Body.*cannot round-trip"),
+                (adopted, {"level": "read"}, "CorpusForm.Metadata.*expected roundtrip"),
+                (adopted, {"origin": adopted["witness"]["origin"].replace("/adopted/", "/cf/")},
+                 "CorpusForm.Metadata.*expected roundtrip"),
+                (adopted, {"owner": adopted["witness"]["owner"].replace("ext:", "main:"),
+                           "at": adopted["witness"]["at"].replace("ext:", "main:")},
+                 "CorpusForm.Metadata.*expected roundtrip"),
+            ):
+                with self.subTest(native_only=native_only, mutation=mutation):
+                    remaining = [row for row in evidence if row is not target]
+                    if mutation is not None:
+                        remaining.append({**target, "witness": {**target["witness"], **mutation}})
+                    self.write_shard(producer, *remaining)
+                    with self.assertRaisesRegex(
+                        ValueError, rf"(?s)^missing required native CFE ownership coverage:.*{error}"
+                    ):
+                        GENERATOR.merge_shards(self.root, shards, native_only=native_only)
+
+    def test_native_cfe_ownership_is_derived_from_registration_links(self) -> None:
+        fixture = Path("tests/fixtures/acceptance/native-cfe-ownership-2.20")
+        manifest_path = fixture / "manifest.json"
+        manifest = json.loads((GENERATOR.REPO / manifest_path).read_bytes())
+        for name in manifest["files"]:
+            path = self.root / fixture / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes((GENERATOR.REPO / fixture / name).read_bytes())
+        manifest_out = self.root / manifest_path
+        manifest_out.write_text(json.dumps(manifest), encoding="utf-8")
+        name = "adopted/Catalogs/CorpusCatalog/Forms/CorpusForm.xml"
+        descriptor = self.root / fixture / name
+        data = descriptor.read_bytes()
+        link = b"3a1f0000-0000-4000-8000-000000001982"
+        self.assertIn(link, data)
+        data = data.replace(link, b"3a1f0000-0000-4000-8000-000000001981", 1)
+        descriptor.write_bytes(data)
+        with self.assertRaisesRegex(ValueError, "fixture bytes differ"):
+            GENERATOR.native_cfe_ownership_requirements(self.root)
+        manifest["files"][name] = {"sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
+        manifest_out.write_text(json.dumps(manifest), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "adopted reference does not match parent descriptor"):
+            GENERATOR.native_cfe_ownership_requirements(self.root)
+
     def test_native_adopted_extension_language_requires_both_read_origins(self) -> None:
         producer = GENERATOR.EXTENSION_LANGUAGE_SHARD
         shard = GENERATOR.EXTENSION_LANGUAGE_KEYS_SHARD

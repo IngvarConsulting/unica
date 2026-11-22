@@ -892,6 +892,226 @@ fn native_extension_root_language_matches_registration() {
     evidence.finish();
 }
 
+/// rule: INV.SOURCE.LOGICAL-READER-PARITY
+/// rule: INV.SOURCE.RESOLVED-RESOURCE-IDENTITY
+#[test]
+fn native_cfe_ownership_addresses_follow_the_exported_registrations() {
+    use unica_workspace::source_profile::platform_xml_source_profile;
+    use unica_workspace::test_support::tree_snapshot;
+
+    const CATALOG_XML: &str = "Catalogs/CorpusCatalog.xml";
+    const FORM_XML: &str = "Catalogs/CorpusCatalog/Forms/CorpusForm.xml";
+    const FORM_BODY: &str = "Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form.xml";
+    const FORM_BSL: &str = "Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form/Module.bsl";
+    const MODULE_XML: &str = "CommonModules/CorpusExtension_OwnProbe.xml";
+    const MODULE_BSL: &str = "CommonModules/CorpusExtension_OwnProbe/Ext/Module.bsl";
+    const ROOT: &str = "ext:Configuration";
+    const CATALOG: &str = "ext:Catalog.CorpusCatalog";
+    const FORM: &str = "ext:Catalog.CorpusCatalog.Form.CorpusForm";
+    const OWN: &str = "ext:CommonModule.CorpusExtension_OwnProbe";
+    let line = export_format_line("2.20").unwrap();
+    let profile = PlatformProfile::for_line(line).unwrap();
+    let kind = SourceSetKind::Extension;
+    let fixtures = fixture_path("acceptance/native-cfe-ownership-2.20");
+    let before = tree_snapshot(&fixtures);
+    let cancellation = CancellationToken::new();
+    let base = native_authority(&cancellation, &fixtures.join("cf"), profile);
+    let mut evidence = EvidenceRows::new(
+        "native_cfe_ownership_addresses_follow_the_exported_registrations",
+        kind,
+    );
+    for (case, root_branch, named_address) in [
+        ("adopted", "Catalog", CATALOG),
+        ("own", "CommonModule", OWN),
+    ] {
+        let source = fixtures.join(case);
+        let canonical = fs::canonicalize(&source).unwrap();
+        assert_eq!(
+            platform_xml_source_profile(kind, &canonical).serialization_format(),
+            Some("2.20"),
+        );
+        let directory = Arc::new(unica_workspace::read::open_source_directory(&canonical).unwrap());
+        let authority = LogicalViewReadAuthority::new(
+            &cancellation,
+            "ext",
+            "native-cfe-ownership",
+            kind,
+            Arc::clone(&directory),
+            profile,
+        );
+        let layout = [LayoutFindSource::new("ext", kind, &directory)];
+        let locate = |at: &str, relative: &str, expected_kind: &str| {
+            let result = WorkspaceFindDirectoryBuilder::default()
+                .locate_path(
+                    &layout,
+                    relative,
+                    ProviderDeadline::no_deadline(),
+                    &cancellation,
+                )
+                .unwrap()
+                .unwrap_or_else(|| panic!("{relative}: no registered CFE address"));
+            assert_eq!(result.at(), at, "{relative}");
+            assert_eq!(result.kind(), expected_kind, "{relative}");
+            assert_eq!(result.placed_path(), Some(relative), "{relative}");
+        };
+        let roundtrip = |address: &str, relative: &str, expected_kind: &str| {
+            let at = QualifiedAddress::parse(address).unwrap();
+            assert_eq!(authority.existing_export_path(&at, None).unwrap(), relative);
+            locate(address, relative, expected_kind);
+        };
+        let not_registered = |reader: &LogicalViewReadAuthority<'_>, address: &str| {
+            let at = QualifiedAddress::parse(address).unwrap();
+            let failure = reader
+                .snapshot(&at)
+                .and_then(|snapshot| reader.read_exact(&at, &snapshot))
+                .err()
+                .expect("unregistered address must refuse");
+            assert_eq!(failure.code(), RefusalCode::NotFound, "{at}: {failure:?}");
+        };
+        let mut record = |owner: &str,
+                          branch: &str,
+                          role: Option<&str>,
+                          path: &str,
+                          outcome: AddressEvidence<'_>| {
+            evidence.record(
+                line,
+                owner,
+                branch,
+                role,
+                &fixture_origin(&source.join(path)),
+                outcome,
+            );
+        };
+        let root_at = format!("ext:{root_branch}");
+        check_native_branch(
+            &authority,
+            &read(&authority, ROOT),
+            &root_at,
+            &BTreeSet::from([named_address.to_owned()]),
+        );
+        record(
+            ROOT,
+            root_branch,
+            None,
+            "Configuration.xml",
+            AddressEvidence::Read(&root_at),
+        );
+        let named = read(&authority, named_address);
+        if case == "adopted" {
+            assert_eq!(named["kind"], "Catalog");
+            assert_eq!(named["props"]["belonging"], "borrowed");
+            roundtrip(CATALOG, CATALOG_XML, "Catalog");
+            record(
+                ROOT,
+                "Catalog",
+                None,
+                CATALOG_XML,
+                AddressEvidence::RoundTrip(CATALOG),
+            );
+            let forms = format!("{CATALOG}.Form");
+            check_native_branch(
+                &authority,
+                &named,
+                &forms,
+                &BTreeSet::from([FORM.to_owned()]),
+            );
+            record(
+                CATALOG,
+                "Form",
+                None,
+                CATALOG_XML,
+                AddressEvidence::Read(&forms),
+            );
+            let form_view = read(&authority, FORM);
+            assert_eq!(form_view["kind"], "Form");
+            assert_eq!(form_view["props"]["isExtension"], true);
+            assert_eq!(form_view["props"]["baseFormVersion"], "2.20");
+            roundtrip(FORM, FORM_BODY, "Form");
+            record(
+                CATALOG,
+                "Form",
+                None,
+                FORM_BODY,
+                AddressEvidence::RoundTrip(FORM),
+            );
+            let metadata = format!("{FORM}.Metadata");
+            assert_eq!(read(&authority, &metadata)["kind"], "Metadata");
+            roundtrip(&metadata, FORM_XML, "Metadata");
+            record(
+                FORM,
+                "Metadata",
+                None,
+                FORM_XML,
+                AddressEvidence::RoundTrip(&metadata),
+            );
+            let group = format!("{FORM}.Module");
+            let module = format!("{group}.Form");
+            check_native_branch(
+                &authority,
+                &form_view,
+                &group,
+                &BTreeSet::from([module.clone()]),
+            );
+            record(
+                FORM,
+                "Module",
+                None,
+                FORM_XML,
+                AddressEvidence::Read(&group),
+            );
+            assert_eq!(read(&authority, &module)["kind"], "Module");
+            roundtrip(&module, FORM_BSL, "Module");
+            record(
+                FORM,
+                "Module",
+                Some("Form"),
+                FORM_BSL,
+                AddressEvidence::RoundTrip(&module),
+            );
+            let body = format!("{module}.Body");
+            let content = fs::read_to_string(source.join(FORM_BSL)).unwrap();
+            let text = content.trim_start_matches('\u{feff}');
+            check_native_bsl_body(&authority, &body, text, 1, text.lines().count());
+            record(
+                &module,
+                "Body",
+                None,
+                FORM_BSL,
+                AddressEvidence::Read(&body),
+            );
+            not_registered(&authority, &format!("{CATALOG}.Form.NotRegistered"));
+        } else {
+            assert_eq!(named["kind"], "Module");
+            assert_eq!(named["props"]["belonging"], "own");
+            record(
+                ROOT,
+                "CommonModule",
+                None,
+                MODULE_XML,
+                AddressEvidence::Read(OWN),
+            );
+            // The descriptor and BSL are separate resources even though reverse
+            // location names the same CommonModule owner for both.
+            locate(OWN, MODULE_XML, "CommonModule");
+            locate(OWN, MODULE_BSL, "CommonModule");
+            let body = format!("{OWN}.Body");
+            let content = fs::read_to_string(source.join(MODULE_BSL)).unwrap();
+            let text = content.trim_start_matches('\u{feff}');
+            check_native_bsl_body(&authority, &body, text, 1, text.lines().count());
+            let at = QualifiedAddress::parse(&body).unwrap();
+            assert_eq!(
+                authority.existing_export_path(&at, None).unwrap(),
+                MODULE_BSL
+            );
+            record(OWN, "Body", None, MODULE_BSL, AddressEvidence::Read(&body));
+            not_registered(&authority, CATALOG);
+            not_registered(&base, "main:CommonModule.CorpusExtension_OwnProbe");
+        }
+    }
+    assert_eq!(tree_snapshot(&fixtures), before);
+    evidence.finish();
+}
+
 /// rule: INV.SOURCE.EXTERNAL-ARTIFACT-ROOTS
 /// rule: INV.SOURCE.LOGICAL-BRANCH-COUNT
 /// rule: INV.SOURCE.RESOLVED-RESOURCE-IDENTITY

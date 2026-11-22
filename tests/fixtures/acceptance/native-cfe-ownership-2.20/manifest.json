@@ -1,0 +1,108 @@
+{
+  "formatVersion": "2.20",
+  "platformVersion": "8.3.27.2342",
+  "source": "New isolated ibcmd imports, checks, applies and exports for adopted Catalog/Form and own CommonModule. The two CFG exports have identical source bytes. The configured Language is adopted in both exports.",
+  "platformSha256": {
+    "1cv8.exe": "2a9ef3653367b6de29000a3a51749a19e6450134347925713c9075674e9f0956",
+    "ibcmd.exe": "38f37715535cea530e58d5ba2e7e072c184b61b12f3e903ac290b299cf39fd38"
+  },
+  "captureReceiptSha256": {
+    "adopted": "0b13c6be7e0244f15c6cabbbf2c87a802d0059a69d26672268e205af2662c90a",
+    "own": "c3f41c2d41159f9c0145c412f3ef3bb7fa7d2378ee0b4e93052f14e1978ce014"
+  },
+  "terminalSummarySha256": "dc2f7a603c2ce44871bd75f00970b695719bda8266209374895f45ad86dd6771",
+  "publicMcpReference": {
+    "version": "0.17.0-alpha.2",
+    "sourceCommit": "030bc8bd5dfb30d4edaec195f418f9f3f00b63cc",
+    "binarySha256": "27b3bc0be4088c11c51af88da9963a52959b317837e54a2bcaa7a9f31c3a928d",
+    "observationsSha256": "d3b3d7d229234dd11310ab5659b64446dd7b039ba356336b8674b84f3311d58c"
+  },
+  "excludedPlatformServiceSidecars": {
+    "adopted/cf/ConfigDumpInfo.xml": {
+      "size": 1287,
+      "sha256": "75526c232bec96ee38525b0a3fa0a91f364d93e666cd9c686f8b9baf74137551"
+    },
+    "adopted/cfe/ConfigDumpInfo.xml": {
+      "size": 1099,
+      "sha256": "68b1ad0f8cb07b748fa7d3b32643f02de61bc7b0676c4f9fc12507591f3f7c8b"
+    },
+    "own/cf/ConfigDumpInfo.xml": {
+      "size": 1287,
+      "sha256": "5cdbd62e6d5e8beae0e78227a345e82fe74f254418161ded1a3f9786ee8fb2a8"
+    },
+    "own/cfe/ConfigDumpInfo.xml": {
+      "size": 958,
+      "sha256": "717fbadc737cead520a6e6289ef2604e788f8aa31c853979479df23efe71ee50"
+    }
+  },
+  "files": {
+    "adopted/Catalogs/CorpusCatalog.xml": {
+      "size": 2485,
+      "sha256": "eeac9b6cc622c74cb3862365ae40aed8327d1ad32be3e078201f32c439bb3a51"
+    },
+    "adopted/Catalogs/CorpusCatalog/Forms/CorpusForm.xml": {
+      "size": 1405,
+      "sha256": "25aa4de7252f5d2daad828d79af0318b01db09f9c590bf225b5c6aeb963071d6"
+    },
+    "adopted/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form.xml": {
+      "size": 1117,
+      "sha256": "b28169d8d730651eab9612bf5c00acd02f7aa293d5a734e555147ba13df9a222"
+    },
+    "adopted/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form/Module.bsl": {
+      "size": 292,
+      "sha256": "95271a2ebccd22c4c4f6667cdd2c35820bf69e170242a2541f6a6496f3b5befe"
+    },
+    "adopted/Configuration.xml": {
+      "size": 3620,
+      "sha256": "dfed201b033f4f679a3e709cdbb571bf3f3ab3ec3adcd09b34ccc3042c333b24"
+    },
+    "adopted/Languages/Русский.xml": {
+      "size": 1283,
+      "sha256": "314598f60b3e7f75a93cc5b6213a318ebac570bb26c1a2ca34753cb0cffb2756"
+    },
+    "cf/Catalogs/CorpusCatalog.xml": {
+      "size": 15032,
+      "sha256": "3325b97d14a6f98bde3b5695c398182e6dca8007ad4abe712f49a4d021cc327a"
+    },
+    "cf/Catalogs/CorpusCatalog/Forms/CorpusForm.xml": {
+      "size": 1383,
+      "sha256": "527665701da0bfc68194a7e8e390bc8f27984efa52e89fda5d942a618b8c21e3"
+    },
+    "cf/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form.xml": {
+      "size": 2511,
+      "sha256": "9ba427f85310cb01f320ae8026454d1f479d3170c5a1d094f024faa00ee4bf8a"
+    },
+    "cf/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form/Module.bsl": {
+      "size": 497,
+      "sha256": "356b4673e18b5c3dda27058f3ed5ce9f889b8c5c396010f3e0d2c1b334fd3755"
+    },
+    "cf/Configuration.xml": {
+      "size": 10478,
+      "sha256": "ccd65a7aa9b1001d5db719f4faa0331d79e8703802771f20cfe56a1d0df0bb7f"
+    },
+    "cf/Ext/ClientApplicationInterface.xml": {
+      "size": 836,
+      "sha256": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+    },
+    "cf/Languages/Русский.xml": {
+      "size": 1251,
+      "sha256": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+    },
+    "own/CommonModules/CorpusExtension_OwnProbe.xml": {
+      "size": 1597,
+      "sha256": "f721378c1fc56673e72721b07661df2d8c9531de7b15cb26ac434e906d8b293b"
+    },
+    "own/CommonModules/CorpusExtension_OwnProbe/Ext/Module.bsl": {
+      "size": 392,
+      "sha256": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
+    },
+    "own/Configuration.xml": {
+      "size": 3642,
+      "sha256": "f20beeefce098615258190b695a760e46e9489faadc872776bccee6a3a29184d"
+    },
+    "own/Languages/Русский.xml": {
+      "size": 1283,
+      "sha256": "314598f60b3e7f75a93cc5b6213a318ebac570bb26c1a2ca34753cb0cffb2756"
+    }
+  }
+}

@@ -20,6 +20,7 @@ REPO = Path(__file__).resolve().parents[2]
 EMITTER_ENV = "UNICA_484_ADDRESS_JSONL_DIR"
 SCHEMA_VERSION = 1
 EXTENSION_LANGUAGE_SHARD = "native_extension_root_language_matches_registration"
+CFE_OWNERSHIP_SHARD = "native_cfe_ownership_addresses_follow_the_exported_registrations"
 EXTERNAL_ROOT_SHARD = "native_external_root_descriptors_match_published_addresses"
 METADATA_SHARD = "native_metadata_address_table_matches_declared_and_observed_child_branches"
 FORM_TEMPLATE_SHARD = "native_form_and_template_addresses_follow_text_registrations"
@@ -30,12 +31,13 @@ NATIVE_SHARDS = frozenset({
     METADATA_SHARD,
     FORM_TEMPLATE_SHARD,
     "native_registered_modules_match_profile_and_physical_paths",
-    EXTENSION_LANGUAGE_SHARD,
+    EXTENSION_LANGUAGE_SHARD, CFE_OWNERSHIP_SHARD,
     EXTERNAL_ROOT_SHARD,
 })
 DAEMON_SHARD = "medium_published_document_and_bsl_branches_have_canonical_addresses"
 ROOT_KEYS_SHARD = "required_configuration_root_keys"
 EXTENSION_LANGUAGE_KEYS_SHARD = "required_native_adopted_extension_language_keys"
+CFE_OWNERSHIP_KEYS_SHARD = "required_native_cfe_ownership_keys"
 METADATA_CHILD_KEYS_SHARD = "required_native_metadata_child_keys"
 EXTERNAL_CHILD_KEYS_SHARD = "required_native_external_child_keys"
 EXTERNAL_INLINE_KEYS_SHARD = "required_native_external_inline_keys"
@@ -60,7 +62,7 @@ XDTO_OWNER_SHAPES = {
 }
 NATIVE_ADDRESS_NAME = r"[^\W\d]\w*"
 REQUIRED_KEY_SHARDS = frozenset({
-    EXTENSION_LANGUAGE_KEYS_SHARD,
+    EXTENSION_LANGUAGE_KEYS_SHARD, CFE_OWNERSHIP_KEYS_SHARD,
     ROOT_KEYS_SHARD, METADATA_CHILD_KEYS_SHARD, EXTERNAL_CHILD_KEYS_SHARD, EXTERNAL_INLINE_KEYS_SHARD,
     MODULE_ROLE_KEYS_SHARD,
     EDS_MODULE_KEYS_SHARD, SUBSYSTEM_INTERFACE_KEYS_SHARD, DCS_QUERY_KEYS_SHARD, ROLE_RIGHT_KEYS_SHARD,
@@ -87,6 +89,7 @@ NATIVE_SCOPE = (
     " Registered native WSDL companions require exact WSReference.Definition round-trips."
     " Native spreadsheet companions require registered Area reads and row Body and Parameter reads."
     " Registered ScheduledJob.Schedule keeps descriptor-only reads and requires companion round-trips."
+    " Native XML 2.20 CFE fixtures require adopted Catalog/Form and own CommonModule witnesses."
 )
 DAEMON_SCOPE = (
     "Read witnesses from the selected document and BSL coverage test of unica-daemon, "
@@ -165,7 +168,7 @@ def validate_record(record: object, test_case: str) -> None:
     version = validate_key(key)
     source_kind = key["source_kind"]
     allowed_kinds = ("configuration",)
-    if test_case == EXTENSION_LANGUAGE_SHARD:
+    if test_case in {EXTENSION_LANGUAGE_SHARD, CFE_OWNERSHIP_SHARD}:
         allowed_kinds = ("extension",)
     elif test_case == EXTERNAL_ROOT_SHARD:
         allowed_kinds = ("external_processor", "external_report")
@@ -215,11 +218,60 @@ def validate_required_record(record: object, shard: str) -> None:
             {"kind": owner_kind, "named": True, "role": None},
         ]:
             raise ValueError("required external child key must name the matching external owner kind")
-    elif shard != EXTENSION_LANGUAGE_KEYS_SHARD and key["source_kind"] != "configuration":
+    elif shard not in {EXTENSION_LANGUAGE_KEYS_SHARD, CFE_OWNERSHIP_KEYS_SHARD} and key["source_kind"] != "configuration":
         raise ValueError("required keys must belong to a configuration source set")
     shape = key["owner_shape"]
     requirement = record["requirement"]
     configuration = [{"kind": "Configuration", "named": False, "role": None}]
+    if shard == CFE_OWNERSHIP_KEYS_SHARD:
+        exact_fields(requirement, {"kind", "observations"}, "native CFE ownership requirement")
+        branch, role = key["branch"], key["role"]
+        kinds = tuple(segment["kind"] for segment in shape)
+        permitted = {
+            ("Configuration",): {("Catalog", None), ("CommonModule", None)},
+            ("Catalog",): {("Form", None)},
+            ("Catalog", "Form"): {("Metadata", None), ("Module", None), ("Module", "Form")},
+            ("Catalog", "Form", "Module"): {("Body", None)},
+            ("CommonModule",): {("Body", None)},
+        }
+        if (
+            key["source_kind"] != "extension" or key["line"] != "8.3.27" or requirement["kind"] != "exact"
+            or (branch, role) not in permitted.get(kinds, set())
+            or shape != [
+                {"kind": kind, "named": kind != "Configuration", "role": "Form" if kind == "Module" else None}
+                for kind in kinds
+            ]
+        ):
+            raise ValueError("required native CFE ownership key is outside the captured XML 2.20 scope")
+        observations = requirement["observations"]
+        if not isinstance(observations, list) or not observations:
+            raise ValueError("required native CFE ownership key needs observations")
+        seen = set()
+        for obs in observations:
+            exact_fields(obs, {"addresses", "owner", "origin", "level"}, "native CFE ownership observation")
+            owner = required_text(obs["owner"], "owner")
+            pattern = r"ext:Configuration" if kinds == ("Configuration",) else (
+                "ext:" + r"\.".join(kind + r"\." + (r"Form" if kind == "Module" else NATIVE_ADDRESS_NAME)
+                                      for kind in kinds)
+            )
+            prefix = f"ext:{branch}" if kinds == ("Configuration",) else f"{owner}.{branch}"
+            address_pattern = re.escape(prefix)
+            if role is not None:
+                address_pattern += rf"\.{role}"
+            elif branch in {"Catalog", "CommonModule", "Form"}:
+                address_pattern += rf"(\.{NATIVE_ADDRESS_NAME})?"
+            origin = required_text(obs["origin"], "origin")
+            addresses = obs["addresses"]
+            if (
+                not re.fullmatch(pattern, owner) or not isinstance(addresses, list) or len(addresses) != 1
+                or not re.fullmatch(address_pattern, required_text(addresses[0], "address"))
+                or obs["level"] not in {"read", "roundtrip"}
+                or (branch in {"CommonModule", "Body"} and obs["level"] != "read")
+                or (addresses[0], origin, obs["level"]) in seen
+            ):
+                raise ValueError("invalid or duplicate required native CFE ownership observation")
+            seen.add((addresses[0], origin, obs["level"]))
+        return
     if shard == EXTENSION_LANGUAGE_KEYS_SHARD:
         exact_fields(requirement, {"kind", "observations"}, "adopted extension Language requirement")
         if (
@@ -462,6 +514,7 @@ def check_required_keys(requirements: dict, groups: dict, *, native_only: bool) 
         SCHEDULE_KEYS_SHARD: ("Schedule", []),
         EXTERNAL_INLINE_KEYS_SHARD: ("external inline", []),
         EXTENSION_LANGUAGE_KEYS_SHARD: ("adopted extension Language", []),
+        CFE_OWNERSHIP_KEYS_SHARD: ("CFE ownership", []),
     }
     diagnostics = []
     for key, (shard, record) in sorted(requirements.items()):
@@ -491,6 +544,8 @@ def check_required_keys(requirements: dict, groups: dict, *, native_only: bool) 
                 emitter = EXTERNAL_ROOT_SHARD
             elif shard == EXTENSION_LANGUAGE_KEYS_SHARD:
                 emitter = EXTENSION_LANGUAGE_SHARD
+            elif shard == CFE_OWNERSHIP_KEYS_SHARD:
+                emitter = CFE_OWNERSHIP_SHARD
             observed = {
                 (w["level"], w["owner"], w["origin"], w["at"]) for w in witnesses
                 if w["test_case"] == emitter and w["reason"] is None
@@ -499,8 +554,10 @@ def check_required_keys(requirements: dict, groups: dict, *, native_only: bool) 
                 {w["at"] for w in witnesses if w["level"] == "roundtrip"}
                 if shard == EXTERNAL_INLINE_KEYS_SHARD else set()
             )
+            if shard == CFE_OWNERSHIP_KEYS_SHARD and record["key"]["branch"] in {"CommonModule", "Body"}:
+                inline_roundtrips = {w["at"] for w in witnesses if w["level"] == "roundtrip"}
             for observation in observations:
-                expected = [(level, observation["origin"])]
+                expected = [(observation.get("level", level), observation["origin"])]
                 if shard == SCHEDULE_KEYS_SHARD:
                     expected.append(("read", observation["descriptor_origin"]))
                 for evidence_level, origin in expected:
@@ -1225,6 +1282,110 @@ def native_schedule_requirements(repo: Path) -> list[dict]:
     return rows
 
 
+def native_cfe_ownership_requirements(repo: Path) -> list[dict]:
+    """Read registrations and physical resource pins from the two XML 2.20 native captures."""
+    fixture = Path("tests/fixtures/acceptance/native-cfe-ownership-2.20")
+    manifest = json.loads((repo / fixture / "manifest.json").read_bytes())
+    if manifest["formatVersion"] != "2.20" or manifest["platformVersion"] != "8.3.27.2342":
+        raise ValueError("native CFE ownership fixture provenance is outside the captured line")
+    for name, pin in manifest["files"].items():
+        raw = (repo / fixture / name).read_bytes()
+        if (len(raw), hashlib.sha256(raw).hexdigest()) != (pin["size"], pin["sha256"]):
+            raise ValueError(f"native CFE ownership fixture bytes differ: {name}")
+    md = "{http://v8.1c.ru/8.3/MDClasses}"
+    lf = "{http://v8.1c.ru/8.3/xcf/logform}"
+    def pin_path(name: str) -> Path:
+        if name not in manifest["files"]:
+            raise ValueError(f"native CFE ownership fixture resource is not pinned: {name}")
+        return fixture / name
+
+    def prop(node: ET.Element, name: str) -> str | None:
+        return node.findtext(f"{md}Properties/{md}{name}")
+
+    def descriptor(path: str, kind: str, name: str | None = None) -> ET.Element:
+        root = ET.parse(repo / pin_path(path)).getroot()
+        if (root.tag != f"{md}MetaDataObject" or root.get("version") != "2.20"
+                or len(root) != 1 or root[0].tag != f"{md}{kind}"
+                or (name is not None and prop(root[0], "Name") != name)
+                or not uuid.UUID(root[0].attrib["uuid"]).int):
+            raise ValueError(f"native CFE ownership descriptor identity differs: {path}")
+        return root[0]
+
+    def registration(node: ET.Element, kind: str) -> str:
+        matches = node.findall(f"{md}ChildObjects/{md}{kind}")
+        if len(matches) != 1:
+            raise ValueError(f"native CFE ownership: expected one registered {kind}")
+        return required_text(matches[0].text, kind)
+
+    def adopted(local: ET.Element, parent: ET.Element) -> None:
+        if (prop(local, "ObjectBelonging") != "Adopted"
+                or prop(local, "ExtendedConfigurationObject") != parent.attrib["uuid"]
+                or local.attrib["uuid"] == parent.attrib["uuid"]):
+            raise ValueError("native CFE ownership: adopted reference does not match parent descriptor")
+
+    base = descriptor("cf/Configuration.xml", "Configuration", "CorpusConfiguration")
+    extension = descriptor("adopted/Configuration.xml", "Configuration", "CorpusExtension")
+    own = descriptor("own/Configuration.xml", "Configuration", "CorpusExtension")
+    for root in (extension, own):
+        if prop(root, "ObjectBelonging") != "Adopted" or prop(root, "ConfigurationExtensionPurpose") != "Customization":
+            raise ValueError("native CFE ownership: expected an extension root declaration")
+    catalog = registration(extension, "Catalog")
+    catalog_path = f"Catalogs/{catalog}.xml"
+    if registration(base, "Catalog") != catalog:
+        raise ValueError("native CFE ownership: parent lacks the adopted Catalog registration")
+    catalog_node = descriptor(f"adopted/{catalog_path}", "Catalog", catalog)
+    parent_catalog = descriptor(f"cf/{catalog_path}", "Catalog", catalog)
+    adopted(catalog_node, parent_catalog)
+    form = registration(catalog_node, "Form")
+    form_path = f"Catalogs/{catalog}/Forms/{form}"
+    if registration(parent_catalog, "Form") != form:
+        raise ValueError("native CFE ownership: parent lacks the adopted Form registration")
+    adopted(descriptor(f"adopted/{form_path}.xml", "Form", form),
+            descriptor(f"cf/{form_path}.xml", "Form", form))
+    local_form = f"adopted/{form_path}/Ext/Form.xml"
+    body = ET.parse(repo / pin_path(local_form)).getroot()
+    if body.tag != f"{lf}Form" or body.get("version") != "2.20" or body.find(f"{lf}BaseForm") is None:
+        raise ValueError("native CFE ownership: local adopted Form companion is missing or invalid")
+    common = registration(own, "CommonModule")
+    common_path = f"own/CommonModules/{common}"
+    own_module = descriptor(f"{common_path}.xml", "CommonModule", common)
+    if (prop(own_module, "ObjectBelonging") is not None or prop(own_module, "ExtendedConfigurationObject") is not None
+            or any(node.text == common for node in base.findall(f"{md}ChildObjects/{md}CommonModule"))):
+        raise ValueError("native CFE ownership: expected a CommonModule declared only in the extension")
+    catalog_at, common_at = f"ext:Catalog.{catalog}", f"ext:CommonModule.{common}"
+    form_at = f"{catalog_at}.Form.{form}"
+    module_at = f"{form_at}.Module.Form"
+    module_path = f"adopted/{form_path}/Ext/Form/Module.bsl"
+    rows = []
+    for shape, owner, branch, role, observations in (
+        (("Configuration",), "ext:Configuration", "Catalog", None, [
+            ("ext:Catalog", "adopted/Configuration.xml", "read"), (catalog_at, f"adopted/{catalog_path}", "roundtrip"),
+        ]),
+        (("Catalog",), catalog_at, "Form", None, [
+            (f"{catalog_at}.Form", f"adopted/{catalog_path}", "read"), (form_at, local_form, "roundtrip"),
+        ]),
+        (("Catalog", "Form"), form_at, "Metadata", None, [(f"{form_at}.Metadata", f"adopted/{form_path}.xml", "roundtrip")]),
+        (("Catalog", "Form"), form_at, "Module", None, [(f"{form_at}.Module", f"adopted/{form_path}.xml", "read")]),
+        (("Catalog", "Form"), form_at, "Module", "Form", [(module_at, module_path, "roundtrip")]),
+        (("Catalog", "Form", "Module"), module_at, "Body", None, [(f"{module_at}.Body", module_path, "read")]),
+        (("Configuration",), "ext:Configuration", "CommonModule", None, [
+            ("ext:CommonModule", "own/Configuration.xml", "read"), (common_at, f"{common_path}.xml", "read"),
+        ]),
+        (("CommonModule",), common_at, "Body", None, [(f"{common_at}.Body", f"{common_path}/Ext/Module.bsl", "read")]),
+    ):
+        rows.append({
+            "schema_version": SCHEMA_VERSION, "record_type": "required",
+            "key": {"line": "8.3.27", "source_kind": "extension", "branch": branch, "role": role,
+                    "owner_shape": [{"kind": kind, "named": kind != "Configuration",
+                                     "role": "Form" if kind == "Module" else None} for kind in shape]},
+            "requirement": {"kind": "exact", "observations": [
+                {"owner": owner, "origin": pin_path(path).as_posix(), "addresses": [at], "level": level}
+                for at, path, level in observations
+            ]},
+        })
+    return rows
+
+
 def native_adopted_extension_language_requirements(repo: Path) -> list[dict]:
     """Require existing reads for the adopted languages in the native empty-extension corpus."""
     md = "{http://v8.1c.ru/8.3/MDClasses}"
@@ -1378,6 +1539,7 @@ def generate_report(native_only: bool) -> dict:
             (SCHEDULE_KEYS_SHARD, native_schedule_requirements),
             (EXTERNAL_INLINE_KEYS_SHARD, native_external_inline_requirements),
             (EXTENSION_LANGUAGE_KEYS_SHARD, native_adopted_extension_language_requirements),
+            (CFE_OWNERSHIP_KEYS_SHARD, native_cfe_ownership_requirements),
             (MXL_KEYS_SHARD, lambda repo: native_mxl_requirements(repo, native_only=native_only)),
         ):
             records = producer(REPO)
