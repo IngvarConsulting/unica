@@ -1,0 +1,130 @@
+{
+  "formatVersion": "2.21",
+  "platformVersion": "8.5.1.1529",
+  "configurationUuid": "11111111-1111-4111-8111-111111111111",
+  "source": "Byte-identical selection of four separately imported, applied, and exported root modules. Configuration.xml matched in all four exports.",
+  "seed": "Retained synthetic settings-export from the same platform build.",
+  "nativeReceiptSha256": "27a4cca98c34863bb82e53bc9e0861346d75da90a95bca69a6024b86ea773d39",
+  "mcp": {
+    "revision": "ec4aac54df2825e075a0d7c292b92dbcfec9ce45",
+    "binarySha256": "641d7dd01731d74f49d8258864e47621650bde9ca44c7274f5661e5cf32916c4",
+    "receiptSha256": "c8fa01cea6dc5c391c97fa763df05cc05cd2f3b45a7ab618acf6b0a14098665a",
+    "successfulCalls": 12
+  },
+  "samples": [
+    {
+      "role": "ManagedApplication",
+      "at": "main:Module.ManagedApplication",
+      "path": "src/Ext/ManagedApplicationModule.bsl",
+      "marker": "Unica484RootManagedApplication221",
+      "platformPhases": [
+        {
+          "stage": "import",
+          "exit": 0,
+          "logSha256": "3ba44e987e5a37fdb6e3fa001dd33118b81fb3ca3a099d288911c58d99594096"
+        },
+        {
+          "stage": "apply",
+          "exit": 0,
+          "logSha256": "7d576eeb4ced47199c8bc4961b1f0ffed4c93a0d5ef626aa611e2df7768c08a1"
+        },
+        {
+          "stage": "export",
+          "exit": 0,
+          "logSha256": "2776a981f0670d938da7c8846e4a3b0ff033681900056ac579e9359086c63500"
+        }
+      ]
+    },
+    {
+      "role": "OrdinaryApplication",
+      "at": "main:Module.OrdinaryApplication",
+      "path": "src/Ext/OrdinaryApplicationModule.bsl",
+      "marker": "Unica484RootOrdinaryApplication221",
+      "platformPhases": [
+        {
+          "stage": "import",
+          "exit": 0,
+          "logSha256": "3ba44e987e5a37fdb6e3fa001dd33118b81fb3ca3a099d288911c58d99594096"
+        },
+        {
+          "stage": "apply",
+          "exit": 0,
+          "logSha256": "0bbe115902944564943965839cf2b3ba321552f6a28ab2fd035114e7259c308a"
+        },
+        {
+          "stage": "export",
+          "exit": 0,
+          "logSha256": "2776a981f0670d938da7c8846e4a3b0ff033681900056ac579e9359086c63500"
+        }
+      ]
+    },
+    {
+      "role": "Session",
+      "at": "main:Module.Session",
+      "path": "src/Ext/SessionModule.bsl",
+      "marker": "Unica484RootSession221",
+      "platformPhases": [
+        {
+          "stage": "import",
+          "exit": 0,
+          "logSha256": "3ba44e987e5a37fdb6e3fa001dd33118b81fb3ca3a099d288911c58d99594096"
+        },
+        {
+          "stage": "apply",
+          "exit": 0,
+          "logSha256": "87d6ff53723d278d8268b56b776a95e28905bf5f77eea9ae0f9d48c4e5997aee"
+        },
+        {
+          "stage": "export",
+          "exit": 0,
+          "logSha256": "2776a981f0670d938da7c8846e4a3b0ff033681900056ac579e9359086c63500"
+        }
+      ]
+    },
+    {
+      "role": "ExternalConnection",
+      "at": "main:Module.ExternalConnection",
+      "path": "src/Ext/ExternalConnectionModule.bsl",
+      "marker": "Unica484RootExternalConnection221",
+      "platformPhases": [
+        {
+          "stage": "import",
+          "exit": 0,
+          "logSha256": "3ba44e987e5a37fdb6e3fa001dd33118b81fb3ca3a099d288911c58d99594096"
+        },
+        {
+          "stage": "apply",
+          "exit": 0,
+          "logSha256": "c2ee4da9a2d458df63862463632fc04c312437aca3dfe091d4b977e439c05000"
+        },
+        {
+          "stage": "export",
+          "exit": 0,
+          "logSha256": "2776a981f0670d938da7c8846e4a3b0ff033681900056ac579e9359086c63500"
+        }
+      ]
+    }
+  ],
+  "files": {
+    "src/Configuration.xml": {
+      "size": 13678,
+      "sha256": "c17f7efd779038626b995904b1f46239e86f52dd412ac402f1481e3d419624b8"
+    },
+    "src/Ext/ExternalConnectionModule.bsl": {
+      "size": 102,
+      "sha256": "cb26011cb3ccf0dce1e735872d9424e38d3ab6885767903ff30760a22004d1fc"
+    },
+    "src/Ext/ManagedApplicationModule.bsl": {
+      "size": 102,
+      "sha256": "ce6f809d3530eb3d5d8ef7f7e422e5d9cefab4d020c66858c57041758de39968"
+    },
+    "src/Ext/OrdinaryApplicationModule.bsl": {
+      "size": 104,
+      "sha256": "4f78dbef06637df5ba031600236d544c929f9d04634ba53b48937bbd0d555c7a"
+    },
+    "src/Ext/SessionModule.bsl": {
+      "size": 80,
+      "sha256": "2367accc2b3ac18ca45a6d9c4993506188bbff2e244157ae8d207a420357fb1a"
+    }
+  }
+}

@@ -481,6 +481,7 @@ fn native_configuration_root_address_table_matches_published_branches() {
                 AddressEvidence::Read(at),
             );
         }
+        check_native_configuration_root_module_paths(xml, &expected_modules, &mut evidence);
     }
 
     let actual_keys: BTreeSet<_> = rows.keys().copied().collect();
@@ -502,6 +503,71 @@ fn native_configuration_root_address_table_matches_published_branches() {
         println!("| {line} | Configuration | {role} | {at} |");
     }
     evidence.finish();
+}
+
+fn check_native_configuration_root_module_paths(
+    format: &str,
+    expected_modules: &BTreeMap<&str, &str>,
+    evidence: &mut EvidenceRows,
+) {
+    let source = fixture_path(&format!(
+        "formats/platform_xml/{format}/configuration_root_module_roles/src"
+    ));
+    let line = export_format_line(format).unwrap();
+    let profile = PlatformProfile::for_line(line).unwrap();
+    let cancellation = CancellationToken::new();
+    let authority = native_authority(&cancellation, &source, profile);
+    let root =
+        unica_workspace::read::open_source_directory(&source.canonicalize().unwrap()).unwrap();
+    let layout = [LayoutFindSource::new(
+        "main",
+        SourceSetKind::Configuration,
+        &root,
+    )];
+    let finder = WorkspaceFindDirectoryBuilder::default();
+    assert_eq!(
+        addresses(&read(&authority, "main:Module"), "items"),
+        expected_modules
+            .keys()
+            .map(|at| at.to_string())
+            .collect::<BTreeSet<_>>(),
+        "{line}: fixture root module roles",
+    );
+    for (&at, &role) in expected_modules {
+        let relative = format!("Ext/{role}Module.bsl");
+        let file = source.join(&relative);
+        let body = read_fixture_descriptor(&file);
+        assert!(!body.trim_start_matches('\u{feff}').trim().is_empty());
+        let view = read(&authority, at);
+        assert_eq!(view["kind"], "Module", "{line}: {at}");
+        assert_eq!(view["props"]["ownerKind"], "Configuration", "{line}: {at}");
+        assert_eq!(view["props"]["role"], role, "{line}: {at}");
+        let address = QualifiedAddress::parse(at).unwrap();
+        assert_eq!(
+            authority.existing_export_path(&address, None).unwrap(),
+            relative,
+        );
+        let located = finder
+            .locate_path(
+                &layout,
+                &relative,
+                ProviderDeadline::no_deadline(),
+                &cancellation,
+            )
+            .unwrap()
+            .unwrap_or_else(|| panic!("{line}: missing native module {relative}"));
+        assert_eq!(located.at(), at);
+        assert_eq!(located.kind(), "Module");
+        assert_eq!(located.placed_path(), Some(relative.as_str()));
+        evidence.record(
+            line,
+            "main:Configuration",
+            "Module",
+            Some(role),
+            &fixture_origin(&file),
+            AddressEvidence::RoundTrip(at),
+        );
+    }
 }
 
 /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
