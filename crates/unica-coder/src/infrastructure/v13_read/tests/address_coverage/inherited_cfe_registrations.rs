@@ -59,8 +59,7 @@ pub(super) fn check_inherited_cfe_registrations(evidence: &mut EvidenceRows) {
     let failure = authority
         .snapshot(&area)
         .and_then(|snapshot| authority.read_exact(&area, &snapshot))
-        .err()
-        .expect("a template with inherited content has no local Area branch");
+        .expect_err("a template with inherited content has no local Area branch");
     assert_eq!(failure.code(), RefusalCode::NotFound);
     assert!(failure.to_string().contains("Template.xml"), "{failure}");
 }

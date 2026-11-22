@@ -984,8 +984,7 @@ fn check_native_cfe_ownership(version: &str, evidence: &mut EvidenceRows) {
             let failure = reader
                 .snapshot(&at)
                 .and_then(|snapshot| reader.read_exact(&at, &snapshot))
-                .err()
-                .expect("unregistered address must refuse");
+                .expect_err("unregistered address must refuse");
             assert_eq!(failure.code(), RefusalCode::NotFound, "{at}: {failure:?}");
         };
         let mut record = |owner: &str,
