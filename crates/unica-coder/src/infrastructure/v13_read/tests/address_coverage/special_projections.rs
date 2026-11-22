@@ -1,3 +1,5 @@
+#[path = "special_projections/document_relations.rs"]
+mod document_relations;
 #[path = "special_projections/exchange_relations.rs"]
 mod exchange_relations;
 #[path = "special_projections/form_members.rs"]
@@ -161,6 +163,7 @@ fn native_special_projection_addresses_match_source() {
         declarations(&mut native, &source);
         predefined(&mut native, &source, version);
         exchange_relations::native_exchange_relations(&mut native, &source, version, line);
+        document_relations::native_document_relations(&mut native, &source, &registrations);
         native_module_slices(&mut native, &source, line);
         let common_form = source.join("CommonForms/MainA/Ext/Form.xml");
         direct_form_command_and_parameter(&mut native, "main:CommonForm.MainA", &common_form);
