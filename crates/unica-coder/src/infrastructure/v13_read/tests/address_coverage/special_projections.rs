@@ -167,6 +167,7 @@ fn native_special_projection_addresses_match_source() {
         native_module_slices(&mut native, &source, line);
         let common_form = source.join("CommonForms/MainA/Ext/Form.xml");
         direct_form_command_and_parameter(&mut native, "main:CommonForm.MainA", &common_form);
+        native_named_form_parameter(&mut evidence, &mut required, version, line);
         external_form_command_and_parameter(&mut evidence, &mut required, version, line);
         native_form_requirements(&mut required, &source, line, &registrations);
         native_module_requirements(&mut required, &source, line, &registrations);
@@ -345,6 +346,69 @@ fn direct_form_command_and_parameter(
             native.collection(owner, kind, &origin, members);
         }
     }
+}
+
+fn native_named_form_parameter(
+    evidence: &mut EvidenceRows,
+    required: &mut RequiredProjections,
+    version: &str,
+    line: PlatformLine,
+) {
+    const CORE: &str = "http://v8.1c.ru/8.1/data/core";
+    let source = fixture_path(&format!(
+        "acceptance/workspace-native-form-parameter/src-{version}"
+    ));
+    assert!(root_registrations(&source, version).contains(&("CommonForm".into(), "MainA".into())));
+    let path = source.join("CommonForms/MainA/Ext/Form.xml");
+    let raw = read_fixture_descriptor(&path);
+    let xml = parse_fixture_descriptor(&raw, &path);
+    let form = xml.root_element();
+    assert!(form.has_tag_name((NATIVE_FORM_NS, "Form")));
+    assert_eq!(form.attribute("version"), Some(version));
+    let parameters: Vec<_> = native_form_children(form, "Parameters")
+        .flat_map(|node| native_form_children(node, "Parameter"))
+        .collect();
+    let owner = "main:CommonForm.MainA";
+    let names: Vec<_> = parameters
+        .iter()
+        .map(|parameter| parameter.attribute("name").unwrap())
+        .collect();
+    assert!(names.contains(&"AddressScope"));
+    let cancellation = CancellationToken::new();
+    let authority = native_authority(
+        &cancellation,
+        &source,
+        PlatformProfile::for_line(line).unwrap(),
+    );
+    NativeProjections {
+        authority: &authority,
+        evidence,
+        required,
+    }
+    .collection(
+        owner,
+        "Parameter",
+        &fixture_origin(&path),
+        named_addresses(owner, "Parameter", names),
+    );
+    for parameter in parameters {
+        let name = parameter.attribute("name").unwrap();
+        let type_element = child(parameter, NATIVE_FORM_NS, "Type");
+        assert_eq!(child(type_element, CORE, "Type").text(), Some("xs:string"));
+        let key = child(parameter, NATIVE_FORM_NS, "KeyParameter")
+            .text()
+            .unwrap()
+            .parse::<bool>()
+            .unwrap();
+        let view = read(&authority, &format!("{owner}.Parameter.{name}"));
+        assert_eq!(view["props"]["type"], "string", "{name}");
+        assert_eq!(view["props"]["isKey"], key, "{name}");
+    }
+    check_native_projection_refusal(
+        &authority,
+        &format!("{owner}.Parameter.UnregisteredParameter"),
+        "was not found",
+    );
 }
 
 fn external_form_command_and_parameter(
