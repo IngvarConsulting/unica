@@ -536,8 +536,6 @@ fn check_native_configuration_root_module_paths(
     for (&at, &role) in expected_modules {
         let relative = format!("Ext/{role}Module.bsl");
         let file = source.join(&relative);
-        let body = read_fixture_descriptor(&file);
-        assert!(!body.trim_start_matches('\u{feff}').trim().is_empty());
         let view = read(&authority, at);
         assert_eq!(view["kind"], "Module", "{line}: {at}");
         assert_eq!(view["props"]["ownerKind"], "Configuration", "{line}: {at}");
@@ -567,6 +565,7 @@ fn check_native_configuration_root_module_paths(
             &fixture_origin(&file),
             AddressEvidence::RoundTrip(at),
         );
+        record_native_physical_module_body(&authority, at, &file, evidence);
     }
 }
 
@@ -4984,10 +4983,6 @@ fn check_native_configuration_physical_module_roles(
         );
 
         let file = source.join(&path);
-        assert!(!read_fixture_descriptor(&file)
-            .trim_start_matches('\u{feff}')
-            .trim()
-            .is_empty());
         let view = read(&authority, &address);
         assert_eq!(view["kind"], "Module", "{address}");
         assert_eq!(view["props"]["ownerKind"], kind.as_str(), "{address}");
@@ -5013,7 +5008,29 @@ fn check_native_configuration_physical_module_roles(
             &fixture_origin(&file),
             AddressEvidence::RoundTrip(&address),
         );
+        record_native_physical_module_body(&authority, &address, &file, evidence);
     }
+}
+
+fn record_native_physical_module_body(
+    authority: &LogicalViewReadAuthority<'_>,
+    module: &str,
+    file: &Path,
+    evidence: &mut EvidenceRows,
+) {
+    let raw = read_fixture_descriptor(file);
+    let source = raw.strip_prefix('\u{feff}').unwrap_or(&raw);
+    assert!(!source.trim().is_empty(), "{module}: native module BSL");
+    let body = format!("{module}.Body");
+    check_native_bsl_body(authority, &body, source, 1, source.lines().count());
+    evidence.record(
+        authority.platform_profile().line(),
+        module,
+        "Body",
+        None,
+        &fixture_origin(file),
+        AddressEvidence::Read(&body),
+    );
 }
 
 struct MissingNativeModules<'a> {
