@@ -908,12 +908,10 @@ fn check_native_subsystem_interface(
         assert_eq!(items, expected, "{at}");
     }
     let origin = (fixture_name, RELATIVE);
-    evidence.record(fixture, origin, &interface_at);
-    if format == "2.20" {
-        for at in [&command_at, &group_at] {
-            evidence.record(fixture, origin, at);
-        }
-    } else {
+    for at in [&interface_at, &command_at, &group_at] {
+        evidence.record(fixture, origin, at);
+    }
+    if format != "2.20" {
         let response = invoke_on(
             runtime,
             &fixture.workspace,

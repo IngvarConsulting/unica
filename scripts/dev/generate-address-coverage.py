@@ -10,6 +10,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 
@@ -35,9 +36,10 @@ METADATA_CHILD_KEYS_SHARD = "required_native_metadata_child_keys"
 EXTERNAL_CHILD_KEYS_SHARD = "required_native_external_child_keys"
 MODULE_ROLE_KEYS_SHARD = "required_configuration_module_role_keys"
 EDS_MODULE_KEYS_SHARD = "required_native_eds_module_keys"
+SUBSYSTEM_INTERFACE_KEYS_SHARD = "required_native_subsystem_interface_keys"
 REQUIRED_KEY_SHARDS = frozenset({
     ROOT_KEYS_SHARD, METADATA_CHILD_KEYS_SHARD, EXTERNAL_CHILD_KEYS_SHARD, MODULE_ROLE_KEYS_SHARD,
-    EDS_MODULE_KEYS_SHARD,
+    EDS_MODULE_KEYS_SHARD, SUBSYSTEM_INTERFACE_KEYS_SHARD,
 })
 NATIVE_SCOPE = (
     "Configuration source sets and native Language registrations in extension source sets "
@@ -185,6 +187,21 @@ def validate_required_record(record: object, shard: str) -> None:
     shape = key["owner_shape"]
     requirement = record["requirement"]
     configuration = [{"kind": "Configuration", "named": False, "role": None}]
+    if shard == SUBSYSTEM_INTERFACE_KEYS_SHARD:
+        exact_fields(requirement, {"kind", "at", "origin"}, "subsystem interface requirement")
+        subsystem = [{"kind": "Subsystem", "named": True, "role": None}]
+        interface = {"kind": "Interface", "named": False, "role": None}
+        branch = key["branch"]
+        valid_shape = (
+            (branch == "Interface" and shape == subsystem)
+            or (branch in {"Command", "Group", "Subsystem"} and shape == [*subsystem, interface])
+        )
+        if key["role"] is not None or not valid_shape or requirement["kind"] != "read":
+            raise ValueError("required subsystem interface key must name an interface read branch")
+        if source_prefix(requirement["at"], "address") != "main":
+            raise ValueError("required subsystem interface address must name the main source set")
+        required_text(requirement["origin"], "origin")
+        return
     if shard == EDS_MODULE_KEYS_SHARD:
         owner_kinds = tuple(segment["kind"] for segment in shape)
         if (
@@ -263,9 +280,21 @@ def check_required_keys(requirements: dict, groups: dict, *, native_only: bool) 
     missing = {"address": 0, "introduced_in": 0}
     missing_module_roles = []
     missing_eds_modules = []
+    missing_interfaces = []
     diagnostics = []
     for key, (shard, record) in sorted(requirements.items()):
         witnesses = groups.get(key, {}).get("witnesses", ())
+        if shard == SUBSYSTEM_INTERFACE_KEYS_SHARD:
+            requirement = record["requirement"]
+            if not any(
+                w["test_case"] == DAEMON_SHARD and w["reason"] is None and w["level"] == "read"
+                and w["at"] == requirement["at"] and w["origin"] == requirement["origin"]
+                for w in witnesses
+            ):
+                missing_interfaces.append(
+                    f"{requirement['at']} ({record['key']['line']}): expected read from {requirement['origin']}"
+                )
+            continue
         if shard == EDS_MODULE_KEYS_SHARD:
             level = record["requirement"]["kind"]
             levels = {
@@ -302,6 +331,10 @@ def check_required_keys(requirements: dict, groups: dict, *, native_only: bool) 
         errors.append(
             f"missing required configuration module roles: {len(missing_module_roles)} address\n"
             + "\n".join(missing_module_roles)
+        )
+    if missing_interfaces:
+        errors.append(
+            "missing required native subsystem interface coverage:\n" + "\n".join(missing_interfaces)
         )
     if errors:
         raise ValueError("\n".join(errors))
@@ -399,16 +432,76 @@ def git_state() -> tuple[str, bytes]:
     return revision.decode("ascii").strip(), status
 
 
+def native_subsystem_interface_requirements(repo: Path) -> list[dict]:
+    """Discover the branches ordered by INV.SOURCE.COMMAND-INTERFACE-ORDERS from native XML."""
+    md = "{http://v8.1c.ru/8.3/MDClasses}"
+    ext = "{http://v8.1c.ru/8.3/xcf/extrnprops}"
+    command_reference = re.compile(
+        r"CommonCommand\.[^\W\d]\w*|[A-Z][A-Za-z]*\.[^\W\d]\w*\.(?:StandardCommand|Command)\.[^\W\d]\w*"
+    )
+    fixtures = (
+        ("2.20", "8.3.27", "workspace-command-groups"),
+        ("2.21", "8.5.1", "workspace-native-subsystem-interface-2.21"),
+        ("2.22", "8.5.4", "workspace-native-subsystem-interface-2.22"),
+    )
+    # These fixtures prove one named representative per structural key and format.
+    # Additional subsystems in the same fixture may share that structural key.
+    name = "Подсистема1"
+    rows = []
+    for format_version, line, fixture in fixtures:
+        source = repo / "tests/fixtures/acceptance" / fixture / "src"
+        configuration = ET.parse(source / "Configuration.xml").getroot()
+        if configuration.get("version") != format_version:
+            raise ValueError(f"{fixture}: wrong configuration format")
+        registrations = configuration.findall(f"{md}Configuration/{md}ChildObjects/{md}Subsystem")
+        if sum(node.text == name for node in registrations) != 1:
+            raise ValueError(f"{fixture}: missing or duplicate registration for {name}")
+        companion = source / "Subsystems" / name / "Ext/CommandInterface.xml"
+        descriptor = ET.parse(source / "Subsystems" / f"{name}.xml").getroot()
+        interface = ET.parse(companion).getroot()
+        if (
+            descriptor.get("version") != format_version
+            or descriptor.findtext(f"{md}Subsystem/{md}Properties/{md}Name") != name
+            or interface.tag != f"{ext}CommandInterface"
+            or interface.get("version") != format_version
+        ):
+            raise ValueError(f"{fixture}: mismatched subsystem or command interface")
+        commands = (
+            command.get("name", "")
+            for section in ("CommandsVisibility", "CommandsPlacement")
+            for command in interface.findall(f"{ext}{section}/{ext}Command")
+        )
+        at = f"main:Subsystem.{name}.Interface"
+        origin = companion.relative_to(repo).as_posix()
+        owner = [{"kind": "Subsystem", "named": True, "role": None}]
+        nested = [*owner, {"kind": "Interface", "named": False, "role": None}]
+        branches = [("Interface", owner, at)]
+        if any(command_reference.fullmatch(command) for command in commands):
+            branches.append(("Command", nested, f"{at}.Command"))
+        if interface.findall(f"{ext}GroupsOrder/{ext}Group"):
+            branches.append(("Group", nested, f"{at}.Group"))
+        if interface.findall(f"{ext}SubsystemsOrder/{ext}Subsystem"):
+            branches.append(("Subsystem", nested, f"{at}.Subsystem"))
+        for branch, shape, address in branches:
+            rows.append({
+                "schema_version": SCHEMA_VERSION, "record_type": "required",
+                "key": {"line": line, "source_kind": "configuration", "owner_shape": shape,
+                        "branch": branch, "role": None},
+                "requirement": {"kind": "read", "at": address, "origin": origin},
+            })
+    return rows
+
+
 def generate_report(native_only: bool) -> dict:
     revision, status = git_state()
     cases = [("unica-coder", "address_coverage")]
-    required_shards = NATIVE_SHARDS | REQUIRED_KEY_SHARDS
+    required_shards = NATIVE_SHARDS | (REQUIRED_KEY_SHARDS - {SUBSYSTEM_INTERFACE_KEYS_SHARD})
     scope = NATIVE_SCOPE
     if native_only:
         scope += f" {NATIVE_ONLY_MODULE_SCOPE}"
     else:
         cases.append(("unica-daemon", DAEMON_SHARD))
-        required_shards |= {DAEMON_SHARD}
+        required_shards |= {DAEMON_SHARD, SUBSYSTEM_INTERFACE_KEYS_SHARD}
         scope += f" {DAEMON_SCOPE}"
     with tempfile.TemporaryDirectory(prefix="unica-address-coverage-") as scratch:
         env = {**os.environ, EMITTER_ENV: scratch}
@@ -420,6 +513,10 @@ def generate_report(native_only: bool) -> dict:
                 stdout=sys.stderr,
                 check=True,
             )
+        if not native_only:
+            records = native_subsystem_interface_requirements(REPO)
+            path = Path(scratch) / f"{SUBSYSTEM_INTERFACE_KEYS_SHARD}.jsonl"
+            path.write_text("".join(f"{canonical_json(row)}\n" for row in records), encoding="utf-8")
         rows = merge_shards(Path(scratch), required_shards, native_only=native_only)
     if git_state() != (revision, status):
         raise ValueError("Git revision or worktree status changed during the address coverage run")
@@ -434,7 +531,7 @@ def main() -> int:
     args = parser.parse_args()
     try:
         report = generate_report(args.native_only)
-    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+    except (OSError, ValueError, ET.ParseError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"{parser.prog}: {error}\n")
     output = render_markdown(report) if args.markdown else json.dumps(
         report, ensure_ascii=False, sort_keys=True, indent=2

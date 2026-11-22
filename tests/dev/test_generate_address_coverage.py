@@ -6,6 +6,7 @@ import importlib.util
 import json
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 
@@ -81,6 +82,73 @@ class AddressCoverageReportTests(unittest.TestCase):
 
     def write_root_shard(self, *records: dict) -> None:
         self.write_shard(ROOT_SHARD, *records)
+
+    def test_native_subsystem_interface_requirements_guard_existing_and_new_branches(self) -> None:
+        shard = GENERATOR.SUBSYSTEM_INTERFACE_KEYS_SHARD
+        cases = GENERATOR.native_subsystem_interface_requirements(GENERATOR.REPO)
+        self.assertEqual(len(cases), 9)
+        self.assertEqual({row["key"]["branch"] for row in cases}, {"Interface", "Command", "Group"})
+
+        def witnessed(required: dict) -> dict:
+            at = required["requirement"]["at"]
+            return {
+                "schema_version": 1, "record_type": "evidence", "key": required["key"],
+                "witness": {
+                    "owner": at.rsplit(".", 1)[0], "at": at, "level": "read", "reason": None,
+                    "origin": required["requirement"]["origin"], "test_case": GENERATOR.DAEMON_SHARD,
+                },
+            }
+
+        evidence = [witnessed(row) for row in cases]
+        required_shards = frozenset({shard, GENERATOR.DAEMON_SHARD})
+        self.write_shard(shard, *cases)
+        self.write_shard(GENERATOR.DAEMON_SHARD, *evidence)
+        self.assertEqual(len(GENERATOR.merge_shards(self.root, required_shards)), 9)
+
+        lost = next(row for row in evidence if row["key"]["line"] == "8.5.1" and row["key"]["branch"] == "Group")
+        self.write_shard(GENERATOR.DAEMON_SHARD, *[row for row in evidence if row != lost])
+        with self.assertRaisesRegex(ValueError, r"(?s)missing required native subsystem interface coverage.*Group"):
+            GENERATOR.merge_shards(self.root, required_shards)
+
+        fixture_repo = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        for origin in {row["requirement"]["origin"] for row in cases}:
+            relative = Path(origin)
+            for path in (relative, relative.parents[2] / "Подсистема1.xml", relative.parents[3] / "Configuration.xml"):
+                target = fixture_repo / path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes((GENERATOR.REPO / path).read_bytes())
+        relative = Path(lost["witness"]["origin"])
+        config_path = fixture_repo / relative.parents[3] / "Configuration.xml"
+        configuration = ET.parse(config_path)
+        md = configuration.getroot().tag.removesuffix("MetaDataObject")
+        registrations = configuration.find(f"{md}Configuration/{md}ChildObjects")
+        ET.SubElement(registrations, md + "Subsystem").text = "SecondSubsystem"
+        configuration.write(config_path, encoding="utf-8", xml_declaration=True)
+        descriptor = ET.parse(fixture_repo / relative.parents[2] / "Подсистема1.xml")
+        second_owner = descriptor.find(md + "Subsystem")
+        second_owner.set("uuid", "00000000-0000-4000-8000-000000000001")
+        second_owner.find(f"{md}Properties/{md}Name").text = "SecondSubsystem"
+        second_file = fixture_repo / relative.parents[2] / "SecondSubsystem.xml"
+        descriptor.write(second_file, encoding="utf-8", xml_declaration=True)
+        second_interface = second_file.with_suffix("") / "Ext/CommandInterface.xml"
+        second_interface.parent.mkdir(parents=True)
+        second_interface.write_bytes((fixture_repo / relative).read_bytes())
+        self.assertEqual(GENERATOR.native_subsystem_interface_requirements(fixture_repo), cases)
+
+        target = fixture_repo / relative
+        document = ET.parse(target)
+        root = document.getroot()
+        namespace = root.tag.removesuffix("CommandInterface")
+        order = ET.SubElement(root, namespace + "SubsystemsOrder")
+        ET.SubElement(order, namespace + "Subsystem").text = "Subsystem.Подсистема1.Subsystem.Probe"
+        document.write(target, encoding="utf-8", xml_declaration=True)
+        enlarged = GENERATOR.native_subsystem_interface_requirements(fixture_repo)
+        new, = [row for row in enlarged if row not in cases]
+        self.assertEqual((new["key"]["line"], new["key"]["branch"]), ("8.5.1", "Subsystem"))
+        self.write_shard(shard, *enlarged)
+        self.write_shard(GENERATOR.DAEMON_SHARD, *evidence)
+        with self.assertRaisesRegex(ValueError, r"(?s)missing required native subsystem interface coverage.*Interface\.Subsystem"):
+            GENERATOR.merge_shards(self.root, required_shards)
 
     def test_witnesses_for_one_shape_are_grouped_in_stable_order(self) -> None:
         first, second = root_witness("main"), root_witness("other")
