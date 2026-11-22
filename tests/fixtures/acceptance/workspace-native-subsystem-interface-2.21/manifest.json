@@ -1,26 +1,24 @@
 {
   "formatVersion": "2.21",
   "platformVersion": "8.5.1.1529",
-  "source": "Byte-preserved file selection from a native ibcmd export.",
+  "source": "Byte-preserved selection from native ibcmd exports. SubsystemsOrder and its registered parent and child were added together.",
   "native": {
     "ibcmdSha256": "4dde71c1d061cc14c619255ec524b4ca8aca1f9bc38a92d1d766eb7d57721d20",
-    "receiptSha256": "6197eb590c207ec87ac5e9cc5d084f467715e6c3b36e7c8ccaa7d184a0d8223b",
-    "packageSha256": "f3be16f8e9c0bef48b6df5454ff135baa2b43b2fff545aeb0ce2fb86e3a884a7",
+    "receiptSha256": "95969f32ad78551e0702bbce44c581a5d089d796d17241eb67c68e57c1168e1f",
+    "packageSha256": "d34c36016761b15faa0a1ab770a1195e3b55c0dd85fe4cc79474697b0c6ac238",
     "stageExits": {
+      "create": 0,
       "import": 0,
       "apply": 0,
       "export": 0
     }
   },
   "mcp": {
-    "revision": "ec4aac54df2825e075a0d7c292b92dbcfec9ce45",
-    "binarySha256": "641d7dd01731d74f49d8258864e47621650bde9ca44c7274f5661e5cf32916c4",
-    "receiptSha256": "5603134c78dabf9a2c195d55a533753f8c7e8f144b231665da67967517d3c40f",
-    "target": "main:Subsystem.Подсистема1.Interface",
-    "kind": "Interface",
-    "forward": true,
-    "reverse": "not_found",
-    "bodyExact": null
+    "release": "0.17.0-alpha.2",
+    "binarySha256": "27b3bc0be4088c11c51af88da9963a52959b317837e54a2bcaa7a9f31c3a928d",
+    "receiptSha256": "438bdcb9ddfe54a48000ce04d9a8cea11d6c8846b37d0d5b59c2d8e984261bc9",
+    "branch": "main:Subsystem.Подсистема1.Interface.Subsystem",
+    "registeredMember": "main:Subsystem.Подсистема1.Subsystem.Подсистема2"
   },
   "files": {
     "src/Catalogs/Справочник1.xml": {
@@ -51,13 +49,40 @@
       "size": 1187,
       "sha256": "5814e912e7335637313c778c4b04b7eaec420f39722fae72b4d05e67b554116d"
     },
-    "src/Subsystems/Подсистема1.xml": {
-      "size": 1646,
-      "sha256": "283c6ff6fdde063f6722220792630132a3c3db0972fca3617c7dbacdb0d4b890"
-    },
     "src/Subsystems/Подсистема1/Ext/CommandInterface.xml": {
-      "size": 986,
-      "sha256": "684798c61cfd25c0cd35809bcac706a29896148105e9b803c487e2d9c8be99ea"
+      "size": 1117,
+      "sha256": "7883a2a06d28324314c309f20857e4f9d854630af9c95f047b1d3b08b5256384"
+    },
+    "src/Subsystems/Подсистема1/Subsystems/Подсистема2.xml": {
+      "size": 1646,
+      "sha256": "b8edaa52256a8ff171f77b0e68c3d412bd4ed49b6cacef48974fd5a40f05d339"
+    },
+    "src/Subsystems/Подсистема1.xml": {
+      "size": 1713,
+      "sha256": "6e9d78824c9176c05f91cf1b7a2ac1ec735490d7231ee25ba8a1a53638377149"
+    }
+  },
+  "priorInterfaceEvidence": {
+    "revision": "cffa63e8412f238787073f874ad23f745217d763",
+    "native": {
+      "ibcmdSha256": "4dde71c1d061cc14c619255ec524b4ca8aca1f9bc38a92d1d766eb7d57721d20",
+      "receiptSha256": "6197eb590c207ec87ac5e9cc5d084f467715e6c3b36e7c8ccaa7d184a0d8223b",
+      "packageSha256": "f3be16f8e9c0bef48b6df5454ff135baa2b43b2fff545aeb0ce2fb86e3a884a7",
+      "stageExits": {
+        "import": 0,
+        "apply": 0,
+        "export": 0
+      }
+    },
+    "mcp": {
+      "revision": "ec4aac54df2825e075a0d7c292b92dbcfec9ce45",
+      "binarySha256": "641d7dd01731d74f49d8258864e47621650bde9ca44c7274f5661e5cf32916c4",
+      "receiptSha256": "5603134c78dabf9a2c195d55a533753f8c7e8f144b231665da67967517d3c40f",
+      "target": "main:Subsystem.Подсистема1.Interface",
+      "kind": "Interface",
+      "forward": true,
+      "reverse": "not_found",
+      "bodyExact": null
     }
   }
 }

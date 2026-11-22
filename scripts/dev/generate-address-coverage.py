@@ -480,7 +480,26 @@ def native_subsystem_interface_requirements(repo: Path) -> list[dict]:
             branches.append(("Command", nested, f"{at}.Command"))
         if interface.findall(f"{ext}GroupsOrder/{ext}Group"):
             branches.append(("Group", nested, f"{at}.Group"))
-        if interface.findall(f"{ext}SubsystemsOrder/{ext}Subsystem"):
+        ordered_subsystems = interface.findall(f"{ext}SubsystemsOrder/{ext}Subsystem")
+        if ordered_subsystems:
+            prefix = f"Subsystem.{name}.Subsystem."
+            registered = descriptor.findall(f"{md}Subsystem/{md}ChildObjects/{md}Subsystem")
+            for reference in ordered_subsystems:
+                child = (reference.text or "").removeprefix(prefix)
+                if (
+                    reference.text != prefix + child
+                    or re.fullmatch(r"[^\W\d]\w*", child) is None
+                    or sum(node.text == child for node in registered) != 1
+                ):
+                    raise ValueError(f"{fixture}: SubsystemsOrder requires a registered direct child")
+                child_path = source / "Subsystems" / name / "Subsystems" / f"{child}.xml"
+                child_descriptor = ET.parse(child_path).getroot()
+                if (
+                    child_descriptor.tag != f"{md}MetaDataObject"
+                    or child_descriptor.get("version") != format_version
+                    or child_descriptor.findtext(f"{md}Subsystem/{md}Properties/{md}Name") != child
+                ):
+                    raise ValueError(f"{fixture}: mismatched registered child {child}")
             branches.append(("Subsystem", nested, f"{at}.Subsystem"))
         for branch, shape, address in branches:
             rows.append({

@@ -14,6 +14,9 @@
 			<CommandGroup>CommandGroup.ГруппаБ</CommandGroup>
 		</Command>
 	</CommandsOrder>
+	<SubsystemsOrder>
+		<Subsystem>Subsystem.Подсистема1.Subsystem.Подсистема2</Subsystem>
+	</SubsystemsOrder>
 	<GroupsOrder>
 		<Group>ActionsPanelCreate</Group>
 		<Group>CommandGroup.ГруппаБ</Group>

@@ -793,9 +793,27 @@ fn check_native_subsystem_interface(
         .filter(|node| node.has_tag_name((READABLE_NS, "Item")))
         .count();
     assert_eq!(content_count, 3);
-    assert!(metadata_child(subsystem, "ChildObjects")
-        .first_element_child()
-        .is_none());
+    let registrations: Vec<_> = metadata_child(subsystem, "ChildObjects")
+        .children()
+        .filter(|node| node.is_element())
+        .collect();
+    let [registration] = registrations.as_slice() else {
+        panic!("expected one native child subsystem registration");
+    };
+    assert!(registration.has_tag_name((MD_CLASSES_NS, "Subsystem")));
+    let child_name = registration.text().expect("registered subsystem name");
+    let child_at = parsed(&format!("{OWNER}.Subsystem"))
+        .member(child_name)
+        .unwrap()
+        .to_string();
+    let child_path = format!("Subsystems/{NAME}/Subsystems/{child_name}.xml");
+    let child_xml = fixture_xml(fixture, OWNER, &child_path);
+    let child = roxmltree::Document::parse(child_xml.trim_start_matches('\u{feff}')).unwrap();
+    assert_eq!(child.root_element().attribute("version"), Some(format));
+    let child = check_metadata_identity(child.root_element(), "Subsystem", child_name);
+    assert!(child
+        .attribute("uuid")
+        .is_some_and(unica_xml_format::names::is_valid_uuid));
 
     let raw = fixture_xml(fixture, OWNER, RELATIVE);
     let interface = roxmltree::Document::parse(raw.trim_start_matches('\u{feff}')).unwrap();
@@ -811,12 +829,25 @@ fn check_native_subsystem_interface(
         root.attribute("version")
     );
     let sections: Vec<_> = root.children().filter(|node| node.is_element()).collect();
-    let [placement, order, groups] = sections.as_slice() else {
-        panic!("native interface should have placement, command order, and group order");
+    let [placement, order, subsystems, groups] = sections.as_slice() else {
+        panic!("native interface should have placement and command, subsystem, and group order");
     };
     assert!(placement.has_tag_name((NS, "CommandsPlacement")));
     assert!(order.has_tag_name((NS, "CommandsOrder")));
+    assert!(subsystems.has_tag_name((NS, "SubsystemsOrder")));
     assert!(groups.has_tag_name((NS, "GroupsOrder")));
+    let ordered_subsystems: Vec<_> = subsystems
+        .children()
+        .filter(|node| node.is_element())
+        .map(|node| {
+            assert!(node.has_tag_name((NS, "Subsystem")));
+            format!("main:{}", node.text().expect("native subsystem reference"))
+        })
+        .collect();
+    assert_eq!(
+        ordered_subsystems.as_slice(),
+        std::slice::from_ref(&child_at)
+    );
     let group_names: Vec<_> = groups
         .children()
         .filter(|node| node.is_element())
@@ -858,12 +889,15 @@ fn check_native_subsystem_interface(
     let relation_at = format!("{OWNER}.Relation");
     let command_at = format!("{interface_at}.Command");
     let group_at = format!("{interface_at}.Group");
+    let subsystem_at = format!("{interface_at}.Subsystem");
+    let registered_subsystems_at = format!("{OWNER}.Subsystem");
     let (subsystem, _) = read_view(runtime, &fixture.workspace, OWNER);
     check_fixture_branches(
         &subsystem,
         [
             (&relation_at, FixtureBranch::Present(content_count)),
             (&interface_at, FixtureBranch::Present(1)),
+            (&registered_subsystems_at, FixtureBranch::Present(1)),
         ],
     );
     let (interface, _) = read_view(runtime, &fixture.workspace, &interface_at);
@@ -873,8 +907,19 @@ fn check_native_subsystem_interface(
         [
             (&command_at, FixtureBranch::Present(commands.len())),
             (&group_at, FixtureBranch::Present(group_names.len())),
+            (
+                &subsystem_at,
+                FixtureBranch::Present(ordered_subsystems.len()),
+            ),
         ],
     );
+    let (subsystem_order, items) = read_view(runtime, &fixture.workspace, &subsystem_at);
+    assert_eq!(subsystem_order["kind"], "Subsystem");
+    assert_eq!(items, [json!({"order": 1, "at": child_at})]);
+    let (child_view, _) = read_view(runtime, &fixture.workspace, &child_at);
+    assert_eq!(child_view["kind"], "Subsystem");
+    assert_eq!(child_view["at"], child_at);
+
     let (_, command_items) = read_view(runtime, &fixture.workspace, &command_at);
     let [item] = command_items.as_slice() else {
         panic!("{command_at}: expected one canonical target");
@@ -908,7 +953,7 @@ fn check_native_subsystem_interface(
         assert_eq!(items, expected, "{at}");
     }
     let origin = (fixture_name, RELATIVE);
-    for at in [&interface_at, &command_at, &group_at] {
+    for at in [&interface_at, &command_at, &group_at, &subsystem_at] {
         evidence.record(fixture, origin, at);
     }
     if format != "2.20" {

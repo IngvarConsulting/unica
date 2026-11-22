@@ -16,6 +16,8 @@
 				<xr:Item xsi:type="xr:MDObjectRef">CommonCommand.КомандаБ</xr:Item>
 			</Content>
 		</Properties>
-		<ChildObjects/>
+		<ChildObjects>
+			<Subsystem>Подсистема2</Subsystem>
+		</ChildObjects>
 	</Subsystem>
 </MetaDataObject>
