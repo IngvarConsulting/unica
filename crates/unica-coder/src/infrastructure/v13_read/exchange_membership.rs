@@ -8,6 +8,8 @@
 //! дерева источников, — без отдельного обхода составов планов.
 
 use super::*;
+use unica_metadata::identifier::is_1c_identifier;
+use unica_source_contract::read::FileStamp;
 
 /// Виды, изменения которых записывает состав плана обмена: только они
 /// получают признак.
@@ -27,6 +29,38 @@ const EXCHANGE_CONTENT_KINDS: &[NodeKind] = &[
 ];
 
 const PROPERTY: &str = "inExchangePlan";
+
+/// Регистрации, из которых уже построена страница вида.
+pub(super) enum ExchangePlanRegistrations {
+    Bounded(Arc<Value>),
+    Streamed(Arc<RegistrationIndex>),
+}
+
+impl ExchangePlanRegistrations {
+    fn configuration_stamp(&self, artifacts: &RegistrationCache) -> Option<FileStamp> {
+        match self {
+            Self::Bounded(payload) => artifacts.configuration_stamp_for_payload(payload),
+            Self::Streamed(index) => artifacts.configuration_stamp_for_index(index),
+        }
+    }
+
+    fn plan_names(
+        &self,
+        checkpoint: &dyn Fn() -> Result<(), ViewError>,
+    ) -> Result<Vec<String>, ViewError> {
+        let kind = NodeKind::ExchangePlan.as_str();
+        match self {
+            Self::Bounded(payload) => Ok(payload["registeredObjects"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|item| item["kind"].as_str() == Some(kind))
+                .filter_map(|item| item["name"].as_str().map(str::to_owned))
+                .collect()),
+            Self::Streamed(index) => index.names_for_kind(kind, checkpoint),
+        }
+    }
+}
 
 /// Объединённый состав планов обмена одного набора исходников.
 #[derive(Debug, Default)]
@@ -64,6 +98,7 @@ impl LogicalViewReadAuthority<'_> {
         &self,
         projected: NodeViewData,
         branch_kind: NodeKind,
+        registrations: &ExchangePlanRegistrations,
         admitted: &ViewSourceSnapshot,
     ) -> Result<NodeViewData, ViewError> {
         if !EXCHANGE_CONTENT_KINDS.contains(&branch_kind)
@@ -74,7 +109,7 @@ impl LogicalViewReadAuthority<'_> {
         let NodeViewData::Collection(collection) = projected else {
             return Ok(projected);
         };
-        let membership = self.exchange_membership(admitted)?;
+        let membership = self.exchange_membership(registrations, admitted)?;
         let (node, mut items) = collection.into_parts();
         for item in &mut items {
             let Some(name) = item.get("title").and_then(Value::as_str) else {
@@ -97,6 +132,7 @@ impl LogicalViewReadAuthority<'_> {
 
     fn exchange_membership(
         &self,
+        registrations: &ExchangePlanRegistrations,
         admitted: &ViewSourceSnapshot,
     ) -> Result<Arc<ExchangeMembership>, ViewError> {
         let key = RevisionCacheKey {
@@ -116,14 +152,28 @@ impl LogicalViewReadAuthority<'_> {
         {
             return Ok(Arc::clone(membership));
         }
-        let membership = match self.read.retained_exchange_membership() {
+        // Новый стамп с диска мог бы относиться уже к другому списку планов.
+        let configuration_stamp = registrations.configuration_stamp(self.read.artifacts());
+        let membership = match configuration_stamp
+            .and_then(|stamp| self.read.retained_exchange_membership(stamp))
+        {
             Some(membership) => membership,
             None => {
-                let plans = self.registered_kind_names(NodeKind::ExchangePlan, admitted)?;
-                // Стампы снимаются до чтения: изменение во время сборки
-                // делает сохранённое недействительным.
-                let stamps = self.read.exchange_membership_stamps(&plans);
-                let membership = Arc::new(self.build_exchange_membership(&plans, admitted)?);
+                let mut membership = ExchangeMembership::default();
+                let mut plans = registrations.plan_names(&|| self.read_checkpoint())?;
+                plans.retain(|plan| {
+                    if is_1c_identifier(plan) {
+                        return true;
+                    }
+                    membership.unread.push(format!(
+                        "план ExchangePlan.{plan} не прочитан: недопустимое имя"
+                    ));
+                    false
+                });
+                let stamps = configuration_stamp
+                    .and_then(|stamp| self.read.exchange_membership_stamps(stamp, &plans));
+                self.read_exchange_membership(&plans, admitted, &mut membership)?;
+                let membership = Arc::new(membership);
                 if let Some(stamps) = stamps {
                     self.read
                         .retain_exchange_membership(stamps, Arc::clone(&membership));
@@ -143,12 +193,13 @@ impl LogicalViewReadAuthority<'_> {
         Ok(membership)
     }
 
-    fn build_exchange_membership(
+    fn read_exchange_membership(
         &self,
         plans: &[String],
         admitted: &ViewSourceSnapshot,
-    ) -> Result<ExchangeMembership, ViewError> {
-        let mut membership = ExchangeMembership::default();
+        membership: &mut ExchangeMembership,
+    ) -> Result<(), ViewError> {
+        self.read_checkpoint()?;
         for plan in plans {
             let owner = MetadataAddress::parse_logical(&format!(
                 "{}.{plan}",
@@ -203,29 +254,6 @@ impl LogicalViewReadAuthority<'_> {
                     .push(format!("состав {} не прочитан: {error}", owner.as_str())),
             }
         }
-        Ok(membership)
-    }
-
-    /// Имена зарегистрированных объектов вида `kind` — по потоковому
-    /// индексу регистраций или по разобранному корню, как у ветви вида.
-    fn registered_kind_names(
-        &self,
-        kind: NodeKind,
-        admitted: &ViewSourceSnapshot,
-    ) -> Result<Vec<String>, ViewError> {
-        if self.read.configuration_xml_requires_streaming() {
-            let index = self.streamed_configuration_registration_index(admitted)?;
-            return index.names_for_kind(kind.as_str(), &|| self.read_checkpoint());
-        }
-        let payload = self.configuration_payload(admitted)?;
-        Ok(payload
-            .get("registeredObjects")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter(|item| item.get("kind").and_then(Value::as_str) == Some(kind.as_str()))
-            .filter_map(|item| item.get("name").and_then(Value::as_str))
-            .map(str::to_string)
-            .collect())
+        Ok(())
     }
 }

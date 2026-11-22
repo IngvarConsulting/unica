@@ -326,9 +326,23 @@ impl Default for RegistrationCache {
 /// built from: `Configuration.xml` and each subsystem descriptor.
 type RetainedSubsystemTopology = (Vec<(std::path::PathBuf, FileStamp)>, Arc<SubsystemTopology>);
 
-/// Стампы `Configuration.xml`, описаний и составов планов обмена и состав,
-/// собранный из них.
-pub(crate) type ExchangeMembershipStamps = Vec<(std::path::PathBuf, Option<FileStamp>)>;
+/// Стамп регистраций в `Configuration.xml`, затем стампы описаний и составов планов.
+pub(crate) struct ExchangeMembershipStamps {
+    pub(crate) configuration: FileStamp,
+    pub(crate) plans: Vec<(std::path::PathBuf, Option<FileStamp>)>,
+}
+
+impl ExchangeMembershipStamps {
+    fn still_matches(&self, root: &SourceDirectory) -> bool {
+        root.relative_file_stamp(std::path::Path::new("Configuration.xml"))
+            .is_ok_and(|current| current == Some(self.configuration))
+            && self.plans.iter().all(|(path, stamp)| {
+                root.relative_file_stamp(path)
+                    .is_ok_and(|current| current == *stamp)
+            })
+    }
+}
+
 type RetainedExchangeMembership = (
     ExchangeMembershipStamps,
     Arc<crate::infrastructure::v13_read::ExchangeMembership>,
@@ -545,6 +559,28 @@ impl RegistrationCache {
         Ok(built)
     }
 
+    /// Стамп прочитанных регистраций, подтверждённый тем же удержанным разбором.
+    pub(crate) fn configuration_stamp_for_payload(
+        &self,
+        payload: &Arc<Value>,
+    ) -> Option<FileStamp> {
+        let retained = slot(&self.configuration);
+        let (stamps, cached) = retained.as_ref()?;
+        if !Arc::ptr_eq(cached, payload) {
+            return None;
+        }
+        stamps[0]
+    }
+
+    pub(crate) fn configuration_stamp_for_index(
+        &self,
+        index: &Arc<RegistrationIndex>,
+    ) -> Option<FileStamp> {
+        let retained = slot(&self.registrations);
+        let (stamp, cached) = retained.as_ref()?;
+        Arc::ptr_eq(cached, index).then_some(*stamp)
+    }
+
     /// The parsed support state of `Ext/ParentConfigurations.bin` (`None`
     /// when absent) with the stamp it was read under.
     pub(crate) fn support_state(
@@ -641,15 +677,11 @@ impl RegistrationCache {
     pub(crate) fn retained_exchange_membership(
         &self,
         root: &SourceDirectory,
+        configuration: FileStamp,
     ) -> Option<Arc<crate::infrastructure::v13_read::ExchangeMembership>> {
         let retained = slot(&self.exchange_membership);
         let (stamps, membership) = retained.as_ref()?;
-        stamps
-            .iter()
-            .all(|(path, stamp)| {
-                root.relative_file_stamp(path)
-                    .is_ok_and(|current| current == *stamp)
-            })
+        (stamps.configuration == configuration && stamps.still_matches(root))
             .then(|| Arc::clone(membership))
     }
 
@@ -657,12 +689,16 @@ impl RegistrationCache {
     /// окна мог измениться, не изменив стампа.
     pub(crate) fn retain_exchange_membership(
         &self,
+        root: &SourceDirectory,
         stamps: ExchangeMembershipStamps,
         membership: Arc<crate::infrastructure::v13_read::ExchangeMembership>,
     ) {
-        if stamps
-            .iter()
-            .all(|(_, stamp)| stamp.as_ref().is_none_or(|stamp| self.retains(stamp)))
+        if self.retains(&stamps.configuration)
+            && stamps
+                .plans
+                .iter()
+                .all(|(_, stamp)| stamp.as_ref().is_none_or(|stamp| self.retains(stamp)))
+            && stamps.still_matches(root)
         {
             *slot(&self.exchange_membership) = Some((stamps, membership));
         }

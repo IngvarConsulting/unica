@@ -1,7 +1,9 @@
 use super::{ProviderReadAuthority, ViewError};
+use crate::infrastructure::v13_large_configuration::ExchangeMembershipStamps;
 use std::path::Path;
 use unica_metadata::read_codec::ExchangeContentFacts;
 use unica_refusal::RefusalDetail;
+use unica_source_contract::read::FileStamp;
 
 impl ProviderReadAuthority {
     /// Состав плана обмена `plan` из `ExchangePlans/<plan>/Ext/Content.xml`.
@@ -41,30 +43,32 @@ impl ProviderReadAuthority {
     /// них сохранённое не используется.
     pub(crate) fn retained_exchange_membership(
         &self,
+        configuration: FileStamp,
     ) -> Option<std::sync::Arc<crate::infrastructure::v13_read::ExchangeMembership>> {
         if self.documents.is_some() {
             return None;
         }
-        self.artifacts.retained_exchange_membership(&self.root)
+        self.artifacts
+            .retained_exchange_membership(&self.root, configuration)
     }
 
-    /// Стампы файлов, из которых собирается состав планов `plans`, снятые до
-    /// их чтения. `None` — стамп не снимается или открыты буферы сеанса:
-    /// такой состав не сохраняется.
+    /// Стамп уже прочитанных регистраций и стампы файлов проверенных имён
+    /// планов, снятые до чтения их состава.
     pub(crate) fn exchange_membership_stamps(
         &self,
+        configuration: FileStamp,
         plans: &[String],
-    ) -> Option<crate::infrastructure::v13_large_configuration::ExchangeMembershipStamps> {
+    ) -> Option<ExchangeMembershipStamps> {
         if self.documents.is_some() {
             return None;
         }
-        let mut paths = vec![std::path::PathBuf::from("Configuration.xml")];
+        let mut paths = Vec::with_capacity(plans.len() * 2);
         for plan in plans {
             let directory = Path::new("ExchangePlans");
             paths.push(directory.join(format!("{plan}.xml")));
             paths.push(directory.join(plan).join("Ext/Content.xml"));
         }
-        paths
+        let plans = paths
             .into_iter()
             .map(|path| {
                 self.root
@@ -72,15 +76,19 @@ impl ProviderReadAuthority {
                     .ok()
                     .map(|stamp| (path, stamp))
             })
-            .collect()
+            .collect::<Option<Vec<_>>>()?;
+        Some(ExchangeMembershipStamps {
+            configuration,
+            plans,
+        })
     }
 
     pub(crate) fn retain_exchange_membership(
         &self,
-        stamps: crate::infrastructure::v13_large_configuration::ExchangeMembershipStamps,
+        stamps: ExchangeMembershipStamps,
         membership: std::sync::Arc<crate::infrastructure::v13_read::ExchangeMembership>,
     ) {
         self.artifacts
-            .retain_exchange_membership(stamps, membership);
+            .retain_exchange_membership(&self.root, stamps, membership);
     }
 }

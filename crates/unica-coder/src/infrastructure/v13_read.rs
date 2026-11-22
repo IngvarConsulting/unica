@@ -634,7 +634,7 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                 .ok_or_else(|| {
                     ViewError::new(RefusalCode::NotFound, "metadata branch kind is absent")
                 })?;
-            let branch = if matches!(
+            let (branch, registrations) = if matches!(
                 self.read.source_set_kind(),
                 SourceSetKind::Configuration | SourceSetKind::Extension
             ) && self.read.configuration_xml_requires_streaming()
@@ -662,11 +662,15 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                     names.iter().map(String::as_str),
                     admitted,
                 )?;
-                crate::infrastructure::v13_read_projection::project_registered_metadata_branch_names(
+                let branch = crate::infrastructure::v13_read_projection::project_registered_metadata_branch_names(
                     route.at(),
                     &names,
                     support,
-                )?
+                )?;
+                (
+                    branch,
+                    exchange_membership::ExchangePlanRegistrations::Streamed(index),
+                )
             } else {
                 self.read.stamp_descriptors_by_directory();
                 let payload = self.configuration_payload(admitted)?;
@@ -706,13 +710,18 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                     .filter_map(|item| item.get("name").and_then(Value::as_str));
                 let support =
                     self.member_support(route.at().source_set(), branch_kind, names, admitted)?;
-                crate::infrastructure::v13_read_projection::project_registered_metadata_branch(
-                    route.at(),
-                    payload.as_ref(),
-                    support,
-                )?
+                let branch =
+                    crate::infrastructure::v13_read_projection::project_registered_metadata_branch(
+                        route.at(),
+                        payload.as_ref(),
+                        support,
+                    )?;
+                (
+                    branch,
+                    exchange_membership::ExchangePlanRegistrations::Bounded(payload),
+                )
             };
-            self.with_exchange_membership(branch, branch_kind, admitted)?
+            self.with_exchange_membership(branch, branch_kind, &registrations, admitted)?
         } else if route.reader() == LogicalReader::Form {
             self.form_view(&route, admitted)?
         } else {
