@@ -1089,7 +1089,12 @@ fn check_native_cfe_ownership(version: &str, evidence: &mut EvidenceRows) {
             not_registered(&authority, &format!("{CATALOG}.Form.NotRegistered"));
         } else {
             assert_eq!(named["kind"], "Module");
-            assert_eq!(named["props"]["belonging"], "own");
+            let own = QualifiedAddress::parse(OWN).unwrap();
+            let borrowing = authority
+                .object_borrowing(&own)
+                .expect("read the CommonModule descriptor")
+                .expect("the CommonModule belongs to the extension");
+            assert!(borrowing.extends.is_none(), "{OWN} is declared as own");
             record(
                 ROOT,
                 "CommonModule",
