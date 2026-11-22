@@ -201,6 +201,29 @@ class AddressCoverageReportTests(unittest.TestCase):
         witness["at"] = owner
         GENERATOR.check_projection_requirements(required, {key: {"witnesses": [witness]}})
 
+    def test_full_bsl_requirements_reject_missing_shard_and_mismatched_owner_or_address(self) -> None:
+        shard = GENERATOR.BSL_PROJECTION_KEYS_SHARD
+        daemon = GENERATOR.DAEMON_SHARD
+        evidence = root_witness("main", "Variable")
+        evidence["key"].update(owner_shape=[{"kind": "CommonModule", "named": True, "role": None}])
+        owner = "main:CommonModule.Probe"
+        at = f"{owner}.Variable"
+        witness = evidence["witness"]
+        witness.update(owner=owner, at=at, origin="tests/dev/Module.bsl", test_case=daemon)
+        observation = {field: witness[field] for field in ("owner", "origin", "level", "test_case")}
+        required = required_key(evidence)
+        required["requirement"] = {"kind": "exact", "observations": [{**observation, "addresses": [at]}]}
+        self.write_shard(daemon, evidence)
+        shards = frozenset({shard, daemon})
+        with self.assertRaisesRegex(ValueError, "evidence shards missing=.*required_bsl_projection_keys"):
+            GENERATOR.merge_shards(self.root, shards)
+        self.write_shard(shard, required)
+        self.assertEqual(len(GENERATOR.merge_shards(self.root, shards)), 1)
+        for field, value in (("owner", "main:CommonModule.Other"), ("at", f"{at}.Sample")):
+            self.write_shard(daemon, {**evidence, "witness": {**witness, field: value}})
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, "missing required native projection evidence"):
+                GENERATOR.merge_shards(self.root, shards)
+
     def test_unnamed_dcs_rows_are_scoped_to_the_native_settings_collection(self) -> None:
         rows = GENERATOR.native_dcs_structure_requirements(GENERATOR.REPO)
         root = next(row for row in rows if row["key"]["line"] == "8.3.27"

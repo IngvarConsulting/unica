@@ -70,9 +70,10 @@ RECURSIVE_SUBSYSTEM_KEYS_SHARD = "native_recursive_subsystem_requirements"
 SPECIAL_PROJECTION_KEYS_SHARD = "required_native_special_projection_keys"
 DCS_STRUCTURE_KEYS_SHARD = "required_native_dcs_structure_keys"
 CROSS_LINE_MODULE_KEYS_SHARD = "required_cross_line_module_roles"
+BSL_PROJECTION_KEYS_SHARD = "required_bsl_projection_keys"
 PROJECTION_KEYS_SHARDS = frozenset({
     RECURSIVE_SUBSYSTEM_KEYS_SHARD, SPECIAL_PROJECTION_KEYS_SHARD, DCS_STRUCTURE_KEYS_SHARD,
-    CROSS_LINE_MODULE_KEYS_SHARD,
+    CROSS_LINE_MODULE_KEYS_SHARD, BSL_PROJECTION_KEYS_SHARD,
 })
 XDTO_OWNER_SHAPES = {
     "Namespace": {("XDTOPackage",)},
@@ -119,6 +120,7 @@ DAEMON_SCOPE = (
     "including observed 8.3.27 examples for extensions, external processors and external reports. "
     "The report checks required configuration module roles from the 8.3.27 address profile "
     "against native or daemon witnesses."
+    " Exact BSL requirements check native and acceptance Variable collections and a form callback Binding."
     " The 8.3.27 spreadsheet reads require PlatformExport bytes in the daemon fixture."
 )
 NATIVE_ONLY_MODULE_SCOPE = (
@@ -565,9 +567,10 @@ def projection_expectations(record: dict, shard: str) -> set[tuple[str, str, str
     recursive = shard == RECURSIVE_SUBSYSTEM_KEYS_SHARD
     dcs = shard == DCS_STRUCTURE_KEYS_SHARD
     module_role = shard == CROSS_LINE_MODULE_KEYS_SHARD
+    bsl = shard == BSL_PROJECTION_KEYS_SHARD
     external = EXTERNAL_OWNER_KINDS.get(source)
     if (not module_role and key["role"] is not None
-            or source != "configuration" and (recursive or dcs or module_role or external is None)):
+            or source != "configuration" and (recursive or dcs or module_role or bsl or external is None)):
         raise ValueError("required projection must name an admitted source and branch")
     if module_role:
         role = key["role"]
@@ -594,6 +597,14 @@ def projection_expectations(record: dict, shard: str) -> set[tuple[str, str, str
         )
         if not known_shape or any(not segment["named"] or segment["role"] is not None for segment in shape):
             raise ValueError("required DCS projection must name a report CalculatedField or scoped settings Item")
+    if bsl:
+        allowed_shape = {
+            "Variable": [("CommonModule", None)],
+            "Binding": [("Catalog", None), ("Form", None), ("Module", "Form"), ("Method", None)],
+        }.get(branch)
+        if ([(segment["kind"], segment["role"]) for segment in shape] != allowed_shape
+                or any(not segment["named"] for segment in shape)):
+            raise ValueError("required BSL projection must name a common-module Variable or form method Binding")
     requirement = record["requirement"]
     exact_fields(requirement, {"kind", "observations"}, "projection requirement")
     if requirement["kind"] != ("read" if recursive else "exact"):
@@ -613,6 +624,7 @@ def projection_expectations(record: dict, shard: str) -> set[tuple[str, str, str
             admitted = {
                 DCS_STRUCTURE_KEYS_SHARD: (DCS_STRUCTURE_SHARD,),
                 CROSS_LINE_MODULE_KEYS_SHARD: (MODULE_SHARD,),
+                BSL_PROJECTION_KEYS_SHARD: (DAEMON_SHARD,),
                 SPECIAL_PROJECTION_KEYS_SHARD: (SPECIAL_PROJECTION_SHARD, FORM_TEMPLATE_SHARD, MODULE_SHARD),
             }[shard]
             if emitter not in admitted or observation["level"] != level:
@@ -637,6 +649,10 @@ def projection_expectations(record: dict, shard: str) -> set[tuple[str, str, str
             collection = owner if role == "Common" else f"{collection}.{role}"
             if addresses != [collection]:
                 raise ValueError("required cross-line role needs the exact module address")
+        if bsl:
+            pattern = "main:" + r"\.".join(rf"{kind}\.{role or NATIVE_ADDRESS_NAME}" for kind, role in allowed_shape)
+            if not re.fullmatch(pattern, owner) or addresses != [collection]:
+                raise ValueError("required BSL projection needs the exact owner and branch address")
         if not isinstance(addresses, list) or collection not in addresses:
             raise ValueError("required projection must include the branch address")
         for address in addresses:
@@ -2054,13 +2070,14 @@ def native_external_inline_requirements(repo: Path) -> list[dict]:
 def generate_report(native_only: bool) -> dict:
     revision, status = git_state()
     cases = [("unica-coder", "address_coverage")]
-    required_shards = NATIVE_SHARDS | PROJECTION_KEYS_SHARDS | (REQUIRED_KEY_SHARDS - {SUBSYSTEM_INTERFACE_KEYS_SHARD})
+    required_shards = (NATIVE_SHARDS | (PROJECTION_KEYS_SHARDS - {BSL_PROJECTION_KEYS_SHARD})
+                       | (REQUIRED_KEY_SHARDS - {SUBSYSTEM_INTERFACE_KEYS_SHARD}))
     scope = NATIVE_SCOPE
     if native_only:
         scope += f" {NATIVE_ONLY_MODULE_SCOPE}"
     else:
         cases.append(("unica-daemon", DAEMON_SHARD))
-        required_shards |= {DAEMON_SHARD, SUBSYSTEM_INTERFACE_KEYS_SHARD}
+        required_shards |= {DAEMON_SHARD, SUBSYSTEM_INTERFACE_KEYS_SHARD, BSL_PROJECTION_KEYS_SHARD}
         scope += f" {DAEMON_SCOPE}"
     with tempfile.TemporaryDirectory(prefix="unica-address-coverage-") as scratch:
         env = {**os.environ, EMITTER_ENV: scratch}
