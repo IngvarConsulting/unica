@@ -4147,16 +4147,46 @@ fn native_registered_modules_match_profile_and_physical_paths() {
         "native_registered_modules_match_profile_and_physical_paths",
         SourceSetKind::Configuration,
     );
-    for (xml, fixture, all_kinds) in [
-        ("2.20", "formats/platform_xml/2.20/all_kinds/src", true),
-        ("2.21", "formats/platform_xml/2.21/all_kinds/src", true),
-        ("2.22", "formats/platform_xml/2.22/all_kinds/src", true),
+    #[derive(Clone, Copy)]
+    enum ModuleSamples {
+        AllKinds,
+        Report,
+        DirectNamed,
+    }
+
+    for (xml, fixture, samples) in [
+        (
+            "2.20",
+            "formats/platform_xml/2.20/all_kinds/src",
+            ModuleSamples::AllKinds,
+        ),
+        (
+            "2.21",
+            "formats/platform_xml/2.21/all_kinds/src",
+            ModuleSamples::AllKinds,
+        ),
+        (
+            "2.22",
+            "formats/platform_xml/2.22/all_kinds/src",
+            ModuleSamples::AllKinds,
+        ),
         (
             "2.20",
             "formats/platform_xml/2.20/template-new-xml/seed",
-            false,
+            ModuleSamples::Report,
+        ),
+        (
+            "2.21",
+            "formats/platform_xml/2.21/direct_named_module_roles/src",
+            ModuleSamples::DirectNamed,
+        ),
+        (
+            "2.22",
+            "formats/platform_xml/2.22/direct_named_module_roles/src",
+            ModuleSamples::DirectNamed,
         ),
     ] {
+        let all_kinds = matches!(samples, ModuleSamples::AllKinds);
         let source = fixture_path(fixture);
         let line = export_format_line(xml).unwrap();
         let profile = PlatformProfile::for_line(line).unwrap();
@@ -4362,10 +4392,32 @@ fn native_registered_modules_match_profile_and_physical_paths() {
                 ("Object", None, "Reports/CorpusReport/Ext/ObjectModule.bsl"),
             ][..],
         )];
-        let owners = if all_kinds {
-            &all_kinds_owners[..]
-        } else {
-            &report[..]
+        let direct_named = [
+            (
+                "CommonCommand",
+                "CommonCommands/Probe.xml",
+                None,
+                &[(
+                    "Command",
+                    None,
+                    "CommonCommands/Probe/Ext/CommandModule.bsl",
+                )][..],
+            ),
+            (
+                "IntegrationService",
+                "IntegrationServices/Probe.xml",
+                None,
+                &[(
+                    "IntegrationService",
+                    None,
+                    "IntegrationServices/Probe/Ext/Module.bsl",
+                )][..],
+            ),
+        ];
+        let owners = match samples {
+            ModuleSamples::AllKinds => &all_kinds_owners[..],
+            ModuleSamples::Report => &report[..],
+            ModuleSamples::DirectNamed => &direct_named[..],
         };
         let queue = (all_kinds && xml == "2.22").then_some((
             "Queue",
@@ -4463,6 +4515,12 @@ fn native_registered_modules_match_profile_and_physical_paths() {
                 let file = source.join(relative);
                 let metadata = fs::metadata(&file).expect("native module resource");
                 assert!(metadata.is_file(), "{xml}: {relative}");
+                if matches!(samples, ModuleSamples::DirectNamed) {
+                    assert!(!read_fixture_descriptor(&file)
+                        .trim_start_matches('\u{feff}')
+                        .trim()
+                        .is_empty());
+                }
                 assert_eq!(authority.existing_export_path(&at, None).unwrap(), relative);
                 let at_text = at.to_string();
                 let (proof, level) = if kind == "WebSocketClient" {
@@ -4479,6 +4537,9 @@ fn native_registered_modules_match_profile_and_physical_paths() {
                         .unwrap()
                         .unwrap_or_else(|| panic!("{xml}: missing reverse layout for {relative}"));
                     assert_eq!(placed.at(), at_text);
+                    if matches!(samples, ModuleSamples::DirectNamed) {
+                        assert_eq!(placed.kind(), "Module");
+                    }
                     assert_eq!(placed.placed_path(), Some(relative));
                     (AddressEvidence::RoundTrip(&at_text), "roundtrip")
                 };
