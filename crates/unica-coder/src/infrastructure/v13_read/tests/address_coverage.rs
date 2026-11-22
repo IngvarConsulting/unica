@@ -4784,10 +4784,127 @@ fn native_registered_modules_match_profile_and_physical_paths() {
             }
         }
     }
-    for format in ["2.20", "2.21", "2.22"] {
+    for (format, module_count) in [("2.20", 17), ("2.21", 22), ("2.22", 22)] {
         check_native_configuration_form_and_command_modules(format, &mut evidence);
+        check_native_configuration_physical_module_roles(format, module_count, &mut evidence);
     }
     evidence.finish();
+}
+
+fn check_native_configuration_physical_module_roles(
+    format: &str,
+    expected_count: usize,
+    evidence: &mut EvidenceRows,
+) {
+    #[derive(serde::Deserialize)]
+    struct Manifest {
+        #[serde(rename = "formatVersion")]
+        format: String,
+        samples: Vec<Sample>,
+    }
+
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Sample {
+        kind: String,
+        name: String,
+        role: String,
+        owner_uuid: String,
+        descriptor: String,
+        path: String,
+    }
+
+    let fixture = fixture_path(&format!(
+        "formats/platform_xml/{format}/configuration_physical_module_roles"
+    ));
+    let manifest: Manifest =
+        serde_json::from_str(&read_fixture_descriptor(&fixture.join("manifest.json"))).unwrap();
+    assert_eq!(manifest.format, format);
+    assert_eq!(manifest.samples.len(), expected_count);
+    let source = fixture.join("src");
+    let registrations = root_registrations(&source, format);
+    let line = export_format_line(format).unwrap();
+    let profile = PlatformProfile::for_line(line).unwrap();
+    let cancellation = CancellationToken::new();
+    let authority = native_authority(&cancellation, &source, profile);
+    let root =
+        unica_workspace::read::open_source_directory(&source.canonicalize().unwrap()).unwrap();
+    let layout = [LayoutFindSource::new(
+        "main",
+        SourceSetKind::Configuration,
+        &root,
+    )];
+    let finder = WorkspaceFindDirectoryBuilder::default();
+    let mut modules = BTreeSet::new();
+    for sample in manifest.samples {
+        let Sample {
+            kind,
+            name,
+            role,
+            owner_uuid,
+            descriptor,
+            path,
+        } = sample;
+        let owner = format!("main:{kind}.{name}");
+        let at = QualifiedAddress::parse(&format!("{owner}.Module"))
+            .unwrap()
+            .member(role.as_str())
+            .unwrap();
+        let address = at.to_string();
+        assert!(
+            modules.insert(address.clone()),
+            "{address}: duplicate sample"
+        );
+        assert_eq!(
+            registrations
+                .iter()
+                .filter(|(tag, value)| tag == &kind && value == &name)
+                .count(),
+            1,
+            "{address}: native owner registration"
+        );
+        let descriptor = source.join(descriptor);
+        let xml = read_fixture_descriptor(&descriptor);
+        let document = parse_fixture_descriptor(&xml, &descriptor);
+        assert_eq!(document.root_element().attribute("version"), Some(format));
+        let artifact = fixture_artifact(&document, &kind, &descriptor);
+        assert_eq!(fixture_properties_name(artifact), Some(name.as_str()));
+        assert_eq!(
+            uuid::Uuid::parse_str(artifact.attribute("uuid").unwrap()).unwrap(),
+            uuid::Uuid::parse_str(&owner_uuid).unwrap()
+        );
+
+        let file = source.join(&path);
+        assert!(!read_fixture_descriptor(&file)
+            .trim_start_matches('\u{feff}')
+            .trim()
+            .is_empty());
+        let view = read(&authority, &address);
+        assert_eq!(view["kind"], "Module", "{address}");
+        assert_eq!(view["props"]["ownerKind"], kind.as_str(), "{address}");
+        assert_eq!(view["props"]["role"], role.as_str(), "{address}");
+        assert_eq!(authority.existing_export_path(&at, None).unwrap(), path);
+        let resolved = finder
+            .locate_path(
+                &layout,
+                &path,
+                ProviderDeadline::no_deadline(),
+                &cancellation,
+            )
+            .unwrap()
+            .unwrap_or_else(|| panic!("{format}: missing native module {path}"));
+        assert_eq!(resolved.at(), address);
+        assert_eq!(resolved.kind(), "Module");
+        assert_eq!(resolved.placed_path(), Some(path.as_str()));
+        evidence.record(
+            line,
+            &owner,
+            "Module",
+            Some(role.as_str()),
+            &fixture_origin(&file),
+            AddressEvidence::RoundTrip(&address),
+        );
+    }
 }
 
 struct MissingNativeModules<'a> {
