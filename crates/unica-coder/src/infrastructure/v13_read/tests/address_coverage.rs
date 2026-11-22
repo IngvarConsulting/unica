@@ -2016,6 +2016,8 @@ fn check_native_configuration_nested_modules(
     let finder = WorkspaceFindDirectoryBuilder::default();
     let registrations = root_registrations(&source, format);
 
+    let check_exchange_inventory = fixture == "report_exchange_enum_module_roles";
+    let mut verified_exchange_children = BTreeSet::new();
     for (kind, name, directory, role, child) in samples {
         assert_eq!(
             registrations
@@ -2082,10 +2084,9 @@ fn check_native_configuration_nested_modules(
         assert_eq!(read(&authority, &module_at)["kind"], "Module");
         let module = QualifiedAddress::parse(&module_at).unwrap();
         let module_path = source.join(&relative);
-        assert!(!read_fixture_descriptor(&module_path)
-            .trim_start_matches('\u{feff}')
-            .trim()
-            .is_empty());
+        let raw_module = read_fixture_descriptor(&module_path);
+        let module_text = raw_module.trim_start_matches('\u{feff}');
+        assert!(!module_text.trim().is_empty());
         assert_eq!(
             authority.existing_export_path(&module, None).unwrap(),
             relative
@@ -2102,14 +2103,92 @@ fn check_native_configuration_nested_modules(
         assert_eq!(located.at(), module_at);
         assert_eq!(located.kind(), "Module");
         assert_eq!(located.placed_path(), Some(relative.as_str()));
+        let module_origin = fixture_origin(&module_path);
         evidence.record(
             line,
             &child_at,
             "Module",
             Some(role),
-            &fixture_origin(&module_path),
+            &module_origin,
             AddressEvidence::RoundTrip(&module_at),
         );
+        if check_exchange_inventory && kind == "ExchangePlan" && name == "Codes" {
+            let body = format!("{module_at}.Body");
+            check_native_bsl_body(
+                &authority,
+                &body,
+                module_text,
+                1,
+                module_text.lines().count(),
+            );
+            evidence.record(
+                line,
+                &module_at,
+                "Body",
+                None,
+                &module_origin,
+                AddressEvidence::Read(&body),
+            );
+            assert!(verified_exchange_children.insert(child_at));
+        }
+    }
+    if check_exchange_inventory {
+        let expected = native_exchange_plan_module_children(&source, format);
+        assert_eq!(
+            verified_exchange_children, expected,
+            "{format}: physical Form and Command module owners in native ExchangePlan.Codes"
+        );
+    }
+}
+
+fn native_exchange_plan_module_children(source: &Path, format: &str) -> BTreeSet<String> {
+    let owner = "main:ExchangePlan.Codes";
+    let descriptor = source.join("ExchangePlans/Codes.xml");
+    let raw = read_fixture_descriptor(&descriptor);
+    let document = parse_fixture_descriptor(&raw, &descriptor);
+    assert_eq!(document.root_element().attribute("version"), Some(format));
+    let artifact = fixture_artifact(&document, "ExchangePlan", &descriptor);
+    assert_eq!(fixture_properties_name(artifact), Some("Codes"));
+    assert!(uuid::Uuid::parse_str(artifact.attribute("uuid").unwrap()).is_ok());
+    let root = descriptor.with_extension("");
+    let mut modules = BTreeSet::new();
+    for form in
+        native_child_objects(artifact).filter(|node| node.has_tag_name((MD_CLASSES_NS, "Form")))
+    {
+        let name = form
+            .text()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .expect("native ExchangePlan Form name");
+        let form_descriptor =
+            native_registered_form_descriptor(artifact, &descriptor, name, format);
+        let module = form_descriptor
+            .with_extension("")
+            .join("Ext/Form/Module.bsl");
+        if native_inventory_has_module(&module) {
+            assert!(modules.insert(format!("{owner}.Form.{name}")));
+        }
+    }
+    for (name, at) in native_command_owners(owner, artifact) {
+        let module = root
+            .join("Commands")
+            .join(name)
+            .join("Ext/CommandModule.bsl");
+        if native_inventory_has_module(&module) {
+            assert!(modules.insert(at));
+        }
+    }
+    modules
+}
+
+fn native_inventory_has_module(path: &Path) -> bool {
+    match fs::metadata(path) {
+        Ok(metadata) => {
+            assert!(metadata.is_file(), "{path:?}: expected native BSL file");
+            true
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => panic!("{path:?}: {error}"),
     }
 }
 
