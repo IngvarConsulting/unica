@@ -1,11 +1,11 @@
 use super::{identity_metadata_payload_from_evidence, ProviderReadAuthority, ViewError};
 use serde_json::{json, Value};
-use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use unica_address::source_target::MetadataAddress;
+use unica_metadata::read_codec::{ExternalInlineReadError, ReadStopped};
 use unica_refusal::{RefusalCode, RefusalDetail};
-use unica_source_designer::owner::{prove_already_read_source_set_owner, MD_CLASSES_NS};
+use unica_source_designer::owner::prove_already_read_source_set_owner;
 
 impl ProviderReadAuthority {
     fn external_inventory_with_checkpoint(
@@ -165,129 +165,46 @@ fn project_inline_members(
     checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
     payload: &mut Value,
 ) -> Result<(), ViewError> {
-    use unica_metadata_designer::info::typed_elements_with_diagnostics;
-
+    let mut stopped = None;
+    let read = crate::infrastructure::family_codecs::metadata_read_codec().external_inline_members(
+        descriptor,
+        target,
+        &mut || {
+            checkpoint().map_err(|error| {
+                stopped = Some(error);
+                ReadStopped
+            })
+        },
+    );
     let invalid = |message| {
         ViewError::detailed(
             RefusalDetail::SourceUnreadable,
             format!("invalid inline metadata in external descriptor {target}: {message}"),
         )
     };
-    checkpoint()?;
-    let text = std::str::from_utf8(descriptor).map_err(|error| invalid(error.to_string()))?;
-    let xml = text.trim_start_matches('\u{feff}');
-    let document = roxmltree::Document::parse(xml).map_err(|error| invalid(error.to_string()))?;
-    // The same bytes have already established the descriptor's owner.
-    let owner = document
-        .root_element()
-        .first_element_child()
-        .ok_or_else(|| invalid("missing owner".into()))?;
-    let mut uuids = owner
-        .attribute("uuid")
-        .and_then(|value| uuid::Uuid::parse_str(value).ok())
-        .into_iter()
-        .collect();
-    let children = direct_md_container(owner, "ChildObjects").map_err(invalid)?;
-    if let Some(children) = children {
-        validate_inline_members(children, true, &mut uuids, target, checkpoint)?;
-    }
-
-    let mut diagnostics = Vec::new();
-    for (tag, key, nested) in [
-        ("Attribute", "attributes", false),
-        ("TabularSection", "tabularSections", true),
-    ] {
-        checkpoint()?;
-        let members = typed_elements_with_diagnostics(
-            xml,
-            children,
-            tag,
-            nested,
-            &format!("collections.{key}"),
-            target,
-            &mut diagnostics,
-        );
-        payload["collections"][key] =
-            serde_json::to_value(members).map_err(|error| invalid(error.to_string()))?;
-    }
-    let unreadable: Vec<_> = diagnostics
-        .into_iter()
-        .filter(|diagnostic| diagnostic.severity == unica_metadata::MetaDiagnosticSeverity::Error)
-        .filter_map(|diagnostic| {
-            let field = diagnostic.field?;
-            Some(json!({"field": field, "message": diagnostic.message}))
-        })
-        .collect();
-    if !unreadable.is_empty() {
-        payload["unreadable"] = json!(unreadable);
+    let facts = match (read, stopped) {
+        (Ok(facts), None) => facts,
+        (_, Some(error)) => return Err(error),
+        (Err(ExternalInlineReadError::InvalidDescriptor(message)), None) => {
+            return Err(invalid(message))
+        }
+        (Err(ExternalInlineReadError::Stopped), None) => {
+            return Err(ViewError::new(
+                RefusalCode::InvalidResult,
+                "external inline metadata read stopped without a checkpoint refusal",
+            ));
+        }
+    };
+    payload["collections"]["attributes"] =
+        serde_json::to_value(facts.attributes).map_err(|error| invalid(error.to_string()))?;
+    payload["collections"]["tabularSections"] =
+        serde_json::to_value(facts.tabular_sections).map_err(|error| invalid(error.to_string()))?;
+    if !facts.unreadable.is_empty() {
+        payload["unreadable"] = json!(facts
+            .unreadable
+            .into_iter()
+            .map(|finding| { json!({"field": finding.field, "message": finding.message}) })
+            .collect::<Vec<_>>());
     }
     checkpoint()
-}
-
-fn direct_md_container<'a, 'input>(
-    owner: roxmltree::Node<'a, 'input>,
-    name: &str,
-) -> Result<Option<roxmltree::Node<'a, 'input>>, String> {
-    let mut nodes = owner
-        .children()
-        .filter(|child| child.is_element() && child.tag_name().name() == name);
-    let first = nodes.next();
-    if first.is_some_and(|node| !node.has_tag_name((MD_CLASSES_NS, name))) || nodes.next().is_some()
-    {
-        return Err(format!("duplicate or foreign {name}"));
-    }
-    Ok(first)
-}
-
-fn validate_inline_members(
-    children: roxmltree::Node<'_, '_>,
-    allow_sections: bool,
-    uuids: &mut BTreeSet<uuid::Uuid>,
-    target: &MetadataAddress,
-    checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
-) -> Result<(), ViewError> {
-    use unica_metadata::identifier::is_1c_identifier;
-    use unica_metadata_designer::info_projection::{
-        direct_text_content, strict_text_leaf_is_valid,
-    };
-
-    let invalid = |message| {
-        ViewError::detailed(
-            RefusalDetail::SourceUnreadable,
-            format!("invalid inline metadata in external descriptor {target}: {message}"),
-        )
-    };
-    let mut names = BTreeSet::new();
-    for member in children.children().filter(roxmltree::Node::is_element) {
-        let tag = member.tag_name().name();
-        if tag != "Attribute" && !(allow_sections && tag == "TabularSection") {
-            continue;
-        }
-        checkpoint()?;
-        if !member.has_tag_name((MD_CLASSES_NS, tag)) {
-            return Err(invalid(format!("foreign {tag}")));
-        }
-        let properties = direct_md_container(member, "Properties")
-            .map_err(invalid)?
-            .ok_or_else(|| invalid(format!("{tag} has no Properties")))?;
-        let name = direct_md_container(properties, "Name")
-            .map_err(invalid)?
-            .filter(|node| strict_text_leaf_is_valid(*node))
-            .map(direct_text_content)
-            .filter(|name| is_1c_identifier(name))
-            .ok_or_else(|| invalid(format!("{tag} has no unique valid Name")))?;
-        let uuid = member
-            .attribute("uuid")
-            .and_then(|value| uuid::Uuid::parse_str(value).ok())
-            .ok_or_else(|| invalid(format!("{tag}.{name} has no valid UUID")))?;
-        if !uuids.insert(uuid) || !names.insert((tag, name.to_lowercase())) {
-            return Err(invalid(format!("duplicate identity for {tag}.{name}")));
-        }
-        if tag == "TabularSection" {
-            if let Some(columns) = direct_md_container(member, "ChildObjects").map_err(invalid)? {
-                validate_inline_members(columns, false, uuids, target, checkpoint)?;
-            }
-        }
-    }
-    Ok(())
 }
