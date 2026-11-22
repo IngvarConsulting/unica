@@ -255,6 +255,9 @@ pub struct RegistrationCache {
     configuration: Mutex<Option<(ConfigurationStamps, Arc<Value>)>>,
     support: Mutex<Option<RetainedSupportState>>,
     subsystems: Mutex<Option<RetainedSubsystemTopology>>,
+    /// Объединённый состав планов обмена со стампами файлов, из которых он
+    /// собран; отсутствующий файл записан `None`.
+    exchange_membership: Mutex<Option<RetainedExchangeMembership>>,
     settle_window: std::time::Duration,
     /// Proven owner descriptors by source-root-relative path, each under the
     /// stamp it had before it was read.
@@ -318,6 +321,7 @@ impl Default for RegistrationCache {
             configuration: Mutex::new(None),
             support: Mutex::new(None),
             subsystems: Mutex::new(None),
+            exchange_membership: Mutex::new(None),
             settle_window: SETTLE_WINDOW,
             owner_evidence: Mutex::new(std::collections::HashMap::new()),
             common_module_synonyms: Mutex::new(std::collections::HashMap::new()),
@@ -337,6 +341,28 @@ impl Default for RegistrationCache {
 /// The registered subsystem topology with the stamp of every file it was
 /// built from: `Configuration.xml` and each subsystem descriptor.
 type RetainedSubsystemTopology = (Vec<(std::path::PathBuf, FileStamp)>, Arc<SubsystemTopology>);
+
+/// Стамп регистраций в `Configuration.xml`, затем стампы описаний и составов планов.
+pub(crate) struct ExchangeMembershipStamps {
+    pub(crate) configuration: FileStamp,
+    pub(crate) plans: Vec<(std::path::PathBuf, Option<FileStamp>)>,
+}
+
+impl ExchangeMembershipStamps {
+    fn still_matches(&self, root: &SourceDirectory) -> bool {
+        root.relative_file_stamp(std::path::Path::new("Configuration.xml"))
+            .is_ok_and(|current| current == Some(self.configuration))
+            && self.plans.iter().all(|(path, stamp)| {
+                root.relative_file_stamp(path)
+                    .is_ok_and(|current| current == *stamp)
+            })
+    }
+}
+
+type RetainedExchangeMembership = (
+    ExchangeMembershipStamps,
+    Arc<crate::infrastructure::v13_read::ExchangeMembership>,
+);
 
 /// Reads descriptors for the topology builder and keeps the stamp each file
 /// had when its bytes were read.
@@ -575,6 +601,28 @@ impl RegistrationCache {
         Ok(built)
     }
 
+    /// Стамп прочитанных регистраций, подтверждённый тем же удержанным разбором.
+    pub(crate) fn configuration_stamp_for_payload(
+        &self,
+        payload: &Arc<Value>,
+    ) -> Option<FileStamp> {
+        let retained = slot(&self.configuration);
+        let (stamps, cached) = retained.as_ref()?;
+        if !Arc::ptr_eq(cached, payload) {
+            return None;
+        }
+        stamps[0]
+    }
+
+    pub(crate) fn configuration_stamp_for_index(
+        &self,
+        index: &Arc<RegistrationIndex>,
+    ) -> Option<FileStamp> {
+        let retained = slot(&self.registrations);
+        let (stamp, cached) = retained.as_ref()?;
+        Arc::ptr_eq(cached, index).then_some(*stamp)
+    }
+
     /// The parsed support state of `Ext/ParentConfigurations.bin` (`None`
     /// when absent) with the stamp it was read under.
     pub(crate) fn support_state(
@@ -664,6 +712,38 @@ impl RegistrationCache {
         *slot(&self.subsystems) = settled.then(|| (stamps, Arc::clone(&topology)));
         checkpoint()?;
         Ok(topology)
+    }
+
+    /// Сохранённый состав планов обмена, если ни один файл, из которых он
+    /// собран, не изменился и не появился.
+    pub(crate) fn retained_exchange_membership(
+        &self,
+        root: &SourceDirectory,
+        configuration: FileStamp,
+    ) -> Option<Arc<crate::infrastructure::v13_read::ExchangeMembership>> {
+        let retained = slot(&self.exchange_membership);
+        let (stamps, membership) = retained.as_ref()?;
+        (stamps.configuration == configuration && stamps.still_matches(root))
+            .then(|| Arc::clone(membership))
+    }
+
+    /// Сохраняет состав, если стампы всех его файлов устоялись: файл моложе
+    /// окна мог измениться, не изменив стампа.
+    pub(crate) fn retain_exchange_membership(
+        &self,
+        root: &SourceDirectory,
+        stamps: ExchangeMembershipStamps,
+        membership: Arc<crate::infrastructure::v13_read::ExchangeMembership>,
+    ) {
+        if self.retains(&stamps.configuration)
+            && stamps
+                .plans
+                .iter()
+                .all(|(_, stamp)| stamp.as_ref().is_none_or(|stamp| self.retains(stamp)))
+            && stamps.still_matches(root)
+        {
+            *slot(&self.exchange_membership) = Some((stamps, membership));
+        }
     }
 
     #[cfg(any(test, feature = "test-support"))]
