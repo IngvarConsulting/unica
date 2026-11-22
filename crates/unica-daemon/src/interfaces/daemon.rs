@@ -1,4 +1,7 @@
 use crate::infrastructure::daemon::server::DaemonServerConfig;
+pub(crate) use crate::infrastructure::daemon::user_state::default_user_daemon_state_root;
+#[cfg(test)]
+use crate::infrastructure::daemon::user_state::resolve_default_user_daemon_state_root;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -90,41 +93,6 @@ fn capacity_report_at_root(root: &Path) -> Result<Option<String>, String> {
     );
     crate::infrastructure::capacity_observation::read_existing_snapshot_json(&identity)
         .map_err(|_| "cannot read local capacity observations securely".to_string())
-}
-
-/// Resolve the persistent state root of the user daemon without mutating the
-/// process environment. Packaged hosts supply the provider root explicitly;
-/// an interactive user falls back to a private directory beneath their home.
-pub(crate) fn default_user_daemon_state_root() -> Result<PathBuf, String> {
-    let root = resolve_default_user_daemon_state_root(&|name| std::env::var_os(name))?;
-    unica_workspace::state_fs::state_root_with_resolved_ancestors(&root)
-        .map_err(|error| format!("cannot resolve the user daemon state root: {error}"))
-}
-
-fn resolve_default_user_daemon_state_root(
-    read_env: &dyn Fn(&str) -> Option<OsString>,
-) -> Result<PathBuf, String> {
-    let root = read_env("UNICA_PROVIDER_STATE_DIR")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| {
-            read_env("HOME")
-                .filter(|value| !value.is_empty())
-                .map(|home| PathBuf::from(home).join(".unica").join("provider-state"))
-        })
-        .or_else(|| {
-            read_env("USERPROFILE")
-                .filter(|value| !value.is_empty())
-                .map(|home| PathBuf::from(home).join(".unica").join("provider-state"))
-        })
-        .ok_or_else(|| {
-            "UNICA_PROVIDER_STATE_DIR, HOME, or USERPROFILE is required for the user daemon state"
-                .to_string()
-        })?;
-    if !root.is_absolute() {
-        return Err("user daemon state root must be absolute".to_string());
-    }
-    Ok(root)
 }
 
 /// Пауза, с которой поднимается демон: назначенная снаружи или та, что по

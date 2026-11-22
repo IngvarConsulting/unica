@@ -395,9 +395,11 @@ pub(crate) struct StepReport {
 
 impl StepReport {
     pub(crate) fn of(tool: &str, arguments: &Map<String, Value>, result: &CallToolResult) -> Self {
+        let mut arguments = without_confirmation(arguments);
+        arguments.remove(unica_execution_contract::invocation::HUMAN_PUSH_PERMISSION_KEY);
         Self {
             tool: tool.to_string(),
-            arguments: without_confirmation(arguments),
+            arguments,
             refused: result.is_error == Some(true),
         }
     }

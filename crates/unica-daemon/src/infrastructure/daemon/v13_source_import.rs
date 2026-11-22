@@ -30,6 +30,7 @@ use super::v13_infobase_exports::{
     runner_start_rejection, BaseDivergence, RunnerAbsence, CONFIG_NAME, LOCAL_CONFIG_NAME,
     RUNNER_OUTPUT_LIMIT,
 };
+use super::v13_push_permission::{Store as PermissionStore, Target as PermissionTarget};
 use super::v13_source_set_name::{source_set_name_guidance, valid_source_set_name};
 use crate::infrastructure::workspace::discover_workspace;
 use serde_json::{json, Map, Value};
@@ -39,7 +40,7 @@ use std::sync::Arc;
 use unica_artifact_delivery::engine::BundledTool;
 use unica_execution::invocation_store::ToolIdentity;
 use unica_execution_contract::invocation::{
-    DomainResult, HumanChoice, HumanChoiceOption, SafeIdentityHash,
+    DomainResult, HumanChoice, HumanChoiceOption, SafeIdentityHash, HUMAN_PUSH_PERMISSION_KEY,
 };
 use unica_process::runner::{ProcessCommand, ProcessOutput, ProcessRunner};
 use unica_redaction::redactor;
@@ -83,6 +84,9 @@ pub(super) struct PreparedSourceImport {
     /// the person's consent to end sessions or restart the server is read
     /// from it.
     call: Map<String, Value>,
+    permission_store: Option<PermissionStore>,
+    /// Set only by a remembered grant or the person's explicit remember answer.
+    permission_target: Option<PermissionTarget>,
 }
 
 pub(super) enum Preparation {
@@ -105,6 +109,13 @@ pub(super) fn prepare(request: &InvocationRequest) -> Preparation {
 
 impl PreparedSourceImport {
     fn parse(request: &InvocationRequest) -> Result<Self, DomainResult> {
+        Self::parse_with_permission_store(request, PermissionStore::for_user())
+    }
+
+    fn parse_with_permission_store(
+        request: &InvocationRequest,
+        permission_store: Option<PermissionStore>,
+    ) -> Result<Self, DomainResult> {
         let arguments = request.arguments();
         let args = arguments
             .get("args")
@@ -154,17 +165,46 @@ impl PreparedSourceImport {
         // Перезапись базы исполняется только с согласия человека. Вопрос
         // задаётся до допуска: вызов, ушедший в фоновую задачу, спросить уже
         // не может. Превью ничего не меняет и не спрашивает.
+        let mut permission_target = None;
         if force && !dry_run {
             let sets = match &arguments.source_set {
                 Some(source_set) => vec![source_set.clone()],
                 None => declared_source_sets(&context.workspace_root.join(CONFIG_NAME))?.0,
             };
-            if !HumanChoice::is_confirmed(
+            let target = permission_store
+                .as_ref()
+                .and_then(|_| PermissionTarget::of_workspace(&context.workspace_root));
+            let remember = request.arguments().get(HUMAN_PUSH_PERMISSION_KEY);
+            let confirmed = HumanChoice::is_confirmed(
                 &push_force_question(&sets),
                 "unica.run",
                 request.arguments(),
-            ) {
-                return Err(push_force_unconfirmed(&sets, request.arguments()));
+            );
+            // A delayed answer about A cannot remember permission for B, even
+            // when both are called origin and use the same public arguments.
+            if remember.is_some()
+                && (!confirmed
+                    || target.as_ref().is_none_or(|target| {
+                        remember.and_then(Value::as_str) != Some(target.digest.as_str())
+                    }))
+            {
+                return Err(reject(RefusalCode::Cancelled, "the infobase target of the remember answer changed; ask again before overwriting it"));
+            }
+            let granted = target.as_ref().is_some_and(|target| {
+                permission_store
+                    .as_ref()
+                    .is_some_and(|store| store.permits(target))
+            });
+            if remember.is_some() || granted {
+                permission_target = target;
+            } else if !confirmed {
+                let mut refusal = push_force_unconfirmed(&sets, request.arguments());
+                if let (Some(target), Some(choice)) =
+                    (target.as_ref(), refusal.human_choice.as_deref_mut())
+                {
+                    add_remember_option(choice, &sets, request.arguments(), target);
+                }
+                return Err(refusal);
             }
         }
         Ok(Self {
@@ -172,7 +212,46 @@ impl PreparedSourceImport {
             dry_run,
             context,
             call: request.arguments().clone(),
+            permission_store,
+            permission_target,
         })
+    }
+
+    fn has_remembered_permission(&self) -> bool {
+        PermissionTarget::of_workspace(&self.context.workspace_root).is_some_and(|target| {
+            self.permission_store
+                .as_ref()
+                .is_some_and(|store| store.permits(&target))
+        })
+    }
+
+    /// Recheck immediately before launching the provider, after preflight.
+    /// Revocation and a changed target must not reuse an admitted grant.
+    fn authorize_remembered_push(&self) -> Result<(), DomainResult> {
+        let Some(target) = &self.permission_target else {
+            return Ok(());
+        };
+        if PermissionTarget::of_workspace(&self.context.workspace_root).as_ref() != Some(target) {
+            return Err(reject(
+                RefusalCode::ConcurrentChange,
+                "the infobase target changed after permission was checked; push loaded nothing",
+            ));
+        }
+        let store = self
+            .permission_store
+            .as_ref()
+            .expect("a remembered permission has its store");
+        if self.call.contains_key(HUMAN_PUSH_PERMISSION_KEY) {
+            store
+                .remember(target)
+                .map_err(|message| reject(RefusalCode::InvalidState, message))?;
+        } else if !store.permits(target) {
+            return Err(reject(
+                RefusalCode::Cancelled,
+                "the force-push permission was revoked; push loaded nothing",
+            ));
+        }
+        Ok(())
     }
 
     /// The workspace root whose lane of source writes the execution holds.
@@ -244,6 +323,28 @@ fn push_force_unconfirmed(sets: &[String], call: &Map<String, Value>) -> DomainR
     );
     rejection.human_choice = Some(Box::new(push_force_confirmation(sets, call)));
     rejection
+}
+
+/// The unasked fallback remains the first, one-call option. Only a human
+/// answer can carry this private target-bound remember argument through MCP.
+fn add_remember_option(
+    choice: &mut HumanChoice,
+    sets: &[String],
+    call: &Map<String, Value>,
+    target: &PermissionTarget,
+) {
+    let mut remembering = unica_execution_contract::invocation::without_confirmation(call);
+    remembering.insert(HUMAN_PUSH_PERMISSION_KEY.into(), json!(target.digest));
+    let mut option = push_force_confirmation(sets, &remembering)
+        .options
+        .remove(0);
+    option.id = "remember".into();
+    option.title = "Разрешить для этой базы и запомнить".into();
+    option.description = format!("сейчас и при следующих загрузках исходников в базу {} изменения в базе могут быть перезаписаны без этого вопроса", target.label);
+    choice.options.push(option);
+    if let Some(data) = choice.data.as_mut() {
+        data["infobaseTarget"] = json!(target.label);
+    }
 }
 
 fn parse_import_arguments(args: &Map<String, Value>) -> Result<ImportArguments, DomainResult> {
@@ -1094,6 +1195,9 @@ fn invoke_runner(
             cancellation,
         )?;
     }
+    if !dry_run {
+        prepared.authorize_remembered_push()?;
+    }
     let output = runner
         .run_staged(&ProcessCommand {
             program: tool.program.clone(),
@@ -1291,9 +1395,32 @@ fn exchange_refusal(
         "args": {"op": OPERATION, "args": push_args, "dryRun": true},
         "reason": "if the sources hold the right state: preview push with force:true, which loads every set in full and overwrites the infobase; changes made in the infobase since this working copy's last exchange are lost"
     }));
-    if let (false, Some(source_set)) = (prepared.dry_run, &source_set) {
-        let choice = base_divergence_choice(source_set, push_args, pull_args);
-        rejection.human_choice = Some(Box::new(choice));
+    if !prepared.has_remembered_permission() {
+        if let (false, Some(source_set)) = (prepared.dry_run, &source_set) {
+            let mut choice = base_divergence_choice(source_set, push_args, pull_args);
+            if let Some(target) = prepared
+                .permission_store
+                .as_ref()
+                .and_then(|_| PermissionTarget::of_workspace(&prepared.context.workspace_root))
+            {
+                let call = unica_execution_contract::invocation::without_confirmation(
+                    &choice.options[0].arguments,
+                );
+                add_remember_option(
+                    &mut choice,
+                    std::slice::from_ref(source_set),
+                    &call,
+                    &target,
+                );
+            }
+            rejection.human_choice = Some(Box::new(choice));
+        }
+    } else {
+        rejection.data.as_mut().expect("exchange refusal has data")["forcePushPermitted"] =
+            json!(true);
+        rejection.summary = "push loaded nothing: the infobase and this working copy's record diverged; the person's remembered permission allows overwriting this target with force:true; preview that push next".into();
+        rejection.diagnostics[0]["message"] = json!(rejection.summary);
+        rejection.next.swap(0, 1);
     }
     rejection
 }
@@ -1531,6 +1658,8 @@ pub(super) mod tests {
         dry_run: bool,
     ) -> PreparedSourceImport {
         PreparedSourceImport {
+            permission_store: None,
+            permission_target: None,
             call: super::super::v13_infobase_another_copy::with_consent(&Map::new()),
             arguments: ImportArguments {
                 source_set: source_set.map(str::to_string),
@@ -2583,6 +2712,232 @@ pub(super) mod tests {
         );
     }
 
+    fn permission_request(root: &Path, call: Value) -> InvocationRequest {
+        InvocationRequest::new(ToolIdentity::Run, call, root.display().to_string(), 7000).unwrap()
+    }
+
+    fn force_call() -> Value {
+        json!({"op":"push","args":{"force":true,"sourceSet":"main"},"dryRun":false})
+    }
+
+    fn offered_permission(root: &Path, store: &PermissionStore) -> HumanChoice {
+        PreparedSourceImport::parse_with_permission_store(
+            &permission_request(root, force_call()),
+            Some(store.clone()),
+        )
+        .expect_err("the first call asks the person")
+        .human_choice
+        .map(|choice| *choice)
+        .unwrap()
+    }
+
+    /// rule: INV.RUNTIME.DESTRUCTIVE-CONFIRMATION
+    /// rule: INV.MCP.HUMAN-CHOICE
+    #[test]
+    fn remembering_force_push_is_explicit_and_survives_a_new_invocation() {
+        let root = workspace();
+        let state = tempfile::tempdir().unwrap();
+        let store = PermissionStore::new(state.path().to_path_buf());
+        let target = PermissionTarget::of_workspace(root.path()).unwrap();
+        let choice = offered_permission(root.path(), &store);
+        assert_eq!(choice.options.len(), 2);
+        assert_eq!(choice.options[0].id, "confirm");
+        assert_eq!(choice.options[1].id, "remember");
+        assert!(choice.options[1].description.contains(&target.label));
+        assert!(!store.permits(&target));
+
+        // One-call consent, including the unasked fallback, never saves a grant.
+        let once = PreparedSourceImport::parse_with_permission_store(
+            &permission_request(
+                root.path(),
+                Value::Object(choice.options[0].arguments.clone()),
+            ),
+            Some(store.clone()),
+        )
+        .unwrap();
+        once.authorize_remembered_push().unwrap();
+        assert!(!store.permits(&target));
+        assert!(PreparedSourceImport::parse_with_permission_store(
+            &permission_request(root.path(), force_call()),
+            Some(store.clone())
+        )
+        .is_err());
+
+        let remembering = PreparedSourceImport::parse_with_permission_store(
+            &permission_request(
+                root.path(),
+                Value::Object(choice.options[1].arguments.clone()),
+            ),
+            Some(store.clone()),
+        )
+        .unwrap();
+        assert!(
+            !store.permits(&target),
+            "admission alone must not write state"
+        );
+        remembering.authorize_remembered_push().unwrap();
+        assert!(store.permits(&target));
+        let reopened = PermissionStore::new(state.path().to_path_buf());
+        let next = PreparedSourceImport::parse_with_permission_store(
+            &permission_request(root.path(), force_call()),
+            Some(reopened),
+        )
+        .unwrap();
+        assert!(next.arguments.force);
+        next.authorize_remembered_push().unwrap();
+        let mut all = force_call();
+        all["args"] = json!({"force":true});
+        assert!(PreparedSourceImport::parse_with_permission_store(
+            &permission_request(root.path(), all),
+            Some(store)
+        )
+        .is_ok());
+    }
+
+    /// rule: INV.RUNTIME.DESTRUCTIVE-CONFIRMATION
+    #[test]
+    fn executing_the_remember_answer_saves_permission_before_the_push() {
+        let root = workspace();
+        let state = tempfile::tempdir().unwrap();
+        let store = PermissionStore::new(state.path().to_path_buf());
+        let choice = offered_permission(root.path(), &store);
+        let call =
+            super::super::v13_infobase_another_copy::with_consent(&choice.options[1].arguments);
+        let admitted = PreparedSourceImport::parse_with_permission_store(
+            &permission_request(root.path(), Value::Object(call)),
+            Some(store.clone()),
+        )
+        .unwrap();
+        let runner = SequenceRunner::new(vec![process(envelope(&[("main", full())], true), true)]);
+        let result = run(root.path(), &admitted, &runner);
+        assert!(result.ok, "{result:?}");
+        assert_eq!(runner.call_count(), 1);
+        assert!(runner.joined_args(0).contains("push main --force"));
+        assert!(store.permits(&PermissionTarget::of_workspace(root.path()).unwrap()));
+        assert!(PreparedSourceImport::parse_with_permission_store(
+            &permission_request(root.path(), force_call()),
+            Some(store),
+        )
+        .is_ok());
+    }
+
+    /// rule: INV.RUNTIME.DESTRUCTIVE-CONFIRMATION
+    #[test]
+    fn changing_the_infobase_cannot_reuse_a_grant_or_a_pending_remember_answer() {
+        let root = workspace();
+        let state = tempfile::tempdir().unwrap();
+        let store = PermissionStore::new(state.path().to_path_buf());
+        let choice = offered_permission(root.path(), &store);
+        let answer = Value::Object(choice.options[1].arguments.clone());
+        let admitted = PreparedSourceImport::parse_with_permission_store(
+            &permission_request(root.path(), answer.clone()),
+            Some(store.clone()),
+        )
+        .unwrap();
+        let old_target = PermissionTarget::of_workspace(root.path()).unwrap();
+        store.remember(&old_target).unwrap();
+        fs::write(
+            root.path().join(LOCAL_CONFIG_NAME),
+            "infobases: {origin: {connection: 'File=another'}}\n",
+        )
+        .unwrap();
+        let new_target = PermissionTarget::of_workspace(root.path()).unwrap();
+        assert_ne!(old_target, new_target);
+        assert!(PreparedSourceImport::parse_with_permission_store(
+            &permission_request(root.path(), answer),
+            Some(store.clone())
+        )
+        .is_err());
+        assert!(admitted.authorize_remembered_push().is_err());
+        assert!(!store.permits(&new_target));
+        let refusal = PreparedSourceImport::parse_with_permission_store(
+            &permission_request(root.path(), force_call()),
+            Some(store),
+        )
+        .unwrap_err();
+        assert!(refusal.human_choice.is_some());
+    }
+
+    /// rule: INV.RUNTIME.DESTRUCTIVE-CONFIRMATION
+    #[test]
+    fn revoked_permission_stops_an_admitted_push_before_provider_launch() {
+        let root = workspace();
+        let state = tempfile::tempdir().unwrap();
+        let store = PermissionStore::new(state.path().join("state"));
+        let target = PermissionTarget::of_workspace(root.path()).unwrap();
+        store.remember(&target).unwrap();
+        let mut admitted = PreparedSourceImport::parse_with_permission_store(
+            &permission_request(root.path(), force_call()),
+            Some(store),
+        )
+        .unwrap();
+        admitted.call = super::super::v13_infobase_another_copy::with_consent(&admitted.call);
+        // A different store with no grant models user revocation without
+        // changing global environment variables or any other test's state.
+        admitted.permission_store = Some(PermissionStore::new(state.path().join("revoked")));
+        let runner = SequenceRunner::new(vec![]);
+        let result = run(root.path(), &admitted, &runner);
+        assert_eq!(result.diagnostics[0]["code"], "cancelled");
+        assert_eq!(runner.call_count(), 0);
+    }
+
+    /// rule: INV.RUNTIME.DESTRUCTIVE-CONFIRMATION
+    #[test]
+    fn preview_never_saves_a_remember_answer() {
+        let root = workspace();
+        let state = tempfile::tempdir().unwrap();
+        let store = PermissionStore::new(state.path().to_path_buf());
+        let choice = offered_permission(root.path(), &store);
+        let mut call = choice.options[1].arguments.clone();
+        call.insert("dryRun".into(), json!(true));
+        let preview = PreparedSourceImport::parse_with_permission_store(
+            &permission_request(root.path(), Value::Object(call)),
+            Some(store.clone()),
+        )
+        .unwrap();
+        assert!(preview.dry_run);
+        assert!(preview.permission_target.is_none());
+        assert!(!store.permits(&PermissionTarget::of_workspace(root.path()).unwrap()));
+    }
+
+    /// rule: INV.RUNTIME.RUNNER-BASE-REFUSALS
+    /// rule: INV.RUNTIME.DESTRUCTIVE-CONFIRMATION
+    #[test]
+    fn divergence_uses_remembered_permission_without_asking_or_adding_force() {
+        let root = workspace();
+        let state = tempfile::tempdir().unwrap();
+        let store = PermissionStore::new(state.path().to_path_buf());
+        let mut prepared = prepared(root.path(), Some("main"), false, false);
+        prepared.permission_store = Some(store.clone());
+        let error = json!({"code":"non_fast_forward", "next":{"source_set":"main"}});
+        let refusal = || reject(RefusalCode::InvalidState, "the base diverged");
+        let first = exchange_refusal(&prepared, refusal(), &error);
+        let choice = first.human_choice.unwrap();
+        assert!(choice.options.iter().any(|option| option.id == "remember"));
+        let remembering = choice
+            .options
+            .iter()
+            .find(|option| option.id == "remember")
+            .unwrap();
+        assert!(HumanChoice::is_confirmed(
+            &push_force_question(&["main".into()]),
+            "unica.run",
+            &remembering.arguments
+        ));
+        store
+            .remember(&PermissionTarget::of_workspace(root.path()).unwrap())
+            .unwrap();
+        let next = exchange_refusal(&prepared, refusal(), &error);
+        assert!(next.human_choice.is_none());
+        assert_eq!(next.data.unwrap()["forcePushPermitted"], true);
+        assert_eq!(next.next[0]["args"]["args"]["force"], true);
+        assert_eq!(next.next[0]["args"]["dryRun"], true);
+        assert!(
+            !prepared.arguments.force,
+            "permission must not silently turn an ordinary push into force"
+        );
+    }
+
     /// Исполняемый `push` с `force:true` идёт только с согласия человека.
     /// Без него — отказ `cancelled` с вопросом-подтверждением по
     /// согласованному тексту: база названа, набор один — «набора», несколько —
@@ -2593,6 +2948,9 @@ pub(super) mod tests {
     #[test]
     fn an_executing_push_with_force_runs_only_with_the_persons_confirmation() {
         let root = workspace();
+        let parse = |request: &InvocationRequest| {
+            PreparedSourceImport::parse_with_permission_store(request, None)
+        };
         let request = |arguments: Value| {
             InvocationRequest::new(
                 ToolIdentity::Run,
@@ -2604,7 +2962,7 @@ pub(super) mod tests {
         };
         let call = json!({"op":"push","args":{"force":true,"sourceSet":"main"},"dryRun":false});
 
-        let refused = PreparedSourceImport::parse(&request(call.clone()))
+        let refused = parse(&request(call.clone()))
             .expect_err("force without a confirmation is not executed");
         assert_eq!(refused.diagnostics[0]["code"], "cancelled");
         let choice = refused.human_choice.as_deref().expect("a confirmation");
@@ -2631,16 +2989,16 @@ pub(super) mod tests {
         );
 
         let confirmed = choice.options[0].arguments.clone();
-        let executed = PreparedSourceImport::parse(&request(Value::Object(confirmed.clone())))
+        let executed = parse(&request(Value::Object(confirmed.clone())))
             .expect("a confirmed force is executed");
         assert!(executed.arguments.force && !executed.dry_run);
 
         // Подтверждение одного набора не перезаписывает базу другим.
         let mut other = confirmed;
         other["args"]["sourceSet"] = json!("ext-sales");
-        assert!(PreparedSourceImport::parse(&request(Value::Object(other))).is_err());
+        assert!(parse(&request(Value::Object(other))).is_err());
 
-        let all = PreparedSourceImport::parse(&request(
+        let all = parse(&request(
             json!({"op":"push","args":{"force":true},"dryRun":false}),
         ))
         .expect_err("all sets need a confirmation too");
@@ -2649,12 +3007,12 @@ pub(super) mod tests {
             "Перезаписать базу «origin» исходниками наборов «main», «ext-sales»?"
         );
 
-        let preview = PreparedSourceImport::parse(&request(
+        let preview = parse(&request(
             json!({"op":"push","args":{"force":true,"sourceSet":"main"},"dryRun":true}),
         ))
         .expect("a preview is not asked");
         assert!(preview.arguments.force && preview.dry_run);
-        let unforced = PreparedSourceImport::parse(&request(
+        let unforced = parse(&request(
             json!({"op":"push","args":{"sourceSet":"main"},"dryRun":false}),
         ))
         .expect("a push without force is not asked");

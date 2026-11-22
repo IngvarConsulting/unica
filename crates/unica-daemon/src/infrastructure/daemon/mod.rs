@@ -12,6 +12,7 @@ pub(crate) mod protocol;
 #[path = "../../../tests/platform/receipt_join_freshness.rs"]
 mod receipt_join_freshness_tests;
 pub(crate) mod server;
+pub(crate) mod user_state;
 
 mod v13_artifact_build;
 mod v13_call_graph;
@@ -24,6 +25,7 @@ mod v13_infobase_another_copy;
 mod v13_infobase_create;
 mod v13_infobase_exports;
 mod v13_infobase_sessions;
+mod v13_push_permission;
 mod v13_read_modes;
 mod v13_run_dictionary;
 mod v13_search_admission;
