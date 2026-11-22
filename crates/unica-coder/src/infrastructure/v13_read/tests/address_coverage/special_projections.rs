@@ -471,7 +471,8 @@ fn registered_form_requirements(
             FORMS,
         );
     }
-    if let Some(attributes) = native_form_children(form, "Attributes").next() {
+    let attributes = native_form_children(form, "Attributes").next();
+    if let Some(attributes) = attributes {
         let names = native_form_children(attributes, "Attribute")
             .map(|node| node.attribute("name").unwrap());
         let mut members = named_addresses(owner, "Attribute", names);
