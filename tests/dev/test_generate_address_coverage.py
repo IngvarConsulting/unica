@@ -564,6 +564,72 @@ class AddressCoverageReportTests(unittest.TestCase):
 
 
 
+    def test_native_adopted_extension_language_requires_both_read_origins(self) -> None:
+        producer = GENERATOR.EXTENSION_LANGUAGE_SHARD
+        shard = GENERATOR.EXTENSION_LANGUAGE_KEYS_SHARD
+        required = GENERATOR.native_adopted_extension_language_requirements(GENERATOR.REPO)
+        self.assertEqual([row["key"]["line"] for row in required], ["8.3.27", "8.5.1", "8.5.4"])
+        evidence = [
+            {
+                "schema_version": 1, "record_type": "evidence", "key": row["key"],
+                "witness": {"owner": obs["owner"], "origin": obs["origin"], "at": at, "level": "read",
+                            "reason": None, "test_case": producer},
+            }
+            for row in required for obs in row["requirement"]["observations"] for at in obs["addresses"]
+        ]
+        self.assertEqual([row["witness"]["at"] for row in evidence], ["ext:Language", "ext:Language.Русский"] * 3)
+        target = evidence[3]
+        witness = target["witness"]
+        self.write_shard(shard, *required)
+        self.write_shard(ROOT_SHARD, root_witness("main", "Language"))
+        self.write_shard(GENERATOR.DAEMON_SHARD, {
+            **target, "witness": {**witness, "test_case": GENERATOR.DAEMON_SHARD},
+        })
+        shards = frozenset({shard, producer, ROOT_SHARD, GENERATOR.DAEMON_SHARD})
+        diagnostic = (
+            r"(?s)missing required native adopted extension Language coverage.*"
+            r"ext:Language\.Русский \(8\.5\.1\): expected read"
+        )
+        for native_only in (False, True):
+            self.write_shard(producer, *evidence)
+            self.assertEqual(len(GENERATOR.merge_shards(self.root, shards, native_only=native_only)), 4)
+            for replacement in (
+                None, {"owner": "main:Configuration", "at": "main:Language.Русский"},
+                {"origin": witness["origin"].replace("/2.21/", "/2.22/")}, {"level": "roundtrip"},
+            ):
+                with self.subTest(native_only=native_only, replacement=replacement):
+                    remaining = [item for item in evidence if item is not target]
+                    if replacement is not None:
+                        remaining.append({**target, "witness": {**witness, **replacement}})
+                    self.write_shard(producer, *remaining)
+                    with self.assertRaisesRegex(ValueError, diagnostic):
+                        GENERATOR.merge_shards(self.root, shards, native_only=native_only)
+            self.write_shard(producer, *[item for item in evidence if item is not evidence[0]])
+            with self.assertRaisesRegex(ValueError, r"ext:Language \(8\.3\.27\): expected read"):
+                GENERATOR.merge_shards(self.root, shards, native_only=native_only)
+
+    def test_native_adopted_language_does_not_infer_belonging_from_registration_name(self) -> None:
+        required = GENERATOR.native_adopted_extension_language_requirements(GENERATOR.REPO)
+        for row in required:
+            for obs in row["requirement"]["observations"]:
+                origin = Path(obs["origin"])
+                target = self.root / origin
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes((GENERATOR.REPO / origin).read_bytes())
+        origin = required[-1]["requirement"]["observations"][1]["origin"]
+        target = self.root / origin
+        native = target.read_bytes()
+        tag = b"<ObjectBelonging>Adopted</ObjectBelonging>"
+        self.assertIn(tag, native)
+        target.write_bytes(native.replace(tag, b"", 1))
+        with self.assertRaisesRegex(ValueError, "expected registered adopted Language"):
+            GENERATOR.native_adopted_extension_language_requirements(self.root)
+        uuid = b"00000000-0000-0000-0000-000000000001"
+        self.assertIn(uuid, native)
+        target.write_bytes(native.replace(uuid, b"00000000-0000-0000-0000-000000000000", 1))
+        with self.assertRaisesRegex(ValueError, "missing extended configuration object UUID"):
+            GENERATOR.native_adopted_extension_language_requirements(self.root)
+
     def test_external_inline_requires_exact_descriptor_read_for_root_and_nested_keys(self) -> None:
         shard = GENERATOR.EXTERNAL_INLINE_KEYS_SHARD
         producer = GENERATOR.EXTERNAL_ROOT_SHARD

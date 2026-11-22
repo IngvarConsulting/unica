@@ -35,6 +35,7 @@ NATIVE_SHARDS = frozenset({
 })
 DAEMON_SHARD = "medium_published_document_and_bsl_branches_have_canonical_addresses"
 ROOT_KEYS_SHARD = "required_configuration_root_keys"
+EXTENSION_LANGUAGE_KEYS_SHARD = "required_native_adopted_extension_language_keys"
 METADATA_CHILD_KEYS_SHARD = "required_native_metadata_child_keys"
 EXTERNAL_CHILD_KEYS_SHARD = "required_native_external_child_keys"
 EXTERNAL_INLINE_KEYS_SHARD = "required_native_external_inline_keys"
@@ -59,13 +60,14 @@ XDTO_OWNER_SHAPES = {
 }
 NATIVE_ADDRESS_NAME = r"[^\W\d]\w*"
 REQUIRED_KEY_SHARDS = frozenset({
+    EXTENSION_LANGUAGE_KEYS_SHARD,
     ROOT_KEYS_SHARD, METADATA_CHILD_KEYS_SHARD, EXTERNAL_CHILD_KEYS_SHARD, EXTERNAL_INLINE_KEYS_SHARD,
     MODULE_ROLE_KEYS_SHARD,
     EDS_MODULE_KEYS_SHARD, SUBSYSTEM_INTERFACE_KEYS_SHARD, DCS_QUERY_KEYS_SHARD, ROLE_RIGHT_KEYS_SHARD,
     XDTO_KEYS_SHARD, SUBSYSTEM_CONTENT_KEYS_SHARD, WSDL_KEYS_SHARD, MXL_KEYS_SHARD, SCHEDULE_KEYS_SHARD,
 })
 NATIVE_SCOPE = (
-    "Configuration source sets and native Language registrations in extension source sets "
+    "Configuration source sets and native adopted Language registrations in extension source sets "
     "across three platform lines, plus native external processor and report root descriptors "
     "in the unica-coder address_coverage tests. Module role and path checks cover roles with "
     "physical BSL witnesses in native configuration and external artifact fixtures. "
@@ -213,11 +215,34 @@ def validate_required_record(record: object, shard: str) -> None:
             {"kind": owner_kind, "named": True, "role": None},
         ]:
             raise ValueError("required external child key must name the matching external owner kind")
-    elif key["source_kind"] != "configuration":
+    elif shard != EXTENSION_LANGUAGE_KEYS_SHARD and key["source_kind"] != "configuration":
         raise ValueError("required keys must belong to a configuration source set")
     shape = key["owner_shape"]
     requirement = record["requirement"]
     configuration = [{"kind": "Configuration", "named": False, "role": None}]
+    if shard == EXTENSION_LANGUAGE_KEYS_SHARD:
+        exact_fields(requirement, {"kind", "observations"}, "adopted extension Language requirement")
+        if (
+            key["source_kind"] != "extension" or shape != configuration
+            or key["branch"] != "Language" or key["role"] is not None or requirement["kind"] != "read"
+        ):
+            raise ValueError("required adopted Language key must name an extension root read")
+        observations = requirement["observations"]
+        if not isinstance(observations, list) or len(observations) < 2:
+            raise ValueError("required adopted Language reads must include the branch and its members")
+        addresses = set()
+        for index, observation in enumerate(observations):
+            exact_fields(observation, {"owner", "origin", "addresses"}, "adopted Language observation")
+            required_text(observation["origin"], "origin")
+            reads = observation["addresses"]
+            pattern = "ext:Language" if index == 0 else rf"ext:Language\.{NATIVE_ADDRESS_NAME}"
+            if (
+                observation["owner"] != "ext:Configuration" or not isinstance(reads, list) or len(reads) != 1
+                or not re.fullmatch(pattern, required_text(reads[0], "address")) or reads[0] in addresses
+            ):
+                raise ValueError("invalid or duplicate required adopted Language address")
+            addresses.add(reads[0])
+        return
     if shard == SUBSYSTEM_INTERFACE_KEYS_SHARD:
         exact_fields(requirement, {"kind", "at", "origin"}, "subsystem interface requirement")
         subsystem = [{"kind": "Subsystem", "named": True, "role": None}]
@@ -436,6 +461,7 @@ def check_required_keys(requirements: dict, groups: dict, *, native_only: bool) 
         MXL_KEYS_SHARD: ("MXL", []),
         SCHEDULE_KEYS_SHARD: ("Schedule", []),
         EXTERNAL_INLINE_KEYS_SHARD: ("external inline", []),
+        EXTENSION_LANGUAGE_KEYS_SHARD: ("adopted extension Language", []),
     }
     diagnostics = []
     for key, (shard, record) in sorted(requirements.items()):
@@ -463,6 +489,8 @@ def check_required_keys(requirements: dict, groups: dict, *, native_only: bool) 
                 emitter = DAEMON_SHARD if record["key"]["line"] == "8.3.27" else FORM_TEMPLATE_SHARD
             elif shard == EXTERNAL_INLINE_KEYS_SHARD:
                 emitter = EXTERNAL_ROOT_SHARD
+            elif shard == EXTENSION_LANGUAGE_KEYS_SHARD:
+                emitter = EXTENSION_LANGUAGE_SHARD
             observed = {
                 (w["level"], w["owner"], w["origin"], w["at"]) for w in witnesses
                 if w["test_case"] == emitter and w["reason"] is None
@@ -1197,6 +1225,57 @@ def native_schedule_requirements(repo: Path) -> list[dict]:
     return rows
 
 
+def native_adopted_extension_language_requirements(repo: Path) -> list[dict]:
+    """Require existing reads for the adopted languages in the native empty-extension corpus."""
+    md = "{http://v8.1c.ru/8.3/MDClasses}"
+    owner = "ext:Configuration"
+    branch = "ext:Language"
+    rows = []
+    for version, line in (("2.20", "8.3.27"), ("2.21", "8.5.1"), ("2.22", "8.5.4")):
+        source = Path("tests/fixtures/formats/platform_xml") / version / "empty_extension/ext"
+        origin = source / "Configuration.xml"
+        root = ET.parse(repo / origin).getroot()
+        configuration = root.find(f"{md}Configuration")
+        if (
+            root.tag != f"{md}MetaDataObject" or root.get("version") != version
+            or configuration is None
+            or configuration.findtext(f"{md}Properties/{md}Name") != "CorpusExtension"
+            or not configuration.findtext(f"{md}Properties/{md}ConfigurationExtensionPurpose")
+        ):
+            raise ValueError(f"{origin}: expected the native XML {version} extension")
+        registrations = configuration.findall(f"{md}ChildObjects/{md}Language")
+        names = [required_text(node.text, "Language registration name") for node in registrations]
+        if not names or len(names) != len(set(names)) or any(
+            len(node) or not re.fullmatch(NATIVE_ADDRESS_NAME, name)
+            for node, name in zip(registrations, names, strict=True)
+        ):
+            raise ValueError(f"{origin}: invalid native Language registrations")
+        observations = [{"owner": owner, "origin": origin.as_posix(), "addresses": [branch]}]
+        for name in names:
+            descriptor = source / "Languages" / f"{name}.xml"
+            root = ET.parse(repo / descriptor).getroot()
+            properties = root.find(f"{md}Language/{md}Properties")
+            if (
+                root.tag != f"{md}MetaDataObject" or root.get("version") != version
+                or properties is None or properties.findtext(f"{md}Name") != name
+                or properties.findtext(f"{md}ObjectBelonging") != "Adopted"
+            ):
+                raise ValueError(f"{descriptor}: expected registered adopted Language.{name}")
+            linked = properties.findtext(f"{md}ExtendedConfigurationObject")
+            if not linked or not uuid.UUID(linked).int:
+                raise ValueError(f"{descriptor}: missing extended configuration object UUID")
+            observations.append({
+                "owner": owner, "origin": descriptor.as_posix(), "addresses": [f"{branch}.{name}"],
+            })
+        rows.append({
+            "schema_version": SCHEMA_VERSION, "record_type": "required",
+            "key": {"line": line, "source_kind": "extension", "branch": "Language", "role": None,
+                    "owner_shape": [{"kind": "Configuration", "named": False, "role": None}]},
+            "requirement": {"kind": "read", "observations": observations},
+        })
+    return rows
+
+
 def native_external_inline_requirements(repo: Path) -> list[dict]:
     md = "{http://v8.1c.ru/8.3/MDClasses}"
     xr = "{http://v8.1c.ru/8.3/xcf/readable}"
@@ -1298,6 +1377,7 @@ def generate_report(native_only: bool) -> dict:
             (WSDL_KEYS_SHARD, native_wsdl_requirements),
             (SCHEDULE_KEYS_SHARD, native_schedule_requirements),
             (EXTERNAL_INLINE_KEYS_SHARD, native_external_inline_requirements),
+            (EXTENSION_LANGUAGE_KEYS_SHARD, native_adopted_extension_language_requirements),
             (MXL_KEYS_SHARD, lambda repo: native_mxl_requirements(repo, native_only=native_only)),
         ):
             records = producer(REPO)
