@@ -285,6 +285,50 @@ class AddressCoverageReportTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, r"(?s)missing required native Role.Right coverage.*Document_Orders.*8\.3\.27"):
                         GENERATOR.merge_shards(self.root, required_shards, native_only=native_only)
 
+    def test_native_xdto_requires_each_witness_from_its_own_line_and_package(self) -> None:
+        shard = GENERATOR.XDTO_KEYS_SHARD
+        required = GENERATOR.native_xdto_requirements(GENERATOR.REPO)
+        self.assertEqual(len(required), 15)
+        observations = [o for row in required for o in row["requirement"]["observations"]]
+        self.assertEqual(len(observations), 21)
+        self.assertEqual(sum(len(o["addresses"]) - 1 for o in observations), 30)
+        evidence = [
+            {
+                "schema_version": 1, "record_type": "evidence", "key": row["key"],
+                "witness": {
+                    "owner": o["owner"], "at": at, "origin": o["origin"],
+                    "level": "read", "reason": None, "test_case": METADATA_SHARD,
+                },
+            }
+            for row in required for o in row["requirement"]["observations"] for at in o["addresses"]
+        ]
+        target = next(
+            row for row in evidence if row["key"]["line"] == "8.5.1"
+            and row["witness"]["at"].endswith(".Type.EnterpriseData.Property.Версия")
+        )
+        rest = [row for row in evidence if row != target]
+        self.assertTrue(any(row["key"] == target["key"] for row in rest))
+        wrong_line = {**target, "key": {**target["key"], "line": "8.5.4"}}
+        wrong_origin = target["witness"]["origin"].replace("/2.21/", "/2.22/")
+        self.assertEqual(
+            (GENERATOR.REPO / target["witness"]["origin"]).read_bytes(),
+            (GENERATOR.REPO / wrong_origin).read_bytes(),
+        )
+        wrong_package = {**target, "witness": {**target["witness"], "origin": wrong_origin}}
+        wrong_level = {**target, "witness": {**target["witness"], "level": "roundtrip"}}
+        self.write_shard(shard, *required)
+        required_shards = frozenset({shard, METADATA_SHARD})
+        for native_only in (False, True):
+            with self.subTest(native_only=native_only):
+                self.write_shard(METADATA_SHARD, *evidence)
+                self.assertEqual(len(GENERATOR.merge_shards(self.root, required_shards, native_only=native_only)), 15)
+                for replacement in ([], [wrong_line], [wrong_package], [wrong_level]):
+                    self.write_shard(METADATA_SHARD, *rest, *replacement)
+                    with self.assertRaisesRegex(
+                        ValueError, r"(?s)missing required native XDTO coverage.*Property\.Версия \(8\.5\.1\)",
+                    ):
+                        GENERATOR.merge_shards(self.root, required_shards, native_only=native_only)
+
     def test_witnesses_for_one_shape_are_grouped_in_stable_order(self) -> None:
         first, second = root_witness("main"), root_witness("other")
         self.write_root_shard(second, first)

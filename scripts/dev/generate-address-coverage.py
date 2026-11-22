@@ -41,9 +41,17 @@ EDS_MODULE_KEYS_SHARD = "required_native_eds_module_keys"
 SUBSYSTEM_INTERFACE_KEYS_SHARD = "required_native_subsystem_interface_keys"
 DCS_QUERY_KEYS_SHARD = "required_native_dcs_query_keys"
 ROLE_RIGHT_KEYS_SHARD = "required_native_role_right_keys"
+XDTO_KEYS_SHARD = "required_native_xdto_keys"
+XDTO_OWNER_SHAPES = {
+    "Namespace": {("XDTOPackage",)},
+    "Type": {("XDTOPackage",)},
+    "Property": {("XDTOPackage",), ("XDTOPackage", "Type"), ("XDTOPackage", "Type", "Property")},
+}
+XDTO_NAME = r"[^\W\d]\w*"
 REQUIRED_KEY_SHARDS = frozenset({
     ROOT_KEYS_SHARD, METADATA_CHILD_KEYS_SHARD, EXTERNAL_CHILD_KEYS_SHARD, MODULE_ROLE_KEYS_SHARD,
     EDS_MODULE_KEYS_SHARD, SUBSYSTEM_INTERFACE_KEYS_SHARD, DCS_QUERY_KEYS_SHARD, ROLE_RIGHT_KEYS_SHARD,
+    XDTO_KEYS_SHARD,
 })
 NATIVE_SCOPE = (
     "Configuration source sets and native Language registrations in extension source sets "
@@ -60,6 +68,7 @@ NATIVE_SCOPE = (
     " and ExternalDataSource module collections and round-trips for the native files on each line."
     " It also requires exact read witnesses for registered native Report and DataProcessor DCS queries"
     " and the role-right collection and members in native SalesReader fixtures."
+    " Native XDTO requirements trace Namespace, Type and Property reads to registered Package.bin files."
 )
 DAEMON_SCOPE = (
     "Read witnesses from the selected document and BSL coverage test of unica-daemon, "
@@ -245,6 +254,39 @@ def validate_required_record(record: object, shard: str) -> None:
             raise ValueError("duplicate required role right address")
         required_text(requirement["origin"], "origin")
         return
+    if shard == XDTO_KEYS_SHARD:
+        exact_fields(requirement, {"kind", "observations"}, "XDTO requirement")
+        kinds = tuple(segment["kind"] for segment in shape)
+        if (
+            kinds not in XDTO_OWNER_SHAPES.get(key["branch"], set()) or key["role"] is not None
+            or any(not segment["named"] or segment["role"] is not None for segment in shape)
+            or requirement["kind"] != "read"
+        ):
+            raise ValueError("required XDTO key must name an XDTO read branch")
+        observations = requirement["observations"]
+        if not isinstance(observations, list) or not observations:
+            raise ValueError("expected nonempty required XDTO observations")
+        owner_pattern = "main:" + r"\.".join(kind + r"\." + XDTO_NAME for kind in kinds)
+        owners = set()
+        for observation in observations:
+            exact_fields(observation, {"owner", "origin", "addresses"}, "XDTO observation")
+            owner = required_text(observation["owner"], "XDTO owner")
+            if not re.fullmatch(owner_pattern, owner) or owner in owners:
+                raise ValueError("required XDTO owner is invalid or duplicated")
+            owners.add(owner)
+            required_text(observation["origin"], "origin")
+            branch = f"{owner}.{key['branch']}"
+            addresses = observation["addresses"]
+            if not isinstance(addresses, list) or not addresses or addresses[0] != branch:
+                raise ValueError("required XDTO addresses must include their branch")
+            for address in addresses[1:]:
+                if key["branch"] == "Namespace" or not re.fullmatch(
+                    rf"{re.escape(branch)}\.{XDTO_NAME}", required_text(address, "XDTO member address")
+                ):
+                    raise ValueError("required XDTO member must belong to its branch")
+            if len(addresses) != len(set(addresses)):
+                raise ValueError("duplicate required XDTO address")
+        return
     if shard == EDS_MODULE_KEYS_SHARD:
         owner_kinds = tuple(segment["kind"] for segment in shape)
         if (
@@ -326,6 +368,7 @@ def check_required_keys(requirements: dict, groups: dict, *, native_only: bool) 
     missing_interfaces = []
     missing_queries = []
     missing_role_rights = []
+    missing_xdto = []
     diagnostics = []
     for key, (shard, record) in sorted(requirements.items()):
         witnesses = groups.get(key, {}).get("witnesses", ())
@@ -342,18 +385,20 @@ def check_required_keys(requirements: dict, groups: dict, *, native_only: bool) 
                     f"{requirement['at']} ({record['key']['line']}): expected read from {requirement['origin']}"
                 )
             continue
-        if shard == ROLE_RIGHT_KEYS_SHARD:
+        if shard in {ROLE_RIGHT_KEYS_SHARD, XDTO_KEYS_SHARD}:
             requirement = record["requirement"]
-            addresses = {
-                w["at"] for w in witnesses
+            observations = [requirement] if shard == ROLE_RIGHT_KEYS_SHARD else requirement["observations"]
+            missing_reads = missing_role_rights if shard == ROLE_RIGHT_KEYS_SHARD else missing_xdto
+            reads = {
+                (w["owner"], w["origin"], w["at"]) for w in witnesses
                 if w["test_case"] == METADATA_SHARD and w["reason"] is None and w["level"] == "read"
-                and w["owner"] == requirement["owner"] and w["origin"] == requirement["origin"]
             }
-            for at in requirement["addresses"]:
-                if at not in addresses:
-                    missing_role_rights.append(
-                        f"{at} ({record['key']['line']}): expected read from {requirement['origin']}"
-                    )
+            for observation in observations:
+                for at in observation["addresses"]:
+                    if (observation["owner"], observation["origin"], at) not in reads:
+                        missing_reads.append(
+                            f"{at} ({record['key']['line']}): expected read from {observation['origin']}"
+                        )
             continue
         if shard == EDS_MODULE_KEYS_SHARD:
             level = record["requirement"]["kind"]
@@ -400,6 +445,8 @@ def check_required_keys(requirements: dict, groups: dict, *, native_only: bool) 
         errors.append("missing required native DCS Query coverage:\n" + "\n".join(missing_queries))
     if missing_role_rights:
         errors.append("missing required native Role.Right coverage:\n" + "\n".join(missing_role_rights))
+    if missing_xdto:
+        errors.append("missing required native XDTO coverage:\n" + "\n".join(missing_xdto))
     if errors:
         raise ValueError("\n".join(errors))
 
@@ -695,6 +742,106 @@ def native_role_right_requirements(repo: Path) -> list[dict]:
     return rows
 
 
+def native_xdto_requirements(repo: Path) -> list[dict]:
+    """Derive XDTO branch and named-member requirements from native registrations and package XML."""
+    md = "{http://v8.1c.ru/8.3/MDClasses}"
+    xdto = "{http://v8.1c.ru/8.1/xdto}"
+    xsi_type = "{http://www.w3.org/2001/XMLSchema-instance}type"
+    rows = []
+
+    def name(value: str | None) -> str:
+        text = required_text(value, "native XDTO name")
+        if not re.fullmatch(XDTO_NAME, text):
+            raise ValueError(f"invalid native XDTO name {text}")
+        return text
+
+    for version, line in (("2.20", "8.3.27"), ("2.21", "8.5.1"), ("2.22", "8.5.4")):
+        source = repo / "tests/fixtures/formats/platform_xml" / version / "all_kinds/src"
+        config = ET.parse(source / "Configuration.xml").getroot()
+        if config.tag != f"{md}MetaDataObject" or config.get("version") != version:
+            raise ValueError(f"native XDTO: wrong configuration format in {source}")
+        packages = [
+            name(node.text) for node in config.findall(f"{md}Configuration/{md}ChildObjects/{md}XDTOPackage")
+        ]
+        if not packages or len(packages) != len(set(packages)):
+            raise ValueError(f"native XDTO: missing or duplicate package registrations in {source}")
+        branches = {}
+        for package_name in sorted(packages):
+            descriptor_path = source / "XDTOPackages" / f"{package_name}.xml"
+            descriptor = ET.parse(descriptor_path).getroot()
+            artifacts = list(descriptor)
+            if (
+                descriptor.tag != f"{md}MetaDataObject" or descriptor.get("version") != version
+                or len(artifacts) != 1 or artifacts[0].tag != f"{md}XDTOPackage"
+                or artifacts[0].findtext(f"{md}Properties/{md}Name") != package_name
+            ):
+                raise ValueError(f"native XDTO: wrong package descriptor {descriptor_path}")
+            try:
+                identity = uuid.UUID(artifacts[0].get("uuid", ""))
+            except ValueError as error:
+                raise ValueError(f"native XDTO: invalid UUID in {descriptor_path}") from error
+            namespace = required_text(artifacts[0].findtext(f"{md}Properties/{md}Namespace"), "XDTO namespace")
+            payload = descriptor_path.with_suffix("") / "Ext/Package.bin"
+            package = ET.parse(payload).getroot()
+            if not identity.int or package.tag != f"{xdto}package" or package.get("targetNamespace") != namespace:
+                raise ValueError(f"native XDTO: identity or namespace mismatch in {payload}")
+            origin = payload.relative_to(repo).as_posix()
+
+            def observe(kinds, owner, branch, members):
+                at = f"{owner}.{branch}"
+                branches.setdefault((kinds, branch), []).append({
+                    "owner": owner, "origin": origin, "addresses": [at, *sorted(members)],
+                })
+
+            def inspect_properties(node, owner, kinds):
+                properties = node.findall(xdto + "property")
+                if not properties:
+                    return
+                members = {}
+                for prop in properties:
+                    if "name" not in prop.attrib:
+                        # Ref-only rows participate in the collection without their own address.
+                        if not prop.get("ref"):
+                            raise ValueError(f"native XDTO: unnamed property without a reference in {payload}")
+                        continue
+                    at = f"{owner}.Property.{name(prop.get('name'))}"
+                    if at in members:
+                        raise ValueError(f"native XDTO: duplicate property {at}")
+                    members[at] = prop
+                observe(kinds, owner, "Property", members)
+                for at, prop in sorted(members.items()):
+                    definitions = prop.findall(xdto + "typeDef")
+                    if len(definitions) > 1 or (definitions and not definitions[0].get(xsi_type)):
+                        raise ValueError(f"native XDTO: ambiguous anonymous type at {at}")
+                    if definitions:
+                        inspect_properties(definitions[0], at, (*kinds, "Property"))
+
+            owner = f"main:XDTOPackage.{package_name}"
+            kinds = ("XDTOPackage",)
+            observe(kinds, owner, "Namespace", ())
+            types = {}
+            for node in package:
+                if node.tag in {xdto + "objectType", xdto + "valueType"}:
+                    at = f"{owner}.Type.{name(node.get('name'))}"
+                    if at in types:
+                        raise ValueError(f"native XDTO: duplicate type {at}")
+                    types[at] = node
+            if types:
+                observe(kinds, owner, "Type", types)
+            inspect_properties(package, owner, kinds)
+            for at, node in sorted(types.items()):
+                inspect_properties(node, at, (*kinds, "Type"))
+        for (kinds, branch), observations in sorted(branches.items()):
+            rows.append({
+                "schema_version": SCHEMA_VERSION, "record_type": "required",
+                "key": {"line": line, "source_kind": "configuration",
+                        "owner_shape": [{"kind": kind, "named": True, "role": None} for kind in kinds],
+                        "branch": branch, "role": None},
+                "requirement": {"kind": "read", "observations": observations},
+            })
+    return rows
+
+
 def generate_report(native_only: bool) -> dict:
     revision, status = git_state()
     cases = [("unica-coder", "address_coverage")]
@@ -719,6 +866,7 @@ def generate_report(native_only: bool) -> dict:
         for shard, producer in (
             (DCS_QUERY_KEYS_SHARD, native_dcs_query_requirements),
             (ROLE_RIGHT_KEYS_SHARD, native_role_right_requirements),
+            (XDTO_KEYS_SHARD, native_xdto_requirements),
         ):
             records = producer(REPO)
             path = Path(scratch) / f"{shard}.jsonl"
