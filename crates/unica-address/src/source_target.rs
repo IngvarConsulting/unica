@@ -787,12 +787,21 @@ mod tests {
         }
     }
 
+    /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
     #[test]
     fn nested_subsystem_paths_do_not_extend_the_metadata_address_grammar() {
+        use crate::address::QualifiedAddress;
+
         assert!(MetadataAddress::parse_logical("Subsystem.A.B").is_err());
         assert!(MetadataAddressPrefix::parse_logical("Subsystem.A.B").is_err());
 
         let top_level = MetadataAddress::parse_logical("Subsystem.A").unwrap();
         assert_eq!(top_level.target_kind(), TargetKind::MetadataObject);
+
+        // Публичный адрес вложенной подсистемы содержит вид каждого узла.
+        assert!(QualifiedAddress::parse("main:Subsystem.A.B").is_err());
+        let at = "main:Subsystem.A.Subsystem.B";
+        let canonical = QualifiedAddress::parse(at).unwrap();
+        assert_eq!(canonical.to_string(), at);
     }
 }

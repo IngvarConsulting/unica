@@ -93,7 +93,8 @@ Prose resembling JSON: `"SubsystemPath": "Subsystems/Ложная/Subsystems"`.
 
         self.assertIn("pub struct SubsystemAddress", subsystem)
         self.assertIn("#[serde(transparent)]", subsystem)
-        self.assertIn("SUBSYSTEM_ADDRESS_MAX_DEPTH", subsystem)
+        self.assertNotIn("SUBSYSTEM_ADDRESS_MAX_DEPTH", subsystem)
+        self.assertNotIn("SOURCE_TREE_TRAVERSAL_MAX_DEPTH", subsystem + source_target)
         self.assertIn('"СтандартныеПодсистемы.Обсуждения"', subsystem)
         self.assertNotIn("SUBSYSTEM_ADDRESS_MAX_SEGMENTS", source_target)
         self.assertIn('MetadataAddress::parse_logical("Subsystem.A.B").is_err()', source_target)

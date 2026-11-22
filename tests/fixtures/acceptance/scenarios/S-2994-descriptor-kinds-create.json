@@ -1,0 +1,148 @@
+{
+  "id": "S-2994-descriptor-kinds-create",
+  "issue": 2994,
+  "area": "Создание и удаление объектов",
+  "task": "Одним вызовом создать стиль, бота, WebSocket-клиент и общую команду, назначить команде группу. Прочитать созданные объекты и проверить группу команды.",
+  "workspace": "tests/fixtures/acceptance/workspace-all-kinds",
+  "formats": [
+    "2.20",
+    "2.21",
+    "2.22"
+  ],
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "object.create",
+            "args": {
+              "values": {
+                "kind": "Style",
+                "name": "Probe2994"
+              }
+            }
+          },
+          {
+            "op": "object.create",
+            "args": {
+              "values": {
+                "kind": "Bot",
+                "name": "Probe2994"
+              }
+            }
+          },
+          {
+            "op": "object.create",
+            "args": {
+              "values": {
+                "kind": "WebSocketClient",
+                "name": "Probe2994"
+              }
+            }
+          },
+          {
+            "op": "object.create",
+            "args": {
+              "values": {
+                "kind": "CommonCommand",
+                "name": "Probe2994"
+              }
+            }
+          },
+          {
+            "op": "props.set",
+            "args": {
+              "at": "main:CommonCommand.Probe2994",
+              "values": {
+                "Group": "NavigationPanelOrdinary"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "token": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Style.Probe2994"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Style"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Bot.Probe2994"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Bot"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:WebSocketClient.Probe2994"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "WebSocketClient"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonCommand.Probe2994"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "CommonCommand"
+        },
+        {
+          "pointer": "/data/props/Group",
+          "eq": "NavigationPanelOrdinary"
+        }
+      ]
+    }
+  ]
+}

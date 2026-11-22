@@ -50,6 +50,7 @@ impl PredefinedCodeTypePlan {
                     kind:
                         unica_metadata::CreatableKind::Typed(MetadataKind::ChartOfCalculationTypes),
                     name,
+                    ..
                 } => {
                     let key = format!("ChartOfCalculationTypes.{name}");
                     if let Some(previous) = owners.remove(&key) {

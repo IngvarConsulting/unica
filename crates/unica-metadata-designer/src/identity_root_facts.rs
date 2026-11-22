@@ -22,6 +22,7 @@ enum Fact {
     UnsignedInteger,
     /// Непустое слово без вложенных элементов.
     Text,
+    ExactText,
     /// Одно из значений перечисления платформы.
     Enum(&'static [&'static str]),
     /// Описание типа в форме, которую читает и `Type` константы; контейнер
@@ -89,9 +90,30 @@ const PROFILE: &[(&str, &[(&str, Fact)])] = &[
     ("IntegrationService", &[("Synonym", Fact::Localized)]),
     ("WSReference", &[("Synonym", Fact::Localized)]),
     ("ExternalDataSource", &[("Synonym", Fact::Localized)]),
-    ("Table", &[("Synonym", Fact::Localized)]),
-    ("Cube", &[("Synonym", Fact::Localized)]),
-    ("DimensionTable", &[("Synonym", Fact::Localized)]),
+    (
+        "Table",
+        &[
+            ("Synonym", Fact::Localized),
+            ("TableType", Fact::Enum(&["Table", "Expression"])),
+            ("NameInDataSource", Fact::ExactText),
+            ("ExpressionInDataSource", Fact::ExactText),
+            ("ReadOnly", Fact::Boolean),
+        ],
+    ),
+    (
+        "Cube",
+        &[
+            ("Synonym", Fact::Localized),
+            ("NameInDataSource", Fact::ExactText),
+        ],
+    ),
+    (
+        "DimensionTable",
+        &[
+            ("Synonym", Fact::Localized),
+            ("NameInDataSource", Fact::ExactText),
+        ],
+    ),
 ];
 
 /// Виды, у которых профиль читает базовые факты корня.
@@ -137,10 +159,10 @@ fn observe(
                 value
             })))
         }
-        Fact::Text => {
+        Fact::Text | Fact::ExactText => {
             let value = direct_text_content(node);
             if !meta_info_property_value_is_valid(node, MetaInfoPropertyValueKind::String)
-                || value.trim() != value
+                || (fact == Fact::Text && value.trim() != value)
             {
                 return Err(malformed());
             }
@@ -351,7 +373,7 @@ mod tests {
     fn an_unmodelled_platform_type_is_a_limit_not_an_absence() {
         let payload = read(
             "SessionParameter",
-            "<Type><v8:Type>v8:FixedStructure</v8:Type></Type>",
+            "<Type><v8:Type>v8:UnknownType</v8:Type></Type>",
         );
         assert_eq!(property(&payload, "Type"), None);
         assert_eq!(unreadable(&payload), ["properties.Type"]);
@@ -359,6 +381,23 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("incomplete"));
+    }
+
+    /// rule: INV.SOURCE.OBSERVED-TYPE-CAPABILITY
+    #[test]
+    fn fixed_structure_is_observed_without_a_writer() {
+        let payload = read(
+            "SessionParameter",
+            "<Type><v8:Type>v8:FixedStructure</v8:Type></Type>",
+        );
+        assert_eq!(
+            property(&payload, "Type"),
+            Some(&json!({
+                "variants": [{"kind": "fixedStructure"}],
+                "mutationCapability": "readOnly"
+            }))
+        );
+        assert!(unreadable(&payload).is_empty());
     }
 
     #[test]

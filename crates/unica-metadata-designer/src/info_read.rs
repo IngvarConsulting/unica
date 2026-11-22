@@ -7,13 +7,13 @@ use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
 use unica_address::source_target::{MetadataAddress, ResolvedTarget, SourceTarget, TargetKind};
-use unica_metadata::subsystem::SUBSYSTEM_ADDRESS_MAX_DEPTH;
 use unica_metadata::subsystem_topology::MetadataObjectIdentity;
 use unica_metadata::support_state::{ObjectSupportState, SupportStateReader};
 use unica_metadata::{
     MetaDiagnostic, MetaDiagnosticCode, MetaEventSource, MetaSupportStatus, MetadataKind,
 };
 use unica_source_contract::discovery::ProjectDiscoveryRead;
+use unica_source_contract::read::SOURCE_TREE_TRAVERSAL_MAX_DEPTH;
 use unica_source_contract::read::{
     RetainedSourceRead, SecureFileSnapshotEntry, SecureTreeCaptureLimits,
 };
@@ -518,7 +518,7 @@ fn typed_subsystem_evidence<G>(
         .open_retained_read(
             &resolved.source_root,
             SecureTreeCaptureLimits {
-                maximum_depth: SUBSYSTEM_ADDRESS_MAX_DEPTH * 2,
+                maximum_depth: SOURCE_TREE_TRAVERSAL_MAX_DEPTH,
             },
             &mut checkpoint,
         )
@@ -527,10 +527,14 @@ fn typed_subsystem_evidence<G>(
             crate::subsystem_topology::read_registered_subsystem_topology(retained, &mut checkpoint)
         }) {
         Ok(topology) => topology,
-        Err(_) => {
+        Err(error) => {
             return subsystem_evidence_unavailable(
                 &identity.address,
-                "registered subsystem topology cannot be proved completely",
+                if error.is_depth_limit() {
+                    "registered subsystem topology exceeds its traversal depth limit"
+                } else {
+                    "registered subsystem topology cannot be proved completely"
+                },
             )
         }
     };
