@@ -3,7 +3,10 @@ use super::*;
 const NATIVE_MODULE: &str = "main:CommonModule.EventHandlers";
 const NATIVE_VARIABLES: &str = "main:CommonModule.EventHandlers.Variable";
 const NATIVE_BSL: &str = "CommonModules/EventHandlers/Ext/Module.bsl";
-const NATIVE_FORMATS: [&str; 2] = ["2.21", "2.22"];
+const NATIVE_FIXTURES: [(&str, &str); 2] = [
+    ("2.21", "tests/fixtures/formats/platform_xml/2.21/all_kinds"),
+    ("2.22", "tests/fixtures/formats/platform_xml/2.22/all_kinds"),
+];
 
 pub(super) fn write_requirements(directory: &Path) {
     let mut lines = vec![
@@ -18,11 +21,11 @@ pub(super) fn write_requirements(directory: &Path) {
             "tests/fixtures/acceptance/workspace-notification-binding/src/Catalogs/Команды/Forms/ФормаСписка/Ext/Form/Module.bsl",
         ),
     ];
-    for format in NATIVE_FORMATS {
+    for (format, fixture_root) in NATIVE_FIXTURES {
         lines.push(required_branch(
             format,
             NATIVE_VARIABLES,
-            &format!("tests/fixtures/formats/platform_xml/{format}/all_kinds/src/{NATIVE_BSL}"),
+            &format!("{fixture_root}/src/{NATIVE_BSL}"),
         ));
     }
     write_shard(&directory.join("required_bsl_projection_keys.jsonl"), lines);
@@ -61,9 +64,12 @@ fn required_branch(format: &str, at: &str, origin: &str) -> String {
 
 pub(super) fn check_native_empty_variables(evidence: &mut EvidenceRows) {
     const NAME: &str = "EventHandlers";
-    for format in NATIVE_FORMATS {
+    for (format, fixture_root) in NATIVE_FIXTURES {
+        let fixture_name = Path::new(fixture_root)
+            .strip_prefix(Path::new("tests").join("fixtures"))
+            .unwrap();
         let fixture = fixture_with_profile(
-            &format!("../formats/platform_xml/{format}/all_kinds"),
+            &format!("../{}", fixture_name.display()),
             unica_workspace::source_profile::platform_xml_source_profile,
         );
         let configuration = fixture_xml(&fixture, NATIVE_MODULE, "Configuration.xml");
@@ -119,7 +125,7 @@ pub(super) fn check_native_empty_variables(evidence: &mut EvidenceRows) {
         );
         evidence.record_fixture_evidence(
             &fixture,
-            &format!("tests/fixtures/formats/platform_xml/{format}/all_kinds"),
+            fixture_root,
             NATIVE_BSL,
             Evidence::Read {
                 at: NATIVE_VARIABLES,
