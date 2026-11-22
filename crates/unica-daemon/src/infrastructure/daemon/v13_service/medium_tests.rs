@@ -1088,27 +1088,40 @@ fn resolve_scheduled_job_schedule_uses_its_local_resource_and_registered_owner()
     const AT: &str = "main:ScheduledJob.KeyProbe.Schedule";
     const RELATIVE: &str = "ScheduledJobs/KeyProbe/Ext/Schedule.xml";
     const ORPHAN: &str = "ScheduledJobs/Orphan/Ext/Schedule.xml";
-    let fixtures: [(&str, &[u8], &[u8], &[u8]); 3] = [
-        (
-            "2.20",
-            include_bytes!("../../../../../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/Configuration.xml"),
-            include_bytes!("../../../../../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/ScheduledJobs/KeyProbe.xml"),
-            include_bytes!("../../../../../../tests/fixtures/acceptance/native-scheduled-job-schedule/2.20/Schedule.xml"),
-        ),
-        (
-            "2.21",
-            include_bytes!("../../../../../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/Configuration.xml"),
-            include_bytes!("../../../../../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/ScheduledJobs/KeyProbe.xml"),
-            include_bytes!("../../../../../../tests/fixtures/acceptance/native-scheduled-job-schedule/2.21/Schedule.xml"),
-        ),
-        (
-            "2.22",
-            include_bytes!("../../../../../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src/Configuration.xml"),
-            include_bytes!("../../../../../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src/ScheduledJobs/KeyProbe.xml"),
-            include_bytes!("../../../../../../tests/fixtures/acceptance/native-scheduled-job-schedule/2.22/Schedule.xml"),
-        ),
+    struct ScheduleFixture {
+        format: &'static str,
+        configuration: &'static [u8],
+        descriptor: &'static [u8],
+        schedule: &'static [u8],
+    }
+
+    let fixtures = [
+        ScheduleFixture {
+            format: "2.20",
+            configuration: include_bytes!("../../../../../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/Configuration.xml"),
+            descriptor: include_bytes!("../../../../../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/ScheduledJobs/KeyProbe.xml"),
+            schedule: include_bytes!("../../../../../../tests/fixtures/acceptance/native-scheduled-job-schedule/2.20/Schedule.xml"),
+        },
+        ScheduleFixture {
+            format: "2.21",
+            configuration: include_bytes!("../../../../../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/Configuration.xml"),
+            descriptor: include_bytes!("../../../../../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/ScheduledJobs/KeyProbe.xml"),
+            schedule: include_bytes!("../../../../../../tests/fixtures/acceptance/native-scheduled-job-schedule/2.21/Schedule.xml"),
+        },
+        ScheduleFixture {
+            format: "2.22",
+            configuration: include_bytes!("../../../../../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src/Configuration.xml"),
+            descriptor: include_bytes!("../../../../../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src/ScheduledJobs/KeyProbe.xml"),
+            schedule: include_bytes!("../../../../../../tests/fixtures/acceptance/native-scheduled-job-schedule/2.22/Schedule.xml"),
+        },
     ];
-    for (format, configuration, descriptor, raw) in fixtures {
+    for ScheduleFixture {
+        format,
+        configuration,
+        descriptor,
+        schedule,
+    } in fixtures
+    {
         let workspace = tempfile::tempdir().unwrap();
         let root = workspace.path().canonicalize().unwrap();
         let src = root.join("src");
@@ -1136,7 +1149,7 @@ fn resolve_scheduled_job_schedule_uses_its_local_resource_and_registered_owner()
         refuse(json!({"at": AT}));
         refuse(json!({"path": RELATIVE}));
 
-        std::fs::write(src.join(RELATIVE), raw).unwrap();
+        std::fs::write(src.join(RELATIVE), schedule).unwrap();
         let forward = invoke_exact_read(&root, ToolIdentity::Resolve, json!({"at": AT}));
         assert!(forward.ok, "{format}: {forward:?}");
         let forward = forward.data.unwrap();
@@ -1159,7 +1172,7 @@ fn resolve_scheduled_job_schedule_uses_its_local_resource_and_registered_owner()
             );
         std::fs::write(src.join("ScheduledJobs/Orphan.xml"), descriptor).unwrap();
         std::fs::create_dir_all(src.join("ScheduledJobs/Orphan/Ext")).unwrap();
-        std::fs::write(src.join(ORPHAN), raw).unwrap();
+        std::fs::write(src.join(ORPHAN), schedule).unwrap();
         let unregistered = refuse(json!({"path": ORPHAN}));
         assert!(
             unregistered.diagnostics[0]["message"]
