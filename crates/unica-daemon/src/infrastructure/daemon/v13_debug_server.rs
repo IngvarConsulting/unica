@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use unica_artifact_delivery::engine::BundledTool;
 use unica_execution_contract::invocation::{DomainResult, SafeIdentityHash};
 use unica_process::runner::{ProcessCommand, ProcessRunner};
-use unica_refusal::RefusalCode;
+use unica_refusal::{RefusalCode, RefusalDetail};
 use unica_source_contract::workspace::WorkspaceContext;
 use unica_work_control::cancellation::CancellationToken;
 
@@ -90,9 +90,9 @@ impl PreparedDebugServer {
         };
         let context = discover_workspace(Some(PathBuf::from(invocation.workspace_hint())))
             .map_err(|_| {
-                failure(
-                    operation,
-                    RefusalCode::ProviderUnavailable,
+                DomainResult::canonical_rejection_detailed(
+                    Some(operation.into()),
+                    RefusalDetail::ProviderAbsent,
                     "cannot discover debug server workspace",
                 )
             })?;
