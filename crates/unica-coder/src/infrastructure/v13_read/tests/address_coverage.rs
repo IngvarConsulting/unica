@@ -839,6 +839,18 @@ fn native_external_root_descriptors_match_published_addresses() {
                 AddressEvidence::Read(&child_branch),
             );
         }
+        if format == "2.20" {
+            let child =
+                native_registered_form_descriptor(artifact, &descriptor_path, "Main", format);
+            let form = QualifiedAddress::parse(&format!("{at_text}.Form.Main")).unwrap();
+            record_native_form_module_group(
+                &authority,
+                (line, source_kind),
+                &form,
+                &child,
+                &mut evidence,
+            );
+        }
         if format == "2.20" && source_kind == SourceSetKind::ExternalReport {
             check_native_external_dcs_parameters(
                 &authority,
@@ -1396,11 +1408,133 @@ fn native_form_and_template_addresses_follow_text_registrations() {
             );
         }
     }
+    check_native_html_processor_form_module(&mut evidence);
     check_native_command_and_bound_events(&mut evidence);
     evidence.finish();
 }
 
 #[allow(clippy::too_many_arguments)]
+fn native_registered_form_descriptor(
+    parent: roxmltree::Node<'_, '_>,
+    parent_descriptor: &Path,
+    name: &str,
+    format: &str,
+) -> PathBuf {
+    let mut registrations = native_child_objects(parent).filter(|node| {
+        node.has_tag_name((MD_CLASSES_NS, "Form")) && node.text().map(str::trim) == Some(name)
+    });
+    let registration = registrations.next().expect("native Form registration");
+    assert!(
+        registrations.next().is_none() && !registration.children().any(|node| node.is_element()),
+        "{parent_descriptor:?}: expected one Form text registration for {name}"
+    );
+    let descriptor = parent_descriptor
+        .with_extension("")
+        .join("Forms")
+        .join(format!("{name}.xml"));
+    let raw = read_fixture_descriptor(&descriptor);
+    let document = parse_fixture_descriptor(&raw, &descriptor);
+    assert_eq!(document.root_element().attribute("version"), Some(format));
+    let form = fixture_artifact(&document, "Form", &descriptor);
+    assert_eq!(fixture_properties_name(form), Some(name));
+    assert!(uuid::Uuid::parse_str(form.attribute("uuid").unwrap()).is_ok());
+    descriptor
+}
+
+fn record_native_form_module_group(
+    authority: &LogicalViewReadAuthority<'_>,
+    source: (PlatformLine, SourceSetKind),
+    form: &QualifiedAddress,
+    descriptor: &Path,
+    evidence: &mut EvidenceRows,
+) -> QualifiedAddress {
+    let owner = form.to_string();
+    let branch = format!("{owner}.Module");
+    let module = format!("{branch}.Form");
+    let view = read(authority, &owner);
+    assert_eq!(view["kind"], "Form", "{owner}");
+    check_native_branch(authority, &view, &branch, &BTreeSet::from([module.clone()]));
+    evidence.record_for_source(
+        source,
+        &owner,
+        "Module",
+        None,
+        &fixture_origin(descriptor),
+        AddressEvidence::Read(&branch),
+    );
+    QualifiedAddress::parse(&module).unwrap()
+}
+
+fn check_native_html_processor_form_module(evidence: &mut EvidenceRows) {
+    let format = "2.20";
+    let source = fixture_path("formats/platform_xml/2.20/support-edit-bin-only/src");
+    let line = export_format_line(format).unwrap();
+    let registrations = root_registrations(&source, format);
+    let kind = "DataProcessor";
+    let name = "ТестHTML";
+    assert_eq!(
+        registrations
+            .iter()
+            .filter(|(tag, value)| tag == kind && value == name)
+            .count(),
+        1
+    );
+    let descriptor = source.join("DataProcessors/ТестHTML.xml");
+    let raw = read_fixture_descriptor(&descriptor);
+    let document = parse_fixture_descriptor(&raw, &descriptor);
+    assert_eq!(document.root_element().attribute("version"), Some(format));
+    let owner = fixture_artifact(&document, kind, &descriptor);
+    assert_eq!(fixture_properties_name(owner), Some(name));
+    assert!(uuid::Uuid::parse_str(owner.attribute("uuid").unwrap()).is_ok());
+    let form_descriptor = native_registered_form_descriptor(owner, &descriptor, "Форма", format);
+
+    let cancellation = CancellationToken::new();
+    let source_kind = SourceSetKind::Configuration;
+    let authority = native_authority(
+        &cancellation,
+        &source,
+        PlatformProfile::for_line(line).unwrap(),
+    );
+    let form = QualifiedAddress::parse("main:DataProcessor.ТестHTML.Form.Форма").unwrap();
+    let module = record_native_form_module_group(
+        &authority,
+        (line, source_kind),
+        &form,
+        &form_descriptor,
+        evidence,
+    );
+    assert_eq!(read(&authority, &module.to_string())["kind"], "Module");
+    let relative = "DataProcessors/ТестHTML/Forms/Форма/Ext/Form/Module.bsl";
+    let file = source.join(relative);
+    assert!(file.is_file(), "{file:?}");
+    assert_eq!(
+        authority.existing_export_path(&module, None).unwrap(),
+        relative
+    );
+    let root =
+        unica_workspace::read::open_source_directory(&source.canonicalize().unwrap()).unwrap();
+    let layout = [LayoutFindSource::new("main", source_kind, &root)];
+    let located = WorkspaceFindDirectoryBuilder::default()
+        .locate_path(
+            &layout,
+            relative,
+            ProviderDeadline::no_deadline(),
+            &cancellation,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(located.at(), module.to_string());
+    assert_eq!(located.placed_path(), Some(relative));
+    evidence.record(
+        line,
+        &form.to_string(),
+        "Module",
+        Some("Form"),
+        &fixture_origin(&file),
+        AddressEvidence::RoundTrip(&module.to_string()),
+    );
+}
+
 fn check_native_form_or_template(
     authority: &LogicalViewReadAuthority<'_>,
     at: &QualifiedAddress,
@@ -1530,6 +1664,15 @@ fn check_native_form_or_template(
                 &fixture_origin(&module),
                 AddressEvidence::RoundTrip(&module_at),
             );
+            if at_text == "main:Catalog.Валюты.Form.ФормаЭлемента" {
+                record_native_form_module_group(
+                    authority,
+                    (line, SourceSetKind::Configuration),
+                    at,
+                    descriptor,
+                    evidence,
+                );
+            }
             covered.insert(module_at);
         }
         "Managed Form"
@@ -3458,7 +3601,7 @@ fn native_registered_modules_match_profile_and_physical_paths() {
                 } else {
                     check_registered_module_read(&authority, &profile_fixture, parent, role)
                 };
-                if kind == "Sequence" {
+                if kind == "Sequence" || command.is_some() {
                     evidence.record(
                         line,
                         parent,
