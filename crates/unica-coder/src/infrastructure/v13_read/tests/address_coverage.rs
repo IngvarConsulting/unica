@@ -1120,6 +1120,13 @@ fn check_native_recalculation_modules(format: &str, evidence: &mut EvidenceRows)
             &fixture_origin(&file),
             AddressEvidence::RoundTrip(&role),
         );
+        record_native_bsl_body(
+            &authority,
+            (profile.line(), SourceSetKind::Configuration),
+            &role,
+            &file,
+            evidence,
+        );
     }
 }
 
@@ -1721,6 +1728,13 @@ fn check_native_external_form_and_object_modules(
             &fixture_origin(&native_module),
             AddressEvidence::RoundTrip(&module_at),
         );
+        record_native_bsl_body(
+            &authority,
+            (export_line, source_kind),
+            &module_at,
+            &native_module,
+            evidence,
+        );
     }
 }
 
@@ -2289,6 +2303,13 @@ fn check_native_html_processor_form_module(evidence: &mut EvidenceRows) {
         &fixture_origin(&file),
         AddressEvidence::RoundTrip(&module.to_string()),
     );
+    record_native_bsl_body(
+        &authority,
+        (line, source_kind),
+        &module.to_string(),
+        &file,
+        evidence,
+    );
 }
 
 struct NativeFormOrTemplateSample<'a> {
@@ -2430,6 +2451,13 @@ fn check_native_form_or_template(
                 Some("Form"),
                 &fixture_origin(&module),
                 AddressEvidence::RoundTrip(&module_at),
+            );
+            record_native_bsl_body(
+                authority,
+                (line, SourceSetKind::Configuration),
+                &module_at,
+                &module,
+                evidence,
             );
             if at_text == "main:Catalog.Валюты.Form.ФормаЭлемента" {
                 record_native_form_module_group(
@@ -2993,7 +3021,6 @@ fn check_eds_module_rows(
 
         for &role in roles {
             let module = format!("{branch}.{role}");
-            read(authority, &format!("{module}.Body"));
             let at = QualifiedAddress::parse(&module).unwrap();
             let path = authority.existing_export_path(&at, None).unwrap();
             let native_path = format!("{directory}/Ext/{role}Module.bsl");
@@ -3008,13 +3035,21 @@ fn check_eds_module_rows(
                 .unwrap()
                 .unwrap();
             assert_eq!(document.at(), module.as_str(), "{line}: {native_path}");
+            let file = source.join(&native_path);
             evidence.record(
                 line,
                 owner,
                 "Module",
                 Some(role),
-                &fixture_origin(&source.join(&native_path)),
+                &fixture_origin(&file),
                 AddressEvidence::RoundTrip(&module),
+            );
+            record_native_bsl_body(
+                authority,
+                (line, SourceSetKind::Configuration),
+                &module,
+                &file,
+                evidence,
             );
         }
     }
@@ -4885,6 +4920,20 @@ fn native_registered_modules_match_profile_and_physical_paths() {
                     &fixture_origin(&file),
                     proof,
                 );
+                // Catalog and service bodies already have their own BSL interior witnesses.
+                // WebSocketClient here is only a forward-layout witness.
+                if !matches!(
+                    kind,
+                    "Catalog" | "HTTPService" | "WebService" | "WebSocketClient"
+                ) {
+                    record_native_bsl_body(
+                        &authority,
+                        (line, SourceSetKind::Configuration),
+                        &at_text,
+                        &file,
+                        &mut evidence,
+                    );
+                }
                 println!(
                     "{line} {at}: {level}; {relative} ({} bytes)",
                     metadata.len()
@@ -5021,15 +5070,16 @@ fn record_native_physical_module_body(
     let raw = read_fixture_descriptor(file);
     let source = raw.strip_prefix('\u{feff}').unwrap_or(&raw);
     assert!(!source.trim().is_empty(), "{module}: native module BSL");
-    let body = format!("{module}.Body");
-    check_native_bsl_body(authority, &body, source, 1, source.lines().count());
-    evidence.record(
-        authority.platform_profile().line(),
+    record_native_bsl_body_text(
+        authority,
+        (
+            authority.platform_profile().line(),
+            SourceSetKind::Configuration,
+        ),
         module,
-        "Body",
-        None,
-        &fixture_origin(file),
-        AddressEvidence::Read(&body),
+        file,
+        source,
+        evidence,
     );
 }
 
@@ -5452,6 +5502,39 @@ fn check_native_bsl_interiors(
             AddressEvidence::Read(&region_branch),
         );
     }
+}
+
+fn record_native_bsl_body(
+    authority: &LogicalViewReadAuthority<'_>,
+    source: (PlatformLine, SourceSetKind),
+    module: &str,
+    file: &Path,
+    evidence: &mut EvidenceRows,
+) {
+    let raw = read_fixture_descriptor(file);
+    let text = raw.trim_start_matches('\u{feff}');
+    record_native_bsl_body_text(authority, source, module, file, text, evidence);
+}
+
+fn record_native_bsl_body_text(
+    authority: &LogicalViewReadAuthority<'_>,
+    source: (PlatformLine, SourceSetKind),
+    module: &str,
+    file: &Path,
+    text: &str,
+    evidence: &mut EvidenceRows,
+) {
+    let at = format!("{module}.Body");
+    // An empty source still has a Body text window at line 1.
+    check_native_bsl_body(authority, &at, text, 1, text.lines().count().max(1));
+    evidence.record_for_source(
+        source,
+        module,
+        "Body",
+        None,
+        &fixture_origin(file),
+        AddressEvidence::Read(&at),
+    );
 }
 
 fn check_native_bsl_body(

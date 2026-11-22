@@ -10,7 +10,10 @@ const MXL_NS: &str = "http://v8.1c.ru/8.2/data/spreadsheet";
 const COMMAND_INTERFACE_NS: &str = "http://v8.1c.ru/8.3/xcf/extrnprops";
 
 enum Evidence<'a> {
-    Read(&'a str),
+    Read {
+        at: &'a str,
+        external_owner_descriptor: Option<&'a str>,
+    },
     ModuleRoundTrip {
         at: &'a str,
         external_owner_descriptor: Option<&'a str>,
@@ -31,7 +34,14 @@ impl EvidenceRows {
     }
 
     fn record(&mut self, fixture: &Fixture, origin: (&str, &str), at: &str) {
-        self.record_evidence(fixture, origin, Evidence::Read(at));
+        self.record_evidence(
+            fixture,
+            origin,
+            Evidence::Read {
+                at,
+                external_owner_descriptor: None,
+            },
+        );
     }
 
     fn record_evidence(&mut self, fixture: &Fixture, origin: (&str, &str), evidence: Evidence<'_>) {
@@ -39,7 +49,10 @@ impl EvidenceRows {
             return;
         }
         let (at, level, descriptor) = match evidence {
-            Evidence::Read(at) => (at, "read", None),
+            Evidence::Read {
+                at,
+                external_owner_descriptor,
+            } => (at, "read", external_owner_descriptor),
             Evidence::ModuleRoundTrip {
                 at,
                 external_owner_descriptor,
@@ -1138,6 +1151,14 @@ fn check_external_modules(
                     external_owner_descriptor: Some(&descriptor),
                 },
             );
+            check_module_body(
+                runtime,
+                fixture,
+                evidence,
+                ("workspace-external-alias", &file),
+                &at,
+                Some(&descriptor),
+            );
         }
     }
 }
@@ -1277,6 +1298,45 @@ fn check_configuration_module_role(
         Evidence::ModuleRoundTrip {
             at: &at,
             external_owner_descriptor: None,
+        },
+    );
+    if role != "Form" {
+        // Configuration Form bodies are covered by the native nested fixtures.
+        check_module_body(runtime, fixture, evidence, origin, &at, None);
+    }
+}
+
+fn check_module_body(
+    runtime: &V5CanonicalInvocationRuntime,
+    fixture: &Fixture,
+    evidence: &mut EvidenceRows,
+    origin: (&str, &str),
+    module: &str,
+    external_owner_descriptor: Option<&str>,
+) {
+    let at = format!("{module}.Body");
+    let source = fixture_xml(fixture, &at, origin.1);
+    let response = invoke_on(
+        runtime,
+        &fixture.workspace,
+        ToolIdentity::View,
+        json!({"at":at}),
+    );
+    assert!(response.ok, "{at}: {response:?}");
+    let data = response.data.unwrap();
+    assert_eq!(data["at"], at);
+    assert_eq!(data["kind"], "Body");
+    assert_eq!(
+        response.source_text.as_deref(),
+        Some(source.trim_start_matches('\u{feff}')),
+        "{at}"
+    );
+    evidence.record_evidence(
+        fixture,
+        origin,
+        Evidence::Read {
+            at: &at,
+            external_owner_descriptor,
         },
     );
 }
