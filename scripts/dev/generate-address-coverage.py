@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -44,6 +45,7 @@ ROLE_RIGHT_KEYS_SHARD = "required_native_role_right_keys"
 XDTO_KEYS_SHARD = "required_native_xdto_keys"
 SUBSYSTEM_CONTENT_KEYS_SHARD = "required_native_subsystem_content_keys"
 WSDL_KEYS_SHARD = "required_native_wsdl_keys"
+MXL_KEYS_SHARD = "required_native_mxl_keys"
 XDTO_OWNER_SHAPES = {
     "Namespace": {("XDTOPackage",)},
     "Type": {("XDTOPackage",)},
@@ -53,7 +55,7 @@ NATIVE_ADDRESS_NAME = r"[^\W\d]\w*"
 REQUIRED_KEY_SHARDS = frozenset({
     ROOT_KEYS_SHARD, METADATA_CHILD_KEYS_SHARD, EXTERNAL_CHILD_KEYS_SHARD, MODULE_ROLE_KEYS_SHARD,
     EDS_MODULE_KEYS_SHARD, SUBSYSTEM_INTERFACE_KEYS_SHARD, DCS_QUERY_KEYS_SHARD, ROLE_RIGHT_KEYS_SHARD,
-    XDTO_KEYS_SHARD, SUBSYSTEM_CONTENT_KEYS_SHARD, WSDL_KEYS_SHARD,
+    XDTO_KEYS_SHARD, SUBSYSTEM_CONTENT_KEYS_SHARD, WSDL_KEYS_SHARD, MXL_KEYS_SHARD,
 })
 NATIVE_SCOPE = (
     "Configuration source sets and native Language registrations in extension source sets "
@@ -73,12 +75,14 @@ NATIVE_SCOPE = (
     " Native XDTO requirements trace Namespace, Type and Property reads to registered Package.bin files."
     " Registered subsystem descriptors independently require reads of Relation and Subsystem branches."
     " Registered native WSDL companions require exact WSReference.Definition round-trips."
+    " Native spreadsheet companions require registered Area reads and row Body and Parameter reads."
 )
 DAEMON_SCOPE = (
     "Read witnesses from the selected document and BSL coverage test of unica-daemon, "
     "including observed 8.3.27 examples for extensions, external processors and external reports. "
     "The report checks required configuration module roles from the 8.3.27 address profile "
     "against native or daemon witnesses."
+    " The 8.3.27 spreadsheet reads require PlatformExport bytes in the daemon fixture."
 )
 NATIVE_ONLY_MODULE_SCOPE = (
     "Native-only mode validates the 8.3.27 module-role declarations "
@@ -258,9 +262,10 @@ def validate_required_record(record: object, shard: str) -> None:
             raise ValueError("duplicate required role right address")
         required_text(requirement["origin"], "origin")
         return
-    if shard in {XDTO_KEYS_SHARD, SUBSYSTEM_CONTENT_KEYS_SHARD, WSDL_KEYS_SHARD}:
+    if shard in {XDTO_KEYS_SHARD, SUBSYSTEM_CONTENT_KEYS_SHARD, WSDL_KEYS_SHARD, MXL_KEYS_SHARD}:
         family = {
             XDTO_KEYS_SHARD: "XDTO", SUBSYSTEM_CONTENT_KEYS_SHARD: "subsystem content", WSDL_KEYS_SHARD: "WSDL",
+            MXL_KEYS_SHARD: "MXL",
         }[shard]
         level = "roundtrip" if shard == WSDL_KEYS_SHARD else "read"
         exact_fields(requirement, {"kind", "observations"}, f"{family} requirement")
@@ -270,6 +275,13 @@ def validate_required_record(record: object, shard: str) -> None:
             known_shape = kinds in XDTO_OWNER_SHAPES.get(branch_kind, set())
         elif shard == WSDL_KEYS_SHARD:
             known_shape = branch_kind == "Definition" and kinds == ("WSReference",)
+        elif shard == MXL_KEYS_SHARD:
+            known_shape = (
+                key["line"] in {"8.3.27", "8.5.1", "8.5.4"} and (
+                    (branch_kind == "Area" and kinds == ("Report", "Template"))
+                    or (branch_kind in {"Body", "Parameter"} and kinds == ("Report", "Template", "Area"))
+                )
+            )
         else:
             known_shape = branch_kind in {"Relation", "Subsystem"} and all(kind == "Subsystem" for kind in kinds)
         if (
@@ -281,7 +293,8 @@ def validate_required_record(record: object, shard: str) -> None:
         observations = requirement["observations"]
         if not isinstance(observations, list) or not observations:
             raise ValueError(f"expected nonempty required {family} observations")
-        owner_pattern = "main:" + r"\.".join(kind + r"\." + NATIVE_ADDRESS_NAME for kind in kinds)
+        prefix = "cf:" if shard == MXL_KEYS_SHARD and key["line"] == "8.3.27" else "main:"
+        owner_pattern = prefix + r"\.".join(kind + r"\." + NATIVE_ADDRESS_NAME for kind in kinds)
         owners = set()
         for observation in observations:
             exact_fields(observation, {"owner", "origin", "addresses"}, f"{family} observation")
@@ -295,7 +308,7 @@ def validate_required_record(record: object, shard: str) -> None:
             if not isinstance(addresses, list) or not addresses or addresses[0] != branch:
                 raise ValueError(f"required {family} addresses must include their branch")
             for address in addresses[1:]:
-                if branch_kind in {"Namespace", "Relation", "Definition"} or not re.fullmatch(
+                if shard == MXL_KEYS_SHARD or branch_kind in {"Namespace", "Relation", "Definition"} or not re.fullmatch(
                     rf"{re.escape(branch)}\.{NATIVE_ADDRESS_NAME}", required_text(address, f"{family} member address")
                 ):
                     raise ValueError(f"required {family} member must belong to its branch")
@@ -387,6 +400,7 @@ def check_required_keys(requirements: dict, groups: dict, *, native_only: bool) 
         XDTO_KEYS_SHARD: ("XDTO", []),
         SUBSYSTEM_CONTENT_KEYS_SHARD: ("subsystem content", []),
         WSDL_KEYS_SHARD: ("WSDL", []),
+        MXL_KEYS_SHARD: ("MXL", []),
     }
     diagnostics = []
     for key, (shard, record) in sorted(requirements.items()):
@@ -409,9 +423,12 @@ def check_required_keys(requirements: dict, groups: dict, *, native_only: bool) 
             level = requirement["kind"]
             observations = [requirement] if shard == ROLE_RIGHT_KEYS_SHARD else requirement["observations"]
             _, missing_witnesses = metadata_errors[shard]
+            emitter = METADATA_SHARD
+            if shard == MXL_KEYS_SHARD:
+                emitter = DAEMON_SHARD if record["key"]["line"] == "8.3.27" else FORM_TEMPLATE_SHARD
             observed = {
                 (w["owner"], w["origin"], w["at"]) for w in witnesses
-                if w["test_case"] == METADATA_SHARD and w["reason"] is None and w["level"] == level
+                if w["test_case"] == emitter and w["reason"] is None and w["level"] == level
             }
             for observation in observations:
                 for at in observation["addresses"]:
@@ -981,6 +998,108 @@ def native_wsdl_requirements(repo: Path) -> list[dict]:
     return rows
 
 
+def native_mxl_requirements(repo: Path, *, native_only: bool) -> list[dict]:
+    md = "{http://v8.1c.ru/8.3/MDClasses}"
+    mxl = "{http://v8.1c.ru/8.2/data/spreadsheet}"
+    xsi_type = "{http://www.w3.org/2001/XMLSchema-instance}type"
+    export_root = repo / "tests/fixtures/formats/platform_xml"
+    sources = []
+    for version, line in (("2.21", "8.5.1"), ("2.22", "8.5.4")):
+        fixture = export_root / version / "mxl-areas"
+        manifest = json.loads((fixture / "manifest.json").read_text(encoding="utf-8"))
+        if (
+            manifest["format"] != version or not manifest["build"].startswith(f"{line}.")
+            or manifest["seed"] != "../all_kinds/src"
+        ):
+            raise ValueError(f"native MXL: wrong platform or registration source in {fixture}")
+        resource = required_text(manifest["exportedResource"], "MXL exported resource")
+        origin = fixture / resource
+        if not origin.resolve().is_relative_to(fixture.resolve()):
+            raise ValueError(f"native MXL: export leaves its fixture: {origin}")
+        raw = origin.read_bytes()
+        if hashlib.sha256(raw).hexdigest() != manifest["exportedResourceSha256"]:
+            raise ValueError(f"native MXL: export does not match manifest: {origin}")
+        sources.append((version, line, "main", fixture.parent / "all_kinds/src", resource, origin, raw))
+
+    if not native_only:
+        # The daemon workspace uses synthetic metadata. Only PlatformExport's
+        # spreadsheet bytes were exported by 8.3.27.2074, as documented by the
+        # mxl_edit fixture. The synthetic F06Template can share its key.
+        source = repo / "tests/fixtures/acceptance/workspace-mxl/src/cf"
+        resource = "Reports/F06Report/Templates/PlatformExport/Ext/Template.xml"
+        origin = source / resource
+        raw = origin.read_bytes()
+        donor = repo / "crates/unica-templates-designer/tests/fixtures/mxl_edit/Template.xml"
+        if raw != donor.read_bytes():
+            raise ValueError(f"native MXL: PlatformExport differs from the 8.3.27 export: {origin}")
+        sources.append(("2.20", "8.3.27", "cf", source, resource, origin, raw))
+
+    rows = []
+    for version, line, prefix, source, resource, origin, raw in sources:
+        names = re.fullmatch(
+            rf"Reports/({NATIVE_ADDRESS_NAME})/Templates/({NATIVE_ADDRESS_NAME})/Ext/Template\.xml",
+            resource,
+        )
+        if names is None:
+            raise ValueError(f"native MXL: expected a report template companion: {origin}")
+        report, template = names.groups()
+
+        def descriptor(relative):
+            root = ET.parse(source / relative).getroot()
+            if root.tag != f"{md}MetaDataObject" or root.get("version") != version:
+                raise ValueError(f"native MXL: wrong descriptor format: {source / relative}")
+            return root
+
+        configuration = descriptor("Configuration.xml").find(f"{md}Configuration")
+        report_node = descriptor(f"Reports/{report}.xml").find(f"{md}Report")
+        template_node = descriptor(f"Reports/{report}/Templates/{template}.xml").find(f"{md}Template")
+        if (
+            configuration is None or report_node is None or template_node is None
+            or [node.text for node in configuration.findall(f"{md}ChildObjects/{md}Report")].count(report) != 1
+            or report_node.findtext(f"{md}Properties/{md}Name") != report
+            or [node.text for node in report_node.findall(f"{md}ChildObjects/{md}Template")].count(template) != 1
+            or template_node.findtext(f"{md}Properties/{md}Name") != template
+            or template_node.findtext(f"{md}Properties/{md}TemplateType") != "SpreadsheetDocument"
+        ):
+            raise ValueError(f"native MXL: missing registered spreadsheet owner for {origin}")
+
+        document = ET.fromstring(raw)
+        if document.tag != f"{mxl}document":
+            raise ValueError(f"native MXL: expected spreadsheet document: {origin}")
+        area_names = set()
+        row_names = []
+        for item in document.findall(f"{mxl}namedItem"):
+            if item.get(xsi_type) != "NamedItemCells":
+                continue
+            name = required_text(item.findtext(f"{mxl}name"), "MXL area name")
+            area = item.find(f"{mxl}area")
+            if not re.fullmatch(NATIVE_ADDRESS_NAME, name) or name in area_names or area is None:
+                raise ValueError(f"native MXL: invalid or duplicate area {name} in {origin}")
+            area_names.add(name)
+            if area.findtext(f"{mxl}type") == "Rows":
+                row_names.append(name)
+        if not row_names:
+            raise ValueError(f"native MXL: no named row areas in {origin}")
+
+        template_owner = f"{prefix}:Report.{report}.Template.{template}"
+        row_owners = [f"{template_owner}.Area.{name}" for name in sorted(row_names)]
+        for branch, kinds, owners in (
+            ("Area", ("Report", "Template"), [template_owner]),
+            ("Body", ("Report", "Template", "Area"), row_owners),
+            ("Parameter", ("Report", "Template", "Area"), row_owners),
+        ):
+            rows.append({
+                "schema_version": SCHEMA_VERSION, "record_type": "required",
+                "key": {"line": line, "source_kind": "configuration", "branch": branch, "role": None,
+                        "owner_shape": [{"kind": kind, "named": True, "role": None} for kind in kinds]},
+                "requirement": {"kind": "read", "observations": [
+                    {"owner": owner, "origin": origin.relative_to(repo).as_posix(),
+                     "addresses": [f"{owner}.{branch}"]} for owner in owners
+                ]},
+            })
+    return rows
+
+
 def generate_report(native_only: bool) -> dict:
     revision, status = git_state()
     cases = [("unica-coder", "address_coverage")]
@@ -1008,6 +1127,7 @@ def generate_report(native_only: bool) -> dict:
             (XDTO_KEYS_SHARD, native_xdto_requirements),
             (SUBSYSTEM_CONTENT_KEYS_SHARD, native_subsystem_content_requirements),
             (WSDL_KEYS_SHARD, native_wsdl_requirements),
+            (MXL_KEYS_SHARD, lambda repo: native_mxl_requirements(repo, native_only=native_only)),
         ):
             records = producer(REPO)
             path = Path(scratch) / f"{shard}.jsonl"

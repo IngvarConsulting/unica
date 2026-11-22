@@ -432,6 +432,90 @@ class AddressCoverageReportTests(unittest.TestCase):
                         ):
                             GENERATOR.merge_shards(self.root, shards, native_only=native_only)
 
+    def test_native_mxl_requires_each_registered_rows_read_provenance(self) -> None:
+        shard = GENERATOR.MXL_KEYS_SHARD
+        producer = GENERATOR.FORM_TEMPLATE_SHARD
+        required = GENERATOR.native_mxl_requirements(GENERATOR.REPO, native_only=True)
+        self.assertEqual(
+            [(row["key"]["line"], row["key"]["branch"], len(row["requirement"]["observations"]))
+             for row in required],
+            [("8.5.1", "Area", 1), ("8.5.1", "Body", 3), ("8.5.1", "Parameter", 3),
+             ("8.5.4", "Area", 1), ("8.5.4", "Body", 3), ("8.5.4", "Parameter", 3)],
+        )
+        owner = "main:Report.АнализВерсийОбъектов.Template.МакетОтчета"
+        for row in required:
+            branch = row["key"]["branch"]
+            expected = [f"{owner}.Area"] if branch == "Area" else [
+                f"{owner}.Area.{name}.{branch}" for name in ("Подвал", "Строка", "Шапка")
+            ]
+            self.assertEqual([at for o in row["requirement"]["observations"] for at in o["addresses"]],
+                             expected)
+        evidence = self.mxl_evidence(required, producer)
+        target_at = f"{owner}.Area.Строка.Parameter"
+        target = next(record for record in evidence
+                      if record["key"]["line"] == "8.5.1" and record["witness"]["at"] == target_at)
+        foreign = next(record for record in evidence
+                       if record["key"]["line"] == "8.5.4" and record["witness"]["at"] == target_at)
+        alternative = {**target, "witness": {**target["witness"], "test_case": METADATA_SHARD}}
+        self.write_shard(shard, *required)
+        self.write_shard(METADATA_SHARD, alternative)
+        shards = frozenset({shard, producer, METADATA_SHARD})
+        for native_only in (False, True):
+            self.write_shard(producer, *evidence)
+            self.assertEqual(len(GENERATOR.merge_shards(self.root, shards, native_only=native_only)), 6)
+            for replacement in ({}, {"origin": foreign["witness"]["origin"]}, {"level": "roundtrip"},
+                                {"owner": target["witness"]["owner"].replace("Строка", "Шапка")}):
+                with self.subTest(native_only=native_only, replacement=replacement):
+                    remaining = [record for record in evidence if record is not target]
+                    if replacement:
+                        remaining.append({**target, "witness": {**target["witness"], **replacement}})
+                    self.write_shard(producer, *remaining)
+                    with self.assertRaisesRegex(
+                        ValueError, r"(?s)missing required native MXL coverage.*Строка\.Parameter \(8\.5\.1\)",
+                    ):
+                        GENERATOR.merge_shards(self.root, shards, native_only=native_only)
+
+    def test_native_mxl_platform_export_requires_native_origin_only_in_full_mode(self) -> None:
+        shard = GENERATOR.MXL_KEYS_SHARD
+        producer = GENERATOR.DAEMON_SHARD
+        native = GENERATOR.native_mxl_requirements(GENERATOR.REPO, native_only=True)
+        full = GENERATOR.native_mxl_requirements(GENERATOR.REPO, native_only=False)
+        self.assertEqual([row for row in full if row["key"]["line"] != "8.3.27"], native)
+        platform = [row for row in full if row["key"]["line"] == "8.3.27"]
+        self.assertEqual([row["key"]["branch"] for row in platform], ["Area", "Body", "Parameter"])
+        evidence = self.mxl_evidence(platform, producer)
+        self.assertEqual(len(evidence), 7)
+        target = next(record for record in evidence if record["key"]["branch"] == "Area")
+        self.assertEqual(target["witness"]["at"], "cf:Report.F06Report.Template.PlatformExport.Area")
+        synthetic = {**target, "witness": {
+            **target["witness"],
+            "owner": target["witness"]["owner"].replace("PlatformExport", "F06Template"),
+            "at": target["witness"]["at"].replace("PlatformExport", "F06Template"),
+            "origin": target["witness"]["origin"].replace("PlatformExport", "F06Template"),
+        }}
+        self.write_shard(shard, *platform)
+        self.write_shard(producer, *evidence, synthetic)
+        shards = frozenset({shard, producer})
+        self.assertEqual(len(GENERATOR.merge_shards(self.root, shards)), 3)
+        self.write_shard(producer, *(record for record in evidence if record is not target), synthetic)
+        with self.assertRaisesRegex(
+            ValueError, r"(?s)missing required native MXL coverage.*PlatformExport\.Area \(8\.3\.27\)",
+        ):
+            GENERATOR.merge_shards(self.root, shards)
+
+    @staticmethod
+    def mxl_evidence(requirements: list[dict], producer: str) -> list[dict]:
+        return [
+            {"schema_version": 1, "record_type": "evidence", "key": row["key"], "witness": {
+                "owner": observation["owner"], "origin": observation["origin"], "at": at,
+                "level": "read", "reason": None, "test_case": producer,
+            }}
+            for row in requirements for observation in row["requirement"]["observations"]
+            for at in observation["addresses"]
+        ]
+
+
+
     def test_witnesses_for_one_shape_are_grouped_in_stable_order(self) -> None:
         first, second = root_witness("main"), root_witness("other")
         self.write_root_shard(second, first)
