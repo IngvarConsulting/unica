@@ -4,7 +4,7 @@ pub(super) fn native_document_relations(
     native: &mut NativeProjections<'_, '_>,
     source: &Path,
     registrations: &[(String, String)],
-) {
+) -> BTreeSet<String> {
     let mut covered = BTreeSet::new();
     for (kind, name) in registrations {
         let (field, relation) = match kind.as_str() {
@@ -83,4 +83,5 @@ pub(super) fn native_document_relations(
             "{owner}: missing native relation input"
         );
     }
+    covered
 }

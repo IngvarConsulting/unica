@@ -6,25 +6,14 @@ pub(super) fn native_additional_relations(
     native: &mut NativeProjections<'_, '_>,
     source: &Path,
     registrations: &[(String, String)],
+    document_relation_owners: &BTreeSet<String>,
     version: &str,
     line: PlatformLine,
 ) {
-    let catalog = "Catalog.Валюты";
-    let path = source.join("Catalogs/Валюты.xml");
-    assert_registered(registrations, catalog);
-    let xml = read_fixture_descriptor(&path);
-    let document = parse_fixture_descriptor(&xml, &path);
-    let properties = fixture_properties(&document, "Catalog", "Валюты", &path);
-    let expected = relation_inputs(properties, "InputByString", "Field");
-    assert_eq!(expected.len(), 2, "{path:?}");
-    let branch = relation(native.authority, catalog);
-    let rows = relation_rows(&branch, "inputByString");
-    assert_eq!(rows.len(), expected.len());
-    for (row, field) in rows.into_iter().zip(expected) {
-        assert!(field.starts_with("Catalog.Валюты.StandardAttribute."));
-        assert_target(native.authority, row, field, "StandardAttribute");
+    input_by_string(native, source, registrations, document_relation_owners);
+    if version == "2.20" {
+        data_lock_fields(native, line);
     }
-    record(native, catalog, &path);
 
     event_subscription(native, source, registrations);
     subsystem_backrefs(native, source, registrations);
@@ -58,6 +47,100 @@ pub(super) fn native_additional_relations(
             required: &mut *native.required,
         },
         calculation,
+        &path,
+    );
+}
+
+fn input_by_string(
+    native: &mut NativeProjections<'_, '_>,
+    source: &Path,
+    registrations: &[(String, String)],
+    document_relation_owners: &BTreeSet<String>,
+) {
+    for (kind, name) in registrations {
+        let (_, declaration) = unica_address::kinds::declared(kind).unwrap();
+        let Some(layout) = declaration.layout else {
+            continue;
+        };
+        let path = source.join(layout.directory).join(format!("{name}.xml"));
+        let xml = read_fixture_descriptor(&path);
+        let document = parse_fixture_descriptor(&xml, &path);
+        let properties = fixture_properties(&document, kind, name, &path);
+        let Some(container) = properties
+            .children()
+            .find(|node| node.has_tag_name((MD_CLASSES_NS, "InputByString")))
+        else {
+            continue;
+        };
+        let expected = relation_entries(container, "Field");
+        if expected.is_empty() {
+            continue;
+        }
+
+        let owner = format!("{kind}.{name}");
+        let branch = relation(native.authority, &owner);
+        let rows = relation_rows(&branch, "inputByString");
+        assert_eq!(rows.len(), expected.len(), "{owner}");
+        for (row, field) in rows.into_iter().zip(expected) {
+            let qualified = format!("main:{field}");
+            let address = QualifiedAddress::parse(&qualified).unwrap();
+            let field_kind = address.segments().last().unwrap().kind().as_str();
+            assert_eq!(address.to_string(), qualified);
+            if field == "Document.Orders.StandardAttribute.Number"
+                && !properties
+                    .children()
+                    .find(|node| node.has_tag_name((MD_CLASSES_NS, "StandardAttributes")))
+                    .is_some_and(|attributes| {
+                        attributes.children().any(|attribute| {
+                            attribute.has_tag_name((READABLE_NS, "StandardAttribute"))
+                                && attribute.attribute("name") == Some("Number")
+                        })
+                    })
+            {
+                // The native descriptor references Number without registering that standard attribute.
+                assert_eq!(row["at"], qualified);
+                assert_eq!(row["kind"], field_kind);
+                check_native_projection_refusal(native.authority, &qualified, "was not found");
+            } else {
+                assert_target(native.authority, row, field, field_kind);
+            }
+        }
+        // RegisterRecords and InputByString in the same descriptor prove one Relation address.
+        if !document_relation_owners.contains(&format!("main:{owner}")) {
+            record(native, &owner, &path);
+        }
+    }
+}
+
+fn data_lock_fields(native: &mut NativeProjections<'_, '_>, line: PlatformLine) {
+    let source = fixture_path("acceptance/workspace-object-data-lock/src");
+    let owner = "Catalog.Codes";
+    assert_registered(&root_registrations(&source, "2.20"), owner);
+    let path = source.join("Catalogs/Codes.xml");
+    let xml = read_fixture_descriptor(&path);
+    let document = parse_fixture_descriptor(&xml, &path);
+    let properties = fixture_properties(&document, "Catalog", "Codes", &path);
+    let expected = relation_inputs(properties, "DataLockFields", "Field");
+    assert_eq!(expected, ["Catalog.Codes.Attribute.Key"], "{path:?}");
+    let cancellation = CancellationToken::new();
+    let authority = native_authority(
+        &cancellation,
+        &source,
+        PlatformProfile::for_line(line).unwrap(),
+    );
+    let branch = relation(&authority, owner);
+    let rows = relation_rows(&branch, "dataLockField");
+    assert_eq!(rows.len(), expected.len());
+    for (row, field) in rows.into_iter().zip(expected) {
+        assert_target(&authority, row, field, "Attribute");
+    }
+    record(
+        &mut NativeProjections {
+            authority: &authority,
+            evidence: &mut *native.evidence,
+            required: &mut *native.required,
+        },
+        owner,
         &path,
     );
 }
@@ -193,7 +276,11 @@ fn relation_inputs<'a, 'input>(
     container: &str,
     tag: &str,
 ) -> Vec<&'a str> {
-    child(properties, MD_CLASSES_NS, container)
+    relation_entries(child(properties, MD_CLASSES_NS, container), tag)
+}
+
+fn relation_entries<'a, 'input>(container: roxmltree::Node<'a, 'input>, tag: &str) -> Vec<&'a str> {
+    container
         .children()
         .filter(roxmltree::Node::is_element)
         .map(|item| {

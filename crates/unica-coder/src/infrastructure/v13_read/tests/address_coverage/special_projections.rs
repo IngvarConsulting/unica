@@ -165,11 +165,13 @@ fn native_special_projection_addresses_match_source() {
         declarations(&mut native, &source);
         predefined(&mut native, &source, version);
         exchange_relations::native_exchange_relations(&mut native, &source, version, line);
-        document_relations::native_document_relations(&mut native, &source, &registrations);
+        let document_relation_owners =
+            document_relations::native_document_relations(&mut native, &source, &registrations);
         additional_relations::native_additional_relations(
             &mut native,
             &source,
             &registrations,
+            &document_relation_owners,
             version,
             line,
         );
