@@ -1,0 +1,39 @@
+{
+  "formatVersion": "2.20",
+  "platformVersion": "8.3.27.2342",
+  "source": "Byte-preserved file selection from a native ibcmd export.",
+  "native": {
+    "ibcmdSha256": "38f37715535cea530e58d5ba2e7e072c184b61b12f3e903ac290b299cf39fd38",
+    "receiptSha256": "3d3d9e5eba24de2381815f60ce0bddc4086207a4e2554323d1e5fab477cc7c2c",
+    "packageSha256": "f3be16f8e9c0bef48b6df5454ff135baa2b43b2fff545aeb0ce2fb86e3a884a7",
+    "stageExits": {
+      "import": 0,
+      "apply": 0,
+      "export": 0
+    }
+  },
+  "mcp": {
+    "revision": "ec4aac54df2825e075a0d7c292b92dbcfec9ce45",
+    "binarySha256": "641d7dd01731d74f49d8258864e47621650bde9ca44c7274f5661e5cf32916c4",
+    "receiptSha256": "5603134c78dabf9a2c195d55a533753f8c7e8f144b231665da67967517d3c40f",
+    "target": "main:IntegrationService.Probe.Module.IntegrationService",
+    "kind": "Module",
+    "forward": true,
+    "reverse": true,
+    "bodyExact": true
+  },
+  "files": {
+    "src/Configuration.xml": {
+      "size": 12881,
+      "sha256": "2ce1483b4af352aa5f759130cbab4a8c198fa7f2f1103191ccbd4a76a551e97d"
+    },
+    "src/IntegrationServices/Probe.xml": {
+      "size": 1579,
+      "sha256": "cd05ad2b6299e77d7209d30018b9690d6a268ade52041b066867ca7c17525b42"
+    },
+    "src/IntegrationServices/Probe/Ext/Module.bsl": {
+      "size": 139,
+      "sha256": "c2c34f6019c7434d1f7cda5d4341bf831c90ca39b36b19dd61c178ec9ec093ae"
+    }
+  }
+}

@@ -759,16 +759,15 @@ fn interface_value<'a>(parent: roxmltree::Node<'a, '_>, tag: &str) -> &'a str {
 fn check_native_subsystem_interface(
     runtime: &V5CanonicalInvocationRuntime,
     fixture: &Fixture,
+    fixture_name: &str,
+    format: &str,
     evidence: &mut EvidenceRows,
 ) {
     const NS: &str = COMMAND_INTERFACE_NS;
     const READABLE_NS: &str = "http://v8.1c.ru/8.3/xcf/readable";
     const NAME: &str = "Подсистема1";
     const OWNER: &str = "main:Subsystem.Подсистема1";
-    const ORIGIN: (&str, &str) = (
-        "workspace-command-groups",
-        "Subsystems/Подсистема1/Ext/CommandInterface.xml",
-    );
+    const RELATIVE: &str = "Subsystems/Подсистема1/Ext/CommandInterface.xml";
     let configuration = fixture_xml(fixture, OWNER, "Configuration.xml");
     let configuration =
         roxmltree::Document::parse(configuration.trim_start_matches('\u{feff}')).unwrap();
@@ -798,11 +797,11 @@ fn check_native_subsystem_interface(
         .first_element_child()
         .is_none());
 
-    let raw = fixture_xml(fixture, OWNER, ORIGIN.1);
+    let raw = fixture_xml(fixture, OWNER, RELATIVE);
     let interface = roxmltree::Document::parse(raw.trim_start_matches('\u{feff}')).unwrap();
     let root = interface.root_element();
     assert!(root.has_tag_name((NS, "CommandInterface")));
-    assert_eq!(root.attribute("version"), Some("2.20"));
+    assert_eq!(root.attribute("version"), Some(format));
     assert_eq!(
         descriptor.root_element().attribute("version"),
         root.attribute("version")
@@ -908,8 +907,24 @@ fn check_native_subsystem_interface(
             .collect();
         assert_eq!(items, expected, "{at}");
     }
-    for at in [&interface_at, &command_at, &group_at] {
-        evidence.record(fixture, ORIGIN, at);
+    let origin = (fixture_name, RELATIVE);
+    evidence.record(fixture, origin, &interface_at);
+    if format == "2.20" {
+        for at in [&command_at, &group_at] {
+            evidence.record(fixture, origin, at);
+        }
+    } else {
+        let response = invoke_on(
+            runtime,
+            &fixture.workspace,
+            ToolIdentity::Resolve,
+            json!({"at": interface_at}),
+        );
+        assert!(response.ok, "{interface_at}: {response:?}");
+        let found = response.data.unwrap();
+        assert_eq!(found["at"], interface_at);
+        assert_eq!(found["kind"], "Interface");
+        assert_eq!(found["path"], RELATIVE);
     }
 }
 
@@ -1510,7 +1525,7 @@ fn medium_published_document_and_bsl_branches_have_canonical_addresses() {
                 check_native_mxl_rows(&runtime, &fixture, &mut evidence);
             }
             "workspace-command-groups" => {
-                check_native_subsystem_interface(&runtime, &fixture, &mut evidence)
+                check_native_subsystem_interface(&runtime, &fixture, name, "2.20", &mut evidence)
             }
             "workspace-module-variables" => {
                 check_module_variables_fixture(&runtime, &fixture, &mut evidence)
@@ -1541,6 +1556,20 @@ fn medium_published_document_and_bsl_branches_have_canonical_addresses() {
                 ),
             );
         }
+    }
+    for (name, format) in [
+        ("workspace-native-subsystem-interface-2.21", "2.21"),
+        ("workspace-native-subsystem-interface-2.22", "2.22"),
+    ] {
+        let fixture = fixture_with_profile(
+            name,
+            unica_workspace::source_profile::platform_xml_source_profile,
+        );
+        let runtime = V5CanonicalInvocationRuntime::new(
+            Arc::new(CanonicalV13ReadService::default()),
+            Arc::new(TokioClock),
+        );
+        check_native_subsystem_interface(&runtime, &fixture, name, format, &mut evidence);
     }
     println!("| Kind | Branch | Canonical address | Evidence |");
     println!("| --- | --- | --- | --- |");

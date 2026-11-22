@@ -4684,6 +4684,11 @@ fn native_registered_modules_match_profile_and_physical_paths() {
             ModuleSamples::Report,
         ),
         (
+            "2.20",
+            "formats/platform_xml/2.20/native_integration_service_module/src",
+            ModuleSamples::DirectNamed,
+        ),
+        (
             "2.21",
             "formats/platform_xml/2.21/direct_named_module_roles/src",
             ModuleSamples::DirectNamed,
@@ -4900,6 +4905,16 @@ fn native_registered_modules_match_profile_and_physical_paths() {
                 ("Object", None, "Reports/CorpusReport/Ext/ObjectModule.bsl"),
             ][..],
         )];
+        let integration_service = (
+            "IntegrationService",
+            "IntegrationServices/Probe.xml",
+            None,
+            &[(
+                "IntegrationService",
+                None,
+                "IntegrationServices/Probe/Ext/Module.bsl",
+            )][..],
+        );
         let direct_named = [
             (
                 "CommonCommand",
@@ -4911,20 +4926,14 @@ fn native_registered_modules_match_profile_and_physical_paths() {
                     "CommonCommands/Probe/Ext/CommandModule.bsl",
                 )][..],
             ),
-            (
-                "IntegrationService",
-                "IntegrationServices/Probe.xml",
-                None,
-                &[(
-                    "IntegrationService",
-                    None,
-                    "IntegrationServices/Probe/Ext/Module.bsl",
-                )][..],
-            ),
+            integration_service,
         ];
         let owners = match samples {
             ModuleSamples::AllKinds => &all_kinds_owners[..],
             ModuleSamples::Report => &report[..],
+            ModuleSamples::DirectNamed if xml == "2.20" => {
+                std::slice::from_ref(&integration_service)
+            }
             ModuleSamples::DirectNamed => &direct_named[..],
         };
         let queue = (all_kinds && xml == "2.22").then_some((

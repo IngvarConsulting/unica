@@ -1,0 +1,63 @@
+{
+  "formatVersion": "2.21",
+  "platformVersion": "8.5.1.1529",
+  "source": "Byte-preserved file selection from a native ibcmd export.",
+  "native": {
+    "ibcmdSha256": "4dde71c1d061cc14c619255ec524b4ca8aca1f9bc38a92d1d766eb7d57721d20",
+    "receiptSha256": "6197eb590c207ec87ac5e9cc5d084f467715e6c3b36e7c8ccaa7d184a0d8223b",
+    "packageSha256": "f3be16f8e9c0bef48b6df5454ff135baa2b43b2fff545aeb0ce2fb86e3a884a7",
+    "stageExits": {
+      "import": 0,
+      "apply": 0,
+      "export": 0
+    }
+  },
+  "mcp": {
+    "revision": "ec4aac54df2825e075a0d7c292b92dbcfec9ce45",
+    "binarySha256": "641d7dd01731d74f49d8258864e47621650bde9ca44c7274f5661e5cf32916c4",
+    "receiptSha256": "5603134c78dabf9a2c195d55a533753f8c7e8f144b231665da67967517d3c40f",
+    "target": "main:Subsystem.Подсистема1.Interface",
+    "kind": "Interface",
+    "forward": true,
+    "reverse": "not_found",
+    "bodyExact": null
+  },
+  "files": {
+    "src/Catalogs/Справочник1.xml": {
+      "size": 15718,
+      "sha256": "70b36983329ccdc014de5cbb6deb092a2cbb4a53236dea4f0718a96f27a5512b"
+    },
+    "src/CommandGroups/ГруппаА.xml": {
+      "size": 1391,
+      "sha256": "8bed6768d1923279fb28e40b4f06d46eb9ef520024bd62cc2238f84e26db23ca"
+    },
+    "src/CommandGroups/ГруппаБ.xml": {
+      "size": 1388,
+      "sha256": "9d57734dc8d98d3620265d25e5639a5f7805b0fac29beee13c8200dd0c34ad87"
+    },
+    "src/CommonCommands/КомандаА.xml": {
+      "size": 1665,
+      "sha256": "87db02e0e80b0a569835b7d7ed556a1cbefdcd69cb943ae28e49a950c7546f30"
+    },
+    "src/CommonCommands/КомандаБ.xml": {
+      "size": 1656,
+      "sha256": "e9f828208b8e5c81ec9a46bbefb8d348e76289998737483257145f8f3a618c8e"
+    },
+    "src/Configuration.xml": {
+      "size": 11482,
+      "sha256": "ed01b71ee6b13283c3fe6323d7fd74e6793c3b0f7fed31fc1bb8507252d06701"
+    },
+    "src/Languages/Русский.xml": {
+      "size": 1187,
+      "sha256": "5814e912e7335637313c778c4b04b7eaec420f39722fae72b4d05e67b554116d"
+    },
+    "src/Subsystems/Подсистема1.xml": {
+      "size": 1646,
+      "sha256": "283c6ff6fdde063f6722220792630132a3c3db0972fca3617c7dbacdb0d4b890"
+    },
+    "src/Subsystems/Подсистема1/Ext/CommandInterface.xml": {
+      "size": 986,
+      "sha256": "684798c61cfd25c0cd35809bcac706a29896148105e9b803c487e2d9c8be99ea"
+    }
+  }
+}

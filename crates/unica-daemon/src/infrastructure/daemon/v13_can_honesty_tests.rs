@@ -297,6 +297,15 @@ fn source_sets(workspace: &Path) -> Vec<(String, SourceSetKind, PathBuf)> {
 }
 
 fn fixture(name: &str) -> Fixture {
+    fixture_with_profile(name, |_, _| {
+        SourceProfile::platform_xml_8_3_27_format_2_20()
+    })
+}
+
+fn fixture_with_profile(
+    name: &str,
+    source_profile: impl Fn(SourceSetKind, &Path) -> SourceProfile,
+) -> Fixture {
     let root = tempfile::tempdir().unwrap();
     let workspace = std::fs::canonicalize(root.path()).unwrap().join("ws");
     copy_tree(&acceptance_fixtures().join(name), &workspace);
@@ -315,7 +324,7 @@ fn fixture(name: &str) -> Fixture {
                 path,
                 *kind,
                 SourceFormat::PlatformXml,
-                SourceProfile::platform_xml_8_3_27_format_2_20(),
+                source_profile(*kind, path),
             )
         })
         .collect::<Vec<_>>();
