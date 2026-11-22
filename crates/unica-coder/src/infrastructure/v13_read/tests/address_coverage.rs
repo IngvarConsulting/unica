@@ -3167,8 +3167,17 @@ fn native_registered_modules_match_profile_and_physical_paths() {
         "native_registered_modules_match_profile_and_physical_paths",
         SourceSetKind::Configuration,
     );
-    for xml in ["2.20", "2.21", "2.22"] {
-        let source = fixture_path(&format!("formats/platform_xml/{xml}/all_kinds/src"));
+    for (xml, fixture, all_kinds) in [
+        ("2.20", "formats/platform_xml/2.20/all_kinds/src", true),
+        ("2.21", "formats/platform_xml/2.21/all_kinds/src", true),
+        ("2.22", "formats/platform_xml/2.22/all_kinds/src", true),
+        (
+            "2.20",
+            "formats/platform_xml/2.20/template-new-xml/seed",
+            false,
+        ),
+    ] {
+        let source = fixture_path(fixture);
         let line = export_format_line(xml).unwrap();
         let profile = PlatformProfile::for_line(line).unwrap();
         let cancellation = CancellationToken::new();
@@ -3182,8 +3191,10 @@ fn native_registered_modules_match_profile_and_physical_paths() {
         )];
         let finder = WorkspaceFindDirectoryBuilder::default();
         let registrations = root_registrations(&source, xml);
-        check_native_bsl_interiors(&authority, &source, xml, &registrations, &mut evidence);
-        if xml == "2.20" {
+        if all_kinds {
+            check_native_bsl_interiors(&authority, &source, xml, &registrations, &mut evidence);
+        }
+        if all_kinds && xml == "2.20" {
             check_baseline_native_modules(
                 &authority,
                 &profile_fixture,
@@ -3192,28 +3203,114 @@ fn native_registered_modules_match_profile_and_physical_paths() {
                 &mut evidence,
             );
         }
-        for (kind, descriptor, modules) in [
+        let all_kinds_owners = [
             (
                 "Catalog",
                 "Catalogs/Валюты.xml",
+                Some(&[][..]),
                 &[
                     ("Manager", None, "Catalogs/Валюты/Ext/ManagerModule.bsl"),
                     ("Object", None, "Catalogs/Валюты/Ext/ObjectModule.bsl"),
                 ][..],
             ),
             (
+                "AccountingRegister",
+                "AccountingRegisters/Бухгалтерский.xml",
+                Some(&["Manager"][..]),
+                &[(
+                    "RecordSet",
+                    None,
+                    "AccountingRegisters/Бухгалтерский/Ext/RecordSetModule.bsl",
+                )][..],
+            ),
+            (
+                "AccumulationRegister",
+                "AccumulationRegisters/Остатки.xml",
+                Some(&["Manager"][..]),
+                &[(
+                    "RecordSet",
+                    None,
+                    "AccumulationRegisters/Остатки/Ext/RecordSetModule.bsl",
+                )][..],
+            ),
+            (
+                "BusinessProcess",
+                "BusinessProcesses/Approval.xml",
+                Some(&["Manager"][..]),
+                &[(
+                    "Object",
+                    None,
+                    "BusinessProcesses/Approval/Ext/ObjectModule.bsl",
+                )][..],
+            ),
+            (
+                "CalculationRegister",
+                "CalculationRegisters/Начисления.xml",
+                Some(&["Manager"][..]),
+                &[(
+                    "RecordSet",
+                    None,
+                    "CalculationRegisters/Начисления/Ext/RecordSetModule.bsl",
+                )][..],
+            ),
+            (
+                "ChartOfAccounts",
+                "ChartsOfAccounts/Хозрасчетный.xml",
+                Some(&["Manager"][..]),
+                &[(
+                    "Object",
+                    None,
+                    "ChartsOfAccounts/Хозрасчетный/Ext/ObjectModule.bsl",
+                )][..],
+            ),
+            (
+                "ChartOfCalculationTypes",
+                "ChartsOfCalculationTypes/ВидыРасчета.xml",
+                Some(&["Manager"][..]),
+                &[(
+                    "Object",
+                    None,
+                    "ChartsOfCalculationTypes/ВидыРасчета/Ext/ObjectModule.bsl",
+                )][..],
+            ),
+            (
+                "ChartOfCharacteristicTypes",
+                "ChartsOfCharacteristicTypes/Codes.xml",
+                Some(&["Manager"][..]),
+                &[(
+                    "Object",
+                    None,
+                    "ChartsOfCharacteristicTypes/Codes/Ext/ObjectModule.bsl",
+                )][..],
+            ),
+            (
+                "ExchangePlan",
+                "ExchangePlans/Codes.xml",
+                Some(&["Manager"][..]),
+                &[("Object", None, "ExchangePlans/Codes/Ext/ObjectModule.bsl")][..],
+            ),
+            (
+                "Task",
+                "Tasks/Work.xml",
+                Some(&["Manager"][..]),
+                &[("Object", None, "Tasks/Work/Ext/ObjectModule.bsl")][..],
+            ),
+            (
                 "Sequence",
                 "Sequences/Probe.xml",
+                None,
                 &[("RecordSet", None, "Sequences/Probe/Ext/RecordSetModule.bsl")][..],
             ),
             (
                 "Document",
                 "Documents/Приход.xml",
+                Some(&["Manager"][..]),
                 &[("Object", None, "Documents/Приход/Ext/ObjectModule.bsl")][..],
             ),
             (
                 "Document",
                 "Documents/Orders.xml",
+                None,
                 &[
                     (
                         "Command",
@@ -3230,6 +3327,7 @@ fn native_registered_modules_match_profile_and_physical_paths() {
             (
                 "HTTPService",
                 "HTTPServices/ПроверкаСвязи.xml",
+                None,
                 &[(
                     "HTTPService",
                     None,
@@ -3239,6 +3337,7 @@ fn native_registered_modules_match_profile_and_physical_paths() {
             (
                 "WebService",
                 "WebServices/ОбменДанными.xml",
+                None,
                 &[(
                     "WebService",
                     None,
@@ -3248,24 +3347,46 @@ fn native_registered_modules_match_profile_and_physical_paths() {
             (
                 "Bot",
                 "Bots/AllKindsBot.xml",
+                None,
                 &[("Bot", None, "Bots/AllKindsBot/Ext/Module.bsl")][..],
             ),
             (
                 "WebSocketClient",
                 "WebSocketClients/AllKindsWebSocketClient.xml",
+                None,
                 &[(
                     "WebSocketClient",
                     None,
                     "WebSocketClients/AllKindsWebSocketClient/Ext/Module.bsl",
                 )][..],
             ),
-        ]
-        .into_iter()
-        .chain((xml == "2.22").then_some((
+        ];
+        let report = [(
+            "Report",
+            "Reports/CorpusReport.xml",
+            Some(&[][..]),
+            &[
+                (
+                    "Manager",
+                    None,
+                    "Reports/CorpusReport/Ext/ManagerModule.bsl",
+                ),
+                ("Object", None, "Reports/CorpusReport/Ext/ObjectModule.bsl"),
+            ][..],
+        )];
+        let owners = if all_kinds {
+            &all_kinds_owners[..]
+        } else {
+            &report[..]
+        };
+        let queue = (all_kinds && xml == "2.22").then_some((
             "Queue",
             "Queues/Probe.xml",
+            Some(&[][..]),
             &[("Manager", None, "Queues/Probe/Ext/ManagerModule.bsl")][..],
-        ))) {
+        ));
+        for (kind, descriptor, roles_without_files, modules) in owners.iter().copied().chain(queue)
+        {
             let descriptor = source.join(descriptor);
             let raw = read_fixture_descriptor(&descriptor);
             let document = parse_fixture_descriptor(&raw, &descriptor);
@@ -3282,14 +3403,15 @@ fn native_registered_modules_match_profile_and_physical_paths() {
                 "{xml}: exactly one {kind}.{name} registration",
             );
             let owner = format!("main:{kind}.{name}");
-            // Check the explicit group expectations for these owners, which
-            // are outside the frozen 8.3.27 module fixture.
-            let native_group = matches!(kind, "Catalog" | "Queue");
-            if native_group {
+            // A role can be listed under Module without an exported BSL.
+            // Only the native module files below are checked for round-trips.
+            if let Some(roles_without_files) = roles_without_files {
                 let branch = format!("{owner}.Module");
                 let expected = modules
                     .iter()
-                    .map(|(role, _, _)| format!("{branch}.{role}"))
+                    .map(|(role, _, _)| *role)
+                    .chain(roles_without_files.iter().copied())
+                    .map(|role| format!("{branch}.{role}"))
                     .collect();
                 check_native_branch(&authority, &read(&authority, &owner), &branch, &expected);
                 evidence.record(
@@ -3324,10 +3446,12 @@ fn native_registered_modules_match_profile_and_physical_paths() {
             };
             for &(role, command, relative) in modules {
                 let parent = command.map_or(owner.as_str(), |name| commands[name].as_str());
-                let at = if native_group {
+                let at = if roles_without_files.is_some() {
                     let at = format!("{parent}.Module.{role}");
-                    if kind == "Queue" {
+                    if kind != "Catalog" {
                         assert_eq!(read(&authority, &at)["kind"], "Module", "{at}");
+                    }
+                    if kind == "Queue" {
                         read(&authority, &format!("{at}.Body"));
                     }
                     QualifiedAddress::parse(&at).unwrap()
