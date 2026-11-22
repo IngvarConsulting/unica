@@ -18,6 +18,8 @@ use unica_work_control::provider_deadline::ProviderDeadline;
 
 #[path = "address_coverage/dcs_named_structure.rs"]
 mod dcs_named_structure;
+#[path = "address_coverage/inherited_cfe_registrations.rs"]
+mod inherited_cfe_registrations;
 #[path = "address_coverage/module_role_requirements.rs"]
 mod module_role_requirements;
 #[path = "address_coverage/recursive_subsystems.rs"]
@@ -913,6 +915,7 @@ fn native_cfe_ownership_addresses_follow_the_exported_registrations() {
     for version in ["2.20", "2.21", "2.22"] {
         check_native_cfe_ownership(version, &mut evidence);
     }
+    inherited_cfe_registrations::check_inherited_cfe_registrations(&mut evidence);
     evidence.finish();
 }
 

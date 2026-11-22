@@ -71,9 +71,11 @@ SPECIAL_PROJECTION_KEYS_SHARD = "required_native_special_projection_keys"
 DCS_STRUCTURE_KEYS_SHARD = "required_native_dcs_structure_keys"
 CROSS_LINE_MODULE_KEYS_SHARD = "required_cross_line_module_roles"
 BSL_PROJECTION_KEYS_SHARD = "required_bsl_projection_keys"
+NATIVE_INHERITED_CFE_KEYS_SHARD = "required_native_inherited_cfe_registrations"
+NATIVE_INHERITED_CFE = Path("tests/fixtures/acceptance/workspace-borrowed/src")
 PROJECTION_KEYS_SHARDS = frozenset({
     RECURSIVE_SUBSYSTEM_KEYS_SHARD, SPECIAL_PROJECTION_KEYS_SHARD, DCS_STRUCTURE_KEYS_SHARD,
-    CROSS_LINE_MODULE_KEYS_SHARD, BSL_PROJECTION_KEYS_SHARD,
+    CROSS_LINE_MODULE_KEYS_SHARD, BSL_PROJECTION_KEYS_SHARD, NATIVE_INHERITED_CFE_KEYS_SHARD,
 })
 XDTO_OWNER_SHAPES = {
     "Namespace": {("XDTOPackage",)},
@@ -114,6 +116,7 @@ NATIVE_SCOPE = (
     " Registered ScheduledJob.Schedule keeps descriptor-only reads and requires companion round-trips."
     " Native XML 2.20–2.22 CFE fixtures require adopted Catalog/Form and own CommonModule witnesses."
     " A form without a local companion has a logical read and a local Metadata round-trip."
+    " Registered native 2.20 borrowed roots and DataProcessor children require exact reads."
 )
 DAEMON_SCOPE = (
     "Read witnesses from the selected document and BSL coverage test of unica-daemon, "
@@ -568,10 +571,18 @@ def projection_expectations(record: dict, shard: str) -> set[tuple[str, str, str
     dcs = shard == DCS_STRUCTURE_KEYS_SHARD
     module_role = shard == CROSS_LINE_MODULE_KEYS_SHARD
     bsl = shard == BSL_PROJECTION_KEYS_SHARD
+    inherited_cfe = shard == NATIVE_INHERITED_CFE_KEYS_SHARD
     external = EXTERNAL_OWNER_KINDS.get(source)
     if (not module_role and key["role"] is not None
-            or source != "configuration" and (recursive or dcs or module_role or bsl or external is None)):
+            or inherited_cfe and source != "extension"
+            or not inherited_cfe and source != "configuration" and (recursive or dcs or module_role or bsl or external is None)):
         raise ValueError("required projection must name an admitted source and branch")
+    if inherited_cfe:
+        cfe_root = shape == [{"kind": "Configuration", "named": False, "role": None}]
+        cfe_child = (shape == [{"kind": "DataProcessor", "named": True, "role": None}]
+                     and branch in {"Form", "Template"})
+        if key["line"] != "8.3.27" or not (cfe_root or cfe_child):
+            raise ValueError("required inherited CFE projection is outside the registered native workspace")
     if module_role:
         role = key["role"]
         expected = {"Common": ("CommonModule", "read"), "Manager": ("Queue", "roundtrip")}
@@ -625,6 +636,7 @@ def projection_expectations(record: dict, shard: str) -> set[tuple[str, str, str
                 DCS_STRUCTURE_KEYS_SHARD: (DCS_STRUCTURE_SHARD,),
                 CROSS_LINE_MODULE_KEYS_SHARD: (MODULE_SHARD,),
                 BSL_PROJECTION_KEYS_SHARD: (DAEMON_SHARD,),
+                NATIVE_INHERITED_CFE_KEYS_SHARD: (CFE_OWNERSHIP_SHARD,),
                 SPECIAL_PROJECTION_KEYS_SHARD: (SPECIAL_PROJECTION_SHARD, FORM_TEMPLATE_SHARD, MODULE_SHARD),
             }[shard]
             if emitter not in admitted or observation["level"] != level:
@@ -633,8 +645,8 @@ def projection_expectations(record: dict, shard: str) -> set[tuple[str, str, str
             if emitter != SPECIAL_PROJECTION_SHARD:
                 raise ValueError("required external projection needs the special projection emitter")
             validate_external_form_projection(key, owner)
-        elif source_prefix(owner, "owner") != "main":
-            raise ValueError("required configuration projection must name its main owner")
+        elif source_prefix(owner, "owner") != ("ext" if inherited_cfe else "main"):
+            raise ValueError("required projection must name its source-set owner")
         if recursive:
             owner_pattern = "main:Configuration" if root else "main:" + r"\.".join(
                 rf"Subsystem\.{NATIVE_ADDRESS_NAME}" for _ in shape
@@ -643,6 +655,11 @@ def projection_expectations(record: dict, shard: str) -> set[tuple[str, str, str
                 raise ValueError("required recursive owner must match the Subsystem depth")
         collection = "main:Subsystem" if recursive and root else f"{owner}.{branch}"
         addresses = observation["addresses"]
+        if inherited_cfe:
+            owner_pattern = "ext:Configuration" if cfe_root else rf"ext:DataProcessor\.{NATIVE_ADDRESS_NAME}"
+            if not re.fullmatch(owner_pattern, owner) or not Path(origin).is_relative_to(NATIVE_INHERITED_CFE / "ext"):
+                raise ValueError("required inherited CFE owner or origin differs from the native registration")
+            collection = f"ext:{branch}" if cfe_root else collection
         if module_role:
             if not re.fullmatch(rf"main:{owner_kind}\.{NATIVE_ADDRESS_NAME}", owner):
                 raise ValueError("required cross-line module owner does not match its declared kind")
@@ -653,7 +670,7 @@ def projection_expectations(record: dict, shard: str) -> set[tuple[str, str, str
             pattern = "main:" + r"\.".join(rf"{kind}\.{role or NATIVE_ADDRESS_NAME}" for kind, role in allowed_shape)
             if not re.fullmatch(pattern, owner) or addresses != [collection]:
                 raise ValueError("required BSL projection needs the exact owner and branch address")
-        if not isinstance(addresses, list) or collection not in addresses:
+        if not isinstance(addresses, list) or not addresses or (not inherited_cfe and collection not in addresses):
             raise ValueError("required projection must include the branch address")
         for address in addresses:
             address = required_text(address, "address")
@@ -1026,6 +1043,29 @@ def inherited_module_absence(repo: Path, key: dict, witness: dict) -> dict | Non
     }
 
 
+def inherited_common_template_absence(repo: Path, key: dict, witness: dict) -> dict | None:
+    relative = Path("CommonTemplates/ОбщийМакет.xml")
+    origin = (NATIVE_INHERITED_CFE / "ext" / relative).as_posix()
+    template = "ext:CommonTemplate.ОбщийМакет"
+    if (
+        key["line"] != "8.3.27" or key["source_kind"] != "extension" or key["branch"] != "CommonTemplate"
+        or key["role"] is not None or witness["owner"] != "ext:Configuration"
+        or witness["test_case"] != CFE_OWNERSHIP_SHARD or witness["level"] != "read"
+        or witness["origin"] != origin or witness["at"] != template
+    ):
+        return None
+    companion = relative.with_suffix("") / "Ext/Template.xml"
+    local_file = NATIVE_INHERITED_CFE / "ext" / companion
+    if (repo / local_file).exists() or not (repo / NATIVE_INHERITED_CFE / "cf" / companion).is_file():
+        raise ValueError("native CommonTemplate no longer matches its inherited-content capture")
+    return {
+        "key": {**key, "branch": "Area", "owner_shape": [{"kind": "CommonTemplate", "named": True, "role": None}]},
+        "attempted_at": f"{template}.Area", "reason": {"kind": "no_local_content"},
+        "evidence": {"origin": origin, "platform": "8.3.27.2074", "format": "2.20", "declaration": template,
+                     "absent_local_file": local_file.as_posix()},
+    }
+
+
 def address_absence_observations(repo: Path, rows: list[dict]) -> list[dict]:
     """Extend the internal report without modifying address evidence or shard validation."""
     observations = native_module_absence_observations(repo)
@@ -1038,6 +1078,8 @@ def address_absence_observations(repo: Path, rows: list[dict]) -> list[dict]:
                     "evidence": {field: witness[field] for field in ("owner", "origin", "test_case")},
                 })
             elif inherited := inherited_module_absence(repo, key, witness):
+                observations.append(inherited)
+            elif inherited := inherited_common_template_absence(repo, key, witness):
                 observations.append(inherited)
             elif (
                 key["line"] == "8.3.27" and key["source_kind"] == "configuration"
@@ -1127,7 +1169,8 @@ def render_markdown(report: dict) -> str:
                 outcome = f"Owner enumeration gap [#{reason['issue']}]({reason['url']})"
                 note = "Direct branch read is witnessed in the address table."
             elif kind == "no_local_content":
-                outcome = "No local content in the inherited form"
+                owner_kind = key["owner_shape"][-1]["kind"]
+                outcome = "No local content in the inherited " + ("template" if owner_kind == "CommonTemplate" else "form")
                 note = f"{evidence['platform']} · {evidence['origin']} · declaration {evidence['declaration']}"
             elif kind == "unnamed_value_row":
                 subject = f"{evidence['owner']}.{key['branch']}"
@@ -1944,6 +1987,89 @@ def native_cfe_ownership_line_requirements(repo: Path, line: str, version: str, 
     return rows
 
 
+def native_inherited_cfe_registrations(repo: Path) -> list[dict]:
+    """Require the declarations registered in the complete native #1304/#1381 export."""
+    md = "{http://v8.1c.ru/8.3/MDClasses}"
+    local_root = NATIVE_INHERITED_CFE / "ext"
+    base_root = NATIVE_INHERITED_CFE / "cf"
+    layouts = {
+        "Language": "Languages", "Role": "Roles", "CommonTemplate": "CommonTemplates",
+        "CommonModule": "CommonModules", "XDTOPackage": "XDTOPackages", "CommonForm": "CommonForms",
+        "DataProcessor": "DataProcessors",
+    }
+    rows = []
+
+    def descriptor(root: Path, relative: Path, kind: str, name: str | None = None) -> ET.Element:
+        path = root / relative
+        document = ET.parse(repo / path).getroot()
+        if document.tag != f"{md}MetaDataObject" or document.get("version") != "2.20" or len(document) != 1:
+            raise ValueError(f"invalid native CFE export {path}")
+        node = document[0]
+        if node.tag != f"{md}{kind}" or (name and node.findtext(f"{md}Properties/{md}Name") != name):
+            raise ValueError(f"wrong native CFE descriptor identity in {path}")
+        return node
+
+    def registrations(node: ET.Element) -> set[tuple[str, str]]:
+        entries = [(child.tag.removeprefix(md), required_text(child.text, "native CFE registration"))
+                   for child in node.findall(f"{md}ChildObjects/*")]
+        if len(set(entries)) != len(entries):
+            raise ValueError("duplicate inherited CFE registration")
+        return set(entries)
+
+    def visit(kind: str, owner: str, path: Path, local: ET.Element, base: ET.Element) -> None:
+        names_by_kind = {}
+        parent_registrations = registrations(base)
+        for child_kind, name in sorted(registrations(local)):
+            if (child_kind, name) not in parent_registrations or not re.fullmatch(NATIVE_ADDRESS_NAME, name):
+                raise ValueError(f"unmatched native CFE parent registration for {owner}/{child_kind}.{name}")
+            names_by_kind.setdefault(child_kind, []).append(name)
+        for branch, names in names_by_kind.items():
+            if kind == "Configuration":
+                directory = layouts.get(branch)
+                collection = f"ext:{branch}"
+            else:
+                directory = {("DataProcessor", "Form"): "Forms", ("DataProcessor", "Template"): "Templates"}.get((kind, branch))
+                collection = f"{owner}.{branch}"
+            if directory is None:
+                raise ValueError(f"unproved native CFE layout for {owner}.{branch}")
+            observations = []
+
+            def expect(address: str, origin: Path) -> None:
+                observations.append({"owner": owner, "addresses": [address], "origin": (local_root / origin).as_posix(),
+                                     "level": "read", "test_case": CFE_OWNERSHIP_SHARD})
+
+            expect(collection, path)
+            for name in names:
+                relative = Path(directory) / f"{name}.xml"
+                if kind != "Configuration":
+                    relative = path.with_suffix("") / relative
+                child = descriptor(local_root, relative, branch, name)
+                parent = descriptor(base_root, relative, branch, name)
+                parent_uuid = parent.attrib["uuid"]
+                if (child.findtext(f"{md}Properties/{md}ObjectBelonging") != "Adopted"
+                        or child.findtext(f"{md}Properties/{md}ExtendedConfigurationObject") != parent_uuid
+                        or child.attrib["uuid"] == parent_uuid or not uuid.UUID(parent_uuid).int):
+                    raise ValueError(f"unmatched native CFE parent UUID for {relative}")
+                at = f"{collection}.{name}"
+                expect(at, relative)
+                visit(branch, at, relative, child, parent)
+            rows.append({
+                "schema_version": SCHEMA_VERSION, "record_type": "required",
+                "key": {"line": "8.3.27", "source_kind": "extension", "branch": branch, "role": None,
+                        "owner_shape": [{"kind": kind, "named": kind != "Configuration", "role": None}]},
+                "requirement": {"kind": "exact", "observations": observations},
+            })
+
+    path = Path("Configuration.xml")
+    root = descriptor(local_root, path, "Configuration")
+    if not root.findtext(f"{md}Properties/{md}ConfigurationExtensionPurpose"):
+        raise ValueError("expected an extension root for the native inherited CFE registrations")
+    visit("Configuration", "ext:Configuration", path, root, descriptor(base_root, path, "Configuration"))
+    if not rows:
+        raise ValueError("the native inherited CFE workspace must retain its registrations")
+    return rows
+
+
 def native_adopted_extension_language_requirements(repo: Path) -> list[dict]:
     """Require existing reads for the adopted languages in the native empty-extension corpus."""
     md = "{http://v8.1c.ru/8.3/MDClasses}"
@@ -2100,6 +2226,7 @@ def generate_report(native_only: bool) -> dict:
             (EXTERNAL_INLINE_KEYS_SHARD, native_external_inline_requirements),
             (EXTENSION_LANGUAGE_KEYS_SHARD, native_adopted_extension_language_requirements),
             (CFE_OWNERSHIP_KEYS_SHARD, native_cfe_ownership_requirements),
+            (NATIVE_INHERITED_CFE_KEYS_SHARD, native_inherited_cfe_registrations),
             (MXL_KEYS_SHARD, lambda repo: native_mxl_requirements(repo, native_only=native_only)),
         ):
             records = producer(REPO)

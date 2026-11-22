@@ -238,6 +238,31 @@ class AddressCoverageReportTests(unittest.TestCase):
         self.assertEqual(len(matches), 1)
         self.assertNotIn("attempted_at", matches[0])
 
+    def test_inherited_cfe_requires_each_registered_owner_and_local_declaration_origin(self) -> None:
+        shard = GENERATOR.NATIVE_INHERITED_CFE_KEYS_SHARD
+        rows = GENERATOR.native_inherited_cfe_registrations(GENERATOR.REPO)
+        self.assertEqual(len(rows), 9)
+        required = {}
+        groups = {}
+        for row in rows:
+            key = GENERATOR.structural_key(row["key"])
+            expected = GENERATOR.projection_expectations(row, shard)
+            required[(shard, key)] = expected
+            groups[key] = {"key": row["key"], "witnesses": [
+                {"test_case": test_case, "level": level, "owner": owner, "origin": origin,
+                 "at": at, "reason": None} for test_case, level, owner, origin, at in sorted(expected)
+            ]}
+        self.assertEqual(sum(map(len, required.values())), 20)
+        GENERATOR.check_projection_requirements(required, groups)
+        group = next(group for group in groups.values() if group["key"]["branch"] == "CommonTemplate")
+        reasons = GENERATOR.address_absence_observations(GENERATOR.REPO, [group])
+        self.assertIn("ext:CommonTemplate.ОбщийМакет.Area", [row["attempted_at"] for row in reasons
+                                                            if row["reason"]["kind"] == "no_local_content"])
+        member = next(witness for witness in group["witnesses"] if witness["at"].endswith(".ОбщийМакет"))
+        member["origin"] = member["origin"].replace("/src/ext/", "/src/cf/")
+        with self.assertRaisesRegex(ValueError, "missing required native projection evidence.*CommonTemplate.ОбщийМакет"):
+            GENERATOR.check_projection_requirements(required, groups)
+
     def test_unnamed_characteristic_reason_is_scoped_to_confirmed_document(self) -> None:
         special = "native_special_projection_addresses_match_source"
         owner = "main:Document.АктОбУничтоженииПерсональныхДанных"
