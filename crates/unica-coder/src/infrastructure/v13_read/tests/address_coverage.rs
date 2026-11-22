@@ -16,6 +16,9 @@ use unica_source_designer::owner::MD_CLASSES_NS;
 use unica_source_designer::registration::platform_child_object_order;
 use unica_work_control::provider_deadline::ProviderDeadline;
 
+#[path = "address_coverage_recursive.rs"]
+mod recursive_subsystems;
+
 // One sorted JSONL file per successful test, when explicitly requested. Use
 // an empty output directory per exact run; the caller verifies the test result.
 const EVIDENCE_DIRECTORY: &str = "UNICA_484_ADDRESS_JSONL_DIR";
