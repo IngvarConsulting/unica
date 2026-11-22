@@ -1,3 +1,5 @@
+mod special_projections;
+
 use super::*;
 use crate::infrastructure::logical_tree::LogicalReader;
 use crate::infrastructure::v13_find::{LayoutFindSource, WorkspaceFindDirectoryBuilder};
