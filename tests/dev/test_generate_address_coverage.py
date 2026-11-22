@@ -379,6 +379,59 @@ class AddressCoverageReportTests(unittest.TestCase):
                     ):
                         GENERATOR.merge_shards(self.root, shards, native_only=native_only)
 
+    def test_native_wsdl_requires_a_roundtrip_from_the_same_line_and_coder_shard(self) -> None:
+        shard = GENERATOR.WSDL_KEYS_SHARD
+        required = [
+            {
+                "schema_version": 1, "record_type": "required",
+                "key": {
+                    "line": line, "source_kind": "configuration",
+                    "owner_shape": [{"kind": "WSReference", "named": True, "role": None}],
+                    "branch": "Definition", "role": None,
+                },
+                "requirement": {"kind": "roundtrip", "observations": [{
+                    "owner": "main:WSReference.Probe",
+                    "origin": f"tests/fixtures/formats/platform_xml/{version}/all_kinds/src/WSReferences/Probe/Ext/WSDefinition.xml",
+                    "addresses": ["main:WSReference.Probe.Definition"],
+                }]},
+            }
+            for version, line in (("2.20", "8.3.27"), ("2.21", "8.5.1"), ("2.22", "8.5.4"))
+        ]
+        evidence = [
+            {
+                "schema_version": 1, "record_type": "evidence", "key": row["key"],
+                "witness": {
+                    "owner": observation["owner"], "origin": observation["origin"],
+                    "at": at, "level": "roundtrip", "reason": None, "test_case": METADATA_SHARD,
+                },
+            }
+            for row in required for observation in row["requirement"]["observations"]
+            for at in observation["addresses"]
+        ]
+        self.assertEqual(GENERATOR.native_wsdl_requirements(GENERATOR.REPO), required)
+        before, target, after = evidence
+        foreign_origin = after["witness"]["origin"]
+        self.assertEqual(
+            (GENERATOR.REPO / target["witness"]["origin"]).read_bytes(),
+            (GENERATOR.REPO / foreign_origin).read_bytes(),
+        )
+        self.write_shard(shard, *required)
+        shards = frozenset({shard, METADATA_SHARD, GENERATOR.FORM_TEMPLATE_SHARD})
+        alternative = {**target, "witness": {**target["witness"], "test_case": GENERATOR.FORM_TEMPLATE_SHARD}}
+        self.write_shard(GENERATOR.FORM_TEMPLATE_SHARD, alternative)
+        for native_only in (False, True):
+            with self.subTest(native_only=native_only):
+                self.write_shard(METADATA_SHARD, *evidence)
+                self.assertEqual(len(GENERATOR.merge_shards(self.root, shards, native_only=native_only)), 3)
+                for changes in ({}, {"level": "read"}, {"origin": foreign_origin}):
+                    with self.subTest(changes=changes):
+                        substitute = [{**target, "witness": {**target["witness"], **changes}}] if changes else []
+                        self.write_shard(METADATA_SHARD, before, after, *substitute)
+                        with self.assertRaisesRegex(
+                            ValueError, r"(?s)missing required native WSDL coverage.*Definition \(8\.5\.1\): expected roundtrip",
+                        ):
+                            GENERATOR.merge_shards(self.root, shards, native_only=native_only)
+
     def test_witnesses_for_one_shape_are_grouped_in_stable_order(self) -> None:
         first, second = root_witness("main"), root_witness("other")
         self.write_root_shard(second, first)

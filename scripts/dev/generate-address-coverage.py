@@ -43,6 +43,7 @@ DCS_QUERY_KEYS_SHARD = "required_native_dcs_query_keys"
 ROLE_RIGHT_KEYS_SHARD = "required_native_role_right_keys"
 XDTO_KEYS_SHARD = "required_native_xdto_keys"
 SUBSYSTEM_CONTENT_KEYS_SHARD = "required_native_subsystem_content_keys"
+WSDL_KEYS_SHARD = "required_native_wsdl_keys"
 XDTO_OWNER_SHAPES = {
     "Namespace": {("XDTOPackage",)},
     "Type": {("XDTOPackage",)},
@@ -52,7 +53,7 @@ NATIVE_ADDRESS_NAME = r"[^\W\d]\w*"
 REQUIRED_KEY_SHARDS = frozenset({
     ROOT_KEYS_SHARD, METADATA_CHILD_KEYS_SHARD, EXTERNAL_CHILD_KEYS_SHARD, MODULE_ROLE_KEYS_SHARD,
     EDS_MODULE_KEYS_SHARD, SUBSYSTEM_INTERFACE_KEYS_SHARD, DCS_QUERY_KEYS_SHARD, ROLE_RIGHT_KEYS_SHARD,
-    XDTO_KEYS_SHARD, SUBSYSTEM_CONTENT_KEYS_SHARD,
+    XDTO_KEYS_SHARD, SUBSYSTEM_CONTENT_KEYS_SHARD, WSDL_KEYS_SHARD,
 })
 NATIVE_SCOPE = (
     "Configuration source sets and native Language registrations in extension source sets "
@@ -71,6 +72,7 @@ NATIVE_SCOPE = (
     " and the role-right collection and members in native SalesReader fixtures."
     " Native XDTO requirements trace Namespace, Type and Property reads to registered Package.bin files."
     " Registered subsystem descriptors independently require reads of Relation and Subsystem branches."
+    " Registered native WSDL companions require exact WSReference.Definition round-trips."
 )
 DAEMON_SCOPE = (
     "Read witnesses from the selected document and BSL coverage test of unica-daemon, "
@@ -256,22 +258,26 @@ def validate_required_record(record: object, shard: str) -> None:
             raise ValueError("duplicate required role right address")
         required_text(requirement["origin"], "origin")
         return
-    if shard in {XDTO_KEYS_SHARD, SUBSYSTEM_CONTENT_KEYS_SHARD}:
-        family = "XDTO" if shard == XDTO_KEYS_SHARD else "subsystem content"
+    if shard in {XDTO_KEYS_SHARD, SUBSYSTEM_CONTENT_KEYS_SHARD, WSDL_KEYS_SHARD}:
+        family = {
+            XDTO_KEYS_SHARD: "XDTO", SUBSYSTEM_CONTENT_KEYS_SHARD: "subsystem content", WSDL_KEYS_SHARD: "WSDL",
+        }[shard]
+        level = "roundtrip" if shard == WSDL_KEYS_SHARD else "read"
         exact_fields(requirement, {"kind", "observations"}, f"{family} requirement")
         kinds = tuple(segment["kind"] for segment in shape)
         branch_kind = key["branch"]
-        known_shape = (
-            kinds in XDTO_OWNER_SHAPES.get(branch_kind, set())
-            if shard == XDTO_KEYS_SHARD else
-            branch_kind in {"Relation", "Subsystem"} and all(kind == "Subsystem" for kind in kinds)
-        )
+        if shard == XDTO_KEYS_SHARD:
+            known_shape = kinds in XDTO_OWNER_SHAPES.get(branch_kind, set())
+        elif shard == WSDL_KEYS_SHARD:
+            known_shape = branch_kind == "Definition" and kinds == ("WSReference",)
+        else:
+            known_shape = branch_kind in {"Relation", "Subsystem"} and all(kind == "Subsystem" for kind in kinds)
         if (
             not known_shape or key["role"] is not None
             or any(not segment["named"] or segment["role"] is not None for segment in shape)
-            or requirement["kind"] != "read"
+            or requirement["kind"] != level
         ):
-            raise ValueError(f"required {family} key must name a supported read branch")
+            raise ValueError(f"required {family} key must name a supported {level} branch")
         observations = requirement["observations"]
         if not isinstance(observations, list) or not observations:
             raise ValueError(f"expected nonempty required {family} observations")
@@ -289,7 +295,7 @@ def validate_required_record(record: object, shard: str) -> None:
             if not isinstance(addresses, list) or not addresses or addresses[0] != branch:
                 raise ValueError(f"required {family} addresses must include their branch")
             for address in addresses[1:]:
-                if branch_kind in {"Namespace", "Relation"} or not re.fullmatch(
+                if branch_kind in {"Namespace", "Relation", "Definition"} or not re.fullmatch(
                     rf"{re.escape(branch)}\.{NATIVE_ADDRESS_NAME}", required_text(address, f"{family} member address")
                 ):
                     raise ValueError(f"required {family} member must belong to its branch")
@@ -376,10 +382,11 @@ def check_required_keys(requirements: dict, groups: dict, *, native_only: bool) 
     missing_eds_modules = []
     missing_interfaces = []
     missing_queries = []
-    metadata_read_errors = {
+    metadata_errors = {
         ROLE_RIGHT_KEYS_SHARD: ("Role.Right", []),
         XDTO_KEYS_SHARD: ("XDTO", []),
         SUBSYSTEM_CONTENT_KEYS_SHARD: ("subsystem content", []),
+        WSDL_KEYS_SHARD: ("WSDL", []),
     }
     diagnostics = []
     for key, (shard, record) in sorted(requirements.items()):
@@ -397,19 +404,20 @@ def check_required_keys(requirements: dict, groups: dict, *, native_only: bool) 
                     f"{requirement['at']} ({record['key']['line']}): expected read from {requirement['origin']}"
                 )
             continue
-        if shard in metadata_read_errors:
+        if shard in metadata_errors:
             requirement = record["requirement"]
+            level = requirement["kind"]
             observations = [requirement] if shard == ROLE_RIGHT_KEYS_SHARD else requirement["observations"]
-            _, missing_reads = metadata_read_errors[shard]
-            reads = {
+            _, missing_witnesses = metadata_errors[shard]
+            observed = {
                 (w["owner"], w["origin"], w["at"]) for w in witnesses
-                if w["test_case"] == METADATA_SHARD and w["reason"] is None and w["level"] == "read"
+                if w["test_case"] == METADATA_SHARD and w["reason"] is None and w["level"] == level
             }
             for observation in observations:
                 for at in observation["addresses"]:
-                    if (observation["owner"], observation["origin"], at) not in reads:
-                        missing_reads.append(
-                            f"{at} ({record['key']['line']}): expected read from {observation['origin']}"
+                    if (observation["owner"], observation["origin"], at) not in observed:
+                        missing_witnesses.append(
+                            f"{at} ({record['key']['line']}): expected {level} from {observation['origin']}"
                         )
             continue
         if shard == EDS_MODULE_KEYS_SHARD:
@@ -455,7 +463,7 @@ def check_required_keys(requirements: dict, groups: dict, *, native_only: bool) 
         )
     if missing_queries:
         errors.append("missing required native DCS Query coverage:\n" + "\n".join(missing_queries))
-    for family, failures in metadata_read_errors.values():
+    for family, failures in metadata_errors.values():
         if failures:
             errors.append(f"missing required native {family} coverage:\n" + "\n".join(failures))
     if errors:
@@ -932,6 +940,47 @@ def native_subsystem_content_requirements(repo: Path) -> list[dict]:
     return rows
 
 
+def native_wsdl_requirements(repo: Path) -> list[dict]:
+    md = "{http://v8.1c.ru/8.3/MDClasses}"
+    wsdl = "{http://schemas.xmlsoap.org/wsdl/}"
+    rows = []
+    for version, line in (("2.20", "8.3.27"), ("2.21", "8.5.1"), ("2.22", "8.5.4")):
+        source = repo / "tests/fixtures/formats/platform_xml" / version / "all_kinds/src"
+        configuration = ET.parse(source / "Configuration.xml").getroot()
+        if configuration.tag != f"{md}MetaDataObject" or configuration.get("version") != version:
+            raise ValueError(f"native WSDL: wrong configuration format in {source}")
+        registrations = configuration.findall(f"{md}Configuration/{md}ChildObjects/{md}WSReference")
+        if not registrations:
+            raise ValueError(f"native WSDL: no registered WSReference in {source}")
+        observations = []
+        for registration in registrations:
+            name = required_text(registration.text, "registered WSReference name")
+            if not re.fullmatch(NATIVE_ADDRESS_NAME, name):
+                raise ValueError(f"native WSDL: invalid WSReference name {name}")
+            path = source / "WSReferences" / f"{name}.xml"
+            descriptor = ET.parse(path).getroot()
+            if (
+                descriptor.tag != f"{md}MetaDataObject" or descriptor.get("version") != version
+                or descriptor.findtext(f"{md}WSReference/{md}Properties/{md}Name") != name
+            ):
+                raise ValueError(f"native WSDL: wrong registered descriptor {path}")
+            origin = path.with_suffix("") / "Ext/WSDefinition.xml"
+            definitions = ET.parse(origin).getroot()
+            if definitions.tag != f"{wsdl}definitions" or not definitions.get("targetNamespace", "").strip():
+                raise ValueError(f"native WSDL: invalid definitions in {origin}")
+            owner = f"main:WSReference.{name}"
+            observations.append({"owner": owner, "origin": origin.relative_to(repo).as_posix(),
+                                 "addresses": [f"{owner}.Definition"]})
+        rows.append({
+            "schema_version": SCHEMA_VERSION, "record_type": "required",
+            "key": {"line": line, "source_kind": "configuration",
+                    "owner_shape": [{"kind": "WSReference", "named": True, "role": None}],
+                    "branch": "Definition", "role": None},
+            "requirement": {"kind": "roundtrip", "observations": observations},
+        })
+    return rows
+
+
 def generate_report(native_only: bool) -> dict:
     revision, status = git_state()
     cases = [("unica-coder", "address_coverage")]
@@ -958,6 +1007,7 @@ def generate_report(native_only: bool) -> dict:
             (ROLE_RIGHT_KEYS_SHARD, native_role_right_requirements),
             (XDTO_KEYS_SHARD, native_xdto_requirements),
             (SUBSYSTEM_CONTENT_KEYS_SHARD, native_subsystem_content_requirements),
+            (WSDL_KEYS_SHARD, native_wsdl_requirements),
         ):
             records = producer(REPO)
             path = Path(scratch) / f"{shard}.jsonl"
