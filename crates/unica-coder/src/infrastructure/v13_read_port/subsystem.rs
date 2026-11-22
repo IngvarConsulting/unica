@@ -6,6 +6,7 @@ use unica_address::address::QualifiedAddress;
 use unica_address::source_target::MetadataAddress;
 use unica_refusal::{RefusalCode, RefusalDetail};
 use unica_source_contract::portable_path::PortablePathExt;
+use unica_source_contract::read::SOURCE_TREE_TRAVERSAL_MAX_DEPTH;
 
 impl ProviderReadAuthority {
     pub(crate) fn subsystem_payload(
@@ -53,16 +54,7 @@ impl ProviderReadAuthority {
             )
             .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
         if let Some(expected) = nested.last() {
-            if &data.name != expected {
-                return Err(ViewError::detailed(
-                    RefusalDetail::SourceUnreadable,
-                    format!(
-                        "subsystem descriptor `{}` names `{}` instead of `{expected}`",
-                        descriptor_relative.portable(),
-                        data.name
-                    ),
-                ));
-            }
+            require_subsystem_name(&descriptor_relative, expected, &data.name)?;
         }
         // Признак поддержки берётся из дескриптора читаемой подсистемы: у
         // вложенной он свой, а не корня.
@@ -89,7 +81,7 @@ impl ProviderReadAuthority {
         checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
     ) -> Result<(PathBuf, Vec<u8>), ViewError> {
         let mut relative = self.metadata_descriptor_relative(target)?;
-        let mut descriptor = self.metadata_descriptor(target)?;
+        let mut descriptor = self.metadata_descriptor_with_checkpoint(target, checkpoint)?;
         for (depth, name) in nested.iter().enumerate() {
             checkpoint()?;
             let text = std::str::from_utf8(&descriptor).map_err(|_| {
@@ -104,16 +96,7 @@ impl ProviderReadAuthority {
             // Промежуточный дескриптор обязан называть ту подсистему, по
             // регистрации которой к нему пришли; корень сверен владельцем.
             if let Some(expected) = depth.checked_sub(1).map(|index| &nested[index]) {
-                if &parent.name != expected {
-                    return Err(ViewError::detailed(
-                        RefusalDetail::SourceUnreadable,
-                        format!(
-                            "subsystem descriptor `{}` names `{}` instead of `{expected}`",
-                            relative.portable(),
-                            parent.name
-                        ),
-                    ));
-                }
+                require_subsystem_name(&relative, expected, &parent.name)?;
             }
             if !parent.child_names.iter().any(|child| child == name) {
                 return Err(ViewError::new(
@@ -126,7 +109,7 @@ impl ProviderReadAuthority {
             }
             relative = nested_subsystem_descriptor(&relative, name);
             descriptor = self
-                .read_optional_relative_whole(&relative)?
+                .read_optional_relative_with_checkpoint(&relative, checkpoint)?
                 .ok_or_else(|| {
                     ViewError::new(
                         RefusalCode::NotFound,
@@ -135,6 +118,37 @@ impl ProviderReadAuthority {
                 })?;
         }
         Ok((relative, descriptor))
+    }
+
+    pub(crate) fn registered_nested_subsystem_export_path(
+        &self,
+        target: &MetadataAddress,
+        nested: &[String],
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+    ) -> Result<String, ViewError> {
+        // The root descriptor sits under Subsystems. Every child adds its
+        // owning subsystem's directory and another Subsystems directory.
+        let directory_depth = 1 + 2 * nested.len();
+        if directory_depth > SOURCE_TREE_TRAVERSAL_MAX_DEPTH {
+            return Err(ViewError::new(
+                RefusalCode::ProviderLimitExceeded,
+                "registered subsystem path exceeds the source tree traversal-depth limit",
+            ));
+        }
+        let (relative, bytes) = self.registered_subsystem_descriptor(target, nested, checkpoint)?;
+        let descriptor = std::str::from_utf8(&bytes).map_err(|_| {
+            ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
+                "subsystem descriptor is not UTF-8",
+            )
+        })?;
+        let (data, _) = crate::infrastructure::family_codecs::metadata_read_codec()
+            .subsystem_info(&relative, descriptor, false)
+            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
+        if let Some(expected) = nested.last() {
+            require_subsystem_name(&relative, expected, &data.name)?;
+        }
+        path_text(relative)
     }
 
     /// Check the selected descriptor and its direct dependencies under the same
@@ -259,6 +273,19 @@ impl ProviderReadAuthority {
     ) -> Result<Arc<unica_metadata::subsystem_topology::SubsystemTopology>, ViewError> {
         self.artifacts.subsystem_topology(&self.root, checkpoint)
     }
+}
+
+fn require_subsystem_name(relative: &Path, expected: &str, actual: &str) -> Result<(), ViewError> {
+    if actual == expected {
+        return Ok(());
+    }
+    Err(ViewError::detailed(
+        RefusalDetail::SourceUnreadable,
+        format!(
+            "subsystem descriptor `{}` names `{actual}` instead of `{expected}`",
+            relative.portable()
+        ),
+    ))
 }
 
 /// `Subsystems/A.xml` → `Subsystems/A/Subsystems/B.xml`.

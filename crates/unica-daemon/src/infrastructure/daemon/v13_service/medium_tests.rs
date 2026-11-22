@@ -1515,6 +1515,106 @@ fn resolve_metadata_point_matches_the_full_layout_directory() {
     );
 }
 
+/// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
+#[test]
+fn resolve_nested_subsystems_proves_only_the_requested_registration_chain() {
+    use unica_execution::invocation_store::ToolIdentity;
+
+    let workspace = resolve_exact_workspace();
+    let source = std::fs::canonicalize(workspace.path().join("src")).unwrap();
+    let configuration = source.join("Configuration.xml");
+    let registered = std::fs::read_to_string(&configuration).unwrap().replace(
+        "</ChildObjects>",
+        "<Subsystem>Level1</Subsystem></ChildObjects>",
+    );
+    std::fs::write(configuration, registered).unwrap();
+
+    let mut at = "main:".to_string();
+    let mut directory = std::path::PathBuf::new();
+    let mut relative = std::path::PathBuf::new();
+    let depth = 12;
+    for level in 1..=depth {
+        let name = format!("Level{level}");
+        let next = if level == depth {
+            String::new()
+        } else {
+            format!("<Subsystem>Level{}</Subsystem>", level + 1)
+        };
+        let descriptor = format!(
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Subsystem uuid="f3317000-0000-4000-8000-0000000000{level:02}"><Properties><Name>{name}</Name><IncludeHelpInContents>false</IncludeHelpInContents><IncludeInCommandInterface>true</IncludeInCommandInterface><UseOneCommand>false</UseOneCommand><Content/></Properties><ChildObjects>{next}</ChildObjects></Subsystem></MetaDataObject>"#
+        );
+        directory.push("Subsystems");
+        std::fs::create_dir_all(source.join(&directory)).unwrap();
+        relative = directory.join(format!("{name}.xml"));
+        std::fs::write(source.join(&relative), descriptor).unwrap();
+        directory.push(&name);
+        if level > 1 {
+            at.push('.');
+        }
+        at.push_str(&format!("Subsystem.{name}"));
+    }
+
+    // A point lookup must not inspect a sibling or the optional command interface.
+    std::fs::write(source.join("Subsystems/Damaged.xml"), "<broken").unwrap();
+    let attachment = source.join(directory).join("Ext/CommandInterface.xml");
+    std::fs::create_dir_all(attachment.parent().unwrap()).unwrap();
+    std::fs::write(attachment, "<broken").unwrap();
+
+    let absolute = source.join(&relative);
+    let relative = relative.to_str().unwrap().replace('\\', "/");
+    let expected = json!({
+        "at": at, "kind": "Subsystem", "path": relative,
+        "lines": {"state": "notLineBased"}
+    });
+    for arguments in [
+        json!({"at": at}),
+        json!({"path": format!("src/{relative}")}),
+        json!({"path": absolute}),
+    ] {
+        let result = invoke_exact_read(workspace.path(), ToolIdentity::Resolve, arguments);
+        assert!(result.ok, "{result:?}");
+        assert_eq!(result.data.unwrap(), expected);
+    }
+
+    let collection = absolute.parent().unwrap();
+    let alternate = collection.with_file_name("subsystems");
+    let temporary = collection.with_file_name("subsystems-case-probe");
+    std::fs::rename(collection, &temporary).unwrap();
+    std::fs::rename(&temporary, &alternate).unwrap();
+    let plain_path = alternate.join(absolute.file_name().unwrap());
+    let alternate_path = plain_path.with_extension("XML");
+    let temporary_path = plain_path.with_extension("case-probe");
+    std::fs::rename(&plain_path, &temporary_path).unwrap();
+    std::fs::rename(&temporary_path, &alternate_path).unwrap();
+    let case_insensitive = absolute.is_file();
+    for arguments in [json!({"at": at}), json!({"path": alternate_path})] {
+        let result = invoke_exact_read(workspace.path(), ToolIdentity::Resolve, arguments);
+        assert_eq!(result.ok, case_insensitive, "{result:?}");
+        if case_insensitive {
+            assert_eq!(result.data.unwrap(), expected);
+        }
+    }
+    std::fs::rename(&alternate_path, &temporary_path).unwrap();
+    std::fs::rename(&temporary_path, &plain_path).unwrap();
+    std::fs::rename(&alternate, &temporary).unwrap();
+    std::fs::rename(&temporary, collection).unwrap();
+
+    let original = std::fs::read_to_string(&absolute).unwrap();
+    std::fs::write(
+        &absolute,
+        original.replace(&format!("<Name>Level{depth}</Name>"), "<Name>Wrong</Name>"),
+    )
+    .unwrap();
+    for arguments in [json!({"at": at}), json!({"path": absolute})] {
+        let result = invoke_exact_read(workspace.path(), ToolIdentity::Resolve, arguments);
+        assert!(!result.ok, "{result:?}");
+        assert!(result.diagnostics[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("instead of"));
+    }
+}
+
 /// rule: INV.WIRE.RESOLVED-SOURCE-LOCATION
 #[test]
 fn resolve_exact_tree_children_use_their_containing_xml() {
