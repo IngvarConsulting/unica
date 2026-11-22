@@ -516,6 +516,53 @@ class AddressCoverageReportTests(unittest.TestCase):
 
 
 
+    def test_native_schedule_keeps_descriptor_read_and_requires_companion_roundtrip(self) -> None:
+        shard = GENERATOR.SCHEDULE_KEYS_SHARD
+        owner = "main:ScheduledJob.KeyProbe"
+        address = f"{owner}.Schedule"
+        required = GENERATOR.native_schedule_requirements(GENERATOR.REPO)
+        self.assertEqual({row["key"]["line"] for row in required}, {"8.3.27", "8.5.1", "8.5.4"})
+        evidence = []
+        for row in required:
+            observation, = row["requirement"]["observations"]
+            self.assertEqual(observation["owner"], owner)
+            self.assertEqual(observation["addresses"], [address])
+            self.assertTrue(observation["descriptor_origin"].endswith("/ScheduledJobs/KeyProbe.xml"))
+            self.assertTrue(observation["origin"].endswith("/Schedule.xml"))
+            for level, origin in (("read", observation["descriptor_origin"]),
+                                  ("roundtrip", observation["origin"])):
+                evidence.append({
+                    "schema_version": 1, "record_type": "evidence", "key": row["key"],
+                    "witness": {"owner": owner, "at": address, "origin": origin, "level": level,
+                                "test_case": METADATA_SHARD, "reason": None},
+                })
+        earlier_read, target = [row for row in evidence if row["key"]["line"] == "8.5.1"]
+        foreign = next(row for row in evidence
+                       if row["key"]["line"] == "8.5.4" and row["witness"]["level"] == "roundtrip")
+        alternate = {**target, "witness": {**target["witness"], "test_case": GENERATOR.FORM_TEMPLATE_SHARD}}
+        self.write_shard(shard, *required)
+        self.write_shard(GENERATOR.FORM_TEMPLATE_SHARD, alternate)
+        shards = frozenset({shard, METADATA_SHARD, GENERATOR.FORM_TEMPLATE_SHARD})
+        for native_only in (False, True):
+            self.write_shard(METADATA_SHARD, *evidence)
+            self.assertEqual(len(GENERATOR.merge_shards(self.root, shards, native_only=native_only)), len(required))
+            for omitted, changes in (
+                (target, {}), (target, {"level": "read"}),
+                (target, {"origin": foreign["witness"]["origin"]}), (earlier_read, {}),
+            ):
+                with self.subTest(native_only=native_only, omitted=omitted["witness"]["level"], changes=changes):
+                    remaining = [record for record in evidence if record is not omitted]
+                    if changes:
+                        remaining.append({**omitted, "witness": {**omitted["witness"], **changes}})
+                    self.write_shard(METADATA_SHARD, *remaining)
+                    with self.assertRaisesRegex(
+                        ValueError, rf"(?s)missing required native Schedule coverage.*Schedule \(8\.5\.1\)"
+                        rf": expected {omitted['witness']['level']}",
+                    ):
+                        GENERATOR.merge_shards(self.root, shards, native_only=native_only)
+
+
+
     def test_witnesses_for_one_shape_are_grouped_in_stable_order(self) -> None:
         first, second = root_witness("main"), root_witness("other")
         self.write_root_shard(second, first)

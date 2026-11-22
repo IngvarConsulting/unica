@@ -46,6 +46,7 @@ XDTO_KEYS_SHARD = "required_native_xdto_keys"
 SUBSYSTEM_CONTENT_KEYS_SHARD = "required_native_subsystem_content_keys"
 WSDL_KEYS_SHARD = "required_native_wsdl_keys"
 MXL_KEYS_SHARD = "required_native_mxl_keys"
+SCHEDULE_KEYS_SHARD = "required_native_schedule_keys"
 XDTO_OWNER_SHAPES = {
     "Namespace": {("XDTOPackage",)},
     "Type": {("XDTOPackage",)},
@@ -55,7 +56,7 @@ NATIVE_ADDRESS_NAME = r"[^\W\d]\w*"
 REQUIRED_KEY_SHARDS = frozenset({
     ROOT_KEYS_SHARD, METADATA_CHILD_KEYS_SHARD, EXTERNAL_CHILD_KEYS_SHARD, MODULE_ROLE_KEYS_SHARD,
     EDS_MODULE_KEYS_SHARD, SUBSYSTEM_INTERFACE_KEYS_SHARD, DCS_QUERY_KEYS_SHARD, ROLE_RIGHT_KEYS_SHARD,
-    XDTO_KEYS_SHARD, SUBSYSTEM_CONTENT_KEYS_SHARD, WSDL_KEYS_SHARD, MXL_KEYS_SHARD,
+    XDTO_KEYS_SHARD, SUBSYSTEM_CONTENT_KEYS_SHARD, WSDL_KEYS_SHARD, MXL_KEYS_SHARD, SCHEDULE_KEYS_SHARD,
 })
 NATIVE_SCOPE = (
     "Configuration source sets and native Language registrations in extension source sets "
@@ -76,6 +77,7 @@ NATIVE_SCOPE = (
     " Registered subsystem descriptors independently require reads of Relation and Subsystem branches."
     " Registered native WSDL companions require exact WSReference.Definition round-trips."
     " Native spreadsheet companions require registered Area reads and row Body and Parameter reads."
+    " Registered ScheduledJob.Schedule keeps descriptor-only reads and requires companion round-trips."
 )
 DAEMON_SCOPE = (
     "Read witnesses from the selected document and BSL coverage test of unica-daemon, "
@@ -262,12 +264,12 @@ def validate_required_record(record: object, shard: str) -> None:
             raise ValueError("duplicate required role right address")
         required_text(requirement["origin"], "origin")
         return
-    if shard in {XDTO_KEYS_SHARD, SUBSYSTEM_CONTENT_KEYS_SHARD, WSDL_KEYS_SHARD, MXL_KEYS_SHARD}:
+    if shard in {XDTO_KEYS_SHARD, SUBSYSTEM_CONTENT_KEYS_SHARD, WSDL_KEYS_SHARD, MXL_KEYS_SHARD, SCHEDULE_KEYS_SHARD}:
         family = {
             XDTO_KEYS_SHARD: "XDTO", SUBSYSTEM_CONTENT_KEYS_SHARD: "subsystem content", WSDL_KEYS_SHARD: "WSDL",
-            MXL_KEYS_SHARD: "MXL",
+            MXL_KEYS_SHARD: "MXL", SCHEDULE_KEYS_SHARD: "Schedule",
         }[shard]
-        level = "roundtrip" if shard == WSDL_KEYS_SHARD else "read"
+        level = "roundtrip" if shard in {WSDL_KEYS_SHARD, SCHEDULE_KEYS_SHARD} else "read"
         exact_fields(requirement, {"kind", "observations"}, f"{family} requirement")
         kinds = tuple(segment["kind"] for segment in shape)
         branch_kind = key["branch"]
@@ -275,6 +277,8 @@ def validate_required_record(record: object, shard: str) -> None:
             known_shape = kinds in XDTO_OWNER_SHAPES.get(branch_kind, set())
         elif shard == WSDL_KEYS_SHARD:
             known_shape = branch_kind == "Definition" and kinds == ("WSReference",)
+        elif shard == SCHEDULE_KEYS_SHARD:
+            known_shape = branch_kind == "Schedule" and kinds == ("ScheduledJob",)
         elif shard == MXL_KEYS_SHARD:
             known_shape = (
                 key["line"] in {"8.3.27", "8.5.1", "8.5.4"} and (
@@ -297,20 +301,28 @@ def validate_required_record(record: object, shard: str) -> None:
         owner_pattern = prefix + r"\.".join(kind + r"\." + NATIVE_ADDRESS_NAME for kind in kinds)
         owners = set()
         for observation in observations:
-            exact_fields(observation, {"owner", "origin", "addresses"}, f"{family} observation")
+            fields = {"owner", "origin", "addresses"}
+            if shard == SCHEDULE_KEYS_SHARD:
+                fields.add("descriptor_origin")
+            exact_fields(observation, fields, f"{family} observation")
             owner = required_text(observation["owner"], f"{family} owner")
             if not re.fullmatch(owner_pattern, owner) or owner in owners:
                 raise ValueError(f"required {family} owner is invalid or duplicated")
             owners.add(owner)
-            required_text(observation["origin"], "origin")
+            origin = required_text(observation["origin"], "origin")
+            if shard == SCHEDULE_KEYS_SHARD and required_text(
+                observation["descriptor_origin"], "descriptor origin",
+            ) == origin:
+                raise ValueError("required Schedule read and roundtrip must have different origins")
             branch = f"{owner}.{branch_kind}"
             addresses = observation["addresses"]
             if not isinstance(addresses, list) or not addresses or addresses[0] != branch:
                 raise ValueError(f"required {family} addresses must include their branch")
             for address in addresses[1:]:
-                if shard == MXL_KEYS_SHARD or branch_kind in {"Namespace", "Relation", "Definition"} or not re.fullmatch(
+                if (shard == MXL_KEYS_SHARD or branch_kind in {"Namespace", "Relation", "Definition", "Schedule"}
+                    or not re.fullmatch(
                     rf"{re.escape(branch)}\.{NATIVE_ADDRESS_NAME}", required_text(address, f"{family} member address")
-                ):
+                )):
                     raise ValueError(f"required {family} member must belong to its branch")
             if len(addresses) != len(set(addresses)):
                 raise ValueError(f"duplicate required {family} address")
@@ -401,6 +413,7 @@ def check_required_keys(requirements: dict, groups: dict, *, native_only: bool) 
         SUBSYSTEM_CONTENT_KEYS_SHARD: ("subsystem content", []),
         WSDL_KEYS_SHARD: ("WSDL", []),
         MXL_KEYS_SHARD: ("MXL", []),
+        SCHEDULE_KEYS_SHARD: ("Schedule", []),
     }
     diagnostics = []
     for key, (shard, record) in sorted(requirements.items()):
@@ -427,15 +440,19 @@ def check_required_keys(requirements: dict, groups: dict, *, native_only: bool) 
             if shard == MXL_KEYS_SHARD:
                 emitter = DAEMON_SHARD if record["key"]["line"] == "8.3.27" else FORM_TEMPLATE_SHARD
             observed = {
-                (w["owner"], w["origin"], w["at"]) for w in witnesses
-                if w["test_case"] == emitter and w["reason"] is None and w["level"] == level
+                (w["level"], w["owner"], w["origin"], w["at"]) for w in witnesses
+                if w["test_case"] == emitter and w["reason"] is None
             }
             for observation in observations:
-                for at in observation["addresses"]:
-                    if (observation["owner"], observation["origin"], at) not in observed:
-                        missing_witnesses.append(
-                            f"{at} ({record['key']['line']}): expected {level} from {observation['origin']}"
-                        )
+                expected = [(level, observation["origin"])]
+                if shard == SCHEDULE_KEYS_SHARD:
+                    expected.append(("read", observation["descriptor_origin"]))
+                for evidence_level, origin in expected:
+                    for at in observation["addresses"]:
+                        if (evidence_level, observation["owner"], origin, at) not in observed:
+                            missing_witnesses.append(
+                                f"{at} ({record['key']['line']}): expected {evidence_level} from {origin}"
+                            )
             continue
         if shard == EDS_MODULE_KEYS_SHARD:
             level = record["requirement"]["kind"]
@@ -1100,6 +1117,54 @@ def native_mxl_requirements(repo: Path, *, native_only: bool) -> list[dict]:
     return rows
 
 
+def native_schedule_requirements(repo: Path) -> list[dict]:
+    md = "{http://v8.1c.ru/8.3/MDClasses}"
+    external = "{http://v8.1c.ru/8.3/xcf/extrnprops}"
+    fixture_root = repo / "tests/fixtures"
+    name = "KeyProbe"
+    owner = f"main:ScheduledJob.{name}"
+    rows = []
+    for version, line in (("2.20", "8.3.27"), ("2.21", "8.5.1"), ("2.22", "8.5.4")):
+        source = fixture_root / "formats/platform_xml" / version / "all_kinds/src"
+        configuration = ET.parse(source / "Configuration.xml").getroot()
+        registrations = configuration.findall(f"{md}Configuration/{md}ChildObjects/{md}ScheduledJob")
+        if (
+            configuration.tag != f"{md}MetaDataObject" or configuration.get("version") != version
+            or [node.text for node in registrations].count(name) != 1
+        ):
+            raise ValueError(f"native Schedule: missing registered {name} in {source}")
+        descriptor = source / "ScheduledJobs" / f"{name}.xml"
+        root = ET.parse(descriptor).getroot()
+        properties = root.find(f"{md}ScheduledJob/{md}Properties")
+        if (
+            root.tag != f"{md}MetaDataObject" or root.get("version") != version
+            or properties is None or properties.findtext(f"{md}Name") != name
+            or properties.find(f"{md}Schedule") is not None
+            or (descriptor.with_suffix("") / "Ext/Schedule.xml").exists()
+        ):
+            raise ValueError(f"native Schedule: expected registered descriptor without a schedule: {descriptor}")
+        # The separate platform export adds the companion to this unchanged seed.
+        origin = fixture_root / "acceptance/native-scheduled-job-schedule" / version / "Schedule.xml"
+        root = ET.parse(origin).getroot()
+        schedule = root.findall(f"{external}Schedule")
+        if (
+            root.tag != f"{external}JobSchedule" or root.get("version") != version
+            or len(schedule) != 1 or not schedule[0].get("BeginTime")
+        ):
+            raise ValueError(f"native Schedule: invalid companion for {version}: {origin}")
+        rows.append({
+            "schema_version": SCHEMA_VERSION, "record_type": "required",
+            "key": {"line": line, "source_kind": "configuration", "branch": "Schedule", "role": None,
+                    "owner_shape": [{"kind": "ScheduledJob", "named": True, "role": None}]},
+            "requirement": {"kind": "roundtrip", "observations": [{
+                "owner": owner, "origin": origin.relative_to(repo).as_posix(),
+                "descriptor_origin": descriptor.relative_to(repo).as_posix(),
+                "addresses": [f"{owner}.Schedule"],
+            }]},
+        })
+    return rows
+
+
 def generate_report(native_only: bool) -> dict:
     revision, status = git_state()
     cases = [("unica-coder", "address_coverage")]
@@ -1127,6 +1192,7 @@ def generate_report(native_only: bool) -> dict:
             (XDTO_KEYS_SHARD, native_xdto_requirements),
             (SUBSYSTEM_CONTENT_KEYS_SHARD, native_subsystem_content_requirements),
             (WSDL_KEYS_SHARD, native_wsdl_requirements),
+            (SCHEDULE_KEYS_SHARD, native_schedule_requirements),
             (MXL_KEYS_SHARD, lambda repo: native_mxl_requirements(repo, native_only=native_only)),
         ):
             records = producer(REPO)
