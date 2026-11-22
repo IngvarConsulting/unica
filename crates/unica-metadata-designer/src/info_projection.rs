@@ -1053,6 +1053,37 @@ pub fn project_meta_info_declarations(
     }
 }
 
+pub(crate) fn implicit_document_number(
+    kind: MetadataKind,
+    properties: Option<roxmltree::Node<'_, '_>>,
+    source: Option<unica_source_contract::SourceSetKind>,
+) -> Option<Vec<MetaStandardAttribute>> {
+    let properties = properties?;
+    if kind != MetadataKind::Document
+        || source != Some(unica_source_contract::SourceSetKind::Configuration)
+        || properties
+            .children()
+            .filter(roxmltree::Node::is_element)
+            .any(|child| {
+                matches!(
+                    child.tag_name().name(),
+                    "StandardAttributes" | "ObjectBelonging" | "ExtendedConfigurationObject"
+                )
+            })
+    {
+        return None;
+    }
+    // Number is part of a document's identity even when the platform omits
+    // its property overrides. The registry supplies the name, never defaults.
+    let name = crate::template_catalog::metadata_standard_attribute_names(kind.as_str())
+        .iter()
+        .find(|name| **name == "Number")?;
+    Some(vec![MetaStandardAttribute {
+        name: (*name).to_owned(),
+        properties: Vec::new(),
+    }])
+}
+
 pub fn project_declaration<T>(
     properties: roxmltree::Node<'_, '_>,
     name: &str,

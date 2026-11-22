@@ -800,6 +800,69 @@ fn applicable_declaration_collections_distinguish_absent_from_inapplicable() {
 }
 
 #[test]
+fn implicit_document_number_does_not_replace_an_explicit_or_unreadable_declaration() {
+    use unica_source_contract::SourceSetKind;
+    let native = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/Documents/Orders.xml"
+    ));
+    let target = MetadataAddress::parse_logical("Document.Orders").unwrap();
+    let read = |xml: &str, kind| {
+        crate::info::parse_typed_meta_local_info_for_source(
+            xml.as_bytes(),
+            &target,
+            unica_metadata::MetaSupportStatus::Supported,
+            kind,
+        )
+        .unwrap()
+    };
+    let inferred = read(native, SourceSetKind::Configuration)
+        .declarations
+        .standard_attributes
+        .unwrap()
+        .unwrap();
+    assert_eq!(inferred.len(), 1);
+    assert_eq!(inferred[0].name, "Number");
+    assert!(inferred[0].properties.is_empty());
+    assert_eq!(
+        read(native, SourceSetKind::Extension)
+            .declarations
+            .standard_attributes,
+        Some(None)
+    );
+
+    for (override_xml, expected_names) in [
+        ("<StandardAttributes/>", Some(vec![])),
+        (
+            "<StandardAttributes><xr:StandardAttribute name=\"Date\"/></StandardAttributes>",
+            Some(vec!["Date".to_owned()]),
+        ),
+        ("<StandardAttributes/><StandardAttributes/>", None),
+        ("<StandardAttributes xmlns=\"urn:foreign\"/>", None),
+    ] {
+        let xml = native.replacen("</Properties>", &format!("{override_xml}</Properties>"), 1);
+        let parsed = read(&xml, SourceSetKind::Configuration);
+        let names = parsed
+            .declarations
+            .standard_attributes
+            .unwrap()
+            .map(|rows| rows.into_iter().map(|row| row.name).collect::<Vec<_>>());
+        assert_eq!(names, expected_names, "{override_xml}");
+        if expected_names.is_none() {
+            assert!(
+                parsed
+                    .diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.field.as_deref()
+                        == Some("properties.StandardAttributes")),
+                "{override_xml}: {:?}",
+                parsed.diagnostics
+            );
+        }
+    }
+}
+
+#[test]
 fn declaration_localized_leaves_reject_unmodelled_attributes() {
     let xml = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:foreign="urn:foreign"><ChartOfAccounts><Properties><Name>Accounts</Name><StandardTabularSections><xr:StandardTabularSection name="ExtDimensionTypes"><xr:Synonym foreign:source="poison"/><xr:Comment/><xr:ToolTip/><xr:FillChecking>DontCheck</xr:FillChecking><xr:StandardAttributes/></xr:StandardTabularSection></StandardTabularSections></Properties></ChartOfAccounts></MetaDataObject>"#;
     let document = roxmltree::Document::parse(xml).unwrap();

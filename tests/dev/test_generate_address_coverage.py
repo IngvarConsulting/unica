@@ -201,6 +201,27 @@ class AddressCoverageReportTests(unittest.TestCase):
         witness["at"] = owner
         GENERATOR.check_projection_requirements(required, {key: {"witnesses": [witness]}})
 
+    def test_implicit_native_document_number_requires_member_evidence_on_every_line(self) -> None:
+        rows = GENERATOR.native_document_number_requirements(GENERATOR.REPO)
+        self.assertEqual({row["key"]["line"] for row in rows}, {"8.3.27", "8.5.1", "8.5.4"})
+        shard = GENERATOR.DOCUMENT_NUMBER_KEYS_SHARD
+        required = {}
+        groups = {}
+        for row in rows:
+            key = GENERATOR.structural_key(row["key"])
+            observations = GENERATOR.projection_expectations(row, shard)
+            self.assertEqual(len(observations), 2)
+            required[(shard, key)] = observations
+            groups[key] = {"witnesses": [
+                {"test_case": test_case, "level": level, "owner": owner, "origin": origin,
+                 "at": at, "reason": None} for test_case, level, owner, origin, at in sorted(observations)
+            ]}
+        GENERATOR.check_projection_requirements(required, groups)
+        group = next(group for key, group in groups.items() if key[0] == (8, 5, 4))
+        group["witnesses"] = [witness for witness in group["witnesses"] if not witness["at"].endswith(".Number")]
+        with self.assertRaisesRegex(ValueError, "missing required native projection evidence.*StandardAttribute.Number"):
+            GENERATOR.check_projection_requirements(required, groups)
+
     def test_full_bsl_requirements_reject_missing_shard_and_mismatched_owner_or_address(self) -> None:
         shard = GENERATOR.BSL_PROJECTION_KEYS_SHARD
         daemon = GENERATOR.DAEMON_SHARD
