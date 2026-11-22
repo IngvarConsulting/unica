@@ -1092,6 +1092,13 @@ fn native_metadata_address_table_matches_declared_and_observed_child_branches() 
         let line = profile.line();
         let cancellation = CancellationToken::new();
         let authority = native_authority(&cancellation, &source, profile);
+        check_native_empty_nested_collections(
+            &authority,
+            &source,
+            xml,
+            &registrations,
+            &mut evidence,
+        );
         check_native_declaration_projections(&authority, &source, &registrations, &mut evidence);
         check_native_projection_companions(
             &authority,
@@ -2938,6 +2945,81 @@ fn check_native_subsystem(
             &origin,
             AddressEvidence::Read(&subsystem),
         );
+    }
+}
+
+fn check_native_empty_nested_collections(
+    authority: &LogicalViewReadAuthority<'_>,
+    source: &Path,
+    format: &str,
+    registrations: &[(String, String)],
+    evidence: &mut EvidenceRows,
+) {
+    // These samples prove direct reads from empty exports. Whether the platform
+    // allows a child kind is a separate question from what this descriptor holds.
+    for (kind, name, directory, container_count, branches) in [
+        (
+            "Constant",
+            "Enabled",
+            "Constants",
+            0,
+            &["Form", "Command"][..],
+        ),
+        (
+            "DocumentNumerator",
+            "Sales",
+            "DocumentNumerators",
+            0,
+            &["Form", "Command"][..],
+        ),
+        (
+            "Sequence",
+            "Probe",
+            "Sequences",
+            1,
+            &["Form", "Command"][..],
+        ),
+        (
+            "SettingsStorage",
+            "Probe",
+            "SettingsStorages",
+            1,
+            &["Form"][..],
+        ),
+    ] {
+        let owner = format!("main:{kind}.{name}");
+        assert!(
+            registrations
+                .iter()
+                .any(|(tag, member)| tag == kind && member == name),
+            "{owner}: missing root registration"
+        );
+        let descriptor = source.join(directory).join(format!("{name}.xml"));
+        let xml = read_fixture_descriptor(&descriptor);
+        let document = parse_fixture_descriptor(&xml, &descriptor);
+        assert_eq!(document.root_element().attribute("version"), Some(format));
+        let artifact = fixture_artifact(&document, kind, &descriptor);
+        assert_eq!(fixture_properties_name(artifact), Some(name));
+        let containers = artifact
+            .children()
+            .filter(|node| node.has_tag_name((MD_CLASSES_NS, "ChildObjects")));
+        assert_eq!(containers.count(), container_count, "{owner}");
+        assert!(native_child_objects(artifact).next().is_none(), "{owner}");
+        let origin = fixture_origin(&descriptor);
+        for &branch in branches {
+            let at = format!("{owner}.{branch}");
+            let collection = read(authority, &at);
+            assert_eq!(collection["kind"], branch, "{at}");
+            assert_eq!(collection["items"], serde_json::json!([]), "{at}");
+            evidence.record(
+                authority.platform_profile().line(),
+                &owner,
+                branch,
+                None,
+                &origin,
+                AddressEvidence::Read(&at),
+            );
+        }
     }
 }
 
