@@ -1558,11 +1558,13 @@ fn native_metadata_address_table_matches_declared_and_observed_child_branches() 
         let line = profile.line();
         let cancellation = CancellationToken::new();
         let authority = native_authority(&cancellation, &source, profile);
+        let mut verified = BTreeSet::new();
         check_native_empty_nested_collections(
             &authority,
             &source,
             xml,
             &registrations,
+            &mut verified,
             &mut evidence,
         );
         check_native_declaration_projections(&authority, &source, &registrations, &mut evidence);
@@ -1574,7 +1576,6 @@ fn native_metadata_address_table_matches_declared_and_observed_child_branches() 
             &mut evidence,
         );
         check_native_job_schedule_roundtrip(&source, xml, profile, &cancellation, &mut evidence);
-        let mut verified = BTreeSet::new();
         for (kind, name) in registrations {
             let at = QualifiedAddress::parse(&format!("main:{kind}.{name}")).unwrap();
             let route = route_logical_address(&at, profile).unwrap();
@@ -4429,6 +4430,7 @@ fn check_native_empty_nested_collections(
     source: &Path,
     format: &str,
     registrations: &[(String, String)],
+    verified: &mut BTreeSet<String>,
     evidence: &mut EvidenceRows,
 ) {
     // These samples prove direct reads from empty exports. Whether the platform
@@ -4487,6 +4489,7 @@ fn check_native_empty_nested_collections(
             let collection = read(authority, &at);
             assert_eq!(collection["kind"], branch, "{at}");
             assert_eq!(collection["items"], serde_json::json!([]), "{at}");
+            assert!(verified.insert(at.clone()), "duplicate witness for {at}");
             evidence.record(
                 authority.platform_profile().line(),
                 &owner,
@@ -5161,12 +5164,12 @@ fn check_native_empty_metadata_branches(
             continue;
         }
         let branch = format!("{owner}.{kind}");
+        if verified.contains(&branch) {
+            continue;
+        }
         let collection = read(authority, &branch);
-        assert!(addresses(&collection, "items").is_empty(), "{branch}");
-        assert!(
-            verified.insert(branch.clone()),
-            "duplicate witness for {branch}"
-        );
+        assert_eq!(collection["items"], serde_json::json!([]), "{branch}");
+        verified.insert(branch.clone());
         evidence.record(
             profile.line(),
             &owner_at,
