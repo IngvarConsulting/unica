@@ -27,6 +27,8 @@ FORM_TEMPLATE_SHARD = "native_form_and_template_addresses_follow_text_registrati
 MODULE_SHARD = "native_registered_modules_match_profile_and_physical_paths"
 RECURSIVE_SUBSYSTEM_SHARD = "native_recursive_subsystem_registrations_have_addresses"
 SPECIAL_PROJECTION_SHARD = "native_special_projection_addresses_match_source"
+DCS_STRUCTURE_SHARD = "native_dcs_named_structure_follows_the_exported_names"
+DCS_ADDRESS_CAPTURE = Path("tests/fixtures/acceptance/native-dcs-addresses")
 NATIVE_SHARDS = frozenset({
     "native_configuration_root_address_table_matches_published_branches",
     "native_ordinary_interface_has_a_registration_only_root_branch",
@@ -34,7 +36,7 @@ NATIVE_SHARDS = frozenset({
     METADATA_SHARD,
     FORM_TEMPLATE_SHARD,
     MODULE_SHARD,
-    RECURSIVE_SUBSYSTEM_SHARD, SPECIAL_PROJECTION_SHARD,
+    RECURSIVE_SUBSYSTEM_SHARD, SPECIAL_PROJECTION_SHARD, DCS_STRUCTURE_SHARD,
     EXTENSION_LANGUAGE_SHARD, CFE_OWNERSHIP_SHARD,
     EXTERNAL_ROOT_SHARD,
 })
@@ -66,7 +68,12 @@ MXL_KEYS_SHARD = "required_native_mxl_keys"
 SCHEDULE_KEYS_SHARD = "required_native_schedule_keys"
 RECURSIVE_SUBSYSTEM_KEYS_SHARD = "native_recursive_subsystem_requirements"
 SPECIAL_PROJECTION_KEYS_SHARD = "required_native_special_projection_keys"
-PROJECTION_KEYS_SHARDS = frozenset({RECURSIVE_SUBSYSTEM_KEYS_SHARD, SPECIAL_PROJECTION_KEYS_SHARD})
+DCS_STRUCTURE_KEYS_SHARD = "required_native_dcs_structure_keys"
+CROSS_LINE_MODULE_KEYS_SHARD = "required_cross_line_module_roles"
+PROJECTION_KEYS_SHARDS = frozenset({
+    RECURSIVE_SUBSYSTEM_KEYS_SHARD, SPECIAL_PROJECTION_KEYS_SHARD, DCS_STRUCTURE_KEYS_SHARD,
+    CROSS_LINE_MODULE_KEYS_SHARD,
+})
 XDTO_OWNER_SHAPES = {
     "Namespace": {("XDTOPackage",)},
     "Type": {("XDTOPackage",)},
@@ -85,6 +92,7 @@ NATIVE_SCOPE = (
     "across three platform lines, plus native external processor and report root descriptors "
     "in the unica-coder address_coverage tests. Module role and path checks cover roles with "
     "physical BSL witnesses in native configuration and external artifact fixtures. "
+    "Native CommonModule and Queue roles have cross-line checks from registrations and the profile. "
     "Read-only direct module "
     "witnesses verify the logical address of registered owners separately from a missing "
     "physical BSL file. For the external root witnesses, key.line "
@@ -96,6 +104,7 @@ NATIVE_SCOPE = (
     " and ExternalDataSource module collections and round-trips for the native files on each line."
     " It also requires exact read witnesses for registered native Report and DataProcessor DCS queries"
     " and the role-right collection and members in native SalesReader fixtures."
+    " Native DCS reads include calculated fields and named Item scopes saved by the platform."
     " Native XDTO requirements trace Namespace, Type and Property reads to registered Package.bin files."
     " Registered subsystem descriptors independently require reads of Relation and Subsystem branches."
     " Recursive subsystem registrations and selected special projections require scoped native reads."
@@ -190,10 +199,13 @@ def validate_record_type(record: dict, kind: str) -> None:
 
 def validate_external_form_projection(key: dict, owner: str) -> None:
     prefix, owner_kind = EXTERNAL_OWNER_KINDS[key["source_kind"]]
-    if key["role"] is not None or key["branch"] not in {"Command", "Parameter"} or key["owner_shape"] != [
-        {"kind": kind, "named": True, "role": None} for kind in (owner_kind, "Form")
-    ] or not re.fullmatch(rf"{prefix}:{owner_kind}\.{NATIVE_ADDRESS_NAME}\.Form\.{NATIVE_ADDRESS_NAME}", owner):
-        raise ValueError("external projection must identify its exact Form Command or Parameter owner")
+    branch = key["branch"]
+    kinds = (owner_kind, "Form", "Command") if branch == "Event" else (owner_kind, "Form")
+    pattern = rf"{prefix}:" + r"\.".join(rf"{kind}\.{NATIVE_ADDRESS_NAME}" for kind in kinds)
+    if key["role"] is not None or branch not in {"Command", "Parameter", "Event"} or key["owner_shape"] != [
+        {"kind": kind, "named": True, "role": None} for kind in kinds
+    ] or not re.fullmatch(pattern, owner):
+        raise ValueError("external projection must identify its exact Form or Form Command owner")
 
 
 def validate_record(record: object, test_case: str) -> None:
@@ -551,15 +563,37 @@ def projection_expectations(record: dict, shard: str) -> set[tuple[str, str, str
     shape = key["owner_shape"]
     branch = key["branch"]
     recursive = shard == RECURSIVE_SUBSYSTEM_KEYS_SHARD
+    dcs = shard == DCS_STRUCTURE_KEYS_SHARD
+    module_role = shard == CROSS_LINE_MODULE_KEYS_SHARD
     external = EXTERNAL_OWNER_KINDS.get(source)
-    if key["role"] is not None or (source != "configuration" and (recursive or external is None)):
+    if (not module_role and key["role"] is not None
+            or source != "configuration" and (recursive or dcs or module_role or external is None)):
         raise ValueError("required projection must name an admitted source and branch")
+    if module_role:
+        role = key["role"]
+        expected = {"Common": ("CommonModule", "read"), "Manager": ("Queue", "roundtrip")}
+        if role not in expected or branch != "Module":
+            raise ValueError("cross-line module requirement must name Common or Queue Manager")
+        owner_kind, level = expected[role]
+        if shape != [{"kind": owner_kind, "named": True, "role": None}]:
+            raise ValueError("cross-line module role and owner kind disagree")
+    else:
+        level = "read"
     if recursive:
         root = shape == [{"kind": "Configuration", "named": False, "role": None}]
         if branch != "Subsystem" or (not root and not all(
             segment == {"kind": "Subsystem", "named": True, "role": None} for segment in shape
         )):
             raise ValueError("required recursive key must name a registered Subsystem branch")
+    if dcs:
+        kinds = [segment["kind"] for segment in shape]
+        known_shape = (
+            (branch == "CalculatedField" and kinds == ["Report", "Template"])
+            or (branch == "Item" and kinds[:3] == ["Report", "Template", "Setting"]
+                and all(kind == "Item" for kind in kinds[3:]))
+        )
+        if not known_shape or any(not segment["named"] or segment["role"] is not None for segment in shape):
+            raise ValueError("required DCS projection must name a report CalculatedField or scoped settings Item")
     requirement = record["requirement"]
     exact_fields(requirement, {"kind", "observations"}, "projection requirement")
     if requirement["kind"] != ("read" if recursive else "exact"):
@@ -575,9 +609,14 @@ def projection_expectations(record: dict, shard: str) -> set[tuple[str, str, str
         owner = required_text(observation["owner"], "owner")
         origin = required_text(observation["origin"], "origin")
         emitter = RECURSIVE_SUBSYSTEM_SHARD if recursive else observation["test_case"]
-        if not recursive and (emitter not in (SPECIAL_PROJECTION_SHARD, FORM_TEMPLATE_SHARD, MODULE_SHARD)
-                              or observation["level"] != "read"):
-            raise ValueError("required special projection needs an admitted native read emitter")
+        if not recursive:
+            admitted = {
+                DCS_STRUCTURE_KEYS_SHARD: (DCS_STRUCTURE_SHARD,),
+                CROSS_LINE_MODULE_KEYS_SHARD: (MODULE_SHARD,),
+                SPECIAL_PROJECTION_KEYS_SHARD: (SPECIAL_PROJECTION_SHARD, FORM_TEMPLATE_SHARD, MODULE_SHARD),
+            }[shard]
+            if emitter not in admitted or observation["level"] != level:
+                raise ValueError("required projection needs an admitted native emitter and level")
         if external:
             if emitter != SPECIAL_PROJECTION_SHARD:
                 raise ValueError("required external projection needs the special projection emitter")
@@ -592,13 +631,19 @@ def projection_expectations(record: dict, shard: str) -> set[tuple[str, str, str
                 raise ValueError("required recursive owner must match the Subsystem depth")
         collection = "main:Subsystem" if recursive and root else f"{owner}.{branch}"
         addresses = observation["addresses"]
+        if module_role:
+            if not re.fullmatch(rf"main:{owner_kind}\.{NATIVE_ADDRESS_NAME}", owner):
+                raise ValueError("required cross-line module owner does not match its declared kind")
+            collection = owner if role == "Common" else f"{collection}.{role}"
+            if addresses != [collection]:
+                raise ValueError("required cross-line role needs the exact module address")
         if not isinstance(addresses, list) or collection not in addresses:
             raise ValueError("required projection must include the branch address")
         for address in addresses:
             address = required_text(address, "address")
             if address != collection and not address.startswith(f"{collection}."):
                 raise ValueError("required projection member must belong to its declared branch")
-            signature = (emitter, "read", owner, origin, address)
+            signature = (emitter, level, owner, origin, address)
             if signature in signatures:
                 raise ValueError("duplicate required projection observation")
             signatures.add(signature)
@@ -993,6 +1038,19 @@ def address_absence_observations(repo: Path, rows: list[dict]) -> list[dict]:
                     "key": key, "reason": {"kind": "unnamed_value_row"},
                     "evidence": {field: witness[field] for field in ("owner", "origin", "test_case")},
                 })
+            elif (
+                key["source_kind"] == "configuration" and key["branch"] == "Item" and key["role"] is None
+                and key["owner_shape"] == [
+                    {"kind": kind, "named": True, "role": None} for kind in ("Report", "Template", "Setting")
+                ]
+                and witness["test_case"] == DCS_STRUCTURE_SHARD and witness["level"] == "read"
+                and witness["at"] == f"{witness['owner']}.Item"
+                and Path(witness["origin"]).is_relative_to(DCS_ADDRESS_CAPTURE)
+            ):
+                observations.append({
+                    "key": key, "reason": {"kind": "unnamed_value_row"},
+                    "evidence": {field: witness[field] for field in ("owner", "origin", "test_case")},
+                })
         if gap := group.get("enumeration_gap"):
             observations.append({"key": key, "reason": {"kind": "enumeration_gap", **gap},
                                  "evidence": {"direct_read": True}})
@@ -1057,7 +1115,8 @@ def render_markdown(report: dict) -> str:
                 note = f"{evidence['platform']} · {evidence['origin']} · declaration {evidence['declaration']}"
             elif kind == "unnamed_value_row":
                 subject = f"{evidence['owner']}.{key['branch']}"
-                outcome = "Characteristic rows carry no applied name"
+                outcome = ("Anonymous DCS charts and point groups carry no address" if key["branch"] == "Item"
+                           else "Characteristic rows carry no applied name")
                 note = f"{evidence['origin']} ({evidence['test_case']})"
             else:
                 outcome = (
@@ -1208,6 +1267,104 @@ def native_dcs_query_requirements(repo: Path) -> list[dict]:
                             "branch": "Query", "role": None},
                     "requirement": {"kind": "read", "at": at, "origin": origin},
                 })
+    return rows
+
+
+def native_dcs_structure_requirements(repo: Path) -> list[dict]:
+    """Read names from the pinned native settings export and preserve their parent scope."""
+    capture_root = DCS_ADDRESS_CAPTURE
+    receipt = json.loads((repo / capture_root / "receipt.json").read_bytes(), object_pairs_hook=json_object)
+    md = "{http://v8.1c.ru/8.3/MDClasses}"
+    dcs = "{http://v8.1c.ru/8.1/data-composition-system/schema}"
+    settings_ns = "{http://v8.1c.ru/8.1/data-composition-system/settings}"
+    xsi_type = "{http://www.w3.org/2001/XMLSchema-instance}type"
+    report_name = "АнализВерсийОбъектов"
+    template_name = "ОсновнаяСхемаКомпоновкиДанных"
+    report_path = Path("Reports") / report_name
+    template_path = report_path / "Templates" / template_name
+    resource_path = template_path / "Ext/Template.xml"
+
+    def pinned_xml(path: Path, pin: dict) -> ET.Element:
+        raw = (repo / path).read_bytes()
+        if len(raw) != pin["size"] or hashlib.sha256(raw).hexdigest() != pin["sha256"]:
+            raise ValueError(f"native DCS receipt differs from {path}")
+        return ET.fromstring(raw)
+
+    rows = []
+
+    def require_reads(line: str, origin: Path, owner: str, kinds: list[str], branch: str, names: list[str]) -> None:
+        if len(set(names)) != len(names) or any(not re.fullmatch(NATIVE_ADDRESS_NAME, name) for name in names):
+            raise ValueError(f"invalid named DCS fixture members in {owner}.{branch}")
+        collection = f"{owner}.{branch}"
+        rows.append({
+            "schema_version": SCHEMA_VERSION, "record_type": "required",
+            "key": {"line": line, "source_kind": "configuration", "branch": branch, "role": None,
+                    "owner_shape": [{"kind": kind, "named": True, "role": None} for kind in kinds]},
+            "requirement": {"kind": "exact", "observations": [{
+                "owner": owner, "origin": origin.as_posix(), "level": "read", "test_case": DCS_STRUCTURE_SHARD,
+                "addresses": [collection, *(f"{collection}.{name}" for name in names)],
+            }]},
+        })
+
+    def add_items(line: str, origin: Path, owner: str, kinds: list[str], parent: ET.Element) -> int:
+        named = []
+        for item in parent.findall(f"{settings_ns}item"):
+            name = item.findtext(f"{settings_ns}name")
+            if name is not None:
+                if item.get(xsi_type) != "dcsset:StructureItemGroup":
+                    raise ValueError(f"unsupported named DCS fixture item {name!r} in {origin}")
+                named.append((name, item))
+        if not named:
+            return 0
+        require_reads(line, origin, owner, kinds, "Item", [name for name, _ in named])
+        return len(named) + sum(add_items(line, origin, f"{owner}.Item.{name}", [*kinds, "Item"], item)
+                                for name, item in named)
+
+    captures = {entry["formatVersion"]: entry for entry in receipt["captures"]}
+    if len(receipt["captures"]) != 3 or set(captures) != {"2.20", "2.21", "2.22"}:
+        raise ValueError("native DCS receipt must cover each XML line once")
+    for line, (version, platform) in CFE_OWNERSHIP_CAPTURES.items():
+        capture = captures[version]
+        source = Path("tests/fixtures/formats/platform_xml") / version / "all_kinds/src"
+        resource = capture["nativeResource"]
+        if (capture["platformVersion"] != platform or capture["stages"] != {"import": 0, "check": 0, "export": 0}
+                or capture["base"] != source.as_posix() or resource["overlayAt"] != resource_path.as_posix()
+                or resource["file"] != f"{version}/Template.xml"):
+            raise ValueError(f"unexpected native DCS capture scope for {version}")
+        pins = capture["baseRegistrationFiles"]
+        configuration = pinned_xml(source / "Configuration.xml", pins["Configuration.xml"])
+        report_descriptor, template_descriptor = (path.with_suffix(".xml") for path in (report_path, template_path))
+        report = pinned_xml(source / report_descriptor, pins[report_descriptor.as_posix()])
+        template = pinned_xml(source / template_descriptor, pins[template_descriptor.as_posix()])
+        if (report_name not in [entry.text for entry in configuration.findall(f"{md}Configuration/{md}ChildObjects/{md}Report")]
+                or template_name not in [entry.text for entry in report.findall(f"{md}Report/{md}ChildObjects/{md}Template")]
+                or template.findtext(f"{md}Template/{md}Properties/{md}TemplateType") != "DataCompositionSchema"):
+            raise ValueError(f"missing native DCS report or template registration for {version}")
+        origin = capture_root / resource["file"]
+        schema = pinned_xml(origin, resource)
+        variants = schema.findall(f"{dcs}settingsVariant")
+        if schema.tag != f"{dcs}DataCompositionSchema" or len(variants) != 1:
+            raise ValueError(f"missing or ambiguous native DCS settings in {origin}")
+        variant = variants[0]
+        settings = variant.find(f"{settings_ns}settings")
+        name = required_text(variant.findtext(f"{settings_ns}name"), "native DCS variant name")
+        if settings is None:
+            raise ValueError(f"missing captured variant {name} in {origin}")
+        template_owner = f"main:Report.{report_name}.Template.{template_name}"
+        owner = f"{template_owner}.Setting.{name}"
+        start = len(rows)
+        named_elements = sum(1 for node in settings.iter() if node.find(f"{settings_ns}name") is not None)
+        if add_items(line, origin, owner, ["Report", "Template", "Setting"], settings) != named_elements or len(rows) - start < 2:
+            raise ValueError(f"native DCS fixture requires named Item scopes at two levels in {origin}")
+        calculated = [
+            {field: required_text(item.findtext(f"{dcs}{field}"), f"native DCS {field}")
+             for field in ("dataPath", "expression")}
+            for item in schema.findall(f"{dcs}calculatedField")
+        ]
+        if capture["calculatedField"] not in calculated:
+            raise ValueError(f"missing captured calculated field in {origin}")
+        require_reads(line, origin, template_owner, ["Report", "Template"], "CalculatedField",
+                      [item["dataPath"] for item in calculated])
     return rows
 
 
@@ -1917,6 +2074,7 @@ def generate_report(native_only: bool) -> dict:
             )
         for shard, producer in (
             (DCS_QUERY_KEYS_SHARD, native_dcs_query_requirements),
+            (DCS_STRUCTURE_KEYS_SHARD, native_dcs_structure_requirements),
             (ROLE_RIGHT_KEYS_SHARD, native_role_right_requirements),
             (XDTO_KEYS_SHARD, native_xdto_requirements),
             (SUBSYSTEM_CONTENT_KEYS_SHARD, native_subsystem_content_requirements),

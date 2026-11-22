@@ -157,6 +157,64 @@ class AddressCoverageReportTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "external projection must identify its exact Form"):
             GENERATOR.merge_shards(self.root, shards)
 
+    def test_named_dcs_requirements_reject_a_missing_or_flattened_child(self) -> None:
+        shard = GENERATOR.DCS_STRUCTURE_KEYS_SHARD
+        emitter = GENERATOR.DCS_STRUCTURE_SHARD
+        rows = GENERATOR.native_dcs_structure_requirements(GENERATOR.REPO)
+        self.assertEqual(len(rows), 9)
+        requirements = {}
+        groups = {}
+        for row in rows:
+            key = GENERATOR.structural_key(row["key"])
+            expected = GENERATOR.projection_expectations(row, shard)
+            self.assertEqual(len(expected), 2)
+            requirements[(shard, key)] = expected
+            groups[key] = {"key": row["key"], "witnesses": [
+                {"test_case": test_case, "level": level, "owner": owner, "origin": origin,
+                 "at": at, "reason": None} for test_case, level, owner, origin, at in sorted(expected)
+            ]}
+        GENERATOR.check_projection_requirements(requirements, groups)
+        for group in groups.values():
+            for witness in group["witnesses"]:
+                if witness["at"].endswith(".Item.AddressProbeChild"):
+                    self.assertEqual(witness["test_case"], emitter)
+                    self.assertIn(".Item.AddressProbeParent.Item.", witness["at"])
+                    witness["at"] = witness["at"].replace(".Item.AddressProbeParent", "")
+        with self.assertRaisesRegex(ValueError, "missing required native projection evidence.*AddressProbeChild"):
+            GENERATOR.check_projection_requirements(requirements, groups)
+
+    def test_cross_line_common_role_requires_the_bare_module_and_not_its_body(self) -> None:
+        shard = GENERATOR.CROSS_LINE_MODULE_KEYS_SHARD
+        owner = "main:CommonModule.EventHandlers"
+        record = required_key(root_witness("main", "Module"))
+        record["key"].update(line="8.5.1", role="Common", owner_shape=[
+            {"kind": "CommonModule", "named": True, "role": None},
+        ])
+        observation = {"owner": owner, "origin": "tests/dev/Module.bsl", "test_case": GENERATOR.MODULE_SHARD,
+                       "level": "read"}
+        record["requirement"] = {"kind": "exact", "observations": [{**observation, "addresses": [owner]}]}
+        key = GENERATOR.structural_key(record["key"])
+        required = {(shard, key): GENERATOR.projection_expectations(record, shard)}
+        witness = {**observation, "at": f"{owner}.Body", "reason": None}
+        with self.assertRaisesRegex(ValueError, "missing required native projection evidence.*CommonModule.EventHandlers"):
+            GENERATOR.check_projection_requirements(required, {key: {"witnesses": [witness]}})
+        witness["at"] = owner
+        GENERATOR.check_projection_requirements(required, {key: {"witnesses": [witness]}})
+
+    def test_unnamed_dcs_rows_are_scoped_to_the_native_settings_collection(self) -> None:
+        rows = GENERATOR.native_dcs_structure_requirements(GENERATOR.REPO)
+        root = next(row for row in rows if row["key"]["line"] == "8.3.27"
+                    and row["key"]["branch"] == "Item" and len(row["key"]["owner_shape"]) == 3)
+        key = root["key"]
+        observation = root["requirement"]["observations"][0]
+        witness = {field: observation[field] for field in ("owner", "origin", "test_case", "level")}
+        witness.update(at=observation["addresses"][0], reason=None)
+        rows = [{"key": key, "witnesses": [witness, {**witness, "test_case": GENERATOR.FORM_TEMPLATE_SHARD}]}]
+        matches = [item for item in GENERATOR.address_absence_observations(GENERATOR.REPO, rows)
+                   if item["reason"]["kind"] == "unnamed_value_row"]
+        self.assertEqual(len(matches), 1)
+        self.assertNotIn("attempted_at", matches[0])
+
     def test_unnamed_characteristic_reason_is_scoped_to_confirmed_document(self) -> None:
         special = "native_special_projection_addresses_match_source"
         owner = "main:Document.АктОбУничтоженииПерсональныхДанных"

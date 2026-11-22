@@ -16,6 +16,10 @@ use unica_source_designer::owner::MD_CLASSES_NS;
 use unica_source_designer::registration::platform_child_object_order;
 use unica_work_control::provider_deadline::ProviderDeadline;
 
+#[path = "address_coverage/dcs_named_structure.rs"]
+mod dcs_named_structure;
+#[path = "address_coverage/module_role_requirements.rs"]
+mod module_role_requirements;
 #[path = "address_coverage/recursive_subsystems.rs"]
 mod recursive_subsystems;
 #[path = "address_coverage/special_projections.rs"]
@@ -5445,6 +5449,7 @@ fn check_metadata_child_branches(
 /// rule: INV.SOURCE.RESOLVED-RESOURCE-IDENTITY
 #[test]
 fn native_registered_modules_match_profile_and_physical_paths() {
+    module_role_requirements::record_cross_line_module_roles();
     let profile_fixture = module_capability_fixture();
     assert_eq!(profile_fixture.profile, PlatformProfile::v8_3_27().id());
     let mut evidence = EvidenceRows::new(
@@ -5732,7 +5737,7 @@ fn native_registered_modules_match_profile_and_physical_paths() {
             }
             ModuleSamples::DirectNamed => &direct_named[..],
         };
-        let queue = (all_kinds && xml == "2.22").then_some((
+        let queue = (all_kinds && metadata_kind_exists(Some(line), "Queue")).then_some((
             "Queue",
             "Queues/Probe.xml",
             Some(&[][..]),
@@ -6597,14 +6602,6 @@ fn check_native_named_module_samples(
                     authority.read_module_text(&body, &snapshot).unwrap(),
                     Some(ModuleText::whole(expected.to_owned())),
                 );
-                evidence.record(
-                    profile.line(),
-                    &owner,
-                    "Module",
-                    Some(role),
-                    &fixture_origin(&module),
-                    AddressEvidence::Read(&owner),
-                );
                 println!(
                     "{} {owner}: read on the bare CommonModule address",
                     profile.id()
@@ -6627,6 +6624,14 @@ fn check_native_named_module_samples(
                     AddressEvidence::Read(&body_at),
                 );
             }
+            evidence.record(
+                profile.line(),
+                &owner,
+                "Module",
+                Some(role),
+                &fixture_origin(&module),
+                AddressEvidence::Read(&owner),
+            );
         } else {
             let at = check_registered_module_read(authority, profile_fixture, &owner, role);
             evidence.record(
