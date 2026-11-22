@@ -130,11 +130,18 @@ DAEMON_SCOPE = (
     " The 8.3.27 spreadsheet reads require PlatformExport bytes in the daemon fixture."
 )
 NATIVE_ONLY_MODULE_SCOPE = (
-    "Native-only mode validates the 8.3.27 module-role declarations "
-    "and skips their witness check because some roles depend on daemon fixtures."
+    "Native-only mode checks the native evidence and validates the 8.3.27 module-role declarations. "
+    "The full mode checks their witnesses, including roles exercised by the daemon fixtures."
 )
-SCOPE_BOUNDARY = "This slice is not the complete #484 map or the other #2958 evidence columns."
-ABSENCE_SCOPE = "Absence observations are limited to the captured cases. Other cases remain unverified."
+FULL_REGISTRY_SCOPE = (
+    "Full mode checks the #484 address-and-reason registry against independent declarations, "
+    "profile admission, native registrations, and scoped evidence. It shares the declaration and "
+    "platform-admission axis with #2958, which tracks the other evidence columns."
+)
+ENUMERATION_SCOPE = (
+    "The 18 marked #2224 cases have a witnessed direct branch read and an owner enumeration gap."
+)
+ABSENCE_SCOPE = "Absence observations apply to the captured cases. Other absences remain unverified."
 NATIVE_ABSENCE_FIXTURE = Path("tests/dev/fixtures/address-coverage-native-absence.json")
 NATIVE_ABSENCE_OWNERS = {
     "main:Constant.Enabled": "Constant",
@@ -2265,7 +2272,7 @@ def generate_report(native_only: bool) -> dict:
     else:
         cases.append(("unica-daemon", DAEMON_SHARD))
         required_shards |= {DAEMON_SHARD, SUBSYSTEM_INTERFACE_KEYS_SHARD, BSL_PROJECTION_KEYS_SHARD}
-        scope += f" {DAEMON_SCOPE}"
+        scope += f" {FULL_REGISTRY_SCOPE} {DAEMON_SCOPE}"
     with tempfile.TemporaryDirectory(prefix="unica-address-coverage-") as scratch:
         env = {**os.environ, EMITTER_ENV: scratch}
         for package, test_filter in cases:
@@ -2304,7 +2311,7 @@ def generate_report(native_only: bool) -> dict:
     if git_state() != (revision, status):
         raise ValueError("Git revision or worktree status changed during the address coverage run")
     return {"schema_version": SCHEMA_VERSION, "revision": revision, "dirty": bool(status),
-            "scope": f"{scope} {SCOPE_BOUNDARY} {ABSENCE_SCOPE}", "rows": rows,
+            "scope": f"{scope} {ENUMERATION_SCOPE} {ABSENCE_SCOPE}", "rows": rows,
             "absence_observations": absence_observations}
 
 
