@@ -1,3 +1,5 @@
+mod form_members;
+
 use super::*;
 
 const SHARD: &str = "native_special_projection_addresses_match_source";
@@ -133,6 +135,7 @@ impl NativeProjections<'_, '_> {
 /// rule: INV.SOURCE.PREDEFINED-ITEMS-ANSWER-BY-ADDRESS
 /// rule: INV.SOURCE.MODULE-SUMMARY
 /// rule: INV.SOURCE.MODULE-REGION-INTERFACE
+/// rule: INV.SOURCE.FORM-OPERATION-TARGETS
 #[test]
 fn native_special_projection_addresses_match_source() {
     let mut evidence = EvidenceRows::new(SHARD, SourceSetKind::Configuration);
@@ -331,6 +334,7 @@ fn direct_form_command_and_parameter(
     let form = xml.root_element();
     assert!(form.has_tag_name((NATIVE_FORM_NS, "Form")));
     let origin = fixture_origin(path);
+    form_members::bound_command_events(native, owner, form, &origin);
     for (container, kind) in [("Commands", "Command"), ("Parameters", "Parameter")] {
         let names = native_form_children(form, container)
             .flat_map(|node| native_form_children(node, kind))
