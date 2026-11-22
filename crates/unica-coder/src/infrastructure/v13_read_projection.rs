@@ -11,6 +11,8 @@ mod form;
 mod form_appearance;
 mod member_properties;
 mod metadata;
+#[cfg(test)]
+pub(crate) use metadata::address_coverage as metadata_address_coverage;
 mod role;
 pub mod structured_properties;
 pub use metadata::borrowing_props;

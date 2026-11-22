@@ -1,0 +1,95 @@
+{
+  "source": "Byte-preserved Form.xml from fresh isolated ibcmd import, apply and export after adding a ValueTable and a ValueTree to the native parameter fixture. The Configuration.xml, Language and CommonForm descriptor exports are byte-identical to workspace-native-form-parameter and are reused there.",
+  "platforms": {
+    "2.20": {
+      "platformVersion": "8.3.27.2342",
+      "ibcmdSha256": "38f37715535cea530e58d5ba2e7e072c184b61b12f3e903ac290b299cf39fd38",
+      "stageExits": {
+        "create": 0,
+        "import": 0,
+        "apply": 0,
+        "export": 0
+      },
+      "reusedNativeFiles": {
+        "tests/fixtures/acceptance/workspace-native-form-parameter/src-2.20/Configuration.xml": {
+          "size": 10341,
+          "sha256": "1cab6a8255358adb7a0a72ab1bd88d679ef52531905863e48101a5387d4729fc"
+        },
+        "tests/fixtures/acceptance/workspace-native-form-parameter/src-2.20/Languages/Русский.xml": {
+          "size": 1251,
+          "sha256": "99c0ebe1ab0b911ea97ce759fb97e6d78e50404f989052b4e99e4bb654a6197b"
+        },
+        "tests/fixtures/acceptance/workspace-native-form-parameter/src-2.20/CommonForms/MainA.xml": {
+          "size": 1599,
+          "sha256": "fd86ca6c4fab7d68225ebf711f3fdccb673d871ccf99c6b03f9335c11d53ec27"
+        }
+      },
+      "directMcpReceiptSha256": "bacf7d39a7b2c3c90783cc0e786c047641b11e9546f7f5aea8cc35384ad2899c"
+    },
+    "2.21": {
+      "platformVersion": "8.5.1.1529",
+      "ibcmdSha256": "4dde71c1d061cc14c619255ec524b4ca8aca1f9bc38a92d1d766eb7d57721d20",
+      "stageExits": {
+        "create": 0,
+        "import": 0,
+        "apply": 0,
+        "export": 0
+      },
+      "reusedNativeFiles": {
+        "tests/fixtures/acceptance/workspace-native-form-parameter/src-2.21/Configuration.xml": {
+          "size": 11098,
+          "sha256": "d2a6896a4aa9d2ec28d75b01d6bce37948abca35f95bafceb0a2c43f69555bea"
+        },
+        "tests/fixtures/acceptance/workspace-native-form-parameter/src-2.21/Languages/Русский.xml": {
+          "size": 1306,
+          "sha256": "5e7c4e7b677543a209c571470266fdb7a4e7e22834d823539a1ab9bcc2a04bec"
+        },
+        "tests/fixtures/acceptance/workspace-native-form-parameter/src-2.21/CommonForms/MainA.xml": {
+          "size": 1729,
+          "sha256": "29c8af5c37210c9033c34284910ef01a19c448fe99ad3cc9ac0164d36e373ff4"
+        }
+      },
+      "directMcpReceiptSha256": "bacf7d39a7b2c3c90783cc0e786c047641b11e9546f7f5aea8cc35384ad2899c"
+    },
+    "2.22": {
+      "platformVersion": "8.5.4.2028",
+      "ibcmdSha256": "d17ba65155a3eec47f8be3d558d2a12e704281f6b9f33fa5350a3eb2dd585181",
+      "stageExits": {
+        "create": 0,
+        "import": 0,
+        "apply": 0,
+        "export": 0
+      },
+      "reusedNativeFiles": {
+        "tests/fixtures/acceptance/workspace-native-form-parameter/src-2.22/Configuration.xml": {
+          "size": 11173,
+          "sha256": "580580b3d9e081c711151eddfed53fc95a9ec47baedfc45bafff4a24662e2d22"
+        },
+        "tests/fixtures/acceptance/workspace-native-form-parameter/src-2.22/Languages/Русский.xml": {
+          "size": 1306,
+          "sha256": "f695d5995479ed9b9790f1f2f2e9d98ed52a78c1b12b112028b75b28d0234dd2"
+        },
+        "tests/fixtures/acceptance/workspace-native-form-parameter/src-2.22/CommonForms/MainA.xml": {
+          "size": 1729,
+          "sha256": "4fdcefc09cdf6ebce6abc9b7a486e73d03622426733844c851a7f114278ab693"
+        }
+      },
+      "directMcpReceiptSha256": "bacf7d39a7b2c3c90783cc0e786c047641b11e9546f7f5aea8cc35384ad2899c"
+    }
+  },
+  "mcpBinarySha256": "6e4d9abe7d143d60c209cd1fcdbc65fda9ce6d78994dc605911e69123b98ad7d",
+  "files": {
+    "2.20/Form.xml": {
+      "size": 2022,
+      "sha256": "dfb004e86659cdf3dc474cd25af0e1651fa71f1614505e93c8bd06eec8ae3119"
+    },
+    "2.21/Form.xml": {
+      "size": 2077,
+      "sha256": "8bbba9cdb8958ae7794dde17a5fdc9080990ffeac5d4e7676f6dc7357cf43b87"
+    },
+    "2.22/Form.xml": {
+      "size": 2077,
+      "sha256": "4599adb3a3efc955f8207730a369ceeac431089d702b0b615ae14abd55870b83"
+    }
+  }
+}

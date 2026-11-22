@@ -20,8 +20,8 @@ use crate::validation_subject::{
 };
 use crate::wsdl::Definition;
 use crate::{
-    MetaExchangeContentItem, MetaInfoPropertyValue, MetaObservedProperty, MetaPredefinedItemsData,
-    MetaSupportStatus, MetadataKind,
+    MetaElementData, MetaExchangeContentItem, MetaInfoPropertyValue, MetaObservedProperty,
+    MetaPredefinedItemsData, MetaSupportStatus, MetadataKind,
 };
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
@@ -79,6 +79,14 @@ pub trait MetadataReadCodec: Send + Sync {
     /// Дополняет ответ чтения очереди её синонимом, свойствами
     /// обработки и дочерними.
     fn queue(&self, descriptor: &[u8], payload: &mut Value) -> Result<(), String>;
+    /// Встроенные реквизиты и табличные части уже подтверждённого владельца EPF или ERF.
+    fn external_inline_members(
+        &self,
+        descriptor: &[u8],
+        target: &MetadataAddress,
+        checkpoint: &mut dyn FnMut() -> Result<(), ReadStopped>,
+    ) -> Result<ExternalInlineMembers, ExternalInlineReadError>;
+
     /// Подчинённые внешнего источника данных, его таблицы, куба и таблицы
     /// измерения куба в `payload.collections`. Вид вне профиля `payload`
     /// не меняет.
@@ -316,6 +324,24 @@ pub trait SupportStateStream: Send {
 /// хранит вызывающий.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReadStopped;
+
+/// Члены внешнего объекта и ограничения чтения отдельных свойств.
+pub struct ExternalInlineMembers {
+    pub attributes: Vec<MetaElementData>,
+    pub tabular_sections: Vec<MetaElementData>,
+    pub unreadable: Vec<ReadFinding>,
+}
+
+pub enum ExternalInlineReadError {
+    InvalidDescriptor(String),
+    Stopped,
+}
+
+impl From<ReadStopped> for ExternalInlineReadError {
+    fn from(_: ReadStopped) -> Self {
+        Self::Stopped
+    }
+}
 
 /// Элементы состава плана обмена и ошибки элементов, которые не удалось прочитать.
 #[derive(Debug, Clone, PartialEq, Eq)]

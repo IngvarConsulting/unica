@@ -3,6 +3,7 @@ use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::Arc;
 use unica_address::source_target::MetadataAddress;
+use unica_metadata::read_codec::{ExternalInlineReadError, ReadStopped};
 use unica_refusal::{RefusalCode, RefusalDetail};
 use unica_source_designer::owner::prove_already_read_source_set_owner;
 
@@ -152,6 +153,58 @@ impl ProviderReadAuthority {
                 ),
             ));
         }
-        identity_metadata_payload_from_evidence(target, &evidence).map(Some)
+        let mut payload = identity_metadata_payload_from_evidence(target, &evidence)?;
+        project_inline_members(&descriptor, target, checkpoint, &mut payload)?;
+        Ok(Some(payload))
     }
+}
+
+fn project_inline_members(
+    descriptor: &[u8],
+    target: &MetadataAddress,
+    checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+    payload: &mut Value,
+) -> Result<(), ViewError> {
+    let mut stopped = None;
+    let read = crate::infrastructure::family_codecs::metadata_read_codec().external_inline_members(
+        descriptor,
+        target,
+        &mut || {
+            checkpoint().map_err(|error| {
+                stopped = Some(error);
+                ReadStopped
+            })
+        },
+    );
+    let invalid = |message| {
+        ViewError::detailed(
+            RefusalDetail::SourceUnreadable,
+            format!("invalid inline metadata in external descriptor {target}: {message}"),
+        )
+    };
+    let facts = match (read, stopped) {
+        (Ok(facts), None) => facts,
+        (_, Some(error)) => return Err(error),
+        (Err(ExternalInlineReadError::InvalidDescriptor(message)), None) => {
+            return Err(invalid(message))
+        }
+        (Err(ExternalInlineReadError::Stopped), None) => {
+            return Err(ViewError::new(
+                RefusalCode::InvalidResult,
+                "external inline metadata read stopped without a checkpoint refusal",
+            ));
+        }
+    };
+    payload["collections"]["attributes"] =
+        serde_json::to_value(facts.attributes).map_err(|error| invalid(error.to_string()))?;
+    payload["collections"]["tabularSections"] =
+        serde_json::to_value(facts.tabular_sections).map_err(|error| invalid(error.to_string()))?;
+    if !facts.unreadable.is_empty() {
+        payload["unreadable"] = json!(facts
+            .unreadable
+            .into_iter()
+            .map(|finding| { json!({"field": finding.field, "message": finding.message}) })
+            .collect::<Vec<_>>());
+    }
+    checkpoint()
 }

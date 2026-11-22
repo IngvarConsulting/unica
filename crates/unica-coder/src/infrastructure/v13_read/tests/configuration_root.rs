@@ -911,19 +911,27 @@ pub(crate) fn production_authorities_reach_all_profile_module_capabilities_from_
         let viewed = main_navigation.view(ViewRequest::new(address).unwrap());
         assert!(viewed.ok, "{address}: {:?}", viewed.diagnostics);
     }
+    for branch in [
+        "main:Sequence.Probe.Module",
+        "main:CalculationRegister.Начисления.Recalculation.Перерасчет1.Module",
+    ] {
+        let viewed = main_navigation.view(ViewRequest::new(branch).unwrap());
+        assert!(viewed.ok, "{branch}: {:?}", viewed.diagnostics);
+        let data = viewed.data.unwrap();
+        let items = data["items"].as_array().unwrap();
+        assert_eq!(items.len(), 1, "{branch}: {data}");
+        assert_eq!(items[0]["at"], format!("{branch}.RecordSet"));
+    }
     let main = main_fixture.operation_read_authority();
     let epf = external_fixture.operation_read_authority("epf", SourceSetKind::ExternalProcessor);
     let erf = external_fixture.operation_read_authority("erf", SourceSetKind::ExternalReport);
-    let expected = serde_json::from_str::<ModuleCapabilityFixture>(include_str!(
-        "../../../../../../tests/fixtures/v013/address-profile-8.3.27.json"
-    ))
-    .unwrap()
-    .module_capabilities
-    .into_iter()
-    .filter(|case| case.exists)
-    .map(|case| case.at)
-    .collect::<std::collections::BTreeSet<_>>();
-    assert_eq!(expected.len(), 25);
+    let expected = module_capability_fixture()
+        .module_capabilities
+        .into_iter()
+        .filter(|case| case.exists)
+        .map(|case| case.at)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(expected.len(), 27);
 
     let index = ReaderReach::new(vec![("main", &main), ("epf", &epf), ("erf", &erf)]);
     for expected_at in expected {
