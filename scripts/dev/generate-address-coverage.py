@@ -95,6 +95,7 @@ NATIVE_SCOPE = (
     " Native spreadsheet companions require registered Area reads and row Body and Parameter reads."
     " Registered ScheduledJob.Schedule keeps descriptor-only reads and requires companion round-trips."
     " Native XML 2.20–2.22 CFE fixtures require adopted Catalog/Form and own CommonModule witnesses."
+    " A form without a local companion has a logical read and a local Metadata round-trip."
 )
 DAEMON_SCOPE = (
     "Read witnesses from the selected document and BSL coverage test of unica-daemon, "
@@ -1394,8 +1395,14 @@ def native_cfe_ownership_line_requirements(repo: Path, line: str, version: str, 
     form_path = f"Catalogs/{catalog}/Forms/{form}"
     if registration(parent_catalog, "Form") != form:
         raise ValueError("native CFE ownership: parent lacks the adopted Form registration")
-    adopted(descriptor(f"adopted/{form_path}.xml", "Form", form),
-            descriptor(f"cf/{form_path}.xml", "Form", form))
+    parent_form = descriptor(f"cf/{form_path}.xml", "Form", form)
+    adopted_form = descriptor(f"adopted/{form_path}.xml", "Form", form)
+    adopted(adopted_form, parent_form)
+    inherited_form = f"inherited/{form_path}.xml"
+    inherited = descriptor(inherited_form, "Form", form)
+    adopted(inherited, parent_form)
+    if inherited.attrib["uuid"] != adopted_form.attrib["uuid"] or prop(inherited, "FormType") is not None:
+        raise ValueError("native CFE ownership: inherited Form descriptor identity or FormType differs")
     local_form = f"adopted/{form_path}/Ext/Form.xml"
     body = ET.parse(repo / pin_path(local_form)).getroot()
     base_form = body.find(f"{lf}BaseForm")
@@ -1421,8 +1428,12 @@ def native_cfe_ownership_line_requirements(repo: Path, line: str, version: str, 
         ]),
         (("Catalog",), catalog_at, "Form", None, [
             (f"{catalog_at}.Form", f"adopted/{catalog_path}", "read"), (form_at, local_form, "roundtrip"),
+            (form_at, inherited_form, "read"),
         ]),
-        (("Catalog", "Form"), form_at, "Metadata", None, [(f"{form_at}.Metadata", f"adopted/{form_path}.xml", "roundtrip")]),
+        (("Catalog", "Form"), form_at, "Metadata", None, [
+            (f"{form_at}.Metadata", f"adopted/{form_path}.xml", "roundtrip"),
+            (f"{form_at}.Metadata", inherited_form, "roundtrip"),
+        ]),
         (("Catalog", "Form"), form_at, "Module", None, [(f"{form_at}.Module", f"adopted/{form_path}.xml", "read")]),
         (("Catalog", "Form"), form_at, "Module", "Form", [(module_at, module_path, "roundtrip")]),
         (("Catalog", "Form", "Module"), module_at, "Body", None, [(f"{module_at}.Body", module_path, "read")]),

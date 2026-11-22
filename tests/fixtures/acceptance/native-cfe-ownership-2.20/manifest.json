@@ -103,6 +103,25 @@
     "own/Languages/Русский.xml": {
       "size": 1283,
       "sha256": "314598f60b3e7f75a93cc5b6213a318ebac570bb26c1a2ca34753cb0cffb2756"
+    },
+    "inherited/Catalogs/CorpusCatalog/Forms/CorpusForm.xml": {
+      "size": 1372,
+      "sha256": "15dd38e519876cb6ba452ad0d3892e6bfe01f9eeaa67acc2fe7b08f433541916"
+    }
+  },
+  "inheritedCapture": {
+    "receiptSha256": "43512883e07d0d940d5f7340ff2022512b25b1207ffb3c7f18a0172da1730489",
+    "platformSha256": {
+      "ibcmd.exe": "38f37715535cea530e58d5ba2e7e072c184b61b12f3e903ac290b299cf39fd38"
+    },
+    "reusedFromAdopted": {
+      "Catalogs/CorpusCatalog.xml": "adopted/Catalogs/CorpusCatalog.xml",
+      "Configuration.xml": "adopted/Configuration.xml",
+      "Languages/Русский.xml": "adopted/Languages/Русский.xml"
+    },
+    "excludedPlatformServiceSidecar": {
+      "size": 933,
+      "sha256": "133fa580ac7c0f3377dbb6c080210c1f2cfe80781cb76950023583cc55445e2d"
     }
   }
 }

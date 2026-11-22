@@ -95,6 +95,25 @@
     "own/Languages/\u0420\u0443\u0441\u0441\u043a\u0438\u0439.xml": {
       "size": 1420,
       "sha256": "fb06dc91db4f35e0d37fbcdcaf42bbb45c30eda087940d63f6de2979ead11e8b"
+    },
+    "inherited/Catalogs/CorpusCatalog/Forms/CorpusForm.xml": {
+      "size": 1608,
+      "sha256": "334c66c38eb635d8aa87a2031d6a749c3da3a577ad8f9f2e809d1ee8bf1504f4"
+    }
+  },
+  "inheritedCapture": {
+    "receiptSha256": "2cda83ab37110f7c81c4e88371921eb3248ff2115577c2ef7daf9d3e08e0c801",
+    "platformSha256": {
+      "ibcmd.exe": "d17ba65155a3eec47f8be3d558d2a12e704281f6b9f33fa5350a3eb2dd585181"
+    },
+    "reusedFromAdopted": {
+      "Catalogs/CorpusCatalog.xml": "adopted/Catalogs/CorpusCatalog.xml",
+      "Configuration.xml": "adopted/Configuration.xml",
+      "Languages/\u0420\u0443\u0441\u0441\u043a\u0438\u0439.xml": "adopted/Languages/\u0420\u0443\u0441\u0441\u043a\u0438\u0439.xml"
+    },
+    "excludedPlatformServiceSidecar": {
+      "size": 933,
+      "sha256": "40bef6990798aec558213283394af19653ea31ceea80d66f160eee4bc0f81a93"
     }
   }
 }

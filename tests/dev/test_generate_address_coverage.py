@@ -622,7 +622,13 @@ class AddressCoverageReportTests(unittest.TestCase):
             }
             for row in required for obs in row["requirement"]["observations"] for at in obs["addresses"]
         ]
-        self.assertEqual(len(evidence), 33)
+        self.assertEqual(len(evidence), 39)
+        inherited = [item for item in evidence if "/inherited/" in item["witness"]["origin"]]
+        self.assertEqual(len(inherited), 6)
+        inherited_form = next(item for item in inherited if item["key"]["line"] == "8.5.1"
+                              and item["witness"]["at"].endswith(".CorpusForm"))
+        inherited_metadata = next(item for item in inherited if item["key"]["line"] == "8.5.4"
+                                  and item["witness"]["at"].endswith(".CorpusForm.Metadata"))
         own_body = next(item for item in evidence if item["key"]["line"] == "8.5.1"
                         and item["witness"]["at"].endswith("OwnProbe.Body"))
         adopted = next(item for item in evidence if item["key"]["line"] == "8.5.4"
@@ -634,6 +640,8 @@ class AddressCoverageReportTests(unittest.TestCase):
             self.assertEqual(len(GENERATOR.merge_shards(self.root, shards, native_only=native_only)), 24)
             for target, mutation, error in (
                 (own_body, None, "OwnProbe.Body.*expected read"),
+                (inherited_form, None, r"CorpusForm \(8\.5\.1\): expected read from .*/inherited/"),
+                (inherited_metadata, None, r"CorpusForm.Metadata \(8\.5\.4\): expected roundtrip from .*/inherited/"),
                 (own_body, {"level": "roundtrip"}, "OwnProbe.Body.*cannot round-trip"),
                 (adopted, {"level": "read"}, "CorpusForm.Metadata.*expected roundtrip"),
                 (adopted, {"origin": adopted["witness"]["origin"].replace("/adopted/", "/cf/")},

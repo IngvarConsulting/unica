@@ -893,6 +893,7 @@ fn native_extension_root_language_matches_registration() {
 }
 
 /// rule: INV.SOURCE.LOGICAL-READER-PARITY
+/// rule: INV.SOURCE.BORROWED-OBJECT-INHERITED-CONTENT
 /// rule: INV.SOURCE.RESOLVED-RESOURCE-IDENTITY
 #[test]
 fn native_cfe_ownership_addresses_follow_the_exported_registrations() {
@@ -1120,7 +1121,98 @@ fn check_native_cfe_ownership(version: &str, evidence: &mut EvidenceRows) {
             not_registered(&base, "main:CommonModule.CorpusExtension_OwnProbe");
         }
     }
+    check_native_inherited_cfe_form(&fixtures, profile, &cancellation, evidence);
     assert_eq!(tree_snapshot(&fixtures), before);
+}
+
+fn check_native_inherited_cfe_form(
+    fixtures: &Path,
+    profile: PlatformProfile,
+    cancellation: &CancellationToken,
+    evidence: &mut EvidenceRows,
+) {
+    const CATALOG: &str = "ext:Catalog.CorpusCatalog";
+    const FORM: &str = "ext:Catalog.CorpusCatalog.Form.CorpusForm";
+    const FORM_XML: &str = "Catalogs/CorpusCatalog/Forms/CorpusForm.xml";
+    let native_descriptor = fixtures.join("inherited").join(FORM_XML);
+    let source = tempfile::tempdir().unwrap();
+    for relative in [
+        "Configuration.xml",
+        "Catalogs/CorpusCatalog.xml",
+        "Languages/Русский.xml",
+        FORM_XML,
+    ] {
+        let input = if relative == FORM_XML {
+            native_descriptor.clone()
+        } else {
+            fixtures.join("adopted").join(relative)
+        };
+        let target = source.path().join(relative);
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::copy(input, target).unwrap();
+    }
+    assert!(!source.path().join(FORM_XML).with_extension("").exists());
+    let canonical = source.path().canonicalize().unwrap();
+    let directory = Arc::new(unica_workspace::read::open_source_directory(&canonical).unwrap());
+    let kind = SourceSetKind::Extension;
+    let authority = LogicalViewReadAuthority::new(
+        cancellation,
+        "ext",
+        "native-inherited-cfe-form",
+        kind,
+        Arc::clone(&directory),
+        profile,
+    );
+    let line = profile.line();
+    let origin = fixture_origin(&native_descriptor);
+    let form = read(&authority, FORM);
+    assert_eq!(form["kind"], "Form");
+    assert_eq!(form["props"]["content"], "inherited");
+    let metadata = format!("{FORM}.Metadata");
+    assert_eq!(
+        addresses(&form, "branches"),
+        BTreeSet::from([metadata.clone()])
+    );
+    evidence.record(
+        line,
+        CATALOG,
+        "Form",
+        None,
+        &origin,
+        AddressEvidence::Read(FORM),
+    );
+
+    assert_eq!(read(&authority, &metadata)["kind"], "Metadata");
+    let metadata_at = QualifiedAddress::parse(&metadata).unwrap();
+    assert_eq!(
+        authority.existing_export_path(&metadata_at, None).unwrap(),
+        FORM_XML
+    );
+    let layout = [LayoutFindSource::new("ext", kind, &directory)];
+    let located = WorkspaceFindDirectoryBuilder::default()
+        .locate_path(
+            &layout,
+            FORM_XML,
+            ProviderDeadline::no_deadline(),
+            cancellation,
+        )
+        .unwrap()
+        .expect("the inherited form has a local Metadata descriptor");
+    assert_eq!(located.at(), metadata);
+    assert_eq!(located.placed_path(), Some(FORM_XML));
+    evidence.record(
+        line,
+        FORM,
+        "Metadata",
+        None,
+        &origin,
+        AddressEvidence::RoundTrip(&metadata),
+    );
+
+    let form_at = QualifiedAddress::parse(FORM).unwrap();
+    let missing = authority.existing_export_path(&form_at, None).unwrap_err();
+    assert_eq!(missing.code(), RefusalCode::NotFound);
+    check_native_projection_refusal(&authority, &format!("{FORM}.Module.Form"), CATALOG);
 }
 
 /// rule: INV.SOURCE.EXTERNAL-ARTIFACT-ROOTS
