@@ -839,6 +839,20 @@ fn native_external_root_descriptors_match_published_addresses() {
                 AddressEvidence::Read(&child_branch),
             );
         }
+        check_native_modules_without_bsl(
+            &authority,
+            descriptor_path.parent().unwrap(),
+            &layout,
+            &cancellation,
+            MissingNativeModules {
+                line,
+                owner: &at,
+                descriptor: &descriptor_path,
+                group_roles: Some(&["Object"]),
+                roles: if format == "2.20" { &[] } else { &["Object"] },
+            },
+            &mut evidence,
+        );
         if format == "2.20" {
             let child =
                 native_registered_form_descriptor(artifact, &descriptor_path, "Main", format);
@@ -3351,6 +3365,15 @@ fn native_registered_modules_match_profile_and_physical_paths() {
         let registrations = root_registrations(&source, xml);
         if all_kinds {
             check_native_bsl_interiors(&authority, &source, xml, &registrations, &mut evidence);
+            check_native_configuration_modules_without_bsl(
+                &authority,
+                &source,
+                &layout,
+                &cancellation,
+                xml,
+                &registrations,
+                &mut evidence,
+            );
         }
         if all_kinds && xml == "2.20" {
             check_baseline_native_modules(
@@ -3664,6 +3687,236 @@ fn native_registered_modules_match_profile_and_physical_paths() {
         }
     }
     evidence.finish();
+}
+
+struct MissingNativeModules<'a> {
+    line: PlatformLine,
+    owner: &'a QualifiedAddress,
+    descriptor: &'a Path,
+    group_roles: Option<&'a [&'a str]>,
+    roles: &'a [&'a str],
+}
+
+fn check_native_modules_without_bsl(
+    authority: &LogicalViewReadAuthority<'_>,
+    source_dir: &Path,
+    layout: &[LayoutFindSource<'_>],
+    cancellation: &CancellationToken,
+    sample: MissingNativeModules<'_>,
+    evidence: &mut EvidenceRows,
+) {
+    let MissingNativeModules {
+        line,
+        owner,
+        descriptor,
+        group_roles,
+        roles,
+    } = sample;
+    let branch = QualifiedAddress::parse(&format!("{owner}.Module")).unwrap();
+    let expected: BTreeSet<_> = if let Some(roles) = group_roles {
+        roles
+            .iter()
+            .map(|role| branch.member(role).unwrap().to_string())
+            .collect()
+    } else {
+        authority
+            .platform_profile()
+            .module_children(&branch)
+            .iter()
+            .map(|entry| entry.at().to_string())
+            .collect()
+    };
+    let owner_text = owner.to_string();
+    let branch_text = branch.to_string();
+    check_native_branch(
+        authority,
+        &read(authority, &owner_text),
+        &branch_text,
+        &expected,
+    );
+
+    let source = (line, authority.source_set_kind_for_test());
+    let origin = fixture_origin(descriptor);
+    if group_roles.is_some() {
+        evidence.record_for_source(
+            source,
+            &owner_text,
+            "Module",
+            None,
+            &origin,
+            AddressEvidence::Read(&branch_text),
+        );
+    }
+    let finder = WorkspaceFindDirectoryBuilder::default();
+    for &role in roles {
+        let at = branch.member(role).unwrap();
+        let address = at.to_string();
+        assert!(
+            expected.contains(&address),
+            "{address}: expected a logical role"
+        );
+        assert_eq!(read(authority, &address)["kind"], "Module", "{address}");
+
+        let path = descriptor
+            .with_extension("")
+            .join(format!("Ext/{role}Module.bsl"));
+        let missing = fs::symlink_metadata(&path).unwrap_err();
+        assert_eq!(missing.kind(), std::io::ErrorKind::NotFound, "{path:?}");
+        let relative = path
+            .strip_prefix(source_dir)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .replace('\\', "/");
+        assert_eq!(
+            authority
+                .existing_export_path(&at, None)
+                .unwrap_err()
+                .code(),
+            RefusalCode::NotFound,
+            "{address}"
+        );
+        assert!(
+            finder
+                .locate_path(
+                    layout,
+                    &relative,
+                    ProviderDeadline::no_deadline(),
+                    cancellation
+                )
+                .unwrap()
+                .is_none(),
+            "{relative}: a missing BSL must not resolve"
+        );
+        evidence.record_for_source(
+            source,
+            &owner_text,
+            "Module",
+            Some(role),
+            &origin,
+            AddressEvidence::Read(&address),
+        );
+    }
+}
+
+fn check_native_configuration_modules_without_bsl(
+    authority: &LogicalViewReadAuthority<'_>,
+    source: &Path,
+    layout: &[LayoutFindSource<'_>],
+    cancellation: &CancellationToken,
+    format: &str,
+    registrations: &[(String, String)],
+    evidence: &mut EvidenceRows,
+) {
+    const MANAGER: &[&str] = &["Manager"];
+    const MANAGER_OBJECT: &[&str] = &["Manager", "Object"];
+    const MANAGER_RECORD_SET: &[&str] = &["Manager", "RecordSet"];
+    const MANAGER_VALUE: &[&str] = &["Manager", "ValueManager"];
+
+    let newer = format != "2.20";
+    let line = export_format_line(format).unwrap();
+    let constant_roles = if newer { MANAGER_VALUE } else { MANAGER };
+    let information_register_roles = if newer { MANAGER_RECORD_SET } else { MANAGER };
+
+    // Some groups or roles already have witnesses, such as Document.Manager
+    // on 2.20. These samples add only the missing logical evidence.
+    let common = [
+        ("AccountingRegister", "Бухгалтерский", None, MANAGER),
+        ("AccumulationRegister", "Остатки", None, MANAGER),
+        ("BusinessProcess", "Approval", None, MANAGER),
+        ("CalculationRegister", "Начисления", None, MANAGER),
+        ("ChartOfAccounts", "Хозрасчетный", None, MANAGER),
+        ("ChartOfCalculationTypes", "ВидыРасчета", None, MANAGER),
+        ("ChartOfCharacteristicTypes", "Codes", None, MANAGER),
+        ("Constant", "Enabled", Some(MANAGER_VALUE), constant_roles),
+        (
+            "DataProcessor",
+            "Обработка",
+            Some(MANAGER_OBJECT),
+            MANAGER_OBJECT,
+        ),
+        ("DocumentJournal", "Entries", Some(MANAGER), MANAGER),
+        ("Enum", "LanguageAware", Some(MANAGER), MANAGER),
+        ("ExchangePlan", "Codes", None, MANAGER),
+        ("FilterCriterion", "Probe", Some(MANAGER), MANAGER),
+        (
+            "InformationRegister",
+            "АдминистративнаяИерархия",
+            Some(MANAGER_RECORD_SET),
+            information_register_roles,
+        ),
+        ("SettingsStorage", "Probe", Some(MANAGER), MANAGER),
+        ("Task", "Work", None, MANAGER),
+    ];
+    let later = [
+        ("Document", "Orders", None, MANAGER),
+        (
+            "Report",
+            "АнализВерсийОбъектов",
+            Some(MANAGER_OBJECT),
+            MANAGER_OBJECT,
+        ),
+    ];
+    for (kind, name, group_roles, roles) in common
+        .into_iter()
+        .chain(newer.then_some(later).into_iter().flatten())
+    {
+        assert_eq!(
+            registrations
+                .iter()
+                .filter(|(tag, value)| tag == kind && value == name)
+                .count(),
+            1,
+            "{format}: native registration for {kind}.{name}"
+        );
+        let directory = METADATA_LAYOUTS
+            .iter()
+            .find(|layout| layout.tag == kind)
+            .unwrap()
+            .directory;
+        let descriptor = source.join(directory).join(format!("{name}.xml"));
+        let bytes = read_fixture_descriptor(&descriptor);
+        let document = parse_fixture_descriptor(&bytes, &descriptor);
+        assert_eq!(document.root_element().attribute("version"), Some(format));
+        let artifact = fixture_artifact(&document, kind, &descriptor);
+        assert_eq!(fixture_properties_name(artifact), Some(name));
+        assert!(uuid::Uuid::parse_str(artifact.attribute("uuid").unwrap()).is_ok());
+        let owner = QualifiedAddress::parse(&format!("main:{kind}.{name}")).unwrap();
+        check_native_modules_without_bsl(
+            authority,
+            source,
+            layout,
+            cancellation,
+            MissingNativeModules {
+                line,
+                owner: &owner,
+                descriptor: &descriptor,
+                group_roles,
+                roles,
+            },
+            evidence,
+        );
+    }
+
+    let forbidden = match format {
+        "2.20" => Some("main:Document.Приход.Module.RecordSet"),
+        "2.22" => Some("main:Queue.Probe.Module.Object"),
+        _ => None,
+    };
+    if let Some(forbidden) = forbidden {
+        let at = QualifiedAddress::parse(forbidden).unwrap();
+        assert_eq!(
+            authority.snapshot(&at).unwrap_err().code(),
+            RefusalCode::NotFound
+        );
+        assert_eq!(
+            authority
+                .existing_export_path(&at, None)
+                .unwrap_err()
+                .code(),
+            RefusalCode::NotFound
+        );
+    }
 }
 
 fn check_native_bsl_interiors(
