@@ -86,6 +86,48 @@ class AddressCoverageReportTests(unittest.TestCase):
     def write_root_shard(self, *records: dict) -> None:
         self.write_shard(ROOT_SHARD, *records)
 
+    def test_empty_branch_gap_requires_direct_reads_without_claiming_tree_enumeration(self) -> None:
+        pairs = (
+            ("FilterCriterion", "Form"), ("FilterCriterion", "Command"),
+            ("SettingsStorage", "Form"), ("SettingsStorage", "Template"),
+            ("HTTPService", "URLTemplate"), ("WebService", "Operation"),
+        )
+        records = []
+        for line in ("8.3.27", "8.5.1", "8.5.4"):
+            for kind, branch in pairs:
+                record = root_witness("main", branch)
+                record["key"].update(
+                    line=line, owner_shape=[{"kind": kind, "named": True, "role": None}],
+                )
+                owner = f"main:{kind}.Probe"
+                record["witness"].update(
+                    owner=owner, at=f"{owner}.{branch}", test_case=METADATA_SHARD,
+                )
+                records.append(record)
+
+        self.write_shard(METADATA_SHARD, *records)
+        rows = GENERATOR.merge_shards(self.root, frozenset({METADATA_SHARD}))
+        GENERATOR.mark_empty_branch_enumeration_gaps(rows)
+        self.assertEqual(len(rows), 18)
+        for row in rows:
+            self.assertEqual(row["enumeration_gap"]["issue"], 2224)
+            self.assertEqual(row["witnesses"][0]["level"], "read")
+        report = GENERATOR.render_markdown({"revision": "test", "dirty": False, "scope": "", "rows": rows})
+        self.assertIn("main:FilterCriterion.Probe.Form (read)", report)
+        self.assertIn("Empty branch enumeration", report)
+
+        missing, others = records[0], records[1:]
+        self.write_shard(METADATA_SHARD, *others)
+        rows = GENERATOR.merge_shards(self.root, frozenset({METADATA_SHARD}))
+        with self.assertRaisesRegex(ValueError, r"8.3.27.*FilterCriterion.Form"):
+            GENERATOR.mark_empty_branch_enumeration_gaps(rows)
+
+        missing["witness"]["at"] = "main:FilterCriterion.Probe.Command"
+        self.write_shard(METADATA_SHARD, missing, *others)
+        rows = GENERATOR.merge_shards(self.root, frozenset({METADATA_SHARD}))
+        with self.assertRaisesRegex(ValueError, r"8.3.27.*FilterCriterion.Form"):
+            GENERATOR.mark_empty_branch_enumeration_gaps(rows)
+
     def test_native_subsystem_interface_requirements_guard_existing_and_new_branches(self) -> None:
         shard = GENERATOR.SUBSYSTEM_INTERFACE_KEYS_SHARD
         cases = GENERATOR.native_subsystem_interface_requirements(GENERATOR.REPO)

@@ -684,6 +684,41 @@ def merge_shards(
     return result
 
 
+def mark_empty_branch_enumeration_gaps(rows: list[dict]) -> None:
+    """Require address evidence for the six routes covered by the #2224 tree gap."""
+    pairs = {
+        ("FilterCriterion", "Form"), ("FilterCriterion", "Command"),
+        ("SettingsStorage", "Form"), ("SettingsStorage", "Template"),
+        ("HTTPService", "URLTemplate"), ("WebService", "Operation"),
+    }
+    missing = {(line, *pair) for line in ("8.3.27", "8.5.1", "8.5.4") for pair in pairs}
+    for group in rows:
+        key = group["key"]
+        shape = key["owner_shape"]
+        if (key["source_kind"] != "configuration" or key["role"] is not None
+                or len(shape) != 1 or not shape[0]["named"] or shape[0]["role"] is not None):
+            continue
+        kind, branch = shape[0]["kind"], key["branch"]
+        entry = (key["line"], kind, branch)
+        if entry not in missing:
+            continue
+        if any(
+            witness["test_case"] == METADATA_SHARD and witness["level"] == "read"
+            and witness["owner"].startswith(f"main:{kind}.")
+            and witness["at"] == f"{witness['owner']}.{branch}"
+            for witness in group["witnesses"]
+        ):
+            group["enumeration_gap"] = {
+                "issue": 2224,
+                "rule": "CTR.SOURCE.EMPTY-BRANCHES",
+                "url": "https://github.com/IngvarConsulting/unica/issues/2224",
+            }
+            missing.remove(entry)
+    if missing:
+        labels = ", ".join(f"{line} {kind}.{branch}" for line, kind, branch in sorted(missing))
+        raise ValueError(f"missing native address evidence for #2224 branches: {labels}")
+
+
 def render_markdown(report: dict) -> str:
     def cell(value: str) -> str:
         return value.replace("|", r"\|")
@@ -711,6 +746,8 @@ def render_markdown(report: dict) -> str:
                 else f"introduced in {witness['reason']['line']}"
             )
             witnesses.append(f"{witness['owner']} → {outcome} [{witness['origin']}, {witness['test_case']}]")
+        if gap := group.get("enumeration_gap"):
+            witnesses.append(f"Empty branch enumeration: [#{gap['issue']}]({gap['url']})")
         cells = map(cell, (key["line"], key["source_kind"], shape, branch, "<br>".join(witnesses)))
         rows.append("| " + " | ".join(cells) + " |")
     return "\n".join(rows)
@@ -1571,6 +1608,7 @@ def generate_report(native_only: bool) -> dict:
             path = Path(scratch) / f"{SUBSYSTEM_INTERFACE_KEYS_SHARD}.jsonl"
             path.write_text("".join(f"{canonical_json(row)}\n" for row in records), encoding="utf-8")
         rows = merge_shards(Path(scratch), required_shards, native_only=native_only)
+        mark_empty_branch_enumeration_gaps(rows)
     if git_state() != (revision, status):
         raise ValueError("Git revision or worktree status changed during the address coverage run")
     return {"schema_version": SCHEMA_VERSION, "revision": revision, "dirty": bool(status),

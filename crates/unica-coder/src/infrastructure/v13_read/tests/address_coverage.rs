@@ -5147,7 +5147,8 @@ fn check_native_empty_metadata_branches(
         })
         .collect();
 
-    // Keep missing declarations visible until their empty contracts are settled.
+    // These addresses can be read directly even when the owner omits their
+    // empty branches. Publication in the tree is tracked by #2224.
     let pending_empty: &[&str] = match owner_kind {
         "FilterCriterion" => &["Form", "Command"],
         "SettingsStorage" => &["Form", "Template"],
@@ -5155,11 +5156,24 @@ fn check_native_empty_metadata_branches(
         "WebService" => &["Operation"],
         _ => &[],
     };
-    for kind in pending_empty.iter().filter(|kind| !declared.contains(kind)) {
-        println!(
-            "| {} | {owner} | {kind} | — | empty branch outside declared order (#2224); native member present: {} |",
-            profile.id(),
-            raw_kinds.contains(kind),
+    for &kind in pending_empty {
+        if declared.contains(&kind) || raw_kinds.contains(kind) {
+            continue;
+        }
+        let branch = format!("{owner}.{kind}");
+        let collection = read(authority, &branch);
+        assert!(addresses(&collection, "items").is_empty(), "{branch}");
+        assert!(
+            verified.insert(branch.clone()),
+            "duplicate witness for {branch}"
+        );
+        evidence.record(
+            profile.line(),
+            &owner_at,
+            kind,
+            None,
+            origin,
+            AddressEvidence::Read(&branch),
         );
     }
 
