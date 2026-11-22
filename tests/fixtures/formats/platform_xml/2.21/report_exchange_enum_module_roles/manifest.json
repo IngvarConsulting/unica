@@ -1,0 +1,348 @@
+{
+  "formatVersion": "2.21",
+  "platformVersion": "8.5.1.1529",
+  "source": "Byte-identical file selection from two native ibcmd configuration exports sharing identical Configuration.xml.",
+  "seed": "A retained settings-export of the same native platform build.",
+  "rootMerge": {
+    "commonFiles": [
+      "Configuration.xml"
+    ],
+    "configurationSha256": "c17f7efd779038626b995904b1f46239e86f52dd412ac402f1481e3d419624b8"
+  },
+  "native": {
+    "ibcmdSha256": "4dde71c1d061cc14c619255ec524b4ca8aca1f9bc38a92d1d766eb7d57721d20",
+    "receiptSha256": "2bfc0ac734f77d3cabd9380540c213189b915309d668a0895515348862a14d2e",
+    "packageSha256": "2c4fbc45827d31e8e85fba1328075460f4cabc1d04f17ed085d8c062ec8a8b56",
+    "commands": [
+      {
+        "stage": "platform-version",
+        "exit": 0,
+        "log": "platform-version.log",
+        "log_identity": {
+          "bytes": 12,
+          "sha256": "0b16569708ba2700af4702ac5695c05d5fbba34755cd5d594bceeb2c493f36da"
+        }
+      },
+      {
+        "stage": "report-exchange-import",
+        "exit": 0,
+        "log": "report-exchange-import.log",
+        "log_identity": {
+          "bytes": 145,
+          "sha256": "3ba44e987e5a37fdb6e3fa001dd33118b81fb3ca3a099d288911c58d99594096"
+        }
+      },
+      {
+        "stage": "report-exchange-apply",
+        "exit": 0,
+        "log": "report-exchange-apply.log",
+        "log_identity": {
+          "bytes": 705,
+          "sha256": "d0ad03949a05f97644c600cf6f28c1dcc337370ade486967e8e7826624ccefd4"
+        }
+      },
+      {
+        "stage": "report-exchange-export",
+        "exit": 0,
+        "log": "report-exchange-export.log",
+        "log_identity": {
+          "bytes": 145,
+          "sha256": "2776a981f0670d938da7c8846e4a3b0ff033681900056ac579e9359086c63500"
+        }
+      },
+      {
+        "stage": "enum-import",
+        "exit": 0,
+        "log": "enum-import.log",
+        "log_identity": {
+          "bytes": 145,
+          "sha256": "3ba44e987e5a37fdb6e3fa001dd33118b81fb3ca3a099d288911c58d99594096"
+        }
+      },
+      {
+        "stage": "enum-apply",
+        "exit": 0,
+        "log": "enum-apply.log",
+        "log_identity": {
+          "bytes": 705,
+          "sha256": "8cc1139f44f3adf0deed41a62c0d824d1a475c43fd1a800ac418f10870156d32"
+        }
+      },
+      {
+        "stage": "enum-export",
+        "exit": 0,
+        "log": "enum-export.log",
+        "log_identity": {
+          "bytes": 145,
+          "sha256": "2776a981f0670d938da7c8846e4a3b0ff033681900056ac579e9359086c63500"
+        }
+      }
+    ]
+  },
+  "mcp": {
+    "revision": "ec4aac54df2825e075a0d7c292b92dbcfec9ce45",
+    "binarySha256": "641d7dd01731d74f49d8258864e47621650bde9ca44c7274f5661e5cf32916c4",
+    "receiptSha256": "22eb958bd7d06260cc3af3d962582cd11ad5e27100f42b02ecba86d1827d2d8b",
+    "successfulCalls": 25,
+    "slices": [
+      {
+        "batch": "report-exchange",
+        "files": 17,
+        "sha256ByFile": {
+          "Reports/АнализВерсийОбъектов/Commands/AddressProbeReportCommand/Ext/CommandModule.bsl": "1215056f03f564be013a360b45aab8dd027ce9c7a6002fdcb385d2038c0f685d",
+          "Reports/АнализВерсийОбъектов/Forms/AddressProbeReportForm/Ext/Form/Module.bsl": "4f7ebe0d866d8059f4c10967fa5d3d2ec40c110036655e6078d27cc6997bf21e",
+          "Reports/АнализВерсийОбъектов/Forms/AddressProbeReportForm/Ext/Form.xml": "80315b737112328c821a684c840e00306733f14ecc41cc1b9b70635a7bbef97c",
+          "Reports/АнализВерсийОбъектов/Forms/AddressProbeReportForm.xml": "52e203b7b699a2e9b4508101a312d12c28386e0715741dff7c2b55f5fb2f1bb1",
+          "Reports/АнализВерсийОбъектов/Templates/МакетОтчета/Ext/Template.xml": "0cf68de58aaa70627972975737d7f1b431c07f4a634897a1fe989f5dd582eaf5",
+          "Reports/АнализВерсийОбъектов/Templates/МакетОтчета.xml": "659a0031ccd19b732310a7a1858e9964385be9586a29015dd2f6767010ac94e6",
+          "Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml": "1b4e65c2f067d7316c5801742a0349763f2d9556687c45ad7706c3479bf612a2",
+          "Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных.xml": "22b1c2819caa27216fd817a94c23cf9f9540fd06ea06743bcd5d3623fd61ae95",
+          "Configuration.xml": "c17f7efd779038626b995904b1f46239e86f52dd412ac402f1481e3d419624b8",
+          "Reports/АнализВерсийОбъектов.xml": "2614ef74a7253087b6164e6dd8c0b8d5a5cfd177e60b2198de7df2698a29bba6",
+          "ExchangePlans/Codes/Commands/AddressProbeExchangeCommand/Ext/CommandModule.bsl": "7ad649b203583c92cdb17e6bcb7e0952af15f770efff67a603eb3754ac916b6f",
+          "ExchangePlans/Codes/Ext/Content.xml": "8fab6485e6d860fc6aac5af00938fad6d872b3f14d7ac41300e157dae97bae84",
+          "ExchangePlans/Codes/Ext/ObjectModule.bsl": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5",
+          "ExchangePlans/Codes/Forms/AddressProbeExchangeForm/Ext/Form/Module.bsl": "000267a76ffb3aa3e68ebc5c05d58a69c82ffb924f9cf83b761f299e8538bcc8",
+          "ExchangePlans/Codes/Forms/AddressProbeExchangeForm/Ext/Form.xml": "80315b737112328c821a684c840e00306733f14ecc41cc1b9b70635a7bbef97c",
+          "ExchangePlans/Codes/Forms/AddressProbeExchangeForm.xml": "1105a749287b62dfeda949d7d9cdef29cdb661bb4344de6f56dccf8c44137fc3",
+          "ExchangePlans/Codes.xml": "7f882a4257ea454fe5a7ba74cc3b0a3617b92f5dc29f5e3bae9ee68ea98c0af7"
+        }
+      },
+      {
+        "batch": "enum",
+        "files": 6,
+        "sha256ByFile": {
+          "Enums/LanguageAware/Commands/AddressProbeEnumCommand/Ext/CommandModule.bsl": "9112de77656978358a8d982c881a9d0996aea4340c0d63497e7b5e8bcb614252",
+          "Enums/LanguageAware/Forms/AddressProbeEnumForm/Ext/Form/Module.bsl": "95e06a236e16ff1c9b49715ff7f4c45dfab4a00e2bb6f973cdd8c8405b648ab1",
+          "Enums/LanguageAware/Forms/AddressProbeEnumForm/Ext/Form.xml": "80315b737112328c821a684c840e00306733f14ecc41cc1b9b70635a7bbef97c",
+          "Enums/LanguageAware/Forms/AddressProbeEnumForm.xml": "236aed9941d48e817866b706aa4e499908e88f787a392a85c8eda9eefe9b9867",
+          "Configuration.xml": "c17f7efd779038626b995904b1f46239e86f52dd412ac402f1481e3d419624b8",
+          "Enums/LanguageAware.xml": "8ea8a7bd1b95e2c83200dc7fd125fc9845c2f50bb5efa200158b4e63cfad9902"
+        }
+      }
+    ]
+  },
+  "samples": [
+    {
+      "owner": "main:Report.АнализВерсийОбъектов.Command.AddressProbeReportCommand",
+      "owner_uuid": "b3f7f763-bea9-4f59-9450-df95e5c3d89d",
+      "child_kind": "Command",
+      "child_uuid": "21c70244-872f-5ae7-a03e-a25111866e3c",
+      "bsl": "Reports/АнализВерсийОбъектов/Commands/AddressProbeReportCommand/Ext/CommandModule.bsl",
+      "marker": "Unica484ReportCommand",
+      "bsl_matches_input": true,
+      "files": {
+        "Configuration.xml": {
+          "bytes": 13678,
+          "sha256": "c17f7efd779038626b995904b1f46239e86f52dd412ac402f1481e3d419624b8"
+        },
+        "Reports/АнализВерсийОбъектов.xml": {
+          "bytes": 3177,
+          "sha256": "2614ef74a7253087b6164e6dd8c0b8d5a5cfd177e60b2198de7df2698a29bba6"
+        },
+        "Reports/АнализВерсийОбъектов/Commands/AddressProbeReportCommand/Ext/CommandModule.bsl": {
+          "bytes": 220,
+          "sha256": "1215056f03f564be013a360b45aab8dd027ce9c7a6002fdcb385d2038c0f685d"
+        }
+      }
+    },
+    {
+      "owner": "main:ExchangePlan.Codes.Form.AddressProbeExchangeForm",
+      "owner_uuid": "88836e71-134d-5216-a9d6-be45490e94c4",
+      "child_kind": "Form",
+      "child_uuid": "1fde60fd-b60d-5eea-a986-26aea2356469",
+      "bsl": "ExchangePlans/Codes/Forms/AddressProbeExchangeForm/Ext/Form/Module.bsl",
+      "marker": "Unica484ExchangeForm",
+      "bsl_matches_input": true,
+      "files": {
+        "Configuration.xml": {
+          "bytes": 13678,
+          "sha256": "c17f7efd779038626b995904b1f46239e86f52dd412ac402f1481e3d419624b8"
+        },
+        "ExchangePlans/Codes.xml": {
+          "bytes": 13062,
+          "sha256": "7f882a4257ea454fe5a7ba74cc3b0a3617b92f5dc29f5e3bae9ee68ea98c0af7"
+        },
+        "ExchangePlans/Codes/Forms/AddressProbeExchangeForm.xml": {
+          "bytes": 1567,
+          "sha256": "1105a749287b62dfeda949d7d9cdef29cdb661bb4344de6f56dccf8c44137fc3"
+        },
+        "ExchangePlans/Codes/Forms/AddressProbeExchangeForm/Ext/Form.xml": {
+          "bytes": 1443,
+          "sha256": "80315b737112328c821a684c840e00306733f14ecc41cc1b9b70635a7bbef97c"
+        },
+        "ExchangePlans/Codes/Forms/AddressProbeExchangeForm/Ext/Form/Module.bsl": {
+          "bytes": 132,
+          "sha256": "000267a76ffb3aa3e68ebc5c05d58a69c82ffb924f9cf83b761f299e8538bcc8"
+        }
+      }
+    },
+    {
+      "owner": "main:ExchangePlan.Codes.Command.AddressProbeExchangeCommand",
+      "owner_uuid": "88836e71-134d-5216-a9d6-be45490e94c4",
+      "child_kind": "Command",
+      "child_uuid": "f69a82ef-ed04-577c-84cd-82610d96d20e",
+      "bsl": "ExchangePlans/Codes/Commands/AddressProbeExchangeCommand/Ext/CommandModule.bsl",
+      "marker": "Unica484ExchangeCommand",
+      "bsl_matches_input": true,
+      "files": {
+        "Configuration.xml": {
+          "bytes": 13678,
+          "sha256": "c17f7efd779038626b995904b1f46239e86f52dd412ac402f1481e3d419624b8"
+        },
+        "ExchangePlans/Codes.xml": {
+          "bytes": 13062,
+          "sha256": "7f882a4257ea454fe5a7ba74cc3b0a3617b92f5dc29f5e3bae9ee68ea98c0af7"
+        },
+        "ExchangePlans/Codes/Commands/AddressProbeExchangeCommand/Ext/CommandModule.bsl": {
+          "bytes": 222,
+          "sha256": "7ad649b203583c92cdb17e6bcb7e0952af15f770efff67a603eb3754ac916b6f"
+        }
+      }
+    },
+    {
+      "owner": "main:Enum.LanguageAware.Form.AddressProbeEnumForm",
+      "owner_uuid": "44444444-4444-4444-8444-444444444444",
+      "child_kind": "Form",
+      "child_uuid": "f26e18f9-bbcb-5b47-95b1-57ba641f930a",
+      "bsl": "Enums/LanguageAware/Forms/AddressProbeEnumForm/Ext/Form/Module.bsl",
+      "marker": "Unica484EnumForm",
+      "bsl_matches_input": true,
+      "files": {
+        "Configuration.xml": {
+          "bytes": 13678,
+          "sha256": "c17f7efd779038626b995904b1f46239e86f52dd412ac402f1481e3d419624b8"
+        },
+        "Enums/LanguageAware.xml": {
+          "bytes": 5428,
+          "sha256": "8ea8a7bd1b95e2c83200dc7fd125fc9845c2f50bb5efa200158b4e63cfad9902"
+        },
+        "Enums/LanguageAware/Forms/AddressProbeEnumForm.xml": {
+          "bytes": 1559,
+          "sha256": "236aed9941d48e817866b706aa4e499908e88f787a392a85c8eda9eefe9b9867"
+        },
+        "Enums/LanguageAware/Forms/AddressProbeEnumForm/Ext/Form.xml": {
+          "bytes": 1443,
+          "sha256": "80315b737112328c821a684c840e00306733f14ecc41cc1b9b70635a7bbef97c"
+        },
+        "Enums/LanguageAware/Forms/AddressProbeEnumForm/Ext/Form/Module.bsl": {
+          "bytes": 128,
+          "sha256": "95e06a236e16ff1c9b49715ff7f4c45dfab4a00e2bb6f973cdd8c8405b648ab1"
+        }
+      }
+    },
+    {
+      "owner": "main:Enum.LanguageAware.Command.AddressProbeEnumCommand",
+      "owner_uuid": "44444444-4444-4444-8444-444444444444",
+      "child_kind": "Command",
+      "child_uuid": "f32bba1d-06f7-5c47-b31e-df67eade624e",
+      "bsl": "Enums/LanguageAware/Commands/AddressProbeEnumCommand/Ext/CommandModule.bsl",
+      "marker": "Unica484EnumCommand",
+      "bsl_matches_input": true,
+      "files": {
+        "Configuration.xml": {
+          "bytes": 13678,
+          "sha256": "c17f7efd779038626b995904b1f46239e86f52dd412ac402f1481e3d419624b8"
+        },
+        "Enums/LanguageAware.xml": {
+          "bytes": 5428,
+          "sha256": "8ea8a7bd1b95e2c83200dc7fd125fc9845c2f50bb5efa200158b4e63cfad9902"
+        },
+        "Enums/LanguageAware/Commands/AddressProbeEnumCommand/Ext/CommandModule.bsl": {
+          "bytes": 218,
+          "sha256": "9112de77656978358a8d982c881a9d0996aea4340c0d63497e7b5e8bcb614252"
+        }
+      }
+    }
+  ],
+  "files": {
+    "src/Configuration.xml": {
+      "size": 13678,
+      "sha256": "c17f7efd779038626b995904b1f46239e86f52dd412ac402f1481e3d419624b8"
+    },
+    "src/Enums/LanguageAware.xml": {
+      "size": 5428,
+      "sha256": "8ea8a7bd1b95e2c83200dc7fd125fc9845c2f50bb5efa200158b4e63cfad9902"
+    },
+    "src/Enums/LanguageAware/Commands/AddressProbeEnumCommand/Ext/CommandModule.bsl": {
+      "size": 218,
+      "sha256": "9112de77656978358a8d982c881a9d0996aea4340c0d63497e7b5e8bcb614252"
+    },
+    "src/Enums/LanguageAware/Forms/AddressProbeEnumForm.xml": {
+      "size": 1559,
+      "sha256": "236aed9941d48e817866b706aa4e499908e88f787a392a85c8eda9eefe9b9867"
+    },
+    "src/Enums/LanguageAware/Forms/AddressProbeEnumForm/Ext/Form.xml": {
+      "size": 1443,
+      "sha256": "80315b737112328c821a684c840e00306733f14ecc41cc1b9b70635a7bbef97c"
+    },
+    "src/Enums/LanguageAware/Forms/AddressProbeEnumForm/Ext/Form/Module.bsl": {
+      "size": 128,
+      "sha256": "95e06a236e16ff1c9b49715ff7f4c45dfab4a00e2bb6f973cdd8c8405b648ab1"
+    },
+    "src/ExchangePlans/Codes.xml": {
+      "size": 13062,
+      "sha256": "7f882a4257ea454fe5a7ba74cc3b0a3617b92f5dc29f5e3bae9ee68ea98c0af7"
+    },
+    "src/ExchangePlans/Codes/Commands/AddressProbeExchangeCommand/Ext/CommandModule.bsl": {
+      "size": 222,
+      "sha256": "7ad649b203583c92cdb17e6bcb7e0952af15f770efff67a603eb3754ac916b6f"
+    },
+    "src/ExchangePlans/Codes/Ext/Content.xml": {
+      "size": 265,
+      "sha256": "8fab6485e6d860fc6aac5af00938fad6d872b3f14d7ac41300e157dae97bae84"
+    },
+    "src/ExchangePlans/Codes/Ext/ObjectModule.bsl": {
+      "size": 3,
+      "sha256": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+    },
+    "src/ExchangePlans/Codes/Forms/AddressProbeExchangeForm.xml": {
+      "size": 1567,
+      "sha256": "1105a749287b62dfeda949d7d9cdef29cdb661bb4344de6f56dccf8c44137fc3"
+    },
+    "src/ExchangePlans/Codes/Forms/AddressProbeExchangeForm/Ext/Form.xml": {
+      "size": 1443,
+      "sha256": "80315b737112328c821a684c840e00306733f14ecc41cc1b9b70635a7bbef97c"
+    },
+    "src/ExchangePlans/Codes/Forms/AddressProbeExchangeForm/Ext/Form/Module.bsl": {
+      "size": 132,
+      "sha256": "000267a76ffb3aa3e68ebc5c05d58a69c82ffb924f9cf83b761f299e8538bcc8"
+    },
+    "src/Reports/АнализВерсийОбъектов.xml": {
+      "size": 3177,
+      "sha256": "2614ef74a7253087b6164e6dd8c0b8d5a5cfd177e60b2198de7df2698a29bba6"
+    },
+    "src/Reports/АнализВерсийОбъектов/Commands/AddressProbeReportCommand/Ext/CommandModule.bsl": {
+      "size": 220,
+      "sha256": "1215056f03f564be013a360b45aab8dd027ce9c7a6002fdcb385d2038c0f685d"
+    },
+    "src/Reports/АнализВерсийОбъектов/Forms/AddressProbeReportForm.xml": {
+      "size": 1591,
+      "sha256": "52e203b7b699a2e9b4508101a312d12c28386e0715741dff7c2b55f5fb2f1bb1"
+    },
+    "src/Reports/АнализВерсийОбъектов/Forms/AddressProbeReportForm/Ext/Form.xml": {
+      "size": 1443,
+      "sha256": "80315b737112328c821a684c840e00306733f14ecc41cc1b9b70635a7bbef97c"
+    },
+    "src/Reports/АнализВерсийОбъектов/Forms/AddressProbeReportForm/Ext/Form/Module.bsl": {
+      "size": 130,
+      "sha256": "4f7ebe0d866d8059f4c10967fa5d3d2ec40c110036655e6078d27cc6997bf21e"
+    },
+    "src/Reports/АнализВерсийОбъектов/Templates/МакетОтчета.xml": {
+      "size": 1340,
+      "sha256": "659a0031ccd19b732310a7a1858e9964385be9586a29015dd2f6767010ac94e6"
+    },
+    "src/Reports/АнализВерсийОбъектов/Templates/МакетОтчета/Ext/Template.xml": {
+      "size": 840,
+      "sha256": "0cf68de58aaa70627972975737d7f1b431c07f4a634897a1fe989f5dd582eaf5"
+    },
+    "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных.xml": {
+      "size": 1416,
+      "sha256": "22b1c2819caa27216fd817a94c23cf9f9540fd06ea06743bcd5d3623fd61ae95"
+    },
+    "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml": {
+      "size": 8537,
+      "sha256": "1b4e65c2f067d7316c5801742a0349763f2d9556687c45ad7706c3479bf612a2"
+    }
+  }
+}

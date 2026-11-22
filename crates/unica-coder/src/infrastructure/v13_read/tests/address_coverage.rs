@@ -1717,6 +1717,48 @@ fn check_native_configuration_form_and_command_modules(format: &str, evidence: &
         )],
         evidence,
     );
+    check_native_configuration_nested_modules(
+        format,
+        "report_exchange_enum_module_roles",
+        [
+            (
+                "Report",
+                "АнализВерсийОбъектов",
+                "Reports",
+                "Command",
+                "AddressProbeReportCommand",
+            ),
+            (
+                "ExchangePlan",
+                "Codes",
+                "ExchangePlans",
+                "Form",
+                "AddressProbeExchangeForm",
+            ),
+            (
+                "ExchangePlan",
+                "Codes",
+                "ExchangePlans",
+                "Command",
+                "AddressProbeExchangeCommand",
+            ),
+            (
+                "Enum",
+                "LanguageAware",
+                "Enums",
+                "Form",
+                "AddressProbeEnumForm",
+            ),
+            (
+                "Enum",
+                "LanguageAware",
+                "Enums",
+                "Command",
+                "AddressProbeEnumCommand",
+            ),
+        ],
+        evidence,
+    );
 }
 
 type NativeNestedModuleSample = (
