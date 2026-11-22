@@ -1078,6 +1078,95 @@ fn single_path(workspace: &std::path::Path, path: &str) -> serde_json::Value {
     result.data.unwrap()
 }
 
+/// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
+/// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
+/// rule: INV.WIRE.RESOLVE-PATH-BATCH
+#[test]
+fn resolve_scheduled_job_schedule_uses_its_local_resource_and_registered_owner() {
+    use unica_execution::invocation_store::ToolIdentity;
+
+    const AT: &str = "main:ScheduledJob.KeyProbe.Schedule";
+    const RELATIVE: &str = "ScheduledJobs/KeyProbe/Ext/Schedule.xml";
+    const ORPHAN: &str = "ScheduledJobs/Orphan/Ext/Schedule.xml";
+    let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures");
+    for format in ["2.20", "2.21", "2.22"] {
+        let native = fixtures.join(format!("formats/platform_xml/{format}/all_kinds/src"));
+        let raw = fixtures.join(format!(
+            "acceptance/native-scheduled-job-schedule/{format}/Schedule.xml"
+        ));
+        let workspace = tempfile::tempdir().unwrap();
+        let root = workspace.path().canonicalize().unwrap();
+        let src = root.join("src");
+        std::fs::create_dir_all(src.join("ScheduledJobs/KeyProbe/Ext")).unwrap();
+        std::fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        for relative in ["Configuration.xml", "ScheduledJobs/KeyProbe.xml"] {
+            std::fs::copy(native.join(relative), src.join(relative)).unwrap();
+        }
+        let refuse = |args| {
+            let result = invoke_exact_read(&root, ToolIdentity::Resolve, args);
+            assert!(!result.ok, "{format}: {result:?}");
+            assert_eq!(
+                result.diagnostics[0]["code"], "not_found",
+                "{format}: {result:?}"
+            );
+            result
+        };
+
+        let absent = invoke_exact_read(&root, ToolIdentity::View, json!({"at": AT}));
+        assert!(absent.ok, "{format}: {absent:?}");
+        assert_eq!(absent.data.unwrap()["props"], json!({"state": "absent"}));
+        refuse(json!({"at": AT}));
+        refuse(json!({"path": RELATIVE}));
+
+        std::fs::copy(&raw, src.join(RELATIVE)).unwrap();
+        let forward = invoke_exact_read(&root, ToolIdentity::Resolve, json!({"at": AT}));
+        assert!(forward.ok, "{format}: {forward:?}");
+        let forward = forward.data.unwrap();
+        assert_eq!(forward["at"], AT);
+        assert_eq!(forward["kind"], "Schedule");
+        assert_eq!(forward["path"], RELATIVE);
+        assert_eq!(forward["lines"], json!({"state": "notLineBased"}));
+        let prefixed = format!("src/{RELATIVE}");
+        let absolute = src.join(RELATIVE).to_str().unwrap().to_owned();
+        for path in [RELATIVE, prefixed.as_str(), absolute.as_str()] {
+            assert_eq!(single_path(&root, path), forward, "{format}: {path}");
+        }
+
+        let descriptor = std::fs::read_to_string(src.join("ScheduledJobs/KeyProbe.xml"))
+            .unwrap()
+            .replace("<Name>KeyProbe</Name>", "<Name>Orphan</Name>")
+            .replace(
+                "57b7516d-510c-5e3b-8ec9-35a5a00038b1",
+                "57b7516d-510c-5e3b-8ec9-35a5a0003800",
+            );
+        std::fs::write(src.join("ScheduledJobs/Orphan.xml"), descriptor).unwrap();
+        std::fs::create_dir_all(src.join("ScheduledJobs/Orphan/Ext")).unwrap();
+        std::fs::copy(&raw, src.join(ORPHAN)).unwrap();
+        let unregistered = refuse(json!({"path": ORPHAN}));
+        assert!(
+            unregistered.diagnostics[0]["message"]
+                .as_str()
+                .unwrap()
+                .contains("not registered"),
+            "{format}: {unregistered:?}"
+        );
+
+        let items = resolve_paths_items(&root, &[RELATIVE, ORPHAN, &prefixed, &absolute]);
+        for index in [0, 2, 3] {
+            assert_eq!(
+                items[index],
+                json!({"at": AT, "kind": "Schedule"}),
+                "{format}: {items:?}"
+            );
+        }
+        assert_eq!(items[1]["code"], "not_found", "{format}: {items:?}");
+    }
+}
+
 /// rule: INV.WIRE.RESOLVE-PATH-BATCH
 #[test]
 fn resolve_paths_translates_paths_and_lines_in_input_order() {

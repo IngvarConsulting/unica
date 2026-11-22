@@ -136,6 +136,7 @@ enum AttachedPathResource {
     FormModule,
     RoleModule,
     WsDefinition,
+    JobSchedule,
 }
 
 impl AttachedPathResource {
@@ -155,6 +156,7 @@ impl AttachedPathResource {
         }
         match parts {
             ["wsreferences", _, "ext", "wsdefinition.xml"] => Some(Self::WsDefinition),
+            ["scheduledjobs", _, "ext", "schedule.xml"] => Some(Self::JobSchedule),
             ["commonforms", _, "ext", "form.xml"] => Some(Self::Form),
             ["commonforms", _, "ext", "form", "module.bsl"] => Some(Self::FormModule),
             [_, _, "forms", _, "ext", "form.xml"] => Some(Self::Form),
@@ -1015,19 +1017,22 @@ impl WorkspaceFindDirectoryBuilder {
         if resource == AttachedPathResource::RoleModule {
             return self.locate_role_module_path(source, tail, deadline, cancellation, located);
         }
-        let (address_suffix, file_suffix, is_module) = match resource {
-            AttachedPathResource::WsDefinition => (".Definition", "/Ext/WSDefinition.xml", false),
-            AttachedPathResource::Form => ("", "/Ext/Form.xml", false),
-            AttachedPathResource::FormModule => (".Module.Form", "/Ext/Form/Module.bsl", true),
+        let (address_suffix, file_suffix, kind) = match resource {
+            AttachedPathResource::WsDefinition => {
+                (".Definition", "/Ext/WSDefinition.xml", "Definition")
+            }
+            AttachedPathResource::JobSchedule => (".Schedule", "/Ext/Schedule.xml", "Schedule"),
+            AttachedPathResource::Form => ("", "/Ext/Form.xml", "Form"),
+            AttachedPathResource::FormModule => (".Module.Form", "/Ext/Form/Module.bsl", "Module"),
             AttachedPathResource::RoleModule => unreachable!("ветка обработана выше"),
         };
+        let uses_descriptor_owner = matches!(
+            resource,
+            AttachedPathResource::WsDefinition | AttachedPathResource::JobSchedule
+        );
         let descriptor_parts = match source.kind {
             SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport => 3,
-            _ if tail.first() == Some(&"commonforms")
-                || resource == AttachedPathResource::WsDefinition =>
-            {
-                2
-            }
+            _ if tail.first() == Some(&"commonforms") || uses_descriptor_owner => 2,
             _ => 4,
         };
         let descriptor_query = format!("{}.xml", tail[..descriptor_parts].join("/"));
@@ -1043,17 +1048,17 @@ impl WorkspaceFindDirectoryBuilder {
         };
         let descriptor_address =
             QualifiedAddress::parse(owner.at()).map_err(|_| unsafe_layout_entry())?;
-        let form_address = if resource == AttachedPathResource::WsDefinition {
+        let owner_address = if uses_descriptor_owner {
             descriptor_address
         } else {
             descriptor_address
                 .form_metadata_owner()
                 .ok_or_else(unsafe_layout_entry)?
         };
-        let at = format!("{form_address}{address_suffix}");
+        let at = format!("{owner_address}{address_suffix}");
         let address = QualifiedAddress::parse(&at).map_err(|_| unsafe_layout_entry())?;
         // Вопрос к маршрутам модулей, а не к событиям: от линии не зависит.
-        if is_module
+        if resource == AttachedPathResource::FormModule
             && unica_bsl::profile::PlatformProfile::for_line_or_base(None)
                 .module_capability(&address)
                 .is_none()
@@ -1075,19 +1080,7 @@ impl WorkspaceFindDirectoryBuilder {
             Err(error) => return Err(child_read_error(error)),
         }
         let descriptor_witness = owner.owner_descriptor().map(str::to_string);
-        let mut document = FindDocument::new(
-            at,
-            if is_module {
-                "Module"
-            } else if resource == AttachedPathResource::WsDefinition {
-                "Definition"
-            } else {
-                "Form"
-            },
-            owner.at(),
-            Vec::new(),
-        )
-        .with_path(relative);
+        let mut document = FindDocument::new(at, kind, owner.at(), Vec::new()).with_path(relative);
         if let Some(descriptor) = descriptor_witness {
             document = document.with_owner_descriptor(descriptor);
         }

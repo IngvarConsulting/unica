@@ -242,7 +242,7 @@ impl CanonicalV13ReadService {
         // только из правдоподобной раскладки.
         if matches!(
             entry.kind(),
-            "Module" | "Metadata" | "Definition" | "OrdinaryInterface"
+            "Module" | "Metadata" | "Definition" | "OrdinaryInterface" | "Schedule"
         ) || entry
             .placed_path()
             .is_some_and(|path| path.ends_with("/Ext/Form.xml"))
