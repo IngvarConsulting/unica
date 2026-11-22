@@ -72,6 +72,10 @@
       "expect": [
         "ok"
       ],
+      "status": "passed",
+      "validators": [
+        "cfe"
+      ],
       "assertions": [
         {
           "pointer": "/data/status",
