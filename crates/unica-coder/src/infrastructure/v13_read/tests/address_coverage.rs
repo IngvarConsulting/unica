@@ -5015,6 +5015,17 @@ fn fixture_artifact<'a, 'input: 'a>(
         .unwrap_or_else(|| panic!("native fixture {} has no {kind} descriptor", path.display()))
 }
 
+fn child<'a, 'input>(
+    owner: roxmltree::Node<'a, 'input>,
+    namespace: &str,
+    name: &str,
+) -> roxmltree::Node<'a, 'input> {
+    owner
+        .children()
+        .find(|node| node.has_tag_name((namespace, name)))
+        .unwrap_or_else(|| panic!("{owner:?}: missing {name}"))
+}
+
 fn fixture_properties_name<'a, 'input: 'a>(
     artifact: roxmltree::Node<'a, 'input>,
 ) -> Option<&'a str> {

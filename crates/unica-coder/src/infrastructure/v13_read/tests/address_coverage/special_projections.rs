@@ -66,17 +66,6 @@ impl RequiredProjections {
     }
 }
 
-fn child<'a, 'input>(
-    owner: roxmltree::Node<'a, 'input>,
-    namespace: &str,
-    name: &str,
-) -> roxmltree::Node<'a, 'input> {
-    owner
-        .children()
-        .find(|node| node.has_tag_name((namespace, name)))
-        .unwrap_or_else(|| panic!("{owner:?}: missing {name}"))
-}
-
 fn named_addresses<'a>(
     owner: &str,
     kind: &str,
