@@ -800,7 +800,7 @@ fn applicable_declaration_collections_distinguish_absent_from_inapplicable() {
 }
 
 #[test]
-fn implicit_document_number_does_not_replace_an_explicit_or_unreadable_declaration() {
+fn implicit_document_attributes_do_not_replace_an_explicit_or_unreadable_declaration() {
     use unica_source_contract::SourceSetKind;
     let native = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -821,9 +821,14 @@ fn implicit_document_number_does_not_replace_an_explicit_or_unreadable_declarati
         .standard_attributes
         .unwrap()
         .unwrap();
-    assert_eq!(inferred.len(), 1);
-    assert_eq!(inferred[0].name, "Number");
-    assert!(inferred[0].properties.is_empty());
+    assert_eq!(
+        inferred
+            .iter()
+            .map(|row| row.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Posted", "Ref", "DeletionMark", "Date", "Number"]
+    );
+    assert!(inferred.iter().all(|row| row.properties.is_empty()));
     assert_eq!(
         read(native, SourceSetKind::Extension)
             .declarations

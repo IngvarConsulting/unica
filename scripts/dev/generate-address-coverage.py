@@ -72,12 +72,12 @@ DCS_STRUCTURE_KEYS_SHARD = "required_native_dcs_structure_keys"
 CROSS_LINE_MODULE_KEYS_SHARD = "required_cross_line_module_roles"
 BSL_PROJECTION_KEYS_SHARD = "required_bsl_projection_keys"
 NATIVE_INHERITED_CFE_KEYS_SHARD = "required_native_inherited_cfe_registrations"
-DOCUMENT_NUMBER_KEYS_SHARD = "required_native_document_number_keys"
+DOCUMENT_STANDARD_ATTRIBUTE_KEYS_SHARD = "required_native_document_standard_attribute_keys"
 NATIVE_INHERITED_CFE = Path("tests/fixtures/acceptance/workspace-borrowed/src")
 PROJECTION_KEYS_SHARDS = frozenset({
     RECURSIVE_SUBSYSTEM_KEYS_SHARD, SPECIAL_PROJECTION_KEYS_SHARD, DCS_STRUCTURE_KEYS_SHARD,
     CROSS_LINE_MODULE_KEYS_SHARD, BSL_PROJECTION_KEYS_SHARD, NATIVE_INHERITED_CFE_KEYS_SHARD,
-    DOCUMENT_NUMBER_KEYS_SHARD,
+    DOCUMENT_STANDARD_ATTRIBUTE_KEYS_SHARD,
 })
 XDTO_OWNER_SHAPES = {
     "Namespace": {("XDTOPackage",)},
@@ -110,7 +110,7 @@ NATIVE_SCOPE = (
     " It also requires exact read witnesses for registered native Report and DataProcessor DCS queries"
     " and the role-right collection and members in native SalesReader fixtures."
     " Native DCS reads include calculated fields and named Item scopes saved by the platform."
-    " Native Document.Number addresses are required even when no standard-attribute override is exported."
+    " Native document standard attributes require addresses when the export omits their overrides."
     " Native XDTO requirements trace Namespace, Type and Property reads to registered Package.bin files."
     " Registered subsystem descriptors independently require reads of Relation and Subsystem branches."
     " Recursive subsystem registrations and selected special projections require scoped native reads."
@@ -575,12 +575,12 @@ def projection_expectations(record: dict, shard: str) -> set[tuple[str, str, str
     module_role = shard == CROSS_LINE_MODULE_KEYS_SHARD
     bsl = shard == BSL_PROJECTION_KEYS_SHARD
     inherited_cfe = shard == NATIVE_INHERITED_CFE_KEYS_SHARD
-    document_number = shard == DOCUMENT_NUMBER_KEYS_SHARD
+    document_attributes = shard == DOCUMENT_STANDARD_ATTRIBUTE_KEYS_SHARD
     external = EXTERNAL_OWNER_KINDS.get(source)
     if (not module_role and key["role"] is not None
             or inherited_cfe and source != "extension"
             or not inherited_cfe and source != "configuration"
-            and (recursive or dcs or module_role or bsl or document_number or external is None)):
+            and (recursive or dcs or module_role or bsl or document_attributes or external is None)):
         raise ValueError("required projection must name an admitted source and branch")
     if inherited_cfe:
         cfe_root = shape == [{"kind": "Configuration", "named": False, "role": None}]
@@ -621,9 +621,9 @@ def projection_expectations(record: dict, shard: str) -> set[tuple[str, str, str
         if ([(segment["kind"], segment["role"]) for segment in shape] != allowed_shape
                 or any(not segment["named"] for segment in shape)):
             raise ValueError("required BSL projection must name a common-module Variable or form method Binding")
-    if document_number and (branch != "StandardAttribute"
+    if document_attributes and (branch != "StandardAttribute"
                             or shape != [{"kind": "Document", "named": True, "role": None}]):
-        raise ValueError("required native Number must name a Document.StandardAttribute branch")
+        raise ValueError("required native document field must name a Document.StandardAttribute branch")
     requirement = record["requirement"]
     exact_fields(requirement, {"kind", "observations"}, "projection requirement")
     if requirement["kind"] != ("read" if recursive else "exact"):
@@ -645,7 +645,7 @@ def projection_expectations(record: dict, shard: str) -> set[tuple[str, str, str
                 CROSS_LINE_MODULE_KEYS_SHARD: (MODULE_SHARD,),
                 BSL_PROJECTION_KEYS_SHARD: (DAEMON_SHARD,),
                 NATIVE_INHERITED_CFE_KEYS_SHARD: (CFE_OWNERSHIP_SHARD,),
-                DOCUMENT_NUMBER_KEYS_SHARD: (SPECIAL_PROJECTION_SHARD,),
+                DOCUMENT_STANDARD_ATTRIBUTE_KEYS_SHARD: (SPECIAL_PROJECTION_SHARD,),
                 SPECIAL_PROJECTION_KEYS_SHARD: (SPECIAL_PROJECTION_SHARD, FORM_TEMPLATE_SHARD, MODULE_SHARD),
             }[shard]
             if emitter not in admitted or observation["level"] != level:
@@ -669,9 +669,9 @@ def projection_expectations(record: dict, shard: str) -> set[tuple[str, str, str
             if not re.fullmatch(owner_pattern, owner) or not Path(origin).is_relative_to(NATIVE_INHERITED_CFE / "ext"):
                 raise ValueError("required inherited CFE owner or origin differs from the native registration")
             collection = f"ext:{branch}" if cfe_root else collection
-        if document_number and (not re.fullmatch(rf"main:Document\.{NATIVE_ADDRESS_NAME}", owner)
-                                or addresses != [collection, f"{collection}.Number"]):
-            raise ValueError("required native Document Number must include its collection and Number address")
+        if document_attributes and (not re.fullmatch(rf"main:Document\.{NATIVE_ADDRESS_NAME}", owner)
+                                    or not isinstance(addresses, list) or f"{collection}.Number" not in addresses):
+            raise ValueError("required native document fields must include the standard Number address")
         if module_role:
             if not re.fullmatch(rf"main:{owner_kind}\.{NATIVE_ADDRESS_NAME}", owner):
                 raise ValueError("required cross-line module owner does not match its declared kind")
@@ -1341,12 +1341,13 @@ def native_dcs_query_requirements(repo: Path) -> list[dict]:
     return rows
 
 
-def native_document_number_requirements(repo: Path) -> list[dict]:
-    """A native Document.Number remains addressable without an override block."""
+def native_document_standard_attribute_requirements(repo: Path) -> list[dict]:
+    """Use a native explicit declaration to check the sibling that omits its overrides."""
     md = "{http://v8.1c.ru/8.3/MDClasses}"
     xr = "{http://v8.1c.ru/8.3/xcf/readable}"
     rows = []
     name = "Orders"
+    explicit_name = "Приход"
     owner = f"main:Document.{name}"
     branch = f"{owner}.StandardAttribute"
     member = f"{branch}.Number"
@@ -1354,8 +1355,9 @@ def native_document_number_requirements(repo: Path) -> list[dict]:
         source = Path("tests/fixtures/formats/platform_xml") / version / "all_kinds/src"
         root = ET.parse(repo / source / "Configuration.xml").getroot()
         registrations = root.findall(f"{md}Configuration/{md}ChildObjects/{md}Document")
-        if root.get("version") != version or sum(entry.text == name for entry in registrations) != 1:
-            raise ValueError(f"native Document Number: missing Orders registration at XML {version}")
+        if root.get("version") != version or any(sum(entry.text == item for entry in registrations) != 1
+                                                for item in (name, explicit_name)):
+            raise ValueError(f"native document standard attributes: missing registration at XML {version}")
         origin = source / "Documents" / f"{name}.xml"
         root = ET.parse(repo / origin).getroot()
         props = root.find(f"{md}Document/{md}Properties")
@@ -1364,12 +1366,24 @@ def native_document_number_requirements(repo: Path) -> list[dict]:
                 or not re.fullmatch(r"[1-9][0-9]*", props.findtext(f"{md}NumberLength", ""))
                 or member.removeprefix("main:") not in [field.text for field in props.findall(f"{md}InputByString/{xr}Field")]):
             raise ValueError(f"native implicit Document Number proof differs in {origin}")
+        explicit = source / "Documents" / f"{explicit_name}.xml"
+        explicit_root = ET.parse(repo / explicit).getroot()
+        explicit_props = explicit_root.find(f"{md}Document/{md}Properties")
+        if (explicit_root.get("version") != version or explicit_props is None
+                or explicit_props.findtext(f"{md}Name") != explicit_name):
+            raise ValueError(f"native document standard attribute control differs in {explicit}")
+        names = [required_text(item.get("name"), "document standard attribute name")
+                 for item in explicit_props.findall(f"{md}StandardAttributes/{xr}StandardAttribute")]
+        if (not {"Number", "Date"} <= set(names) or len(set(names)) != len(names)
+                or any(not re.fullmatch(NATIVE_ADDRESS_NAME, name) for name in names)):
+            raise ValueError(f"native document standard attribute control names differ in {explicit}")
         rows.append({
             "schema_version": SCHEMA_VERSION, "record_type": "required",
             "key": {"line": line, "source_kind": "configuration", "branch": "StandardAttribute", "role": None,
                     "owner_shape": [{"kind": "Document", "named": True, "role": None}]},
             "requirement": {"kind": "exact", "observations": [{
-                "owner": owner, "origin": origin.as_posix(), "addresses": [branch, member],
+                "owner": owner, "origin": origin.as_posix(),
+                "addresses": [branch, *(f"{branch}.{name}" for name in names)],
                 "level": "read", "test_case": SPECIAL_PROJECTION_SHARD,
             }]},
         })
@@ -2265,7 +2279,7 @@ def generate_report(native_only: bool) -> dict:
         for shard, producer in (
             (DCS_QUERY_KEYS_SHARD, native_dcs_query_requirements),
             (DCS_STRUCTURE_KEYS_SHARD, native_dcs_structure_requirements),
-            (DOCUMENT_NUMBER_KEYS_SHARD, native_document_number_requirements),
+            (DOCUMENT_STANDARD_ATTRIBUTE_KEYS_SHARD, native_document_standard_attribute_requirements),
             (ROLE_RIGHT_KEYS_SHARD, native_role_right_requirements),
             (XDTO_KEYS_SHARD, native_xdto_requirements),
             (SUBSYSTEM_CONTENT_KEYS_SHARD, native_subsystem_content_requirements),

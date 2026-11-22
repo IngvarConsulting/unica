@@ -202,15 +202,16 @@ class AddressCoverageReportTests(unittest.TestCase):
         GENERATOR.check_projection_requirements(required, {key: {"witnesses": [witness]}})
 
     def test_implicit_native_document_number_requires_member_evidence_on_every_line(self) -> None:
-        rows = GENERATOR.native_document_number_requirements(GENERATOR.REPO)
+        rows = GENERATOR.native_document_standard_attribute_requirements(GENERATOR.REPO)
         self.assertEqual({row["key"]["line"] for row in rows}, {"8.3.27", "8.5.1", "8.5.4"})
-        shard = GENERATOR.DOCUMENT_NUMBER_KEYS_SHARD
+        shard = GENERATOR.DOCUMENT_STANDARD_ATTRIBUTE_KEYS_SHARD
         required = {}
         groups = {}
         for row in rows:
             key = GENERATOR.structural_key(row["key"])
             observations = GENERATOR.projection_expectations(row, shard)
-            self.assertEqual(len(observations), 2)
+            names = {address.rsplit(".", 1)[-1] for _, _, _, _, address in observations}
+            self.assertEqual(names, {"StandardAttribute", "Posted", "Ref", "DeletionMark", "Date", "Number"})
             required[(shard, key)] = observations
             groups[key] = {"witnesses": [
                 {"test_case": test_case, "level": level, "owner": owner, "origin": origin,

@@ -791,11 +791,13 @@ pub fn parse_typed_meta_local_info_inner(
         &mut diagnostics,
     );
     if declarations.standard_attributes == Some(None) {
-        declarations.standard_attributes = Some(crate::info_projection::implicit_document_number(
-            kind,
-            properties,
-            source_kind,
-        ));
+        declarations.standard_attributes = Some(
+            crate::info_projection::implicit_document_standard_attributes(
+                kind,
+                properties,
+                source_kind,
+            ),
+        );
     }
     let format = unica_source_designer::roots::root_version_literal(xml, doc.root_element());
     let member_read_profile = source_kind.and_then(|source| {

@@ -34,7 +34,6 @@ pub(super) fn native_additional_relations(
         &source,
         PlatformProfile::for_line(line).unwrap(),
     );
-    check_explicit_document_number(&authority, &source, &registrations);
     let branch = relation(&authority, calculation);
     let rows = relation_rows(&branch, "baseCalculationType");
     assert_eq!(rows.len(), expected.len());
@@ -58,6 +57,8 @@ fn input_by_string(
     registrations: &[(String, String)],
     document_relation_owners: &BTreeSet<String>,
 ) {
+    let document_attributes =
+        check_explicit_document_attributes(native.authority, source, registrations);
     for (kind, name) in registrations {
         let (_, declaration) = unica_address::kinds::declared(kind).unwrap();
         let Some(layout) = declaration.layout else {
@@ -94,25 +95,26 @@ fn input_by_string(
                     .any(|node| node.has_tag_name((MD_CLASSES_NS, "StandardAttributes"))));
                 let at = "main:Document.Orders";
                 let collection = format!("{at}.StandardAttribute");
-                let (view, kind) = (read(native.authority, &qualified), "StandardAttribute");
-                assert_eq!(view["kind"], kind);
-                assert!(
-                    view["props"]
-                        .as_object()
-                        .is_none_or(serde_json::Map::is_empty),
-                    "{qualified}: {view}"
-                );
+                let kind = "StandardAttribute";
+                let members =
+                    named_addresses(at, kind, document_attributes.iter().map(String::as_str));
+                assert!(members.contains(&qualified), "{qualified}");
+                for member in &members {
+                    let view = read(native.authority, member);
+                    assert_eq!(view["kind"], kind);
+                    assert!(
+                        view["props"]
+                            .as_object()
+                            .is_none_or(serde_json::Map::is_empty),
+                        "{member}: {view}"
+                    );
+                }
                 check_native_projection_refusal(
                     native.authority,
                     &format!("{collection}.Unregistered"),
                     "was not found",
                 );
-                native.collection(
-                    at,
-                    kind,
-                    &fixture_origin(&path),
-                    BTreeSet::from([qualified]),
-                );
+                native.collection(at, kind, &fixture_origin(&path), members);
             }
         }
         // RegisterRecords and InputByString in the same descriptor prove one Relation address.
@@ -122,11 +124,11 @@ fn input_by_string(
     }
 }
 
-fn check_explicit_document_number(
+fn check_explicit_document_attributes(
     authority: &LogicalViewReadAuthority<'_>,
     source: &Path,
     registrations: &[(String, String)],
-) {
+) -> Vec<String> {
     let name = "Приход";
     assert_registered(registrations, &format!("Document.{name}"));
     let path = source.join(format!("Documents/{name}.xml"));
@@ -136,15 +138,22 @@ fn check_explicit_document_number(
     let standard = child(properties, MD_CLASSES_NS, "StandardAttributes");
     let collection = format!("main:Document.{name}.StandardAttribute");
     let expected = native_named_declaration_members(standard, &collection, "StandardAttribute");
-    let number = format!("{collection}.Number");
-    assert!(expected.contains(&number));
+    assert!(expected.contains(&format!("{collection}.Number")));
+    assert!(expected.contains(&format!("{collection}.Date")));
     check_native_branch(
         authority,
         &read(authority, &format!("main:Document.{name}")),
         &collection,
         &expected,
     );
-    assert_eq!(read(authority, &number)["kind"], "StandardAttribute");
+    let prefix = format!("{collection}.");
+    expected
+        .into_iter()
+        .map(|address| {
+            assert_eq!(read(authority, &address)["kind"], "StandardAttribute");
+            address.strip_prefix(&prefix).unwrap().to_owned()
+        })
+        .collect()
 }
 
 fn data_lock_fields(native: &mut NativeProjections<'_, '_>, line: PlatformLine) {
