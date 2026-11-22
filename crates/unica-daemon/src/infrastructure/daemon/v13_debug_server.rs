@@ -221,7 +221,7 @@ impl PreparedDebugServer {
                     .push(json!({"debugServerSession":true,"action":"started"}));
                 return result;
             }
-            if data["owner"] == "runner" {
+            if !self.dry_run && owned {
                 let stopped = self.stop(tool, runner, session, false, &CancellationToken::new());
                 if !stopped.ok {
                     let mut failure = failure(START, RefusalCode::ProviderFailed,
@@ -562,6 +562,85 @@ mod tests {
         let result = prepared.start(&tool, &runner, &CancellationToken::new(), 42, None);
         assert_eq!(result.data.unwrap()["action"], "planned");
         assert!(!runner.calls.borrow()[0].1);
+    }
+
+    #[test]
+    fn debug_server_start_leaves_a_different_owner_session_alone() {
+        let root = tempfile::tempdir().unwrap();
+        let (prepared, tool) = fixture(root.path());
+        let mut receipt = start_data();
+        receipt["data"]["owner_pid"] = json!(43);
+        let runner = Provider {
+            calls: RefCell::default(),
+            results: RefCell::new(vec![receipt, stop_data(SESSION)]),
+            cancel_during_reply: None,
+        };
+
+        let result = prepared.start(&tool, &runner, &CancellationToken::new(), 42, None);
+
+        assert_eq!(result.diagnostics[0]["code"], "invalid_result");
+        assert_eq!(
+            runner.calls.borrow().len(),
+            1,
+            "foreign session was stopped"
+        );
+    }
+
+    #[test]
+    fn debug_server_preview_does_not_stop_a_session_from_a_malformed_receipt() {
+        let root = tempfile::tempdir().unwrap();
+        let (mut prepared, tool) = fixture(root.path());
+        prepared.dry_run = true;
+        let mut receipt = start_data();
+        receipt["data"]["action"] = json!("planned");
+        receipt["data"]["pid"] = Value::Null;
+        let runner = Provider {
+            calls: RefCell::default(),
+            results: RefCell::new(vec![receipt, stop_data(SESSION)]),
+            cancel_during_reply: None,
+        };
+
+        let result = prepared.start(&tool, &runner, &CancellationToken::new(), 42, None);
+
+        assert_eq!(result.diagnostics[0]["code"], "invalid_result");
+        let calls = runner.calls.borrow();
+        assert_eq!(calls.len(), 1, "preview dispatched a stop");
+        assert!(calls[0].0.iter().any(|arg| arg == "--dry-run"));
+    }
+
+    #[test]
+    fn debug_server_start_cleans_up_its_session_when_readiness_is_invalid() {
+        let root = tempfile::tempdir().unwrap();
+        let (prepared, tool) = fixture(root.path());
+        let mut receipt = start_data();
+        receipt["data"]["url"] = Value::Null;
+        for (stop_session, expected_code) in [
+            (SESSION, "invalid_result"),
+            ("ffffffffffffffffffffffffffffffff", "provider_failed"),
+        ] {
+            let runner = Provider {
+                calls: RefCell::default(),
+                results: RefCell::new(vec![receipt.clone(), stop_data(stop_session)]),
+                cancel_during_reply: None,
+            };
+
+            let result = prepared.start(&tool, &runner, &CancellationToken::new(), 42, None);
+
+            assert_eq!(result.diagnostics[0]["code"], expected_code);
+            let calls = runner.calls.borrow();
+            assert_eq!(calls.len(), 2);
+            assert!(calls[1].0.ends_with(&[
+                "debug-server".to_owned(),
+                "stop".to_owned(),
+                SESSION.to_owned()
+            ]));
+            assert!(!calls[1].0.iter().any(|arg| arg == "--dry-run"));
+            if stop_session != SESSION {
+                let data = result.data.unwrap();
+                assert_eq!(data["session"], SESSION);
+                assert_eq!(data["ownerPid"], 42);
+            }
+        }
     }
 
     #[test]
