@@ -1641,23 +1641,6 @@ fn check_native_external_form_module(
 }
 
 fn check_native_configuration_form_and_command_modules(format: &str, evidence: &mut EvidenceRows) {
-    let source = fixture_path(&format!(
-        "formats/platform_xml/{format}/nested_module_roles/src"
-    ));
-    let line = export_format_line(format).unwrap();
-    let profile = PlatformProfile::for_line(line).unwrap();
-    let cancellation = CancellationToken::new();
-    let authority = native_authority(&cancellation, &source, profile);
-    let root =
-        unica_workspace::read::open_source_directory(&source.canonicalize().unwrap()).unwrap();
-    let layout = [LayoutFindSource::new(
-        "main",
-        SourceSetKind::Configuration,
-        &root,
-    )];
-    let finder = WorkspaceFindDirectoryBuilder::default();
-    let registrations = root_registrations(&source, format);
-
     let common = [
         (
             "Document",
@@ -1695,7 +1678,65 @@ fn check_native_configuration_form_and_command_modules(format: &str, evidence: &
         "Form",
         "Форма",
     ));
-    for (kind, name, directory, role, child) in common.into_iter().chain(processor_form) {
+    check_native_configuration_nested_modules(
+        format,
+        "nested_module_roles",
+        common.into_iter().chain(processor_form),
+        evidence,
+    );
+    check_native_configuration_nested_modules(
+        format,
+        "information_register_module_roles",
+        [
+            (
+                "InformationRegister",
+                "АдминистративнаяИерархия",
+                "InformationRegisters",
+                "Form",
+                "AddressProbeRegisterForm",
+            ),
+            (
+                "InformationRegister",
+                "АдминистративнаяИерархия",
+                "InformationRegisters",
+                "Command",
+                "AddressProbeRegisterCommand",
+            ),
+        ],
+        evidence,
+    );
+}
+
+type NativeNestedModuleSample = (
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static str,
+);
+
+fn check_native_configuration_nested_modules(
+    format: &str,
+    fixture: &str,
+    samples: impl IntoIterator<Item = NativeNestedModuleSample>,
+    evidence: &mut EvidenceRows,
+) {
+    let source = fixture_path(&format!("formats/platform_xml/{format}/{fixture}/src"));
+    let line = export_format_line(format).unwrap();
+    let profile = PlatformProfile::for_line(line).unwrap();
+    let cancellation = CancellationToken::new();
+    let authority = native_authority(&cancellation, &source, profile);
+    let root =
+        unica_workspace::read::open_source_directory(&source.canonicalize().unwrap()).unwrap();
+    let layout = [LayoutFindSource::new(
+        "main",
+        SourceSetKind::Configuration,
+        &root,
+    )];
+    let finder = WorkspaceFindDirectoryBuilder::default();
+    let registrations = root_registrations(&source, format);
+
+    for (kind, name, directory, role, child) in samples {
         assert_eq!(
             registrations
                 .iter()
