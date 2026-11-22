@@ -324,12 +324,11 @@ impl ProcessRunner for BreakawayProcessRunner {
         &self,
         command: &ProcessCommand,
     ) -> Result<ProcessOutput, ProcessStreamFailure> {
-        let cancel = if cfg!(windows) {
-            CancelPolicy::Terminate
-        } else {
-            CancelPolicy::Interrupt
-        };
-        run_staged_in(command, JobPolicy::AllowsBreakaway, cancel)
+        run_staged_in(
+            command,
+            JobPolicy::AllowsBreakaway,
+            CancelPolicy::without_windows_interrupt(),
+        )
     }
 
     fn run_pending_handoff(
