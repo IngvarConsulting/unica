@@ -1088,12 +1088,27 @@ fn resolve_scheduled_job_schedule_uses_its_local_resource_and_registered_owner()
     const AT: &str = "main:ScheduledJob.KeyProbe.Schedule";
     const RELATIVE: &str = "ScheduledJobs/KeyProbe/Ext/Schedule.xml";
     const ORPHAN: &str = "ScheduledJobs/Orphan/Ext/Schedule.xml";
-    let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures");
-    for format in ["2.20", "2.21", "2.22"] {
-        let native = fixtures.join(format!("formats/platform_xml/{format}/all_kinds/src"));
-        let raw = fixtures.join(format!(
-            "acceptance/native-scheduled-job-schedule/{format}/Schedule.xml"
-        ));
+    let fixtures: [(&str, &[u8], &[u8], &[u8]); 3] = [
+        (
+            "2.20",
+            include_bytes!("../../../../../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/Configuration.xml"),
+            include_bytes!("../../../../../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/ScheduledJobs/KeyProbe.xml"),
+            include_bytes!("../../../../../../tests/fixtures/acceptance/native-scheduled-job-schedule/2.20/Schedule.xml"),
+        ),
+        (
+            "2.21",
+            include_bytes!("../../../../../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/Configuration.xml"),
+            include_bytes!("../../../../../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/ScheduledJobs/KeyProbe.xml"),
+            include_bytes!("../../../../../../tests/fixtures/acceptance/native-scheduled-job-schedule/2.21/Schedule.xml"),
+        ),
+        (
+            "2.22",
+            include_bytes!("../../../../../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src/Configuration.xml"),
+            include_bytes!("../../../../../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src/ScheduledJobs/KeyProbe.xml"),
+            include_bytes!("../../../../../../tests/fixtures/acceptance/native-scheduled-job-schedule/2.22/Schedule.xml"),
+        ),
+    ];
+    for (format, configuration, descriptor, raw) in fixtures {
         let workspace = tempfile::tempdir().unwrap();
         let root = workspace.path().canonicalize().unwrap();
         let src = root.join("src");
@@ -1103,9 +1118,8 @@ fn resolve_scheduled_job_schedule_uses_its_local_resource_and_registered_owner()
             "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
         )
         .unwrap();
-        for relative in ["Configuration.xml", "ScheduledJobs/KeyProbe.xml"] {
-            std::fs::copy(native.join(relative), src.join(relative)).unwrap();
-        }
+        std::fs::write(src.join("Configuration.xml"), configuration).unwrap();
+        std::fs::write(src.join("ScheduledJobs/KeyProbe.xml"), descriptor).unwrap();
         let refuse = |args| {
             let result = invoke_exact_read(&root, ToolIdentity::Resolve, args);
             assert!(!result.ok, "{format}: {result:?}");
@@ -1122,7 +1136,7 @@ fn resolve_scheduled_job_schedule_uses_its_local_resource_and_registered_owner()
         refuse(json!({"at": AT}));
         refuse(json!({"path": RELATIVE}));
 
-        std::fs::copy(&raw, src.join(RELATIVE)).unwrap();
+        std::fs::write(src.join(RELATIVE), raw).unwrap();
         let forward = invoke_exact_read(&root, ToolIdentity::Resolve, json!({"at": AT}));
         assert!(forward.ok, "{format}: {forward:?}");
         let forward = forward.data.unwrap();
@@ -1145,7 +1159,7 @@ fn resolve_scheduled_job_schedule_uses_its_local_resource_and_registered_owner()
             );
         std::fs::write(src.join("ScheduledJobs/Orphan.xml"), descriptor).unwrap();
         std::fs::create_dir_all(src.join("ScheduledJobs/Orphan/Ext")).unwrap();
-        std::fs::copy(&raw, src.join(ORPHAN)).unwrap();
+        std::fs::write(src.join(ORPHAN), raw).unwrap();
         let unregistered = refuse(json!({"path": ORPHAN}));
         assert!(
             unregistered.diagnostics[0]["message"]
