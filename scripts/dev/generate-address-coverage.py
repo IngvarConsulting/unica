@@ -24,13 +24,17 @@ CFE_OWNERSHIP_SHARD = "native_cfe_ownership_addresses_follow_the_exported_regist
 EXTERNAL_ROOT_SHARD = "native_external_root_descriptors_match_published_addresses"
 METADATA_SHARD = "native_metadata_address_table_matches_declared_and_observed_child_branches"
 FORM_TEMPLATE_SHARD = "native_form_and_template_addresses_follow_text_registrations"
+MODULE_SHARD = "native_registered_modules_match_profile_and_physical_paths"
+RECURSIVE_SUBSYSTEM_SHARD = "native_recursive_subsystem_registrations_have_addresses"
+SPECIAL_PROJECTION_SHARD = "native_special_projection_addresses_match_source"
 NATIVE_SHARDS = frozenset({
     "native_configuration_root_address_table_matches_published_branches",
     "native_ordinary_interface_has_a_registration_only_root_branch",
     "native_recalculation_module_address_table_matches_registered_owner",
     METADATA_SHARD,
     FORM_TEMPLATE_SHARD,
-    "native_registered_modules_match_profile_and_physical_paths",
+    MODULE_SHARD,
+    RECURSIVE_SUBSYSTEM_SHARD, SPECIAL_PROJECTION_SHARD,
     EXTENSION_LANGUAGE_SHARD, CFE_OWNERSHIP_SHARD,
     EXTERNAL_ROOT_SHARD,
 })
@@ -60,6 +64,9 @@ SUBSYSTEM_CONTENT_KEYS_SHARD = "required_native_subsystem_content_keys"
 WSDL_KEYS_SHARD = "required_native_wsdl_keys"
 MXL_KEYS_SHARD = "required_native_mxl_keys"
 SCHEDULE_KEYS_SHARD = "required_native_schedule_keys"
+RECURSIVE_SUBSYSTEM_KEYS_SHARD = "native_recursive_subsystem_requirements"
+SPECIAL_PROJECTION_KEYS_SHARD = "required_native_special_projection_keys"
+PROJECTION_KEYS_SHARDS = frozenset({RECURSIVE_SUBSYSTEM_KEYS_SHARD, SPECIAL_PROJECTION_KEYS_SHARD})
 XDTO_OWNER_SHAPES = {
     "Namespace": {("XDTOPackage",)},
     "Type": {("XDTOPackage",)},
@@ -91,6 +98,7 @@ NATIVE_SCOPE = (
     " and the role-right collection and members in native SalesReader fixtures."
     " Native XDTO requirements trace Namespace, Type and Property reads to registered Package.bin files."
     " Registered subsystem descriptors independently require reads of Relation and Subsystem branches."
+    " Recursive subsystem registrations and selected special projections require scoped native reads."
     " Registered native WSDL companions require exact WSReference.Definition round-trips."
     " Native spreadsheet companions require registered Area reads and row Body and Parameter reads."
     " Registered ScheduledJob.Schedule keeps descriptor-only reads and requires companion round-trips."
@@ -180,6 +188,14 @@ def validate_record_type(record: dict, kind: str) -> None:
         raise ValueError(f"expected record_type {kind!r}")
 
 
+def validate_external_form_projection(key: dict, owner: str) -> None:
+    prefix, owner_kind = EXTERNAL_OWNER_KINDS[key["source_kind"]]
+    if key["role"] is not None or key["branch"] not in {"Command", "Parameter"} or key["owner_shape"] != [
+        {"kind": kind, "named": True, "role": None} for kind in (owner_kind, "Form")
+    ] or not re.fullmatch(rf"{prefix}:{owner_kind}\.{NATIVE_ADDRESS_NAME}\.Form\.{NATIVE_ADDRESS_NAME}", owner):
+        raise ValueError("external projection must identify its exact Form Command or Parameter owner")
+
+
 def validate_record(record: object, test_case: str) -> None:
     exact_fields(record, {"schema_version", "record_type", "key", "witness"}, "record")
     validate_record_type(record, "evidence")
@@ -191,6 +207,8 @@ def validate_record(record: object, test_case: str) -> None:
         allowed_kinds = ("extension",)
     elif test_case == EXTERNAL_ROOT_SHARD:
         allowed_kinds = ("external_processor", "external_report")
+    elif test_case == SPECIAL_PROJECTION_SHARD:
+        allowed_kinds = ("configuration", "external_processor", "external_report")
     elif test_case == DAEMON_SHARD:
         allowed_kinds = ("configuration", "extension", "external_processor", "external_report")
     if source_kind not in allowed_kinds:
@@ -199,6 +217,8 @@ def validate_record(record: object, test_case: str) -> None:
     witness = record["witness"]
     exact_fields(witness, {"owner", "at", "level", "origin", "test_case", "reason"}, "witness")
     owner_prefix = source_prefix(witness["owner"], "owner")
+    if test_case == SPECIAL_PROJECTION_SHARD and source_kind in EXTERNAL_OWNER_KINDS:
+        validate_external_form_projection(key, witness["owner"])
     required_text(witness["origin"], "origin")
     if witness["test_case"] != test_case:
         raise ValueError(f"unexpected test_case {witness['test_case']!r}; expected {test_case!r}")
@@ -522,6 +542,82 @@ def canonical_json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+def projection_expectations(record: dict, shard: str) -> set[tuple[str, str, str, str, str]]:
+    exact_fields(record, {"schema_version", "record_type", "key", "requirement"}, "record")
+    validate_record_type(record, "required")
+    key = record["key"]
+    validate_key(key)
+    source = key["source_kind"]
+    shape = key["owner_shape"]
+    branch = key["branch"]
+    recursive = shard == RECURSIVE_SUBSYSTEM_KEYS_SHARD
+    external = EXTERNAL_OWNER_KINDS.get(source)
+    if key["role"] is not None or (source != "configuration" and (recursive or external is None)):
+        raise ValueError("required projection must name an admitted source and branch")
+    if recursive:
+        root = shape == [{"kind": "Configuration", "named": False, "role": None}]
+        if branch != "Subsystem" or (not root and not all(
+            segment == {"kind": "Subsystem", "named": True, "role": None} for segment in shape
+        )):
+            raise ValueError("required recursive key must name a registered Subsystem branch")
+    requirement = record["requirement"]
+    exact_fields(requirement, {"kind", "observations"}, "projection requirement")
+    if requirement["kind"] != ("read" if recursive else "exact"):
+        raise ValueError("unexpected projection requirement kind")
+    observations = requirement["observations"]
+    if not isinstance(observations, list) or not observations:
+        raise ValueError("projection requirement needs at least one observation")
+
+    signatures = set()
+    for observation in observations:
+        fields = {"owner", "origin", "addresses"}
+        exact_fields(observation, fields if recursive else fields | {"level", "test_case"}, "projection observation")
+        owner = required_text(observation["owner"], "owner")
+        origin = required_text(observation["origin"], "origin")
+        emitter = RECURSIVE_SUBSYSTEM_SHARD if recursive else observation["test_case"]
+        if not recursive and (emitter not in (SPECIAL_PROJECTION_SHARD, FORM_TEMPLATE_SHARD, MODULE_SHARD)
+                              or observation["level"] != "read"):
+            raise ValueError("required special projection needs an admitted native read emitter")
+        if external:
+            if emitter != SPECIAL_PROJECTION_SHARD:
+                raise ValueError("required external projection needs the special projection emitter")
+            validate_external_form_projection(key, owner)
+        elif source_prefix(owner, "owner") != "main":
+            raise ValueError("required configuration projection must name its main owner")
+        if recursive:
+            owner_pattern = "main:Configuration" if root else "main:" + r"\.".join(
+                rf"Subsystem\.{NATIVE_ADDRESS_NAME}" for _ in shape
+            )
+            if not re.fullmatch(owner_pattern, owner):
+                raise ValueError("required recursive owner must match the Subsystem depth")
+        collection = "main:Subsystem" if recursive and root else f"{owner}.{branch}"
+        addresses = observation["addresses"]
+        if not isinstance(addresses, list) or collection not in addresses:
+            raise ValueError("required projection must include the branch address")
+        for address in addresses:
+            address = required_text(address, "address")
+            if address != collection and not address.startswith(f"{collection}."):
+                raise ValueError("required projection member must belong to its declared branch")
+            signature = (emitter, "read", owner, origin, address)
+            if signature in signatures:
+                raise ValueError("duplicate required projection observation")
+            signatures.add(signature)
+    return signatures
+
+
+def check_projection_requirements(requirements: dict, groups: dict) -> None:
+    missing = []
+    for (shard, key), expected in sorted(requirements.items()):
+        witnessed = {
+            (w["test_case"], w["level"], w["owner"], w["origin"], w["at"])
+            for w in groups.get(key, {}).get("witnesses", ()) if w["reason"] is None
+        }
+        for emitter, level, owner, origin, address in sorted(expected - witnessed):
+            missing.append(f"{shard}: {address} ({owner}, {level}, {origin}, {emitter})")
+    if missing:
+        raise ValueError("missing required native projection evidence: " + "; ".join(missing))
+
+
 def check_required_keys(requirements: dict, groups: dict, *, native_only: bool) -> None:
     missing = {"address": 0, "introduced_in": 0}
     missing_module_roles = []
@@ -654,6 +750,7 @@ def merge_shards(
 
     groups = {}
     requirements = {}
+    projections = {}
     seen = set()
     for name in sorted(expected):
         shard = directory / name
@@ -674,6 +771,13 @@ def merge_shards(
                         raise ValueError(f"{kind} requirement for structural key {canonical_json(record['key'])}")
                     requirements[key] = (shard.stem, record)
                     continue
+                if shard.stem in PROJECTION_KEYS_SHARDS:
+                    expected_projection = projection_expectations(record, shard.stem)
+                    key = (shard.stem, structural_key(record["key"]))
+                    if key in projections:
+                        raise ValueError(f"duplicate projection requirement for {canonical_json(record['key'])}")
+                    projections[key] = expected_projection
+                    continue
                 validate_record(record, shard.stem)
                 signature = canonical_json(record)
                 if signature in seen:
@@ -692,6 +796,7 @@ def merge_shards(
                 raise ValueError(f"{name}:{index}: {error}") from error
 
     check_required_keys(requirements, groups, native_only=native_only)
+    check_projection_requirements(projections, groups)
     result = [groups[key] for key in sorted(groups)]
     for group in result:
         group["witnesses"].sort(key=canonical_json)
@@ -873,6 +978,21 @@ def address_absence_observations(repo: Path, rows: list[dict]) -> list[dict]:
                 })
             elif inherited := inherited_module_absence(repo, key, witness):
                 observations.append(inherited)
+            elif (
+                key["line"] == "8.3.27" and key["source_kind"] == "configuration"
+                and key["owner_shape"] == [{"kind": "Document", "named": True, "role": None}]
+                and key["branch"] == "Characteristic" and key["role"] is None
+                and witness["test_case"] == SPECIAL_PROJECTION_SHARD and witness["level"] == "read"
+                and witness["owner"] == "main:Document.АктОбУничтоженииПерсональныхДанных"
+                and witness["at"] == f"{witness['owner']}.Characteristic"
+                and witness["origin"] == (
+                    "tests/fixtures/acceptance/workspace/src/Documents/АктОбУничтоженииПерсональныхДанных.xml"
+                )
+            ):
+                observations.append({
+                    "key": key, "reason": {"kind": "unnamed_value_row"},
+                    "evidence": {field: witness[field] for field in ("owner", "origin", "test_case")},
+                })
         if gap := group.get("enumeration_gap"):
             observations.append({"key": key, "reason": {"kind": "enumeration_gap", **gap},
                                  "evidence": {"direct_read": True}})
@@ -935,6 +1055,10 @@ def render_markdown(report: dict) -> str:
             elif kind == "no_local_content":
                 outcome = "No local content in the inherited form"
                 note = f"{evidence['platform']} · {evidence['origin']} · declaration {evidence['declaration']}"
+            elif kind == "unnamed_value_row":
+                subject = f"{evidence['owner']}.{key['branch']}"
+                outcome = "Characteristic rows carry no applied name"
+                note = f"{evidence['origin']} ({evidence['test_case']})"
             else:
                 outcome = (
                     "Child not subordinate in this native import"
@@ -1773,7 +1897,7 @@ def native_external_inline_requirements(repo: Path) -> list[dict]:
 def generate_report(native_only: bool) -> dict:
     revision, status = git_state()
     cases = [("unica-coder", "address_coverage")]
-    required_shards = NATIVE_SHARDS | (REQUIRED_KEY_SHARDS - {SUBSYSTEM_INTERFACE_KEYS_SHARD})
+    required_shards = NATIVE_SHARDS | PROJECTION_KEYS_SHARDS | (REQUIRED_KEY_SHARDS - {SUBSYSTEM_INTERFACE_KEYS_SHARD})
     scope = NATIVE_SCOPE
     if native_only:
         scope += f" {NATIVE_ONLY_MODULE_SCOPE}"

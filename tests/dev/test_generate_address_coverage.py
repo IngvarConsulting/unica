@@ -86,6 +86,94 @@ class AddressCoverageReportTests(unittest.TestCase):
     def write_root_shard(self, *records: dict) -> None:
         self.write_shard(ROOT_SHARD, *records)
 
+    def test_recursive_requirements_overlay_root_requirements_and_reject_a_missing_member(self) -> None:
+        case = "native_recursive_subsystem_registrations_have_addresses"
+        required_shard = "native_recursive_subsystem_requirements"
+        root = root_witness("main", "Subsystem")
+        branch = {**root, "witness": {**root["witness"], "test_case": case}}
+        member = {**branch, "witness": {**branch["witness"], "at": "main:Subsystem.NewChild"}}
+        required = required_key(root)
+        required["requirement"] = {"kind": "read", "observations": [{
+            "owner": root["witness"]["owner"], "origin": root["witness"]["origin"],
+            "addresses": ["main:Subsystem", "main:Subsystem.NewChild"],
+        }]}
+        self.write_shard(ROOT_SHARD, root)
+        self.write_shard(ROOT_KEYS, required_key(root))
+        self.write_shard(required_shard, required)
+        self.write_shard(case, branch)
+        shards = frozenset({ROOT_SHARD, ROOT_KEYS, case, required_shard})
+        with self.assertRaisesRegex(ValueError, r"missing required native projection evidence.*",):
+            GENERATOR.merge_shards(self.root, shards)
+        self.write_shard(case, branch, member)
+        self.assertEqual(len(GENERATOR.merge_shards(self.root, shards)), 1)
+
+    def test_special_projection_overlay_requires_the_declared_producer_and_origin(self) -> None:
+        requirement_shard = "required_native_special_projection_keys"
+        special = "native_special_projection_addresses_match_source"
+        evidence = root_witness("main", "Item")
+        evidence["key"]["owner_shape"] = [{"kind": "CommonForm", "named": True, "role": None}]
+        witness = evidence["witness"]
+        witness.update(owner="main:CommonForm.MainA", at="main:CommonForm.MainA.Item",
+                       origin="tests/dev/form.xml", test_case=special)
+        required = required_key(evidence)
+        required["requirement"] = {"kind": "exact", "observations": [{
+            "owner": witness["owner"], "origin": witness["origin"], "addresses": [witness["at"]],
+            "level": "read", "test_case": GENERATOR.FORM_TEMPLATE_SHARD,
+        }]}
+        self.write_shard(requirement_shard, required)
+        self.write_shard(special, evidence)
+        self.write_shard(GENERATOR.FORM_TEMPLATE_SHARD, {
+            **evidence, "witness": {**witness, "test_case": GENERATOR.FORM_TEMPLATE_SHARD, "origin": "tests/dev/other.xml"},
+        })
+        shards = frozenset({requirement_shard, special, GENERATOR.FORM_TEMPLATE_SHARD})
+        with self.assertRaisesRegex(ValueError, r"missing required native projection evidence.*",):
+            GENERATOR.merge_shards(self.root, shards)
+        self.write_shard(GENERATOR.FORM_TEMPLATE_SHARD, {
+            **evidence, "witness": {**witness, "test_case": GENERATOR.FORM_TEMPLATE_SHARD},
+        })
+        self.assertEqual(len(GENERATOR.merge_shards(self.root, shards)), 1)
+
+    def test_external_special_projection_requires_a_form_owner_of_the_matching_source(self) -> None:
+        special = GENERATOR.SPECIAL_PROJECTION_SHARD
+        requirement_shard = GENERATOR.SPECIAL_PROJECTION_KEYS_SHARD
+        evidence = root_witness("main", "Parameter")
+        owner = "erf:ExternalReport.SyntheticReport.Form.Main"
+        evidence["key"].update(source_kind="external_report", owner_shape=[
+            {"kind": kind, "named": True, "role": None} for kind in ("ExternalReport", "Form")
+        ])
+        witness = evidence["witness"]
+        witness.update(owner=owner, at=f"{owner}.Parameter", origin="tests/dev/form.xml", test_case=special)
+        required = required_key(evidence)
+        observation = {field: witness[field] for field in ("owner", "origin", "level", "test_case")}
+        required["requirement"] = {"kind": "exact", "observations": [
+            {**observation, "addresses": [witness["at"]]},
+        ]}
+        self.write_shard(special, evidence)
+        self.write_shard(requirement_shard, required)
+        shards = frozenset({special, requirement_shard})
+        self.assertEqual(len(GENERATOR.merge_shards(self.root, shards)), 1)
+        witness.update(owner=owner.replace("erf:", "epf:"), at=witness["at"].replace("erf:", "epf:"))
+        self.write_shard(special, evidence)
+        with self.assertRaisesRegex(ValueError, "external projection must identify its exact Form"):
+            GENERATOR.merge_shards(self.root, shards)
+
+    def test_unnamed_characteristic_reason_is_scoped_to_confirmed_document(self) -> None:
+        special = "native_special_projection_addresses_match_source"
+        owner = "main:Document.АктОбУничтоженииПерсональныхДанных"
+        key = {"line": "8.3.27", "source_kind": "configuration", "branch": "Characteristic", "role": None,
+               "owner_shape": [{"kind": "Document", "named": True, "role": None}]}
+        witness = {"owner": owner, "at": f"{owner}.Characteristic", "level": "read", "reason": None,
+                   "origin": "tests/fixtures/acceptance/workspace/src/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+                   "test_case": special}
+        rows = [{"key": key, "witnesses": [witness]},
+                {"key": {**key, "line": "8.5.1"}, "witnesses": [witness]},
+                {"key": key, "witnesses": [{**witness, "test_case": METADATA_SHARD}]}]
+        result = [row for row in GENERATOR.address_absence_observations(GENERATOR.REPO, rows)
+                  if row["reason"]["kind"] == "unnamed_value_row"]
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["key"], key)
+        self.assertNotIn("attempted_at", result[0])
+
     def test_address_absence_keeps_named_probes_out_of_positive_rows(self) -> None:
         rows = [{"key": root_witness("main", introduced_in="8.5.1")["key"],
                  "witnesses": [root_witness("main", introduced_in="8.5.1")["witness"]]}]
