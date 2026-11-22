@@ -563,6 +563,58 @@ class AddressCoverageReportTests(unittest.TestCase):
 
 
 
+    def test_external_inline_requires_exact_descriptor_read_for_root_and_nested_keys(self) -> None:
+        shard = GENERATOR.EXTERNAL_INLINE_KEYS_SHARD
+        producer = GENERATOR.EXTERNAL_ROOT_SHARD
+        required = GENERATOR.native_external_inline_requirements(GENERATOR.REPO)
+        self.assertEqual(len(required), 18)
+        self.assertEqual(
+            {(row["key"]["line"], row["key"]["source_kind"], row["key"]["branch"],
+              tuple(segment["kind"] for segment in row["key"]["owner_shape"])) for row in required},
+            {(line, source, branch, shape)
+             for line in ("8.3.27", "8.5.1", "8.5.4")
+             for source, kind in (("external_processor", "ExternalDataProcessor"),
+                                  ("external_report", "ExternalReport"))
+             for branch, shape in (("Attribute", (kind,)), ("TabularSection", (kind,)),
+                                   ("Attribute", (kind, "TabularSection")))},
+        )
+        evidence = []
+        for row in required:
+            obs, = row["requirement"]["observations"]
+            at, = obs["addresses"]
+            evidence.append({
+                "schema_version": 1, "record_type": "evidence", "key": row["key"],
+                "witness": {"owner": obs["owner"], "at": at, "origin": obs["origin"],
+                            "level": "read", "test_case": producer, "reason": None},
+            })
+        expected_at = "erf:ExternalReport.SyntheticReport.TabularSection.Lines.Attribute"
+        target = next(item for item in evidence if item["key"]["line"] == "8.5.1"
+                      and item["witness"]["at"] == expected_at)
+        witness = target["witness"]
+        alternate = {**target, "witness": {**witness, "test_case": GENERATOR.DAEMON_SHARD}}
+        self.write_shard(shard, *required)
+        self.write_shard(GENERATOR.DAEMON_SHARD, alternate)
+        shards = frozenset({shard, producer, GENERATOR.DAEMON_SHARD})
+        for native_only in (False, True):
+            self.write_shard(producer, *evidence)
+            self.assertEqual(len(GENERATOR.merge_shards(self.root, shards, native_only=native_only)), 18)
+            for changes in ({}, {"origin": witness["origin"].replace("/2.21/", "/2.22/")},
+                            {"level": "roundtrip"},
+                            {"owner": witness["owner"].replace(".Lines", ".Other")}):
+                with self.subTest(native_only=native_only, changes=changes):
+                    remaining = [item for item in evidence if item is not target]
+                    if changes:
+                        remaining.append({**target, "witness": {**witness, **changes}})
+                    self.write_shard(producer, *remaining)
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        r"(?s)missing required native external inline coverage.*"
+                        r"Lines\.Attribute \(8\.5\.1\): expected read",
+                    ):
+                        GENERATOR.merge_shards(self.root, shards, native_only=native_only)
+
+
+
     def test_witnesses_for_one_shape_are_grouped_in_stable_order(self) -> None:
         first, second = root_witness("main"), root_witness("other")
         self.write_root_shard(second, first)

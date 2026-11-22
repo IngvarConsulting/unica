@@ -37,6 +37,11 @@ DAEMON_SHARD = "medium_published_document_and_bsl_branches_have_canonical_addres
 ROOT_KEYS_SHARD = "required_configuration_root_keys"
 METADATA_CHILD_KEYS_SHARD = "required_native_metadata_child_keys"
 EXTERNAL_CHILD_KEYS_SHARD = "required_native_external_child_keys"
+EXTERNAL_INLINE_KEYS_SHARD = "required_native_external_inline_keys"
+EXTERNAL_OWNER_KINDS = {
+    "external_processor": ("epf", "ExternalDataProcessor"),
+    "external_report": ("erf", "ExternalReport"),
+}
 MODULE_ROLE_KEYS_SHARD = "required_configuration_module_role_keys"
 EDS_MODULE_KEYS_SHARD = "required_native_eds_module_keys"
 SUBSYSTEM_INTERFACE_KEYS_SHARD = "required_native_subsystem_interface_keys"
@@ -54,7 +59,8 @@ XDTO_OWNER_SHAPES = {
 }
 NATIVE_ADDRESS_NAME = r"[^\W\d]\w*"
 REQUIRED_KEY_SHARDS = frozenset({
-    ROOT_KEYS_SHARD, METADATA_CHILD_KEYS_SHARD, EXTERNAL_CHILD_KEYS_SHARD, MODULE_ROLE_KEYS_SHARD,
+    ROOT_KEYS_SHARD, METADATA_CHILD_KEYS_SHARD, EXTERNAL_CHILD_KEYS_SHARD, EXTERNAL_INLINE_KEYS_SHARD,
+    MODULE_ROLE_KEYS_SHARD,
     EDS_MODULE_KEYS_SHARD, SUBSYSTEM_INTERFACE_KEYS_SHARD, DCS_QUERY_KEYS_SHARD, ROLE_RIGHT_KEYS_SHARD,
     XDTO_KEYS_SHARD, SUBSYSTEM_CONTENT_KEYS_SHARD, WSDL_KEYS_SHARD, MXL_KEYS_SHARD, SCHEDULE_KEYS_SHARD,
 })
@@ -70,6 +76,7 @@ NATIVE_SCOPE = (
     "and establish neither write support nor a match with the runtime profile."
     " The native report checks declaration closure for configuration roots and top-level metadata children."
     " It requires external Form, Template, and Command collections witnessed against native XML,"
+    " exact reads of external inline attributes, tabular sections and their columns,"
     " and ExternalDataSource module collections and round-trips for the native files on each line."
     " It also requires exact read witnesses for registered native Report and DataProcessor DCS queries"
     " and the role-right collection and members in native SalesReader fixtures."
@@ -198,12 +205,11 @@ def validate_required_record(record: object, shard: str) -> None:
     validate_record_type(record, "required")
     key = record["key"]
     version = validate_key(key)
-    if shard == EXTERNAL_CHILD_KEYS_SHARD:
-        owner_kind = {
-            "external_processor": "ExternalDataProcessor",
-            "external_report": "ExternalReport",
-        }.get(key["source_kind"])
-        if owner_kind is None or key["owner_shape"] != [
+    if shard in {EXTERNAL_CHILD_KEYS_SHARD, EXTERNAL_INLINE_KEYS_SHARD}:
+        _, owner_kind = EXTERNAL_OWNER_KINDS.get(key["source_kind"], (None, None))
+        if owner_kind is None:
+            raise ValueError("required external key must name an external source set")
+        if shard == EXTERNAL_CHILD_KEYS_SHARD and key["owner_shape"] != [
             {"kind": owner_kind, "named": True, "role": None},
         ]:
             raise ValueError("required external child key must name the matching external owner kind")
@@ -264,10 +270,14 @@ def validate_required_record(record: object, shard: str) -> None:
             raise ValueError("duplicate required role right address")
         required_text(requirement["origin"], "origin")
         return
-    if shard in {XDTO_KEYS_SHARD, SUBSYSTEM_CONTENT_KEYS_SHARD, WSDL_KEYS_SHARD, MXL_KEYS_SHARD, SCHEDULE_KEYS_SHARD}:
+    if shard in {
+        XDTO_KEYS_SHARD, SUBSYSTEM_CONTENT_KEYS_SHARD, WSDL_KEYS_SHARD,
+        MXL_KEYS_SHARD, SCHEDULE_KEYS_SHARD, EXTERNAL_INLINE_KEYS_SHARD,
+    }:
         family = {
             XDTO_KEYS_SHARD: "XDTO", SUBSYSTEM_CONTENT_KEYS_SHARD: "subsystem content", WSDL_KEYS_SHARD: "WSDL",
             MXL_KEYS_SHARD: "MXL", SCHEDULE_KEYS_SHARD: "Schedule",
+            EXTERNAL_INLINE_KEYS_SHARD: "external inline",
         }[shard]
         level = "roundtrip" if shard in {WSDL_KEYS_SHARD, SCHEDULE_KEYS_SHARD} else "read"
         exact_fields(requirement, {"kind", "observations"}, f"{family} requirement")
@@ -279,6 +289,11 @@ def validate_required_record(record: object, shard: str) -> None:
             known_shape = branch_kind == "Definition" and kinds == ("WSReference",)
         elif shard == SCHEDULE_KEYS_SHARD:
             known_shape = branch_kind == "Schedule" and kinds == ("ScheduledJob",)
+        elif shard == EXTERNAL_INLINE_KEYS_SHARD:
+            known_shape = (
+                (branch_kind in {"Attribute", "TabularSection"} and kinds == (owner_kind,))
+                or (branch_kind == "Attribute" and kinds == (owner_kind, "TabularSection"))
+            )
         elif shard == MXL_KEYS_SHARD:
             known_shape = (
                 key["line"] in {"8.3.27", "8.5.1", "8.5.4"} and (
@@ -297,8 +312,12 @@ def validate_required_record(record: object, shard: str) -> None:
         observations = requirement["observations"]
         if not isinstance(observations, list) or not observations:
             raise ValueError(f"expected nonempty required {family} observations")
-        prefix = "cf:" if shard == MXL_KEYS_SHARD and key["line"] == "8.3.27" else "main:"
-        owner_pattern = prefix + r"\.".join(kind + r"\." + NATIVE_ADDRESS_NAME for kind in kinds)
+        alias = "main"
+        if shard == EXTERNAL_INLINE_KEYS_SHARD:
+            alias = EXTERNAL_OWNER_KINDS[key["source_kind"]][0]
+        elif shard == MXL_KEYS_SHARD and key["line"] == "8.3.27":
+            alias = "cf"
+        owner_pattern = f"{alias}:" + r"\.".join(kind + r"\." + NATIVE_ADDRESS_NAME for kind in kinds)
         owners = set()
         for observation in observations:
             fields = {"owner", "origin", "addresses"}
@@ -319,7 +338,8 @@ def validate_required_record(record: object, shard: str) -> None:
             if not isinstance(addresses, list) or not addresses or addresses[0] != branch:
                 raise ValueError(f"required {family} addresses must include their branch")
             for address in addresses[1:]:
-                if (shard == MXL_KEYS_SHARD or branch_kind in {"Namespace", "Relation", "Definition", "Schedule"}
+                if (shard in {MXL_KEYS_SHARD, EXTERNAL_INLINE_KEYS_SHARD}
+                    or branch_kind in {"Namespace", "Relation", "Definition", "Schedule"}
                     or not re.fullmatch(
                     rf"{re.escape(branch)}\.{NATIVE_ADDRESS_NAME}", required_text(address, f"{family} member address")
                 )):
@@ -414,6 +434,7 @@ def check_required_keys(requirements: dict, groups: dict, *, native_only: bool) 
         WSDL_KEYS_SHARD: ("WSDL", []),
         MXL_KEYS_SHARD: ("MXL", []),
         SCHEDULE_KEYS_SHARD: ("Schedule", []),
+        EXTERNAL_INLINE_KEYS_SHARD: ("external inline", []),
     }
     diagnostics = []
     for key, (shard, record) in sorted(requirements.items()):
@@ -439,6 +460,8 @@ def check_required_keys(requirements: dict, groups: dict, *, native_only: bool) 
             emitter = METADATA_SHARD
             if shard == MXL_KEYS_SHARD:
                 emitter = DAEMON_SHARD if record["key"]["line"] == "8.3.27" else FORM_TEMPLATE_SHARD
+            elif shard == EXTERNAL_INLINE_KEYS_SHARD:
+                emitter = EXTERNAL_ROOT_SHARD
             observed = {
                 (w["level"], w["owner"], w["origin"], w["at"]) for w in witnesses
                 if w["test_case"] == emitter and w["reason"] is None
@@ -1165,6 +1188,57 @@ def native_schedule_requirements(repo: Path) -> list[dict]:
     return rows
 
 
+def native_external_inline_requirements(repo: Path) -> list[dict]:
+    md = "{http://v8.1c.ru/8.3/MDClasses}"
+    export_root = repo / "tests/fixtures/formats/platform_xml"
+    rows = []
+    for version, line in (("2.20", "8.3.27"), ("2.21", "8.5.1"), ("2.22", "8.5.4")):
+        fixture = export_root / version / "external_artifacts"
+        manifest = json.loads((fixture / "manifest.json").read_text(encoding="utf-8"))
+        if manifest["formatVersion"] != version or not manifest["platformVersion"].startswith(f"{line}."):
+            raise ValueError(f"native external inline: wrong export provenance in {fixture}")
+        for source_kind, (alias, kind) in EXTERNAL_OWNER_KINDS.items():
+            descriptors = [Path(path) for path in manifest["files"]
+                           if re.fullmatch(rf"{alias}/{NATIVE_ADDRESS_NAME}\.xml", path)]
+            if len(descriptors) != 1:
+                raise ValueError(f"native external inline: expected one {alias} descriptor in {fixture}")
+            relative, = descriptors
+            origin = fixture / relative
+            raw = origin.read_bytes()
+            recorded = manifest["files"][relative.as_posix()]
+            if len(raw) != recorded["size"] or hashlib.sha256(raw).hexdigest() != recorded["sha256"]:
+                raise ValueError(f"native external inline: unexpected descriptor bytes in {origin}")
+            root = ET.fromstring(raw)
+            if (root.tag != f"{md}MetaDataObject" or root.get("version") != version
+                    or len(root) != 1 or root[0].tag != f"{md}{kind}"
+                    or root[0].findtext(f"{md}Properties/{md}Name") != relative.stem):
+                raise ValueError(f"native external inline: invalid registered root in {origin}")
+            artifact = root[0]
+            owner = f"{alias}:{kind}.{relative.stem}"
+            child_path = f"{md}ChildObjects"
+            attributes = artifact.findall(f"{child_path}/{md}Attribute")
+            tables = artifact.findall(f"{child_path}/{md}TabularSection")
+            table_names = [required_text(node.findtext(f"{md}Properties/{md}Name"), "table name")
+                           for node in tables]
+            if not attributes or not tables or any(not table.findall(f"{child_path}/{md}Attribute") for table in tables):
+                raise ValueError(f"native external inline: expected attributes, tables and columns in {origin}")
+            for branch, kinds, owners in (
+                ("Attribute", (kind,), [owner]),
+                ("TabularSection", (kind,), [owner]),
+                ("Attribute", (kind, "TabularSection"), [f"{owner}.TabularSection.{name}" for name in table_names]),
+            ):
+                rows.append({
+                    "schema_version": SCHEMA_VERSION, "record_type": "required",
+                    "key": {"line": line, "source_kind": source_kind, "branch": branch, "role": None,
+                            "owner_shape": [{"kind": item, "named": True, "role": None} for item in kinds]},
+                    "requirement": {"kind": "read", "observations": [
+                        {"owner": at, "origin": origin.relative_to(repo).as_posix(),
+                         "addresses": [f"{at}.{branch}"]} for at in owners
+                    ]},
+                })
+    return rows
+
+
 def generate_report(native_only: bool) -> dict:
     revision, status = git_state()
     cases = [("unica-coder", "address_coverage")]
@@ -1193,6 +1267,7 @@ def generate_report(native_only: bool) -> dict:
             (SUBSYSTEM_CONTENT_KEYS_SHARD, native_subsystem_content_requirements),
             (WSDL_KEYS_SHARD, native_wsdl_requirements),
             (SCHEDULE_KEYS_SHARD, native_schedule_requirements),
+            (EXTERNAL_INLINE_KEYS_SHARD, native_external_inline_requirements),
             (MXL_KEYS_SHARD, lambda repo: native_mxl_requirements(repo, native_only=native_only)),
         ):
             records = producer(REPO)

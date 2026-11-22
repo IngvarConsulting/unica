@@ -1031,8 +1031,8 @@ fn native_external_root_descriptors_match_published_addresses() {
             AddressEvidence::RoundTrip(&at_text),
         );
         for &child_kind in platform_child_object_order(kind).unwrap() {
-            // The external identity reader projects these native registrations.
-            // Attribute and TabularSection still need their own typed read path.
+            // These children can have their own files; inline registrations
+            // are checked below against their containing descriptor.
             if !matches!(child_kind, "Form" | "Template" | "Command") {
                 continue;
             }
@@ -1088,6 +1088,14 @@ fn native_external_root_descriptors_match_published_addresses() {
             &mut evidence,
         );
         if format == "2.20" {
+            check_native_external_inline(
+                &authority,
+                (line, source_kind),
+                &at_text,
+                artifact,
+                &descriptor_path,
+                &mut evidence,
+            );
             let child =
                 native_registered_form_descriptor(artifact, &descriptor_path, "Main", format);
             let form = QualifiedAddress::parse(&format!("{at_text}.Form.Main")).unwrap();
@@ -1958,6 +1966,75 @@ fn record_native_form_module_group(
     QualifiedAddress::parse(&module).unwrap()
 }
 
+fn check_native_external_inline<'a, 'input: 'a>(
+    authority: &LogicalViewReadAuthority<'_>,
+    source: (PlatformLine, SourceSetKind),
+    owner: &str,
+    artifact: roxmltree::Node<'a, 'input>,
+    descriptor: &Path,
+    evidence: &mut EvidenceRows,
+) {
+    let origin = fixture_origin(descriptor);
+    let mut check = |owner: &str, branch: &str, node: roxmltree::Node<'a, 'input>| {
+        let at = format!("{owner}.{branch}");
+        let address = QualifiedAddress::parse(&at).unwrap();
+        let members: Vec<_> = native_child_objects(node)
+            .filter(|child| child.has_tag_name((MD_CLASSES_NS, branch)))
+            .map(|child| {
+                let name = fixture_properties_name(child).expect("inline child Properties.Name");
+                (address.member(name).unwrap().to_string(), child)
+            })
+            .collect();
+        assert!(
+            !members.is_empty(),
+            "{at}: expected native inline registrations"
+        );
+        let expected = members
+            .iter()
+            .map(|(at, _)| at.clone())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            expected.len(),
+            members.len(),
+            "{at}: duplicate native registrations"
+        );
+        let collection = check_native_branch(authority, &read(authority, owner), &at, &expected);
+        let order: Vec<_> = collection["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["at"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            order,
+            members
+                .iter()
+                .map(|(at, _)| at.as_str())
+                .collect::<Vec<_>>(),
+            "{at}: inline registration order"
+        );
+        for (member, _) in &members {
+            let detail = read(authority, member);
+            assert_eq!(detail["at"], member.as_str());
+            assert_eq!(detail["kind"], branch);
+        }
+        evidence.record_for_source(
+            source,
+            owner,
+            branch,
+            None,
+            &origin,
+            AddressEvidence::Read(&at),
+        );
+        members
+    };
+
+    check(owner, "Attribute", artifact);
+    for (section, node) in check(owner, "TabularSection", artifact) {
+        check(&section, "Attribute", node);
+    }
+}
+
 fn check_native_external_form_and_object_modules(
     format: &str,
     source_kind: SourceSetKind,
@@ -1975,14 +2052,14 @@ fn check_native_external_form_and_object_modules(
     let raw = read_fixture_descriptor(&descriptor_path);
     let document = parse_fixture_descriptor(&raw, &descriptor_path);
     assert_eq!(document.root_element().attribute("version"), Some(format));
-    let owner = fixture_artifact(&document, kind, &descriptor_path);
-    let owner_name = fixture_properties_name(owner).expect("external owner name");
+    let artifact = fixture_artifact(&document, kind, &descriptor_path);
+    let owner_name = fixture_properties_name(artifact).expect("external owner name");
     assert_eq!(
         descriptor_path.file_stem().unwrap().to_str(),
         Some(owner_name)
     );
     let form_descriptor =
-        native_registered_form_descriptor(owner, &descriptor_path, "Main", format);
+        native_registered_form_descriptor(artifact, &descriptor_path, "Main", format);
     let form_body = form_descriptor.with_extension("").join("Ext/Form.xml");
     let body = read_fixture_descriptor(&form_body);
     let body_xml = parse_fixture_descriptor(&body, &form_body);
@@ -2012,6 +2089,14 @@ fn check_native_external_form_and_object_modules(
     assert!(addresses(&read(&authority, &branch), "items").contains(&at.to_string()));
 
     let export_line = export_format_line(format).unwrap();
+    check_native_external_inline(
+        &authority,
+        (export_line, source_kind),
+        &owner,
+        artifact,
+        &descriptor_path,
+        evidence,
+    );
     let module = record_native_form_module_group(
         &authority,
         (export_line, source_kind),
