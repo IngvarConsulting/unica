@@ -914,7 +914,7 @@ fn native_external_root_descriptors_match_published_addresses() {
             ),
             (SourceSetKind::ExternalReport, "erf/SyntheticReport.xml"),
         ] {
-            check_native_external_form_module(
+            check_native_external_form_and_object_modules(
                 format,
                 source_kind,
                 &format!("formats/platform_xml/{format}/external_artifacts/{artifact}"),
@@ -1544,7 +1544,7 @@ fn record_native_form_module_group(
     QualifiedAddress::parse(&module).unwrap()
 }
 
-fn check_native_external_form_module(
+fn check_native_external_form_and_object_modules(
     format: &str,
     source_kind: SourceSetKind,
     relative: &str,
@@ -1555,7 +1555,7 @@ fn check_native_external_form_module(
     let (alias, kind) = match source_kind {
         SourceSetKind::ExternalProcessor => ("epf", "ExternalDataProcessor"),
         SourceSetKind::ExternalReport => ("erf", "ExternalReport"),
-        _ => unreachable!("external form fixture uses an external source kind"),
+        _ => unreachable!("external module fixture uses an external source kind"),
     };
     let descriptor_path = fixture_path(relative);
     let raw = read_fixture_descriptor(&descriptor_path);
@@ -1584,7 +1584,7 @@ fn check_native_external_form_module(
     let authority = LogicalViewReadAuthority::new(
         &cancellation,
         alias,
-        "address-coverage-native-external-form",
+        "address-coverage-native-external-modules",
         source_kind,
         Arc::clone(&root),
         profile,
@@ -1605,39 +1605,58 @@ fn check_native_external_form_module(
         &form_descriptor,
         evidence,
     );
-    let module_at = module.to_string();
-    assert_eq!(read(&authority, &module_at)["kind"], "Module");
-    let module_path = format!("{owner_name}/Forms/Main/Ext/Form/Module.bsl");
-    let native_module = descriptor_path.parent().unwrap().join(&module_path);
-    assert!(!read_fixture_descriptor(&native_module)
-        .trim_start_matches('\u{feff}')
-        .trim()
-        .is_empty());
-    assert_eq!(
-        authority.existing_export_path(&module, None).unwrap(),
-        module_path
-    );
+    let object_module = QualifiedAddress::parse(&format!("{owner}.Module.Object")).unwrap();
     let layout = [LayoutFindSource::new(alias, source_kind, &root)];
-    let located = WorkspaceFindDirectoryBuilder::default()
-        .locate_path(
-            &layout,
-            &module_path,
-            ProviderDeadline::no_deadline(),
-            &cancellation,
-        )
-        .unwrap()
-        .unwrap_or_else(|| panic!("missing external form module {module_path}"));
-    assert_eq!(located.at(), module_at);
-    assert_eq!(located.kind(), "Module");
-    assert_eq!(located.placed_path(), Some(module_path.as_str()));
-    evidence.record_for_source(
-        (export_line, source_kind),
-        &at.to_string(),
-        "Module",
-        Some("Form"),
-        &fixture_origin(&native_module),
-        AddressEvidence::RoundTrip(&module_at),
-    );
+    let finder = WorkspaceFindDirectoryBuilder::default();
+    for (owner, module, role, module_path) in [
+        (
+            at.to_string(),
+            module,
+            "Form",
+            format!("{owner_name}/Forms/Main/Ext/Form/Module.bsl"),
+        ),
+        (
+            owner,
+            object_module,
+            "Object",
+            format!("{owner_name}/Ext/ObjectModule.bsl"),
+        ),
+    ] {
+        let module_at = module.to_string();
+        let view = read(&authority, &module_at);
+        assert_eq!(view["kind"], "Module");
+        assert_eq!(view["props"]["role"], role);
+        assert_eq!(view["props"]["ownerKind"], kind);
+        let native_module = descriptor_path.parent().unwrap().join(&module_path);
+        assert!(!read_fixture_descriptor(&native_module)
+            .trim_start_matches('\u{feff}')
+            .trim()
+            .is_empty());
+        assert_eq!(
+            authority.existing_export_path(&module, None).unwrap(),
+            module_path
+        );
+        let located = finder
+            .locate_path(
+                &layout,
+                &module_path,
+                ProviderDeadline::no_deadline(),
+                &cancellation,
+            )
+            .unwrap()
+            .unwrap_or_else(|| panic!("missing external module {module_path}"));
+        assert_eq!(located.at(), module_at);
+        assert_eq!(located.kind(), "Module");
+        assert_eq!(located.placed_path(), Some(module_path.as_str()));
+        evidence.record_for_source(
+            (export_line, source_kind),
+            &owner,
+            "Module",
+            Some(role),
+            &fixture_origin(&native_module),
+            AddressEvidence::RoundTrip(&module_at),
+        );
+    }
 }
 
 fn check_native_configuration_form_and_command_modules(format: &str, evidence: &mut EvidenceRows) {
@@ -1847,6 +1866,55 @@ fn check_native_configuration_form_and_command_modules(format: &str, evidence: &
                 "CalculationRegisters",
                 "Command",
                 "AddressProbeCalculationRegisterCommand",
+            ),
+        ],
+        evidence,
+    );
+    check_native_configuration_nested_modules(
+        format,
+        "chart_family_module_roles",
+        [
+            (
+                "ChartOfAccounts",
+                "Хозрасчетный",
+                "ChartsOfAccounts",
+                "Form",
+                "AddressProbeAccountsChartForm",
+            ),
+            (
+                "ChartOfAccounts",
+                "Хозрасчетный",
+                "ChartsOfAccounts",
+                "Command",
+                "AddressProbeAccountsChartCommand",
+            ),
+            (
+                "ChartOfCalculationTypes",
+                "ВидыРасчета",
+                "ChartsOfCalculationTypes",
+                "Form",
+                "AddressProbeCalculationTypesChartForm",
+            ),
+            (
+                "ChartOfCalculationTypes",
+                "ВидыРасчета",
+                "ChartsOfCalculationTypes",
+                "Command",
+                "AddressProbeCalculationTypesChartCommand",
+            ),
+            (
+                "ChartOfCharacteristicTypes",
+                "Codes",
+                "ChartsOfCharacteristicTypes",
+                "Form",
+                "AddressProbeCharacteristicTypesChartForm",
+            ),
+            (
+                "ChartOfCharacteristicTypes",
+                "Codes",
+                "ChartsOfCharacteristicTypes",
+                "Command",
+                "AddressProbeCharacteristicTypesChartCommand",
             ),
         ],
         evidence,
