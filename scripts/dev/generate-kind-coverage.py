@@ -68,7 +68,7 @@ def root_kinds(repo: Path) -> list[str]:
 def root_object_address(at: str, kind: str) -> re.Match | None:
     if not isinstance(at, str):
         return None
-    return re.fullmatch(rf"([^:\r\n]+):{re.escape(kind)}\.((?:[^.\\\r\n]|\\[.\\])+)", at)
+    return re.fullmatch(rf"([^:\r\n]+):{re.escape(kind)}\.([^.\\\r\n]+)", at)
 
 
 def confirms_object_read(assertions: list[dict], kind: str, at: str) -> bool:
@@ -337,7 +337,7 @@ def registered_root_address(repo: Path, kind: str, at: str, origin: str) -> None
     address = root_object_address(at, kind)
     if address is None or address[1] != "main":
         raise ValueError(f"root evidence addresses a descendant or another kind: {at}")
-    name = re.sub(r"\\([.\\])", r"\1", address[2])
+    name = address[2]
     for directory in (repo / origin).parents:
         if directory == repo.parent:
             break

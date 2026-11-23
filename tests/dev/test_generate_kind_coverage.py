@@ -396,12 +396,14 @@ class KindCoverageTests(unittest.TestCase):
     def test_root_address_members_must_be_single_and_registered(self) -> None:
         address = self.address_report()
         self.write("native/Configuration.xml", "<Configuration><ChildObjects>"
-                   "<Alpha>Probe</Alpha><Alpha>Probe.One</Alpha></ChildObjects></Configuration>")
+                   "<Alpha>Probe</Alpha><Alpha>Корень</Alpha><Alpha>Probe.One</Alpha>"
+                   "</ChildObjects></Configuration>")
         witness = address["rows"][0]["witnesses"][0]
-        for at in ("main:Alpha.Probe", "main:Alpha.Probe\\.One"):
+        for at in ("main:Alpha.Probe", "main:Alpha.Корень"):
             witness["at"] = at
             self.assertEqual(self.generate(address)["rows"][0]["address"]["status"], "evidenced")
-        for at in ("main:Alpha.Unknown", "main:Alpha.Probe.Form.Main", "main:Alpha.Probe.Module.Object"):
+        for at in ("main:Alpha.Unknown", "main:Alpha.Probe.Form.Main", "main:Alpha.Probe.Module.Object",
+                   "main:Alpha.Probe\\.One", "main:Alpha.Probe\\\\One"):
             with self.subTest(at=at):
                 witness["at"] = at
                 with self.assertRaises(ValueError):
