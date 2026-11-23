@@ -215,6 +215,9 @@ class CheckStepTests(unittest.TestCase):
                 result, _, output = self.run_step(answer, parent=parent)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("admitted=false", output, result.stderr)
+                if parent is None:
+                    self.assertIn("Не удалось прочитать родительскую задачу Refs #2958", result.stdout)
+                    self.assertNotIn("нужна от zeegin", result.stdout)
 
     def test_only_a_local_parent_declaration_counts_and_closing_issues_take_precedence(self) -> None:
         for body in ("Пример\nRefs #2958", "> Refs #2958", "Refs other/repo#2958", "Refs #2958 and #2"):

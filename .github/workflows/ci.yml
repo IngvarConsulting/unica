@@ -111,7 +111,7 @@ jobs:
               parent="$(jq -c '.data.repository.issue' <<<"$found")"
             fi
           fi
-          problems="$(jq -r --argjson parent "$parent" --arg owner "$MILESTONE_OWNER" --arg working "${WORKING_MILESTONE:-}" --arg strict "$STRICT" '
+          problems="$(jq -r --arg parent_number "$parent_number" --argjson parent "$parent" --arg owner "$MILESTONE_OWNER" --arg working "${WORKING_MILESTONE:-}" --arg strict "$STRICT" '
             def milestone_actor: .timelineItems.nodes[-1].actor.login // "неизвестно";
             def version:
               if test("^v[0-9]+[.][0-9]+$") then ltrimstr("v") | split(".") | map(tonumber)
@@ -128,7 +128,9 @@ jobs:
             | (if $pr.closingIssuesReferences.pageInfo.hasNextPage then
                  "Не удалось проверить все закрываемые issue"
                else empty end),
-              (if $pr.milestone == null then
+              (if $parent_number != "" and ($parent == null or $parent.repository.id != $repo.id) then
+                 "Не удалось прочитать родительскую задачу Refs #\($parent_number) в этом репозитории"
+               elif $pr.milestone == null then
                  (if ($local | length) > 0 then "Поставьте веху: скопируйте её с issue" else "Поставьте веху: на PR без issue её ставит \($owner)" end)
                elif ($local | length) == 0 and $actor != $owner then "Веху на PR поставил \($actor), нужна от \($owner)"
                elif ($local | length) > 0 and (any($local[]; .milestone.id == $pr.milestone.id) | not) then
