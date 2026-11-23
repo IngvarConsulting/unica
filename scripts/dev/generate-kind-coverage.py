@@ -22,6 +22,14 @@ ADDRESS = runpy.run_path(str(REPO / "scripts/dev/generate-address-coverage.py"))
 SCENARIOS = tuple(f"S-2994-{name}-create" for name in (
     "configurator-kinds", "declared-kinds", "descriptor-kinds", "queue",
 ))
+READ_SELECTIONS = (
+    ("S-1568-identity-metadata-facts", "CommonPicture", 8, "/data/props/Synonym"),
+    ("S-1568-identity-metadata-facts", "FilterCriterion", 12, "/data/props/Type"),
+    ("S-1568-identity-metadata-facts", "IntegrationService", 28, "/data/props/Synonym"),
+    ("S-3097-role-comment-subsystem-help", "Role", 2, "/data/props/Comment"),
+    ("S-3097-role-comment-subsystem-help", "Subsystem", 8, "/data/props/IncludeHelpInContents"),
+    ("S-3098-xdto-synonym", "XDTOPackage", 1, "/data/props/Synonym"),
+)
 SCENARIO_DIR = Path("tests/fixtures/acceptance/scenarios")
 MANIFEST_DIR = Path("tests/fixtures/acceptance/scenario-manifest")
 ROOT_TEST = "native_configuration_root_address_table_matches_published_branches"
@@ -43,15 +51,20 @@ def root_kinds(repo: Path) -> list[str]:
     return roots
 
 
+def load_scenario(repo: Path, scenario: str) -> tuple[Path, dict]:
+    path = SCENARIO_DIR / f"{scenario}.json"
+    data = json.loads((repo / path).read_text(encoding="utf-8"))
+    manifest = (repo / MANIFEST_DIR / f"{scenario}.steps").read_text().splitlines()
+    if data["id"] != scenario or [step["tool"] for step in data["wire"]] != manifest:
+        raise ValueError(f"invalid scenario/step manifest: {path}")
+    return path, data
+
+
 def creation_evidence(repo: Path, roots: list[str], scenarios: tuple[str, ...]) -> dict:
     evidence = {kind: [] for kind in roots}
     for scenario in scenarios:
-        path = SCENARIO_DIR / f"{scenario}.json"
-        data = json.loads((repo / path).read_text(encoding="utf-8"))
+        path, data = load_scenario(repo, scenario)
         wire = data["wire"]
-        manifest = (repo / MANIFEST_DIR / f"{scenario}.steps").read_text().splitlines()
-        if data["id"] != scenario or [step["tool"] for step in wire] != manifest:
-            raise ValueError(f"invalid scenario/step manifest: {path}")
         found = False
         for prepare, step in enumerate(wire):
             if step["tool"] != "unica.apply" or step.get("expect") != ["ok"]:
@@ -106,6 +119,61 @@ def creation_evidence(repo: Path, roots: list[str], scenarios: tuple[str, ...]) 
                     found = True
         if not found:
             raise ValueError(f"scenario has no executed creation/read evidence: {path}")
+    return evidence
+
+
+def read_evidence(repo: Path, roots: list[str], selections: tuple) -> dict:
+    evidence = {kind: [] for kind in roots}
+    for scenario, kind, view_step, pointer in selections:
+        if kind not in evidence:
+            raise ValueError(f"unregistered read kind: {kind}")
+        path, data = load_scenario(repo, scenario)
+        wire = data["wire"]
+        if not 1 <= view_step <= len(wire):
+            raise ValueError(f"invalid read step: {path}:{view_step}")
+        view = wire[view_step - 1]
+        if view["tool"] != "unica.view" or view.get("expect") != ["ok"]:
+            raise ValueError(f"read witness is not a successful view: {path}:{view_step}")
+        at = view.get("args", {}).get("at", "")
+        capture = None
+        producer = None
+        if at.startswith("$capture."):
+            name = at.removeprefix("$capture.")
+            # The most recent binding wins, including a malformed binding.
+            for index in range(view_step - 2, -1, -1):
+                if name in wire[index].get("captures", {}):
+                    producer = wire[index]
+                    binding = producer["captures"][name]
+                    address_pointer = binding.get("pointer")
+                    assertions = [a for a in producer.get("assertions", [])
+                                  if a.get("pointer") == address_pointer and "eq" in a]
+                    if (producer["tool"] != "unica.view" or producer.get("expect") != ["ok"]
+                            or not isinstance(address_pointer, str)
+                            or not re.fullmatch(r"/data/items/(0|[1-9]\d*)/at", address_pointer)
+                            or len(assertions) != 1 or not isinstance(assertions[0]["eq"], str)):
+                        raise ValueError(f"capture has no asserted list address: {path}:{name}")
+                    at = assertions[0]["eq"]
+                    capture = {"name": name, "producer_step": index + 1,
+                               "pointer": address_pointer, "assertion": assertions[0]}
+                    break
+            if capture is None:
+                raise ValueError(f"unresolved read address capture: {path}:{name}")
+        address = re.fullmatch(rf"([^:\r\n]+):{re.escape(kind)}\.(?:[^.\\\r\n]|\\[.\\])+", at)
+        if address is None:
+            raise ValueError(f"read address is not a root object of {kind}: {path}:{at}")
+        if producer is not None and producer.get("args", {}).get("at") != f"{address[1]}:{kind}":
+            raise ValueError(f"capture belongs to another list: {path}:{at}")
+        assertions = view.get("assertions", [])
+        fields = [a for a in assertions if a.get("pointer") == pointer and "eq" in a]
+        if not pointer.startswith("/data/props/") or len(fields) != 1:
+            raise ValueError(f"read has no confirming data assertion: {path}:{view_step}:{pointer}")
+        if any(a.get("pointer") == "/data/kind" and a.get("eq") != kind for a in assertions):
+            raise ValueError(f"read asserts another kind: {path}:{view_step}")
+        evidence[kind].append({
+            "scenario": path.as_posix(), "declared_formats": data.get("formats"),
+            "workspace": data["workspace"], "at": at, "view_step": view_step,
+            "assertion": fields[0], "address_capture": capture,
+        })
     return evidence
 
 
@@ -175,17 +243,20 @@ def cell(evidence: list[dict]) -> dict:
 
 
 def generate_report(repo: Path = REPO, address_report: dict | None = None,
-                    scenarios: tuple[str, ...] = SCENARIOS) -> dict:
+                    scenarios: tuple[str, ...] = SCENARIOS,
+                    read_selections: tuple = READ_SELECTIONS) -> dict:
     roots = root_kinds(repo)
     creations = creation_evidence(repo, roots, scenarios)
+    reads = read_evidence(repo, roots, read_selections)
     addresses, observations = address_evidence(repo, roots, address_report)
-    rows = [{"kind": kind, "read": cell(creations[kind]), "write": cell(creations[kind]),
+    rows = [{"kind": kind, "read": cell(creations[kind] + reads[kind]), "write": cell(creations[kind]),
              "address": {**cell(addresses[kind]), "absence_observations": sorted(
                  observations[kind], key=canonical)}, "check": cell([])} for kind in roots]
     return {
         "schema_version": 1,
         "scope": {
             "write_operation": "object.create", "scenarios": list(scenarios),
+            "read_only_scenarios": sorted({selection[0] for selection in read_selections}),
             "corpus_evidence": "References to existing asserted corpus steps; no new execution implied.",
             "declared_formats": "Scenario admission, not evidence of execution on every format.",
             "address": None if address_report is None else {

@@ -48,7 +48,7 @@ class KindCoverageTests(unittest.TestCase):
                    "\n".join(step["tool"] for step in self.wire) + "\n")
 
     def generate(self, addresses: dict | None = None) -> dict:
-        return GENERATOR.generate_report(self.repo, addresses, (SCENARIO,))
+        return GENERATOR.generate_report(self.repo, addresses, (SCENARIO,), ())
 
     def address_report(self) -> dict:
         self.write(GENERATOR.ROOT_TEST_FILE, f"fn {GENERATOR.ROOT_TEST}() {{}}")
@@ -63,6 +63,91 @@ class KindCoverageTests(unittest.TestCase):
                 "origin": "native/Configuration.xml", "test_case": GENERATOR.ROOT_TEST, "reason": None,
             }]})
         return {"schema_version": 1, "revision": "fixture", "dirty": False, "scope": "fixture", "rows": rows}
+
+    def read_fixture(self) -> list[dict]:
+        return [
+            {"tool": "unica.view", "args": {"at": "main:Beta"}, "expect": ["ok"],
+             "assertions": [{"pointer": "/data/items/0/at", "eq": "main:Beta.ReadOnly"}],
+             "captures": {"node": {"pointer": "/data/items/0/at"}}},
+            {"tool": "unica.view", "args": {"at": "$capture.node"}, "expect": ["ok"],
+             "assertions": [{"pointer": "/data/kind", "eq": "Beta"},
+                            {"pointer": "/data/props/Comment", "eq": "Read only"}]},
+        ]
+
+    def generate_read(self, wire: list[dict]) -> dict:
+        scenario = "S-Fixture-read"
+        self.write(GENERATOR.SCENARIO_DIR / f"{scenario}.json", json.dumps({
+            "id": scenario, "workspace": "tests/fixtures/workspace", "wire": wire,
+        }))
+        self.write(GENERATOR.MANIFEST_DIR / f"{scenario}.steps",
+                   "\n".join(step["tool"] for step in wire) + "\n")
+        return GENERATOR.generate_report(self.repo, None, (SCENARIO,), (
+            (scenario, "Beta", len(wire), "/data/props/Comment"),
+        ))
+
+    def test_read_only_evidence_binds_address_and_field_without_changing_write(self) -> None:
+        before = self.generate()
+        for captured in (True, False):
+            with self.subTest(captured=captured):
+                wire = self.read_fixture()
+                if not captured:
+                    wire[-1]["args"]["at"] = "main:Beta.ReadOnly"
+                    wire = [wire[-1]]
+                report = self.generate_read(wire)
+                for old, new in zip(before["rows"], report["rows"]):
+                    for column in ("write", "address", "check"):
+                        self.assertEqual(old[column], new[column])
+                    for witness in old["read"]["evidence"]:
+                        self.assertIn(witness, new["read"]["evidence"])
+                beta = report["rows"][1]
+                self.assertEqual(beta["read"]["status"], "evidenced")
+                self.assertEqual(beta["write"]["status"], "no_evidence")
+                item = beta["read"]["evidence"][0]
+                self.assertEqual(item["at"], "main:Beta.ReadOnly")
+                self.assertEqual(item["assertion"], wire[-1]["assertions"][1])
+                self.assertIsNone(item["declared_formats"])
+                if captured:
+                    self.assertEqual(item["address_capture"]["producer_step"], 1)
+                    self.assertEqual(item["address_capture"]["pointer"], "/data/items/0/at")
+                else:
+                    self.assertIsNone(item["address_capture"])
+
+    def test_read_only_rejects_wrong_or_unconfirmed_captures(self) -> None:
+        for damage in ("unknown", "pointer", "unasserted", "foreign-list", "shadowed"):
+            with self.subTest(damage=damage):
+                wire = self.read_fixture()
+                if damage == "unknown":
+                    wire[-1]["args"]["at"] = "$capture.missing"
+                elif damage == "pointer":
+                    wire[0]["captures"]["node"]["pointer"] = "/data/items/1/at"
+                elif damage == "unasserted":
+                    wire[0]["assertions"] = []
+                elif damage == "foreign-list":
+                    wire[0]["args"]["at"] = "main:Alpha"
+                else:
+                    wire.insert(1, {"tool": "unica.view", "args": {}, "expect": ["ok"],
+                                    "captures": {"node": {"file": "source.xml", "kind": "sha256"}}})
+                with self.assertRaises(ValueError):
+                    self.generate_read(wire)
+
+    def test_read_only_rejects_wrong_kind_and_missing_data_confirmation(self) -> None:
+        for damage in ("address-kind", "asserted-kind", "child", "kind-only", "absent", "refusal"):
+            with self.subTest(damage=damage):
+                wire = self.read_fixture()
+                if damage == "address-kind":
+                    wire[-1]["args"]["at"] = "main:Alpha.ReadOnly"
+                elif damage == "asserted-kind":
+                    wire[-1]["assertions"][0]["eq"] = "Alpha"
+                elif damage == "child":
+                    wire[-1]["args"]["at"] = "main:Beta.ReadOnly.Props.Comment"
+                elif damage == "kind-only":
+                    wire[-1]["assertions"].pop()
+                elif damage == "absent":
+                    wire[-1]["assertions"][1] = {"pointer": "/data/props/Comment", "absent": True}
+                else:
+                    wire[-1]["expect"] = ["not_found"]
+                with self.assertRaises(ValueError):
+                    self.generate_read(wire)
 
     def test_all_declared_roots_have_rows_but_unknown_cells_stay_unknown(self) -> None:
         self.write("crates/unica-address/src/kinds/child.rs", 'KindDeclaration::new("Child")')
