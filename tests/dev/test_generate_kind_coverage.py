@@ -161,6 +161,16 @@ class KindCoverageTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.generate(address)
 
+    def test_other_native_root_producers_keep_their_test_reference(self) -> None:
+        address = self.address_report()
+        producer = GENERATOR.ADDRESS["FORM_TEMPLATE_SHARD"]
+        source = "crates/unica-coder/src/infrastructure/v13_read/tests/nested/form.rs"
+        self.write(source, f"fn {producer}() {{}}")
+        address["rows"][0]["witnesses"][0]["test_case"] = producer
+        report = self.generate(address)
+        self.assertEqual(report["rows"][0]["address"]["evidence"][0]["test_file"], source)
+        self.assertEqual(report["rows"][1]["read"]["status"], "no_evidence")
+
     def test_partial_duplicate_or_foreign_owner_address_rows_are_rejected(self) -> None:
         original = self.address_report()
         partial = deepcopy(original)

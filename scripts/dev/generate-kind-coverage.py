@@ -122,9 +122,14 @@ def address_evidence(repo: Path, roots: list[str], report: dict | None) -> tuple
         return positive, observations
     if report.get("schema_version") != 1:
         raise ValueError("unsupported address report schema")
-    repository_file(repo, ROOT_TEST_FILE)
-    if f"fn {ROOT_TEST}(" not in (repo / ROOT_TEST_FILE).read_text():
-        raise ValueError("address evidence test does not exist")
+    producers = {}
+    test_root = repo / "crates/unica-coder/src/infrastructure/v13_read/tests"
+    for path in sorted(test_root.rglob("*.rs")):
+        for name in re.findall(r"\bfn\s+(\w+)\s*\(", path.read_text()):
+            if name in ADDRESS["NATIVE_SHARDS"]:
+                if name in producers:
+                    raise ValueError(f"ambiguous address evidence test: {name}")
+                producers[name] = path.relative_to(repo).as_posix()
     seen = set()
     present = set()
     for row in report["rows"]:
@@ -141,12 +146,13 @@ def address_evidence(repo: Path, roots: list[str], report: dict | None) -> tuple
         if not row["witnesses"]:
             raise ValueError(f"root address row has no witness: {kind}")
         for witness in row["witnesses"]:
-            # Only the root test establishes this slice. Child branches and
-            # other owners in the address map must not widen these cells.
-            if witness["test_case"] != ROOT_TEST:
-                raise ValueError(f"invalid root address evidence test: {witness['test_case']}")
+            # Reuse the address map's native producers, while keeping only
+            # Configuration-root keys. Child/extension evidence stays out.
+            producer = witness["test_case"]
+            if producer not in producers:
+                raise ValueError(f"invalid root address evidence test: {producer}")
             ADDRESS["validate_record"]({"schema_version": 1, "record_type": "evidence",
-                                        "key": key, "witness": witness}, ROOT_TEST)
+                                        "key": key, "witness": witness}, producer)
             repository_file(repo, witness["origin"])
             if witness["owner"] != "main:Configuration":
                 raise ValueError("root address witness has another owner")
@@ -154,7 +160,7 @@ def address_evidence(repo: Path, roots: list[str], report: dict | None) -> tuple
                     witness["at"] == f"main:{kind}"
                     or witness["at"].startswith(f"main:{kind}.")):
                 raise ValueError("root address witness names another kind")
-            item = {"key": key, "witness": witness, "test_file": ROOT_TEST_FILE}
+            item = {"key": key, "witness": witness, "test_file": producers[producer]}
             target = observations if witness["reason"] is not None else positive
             target[kind].append(item)
         present.add(kind)
