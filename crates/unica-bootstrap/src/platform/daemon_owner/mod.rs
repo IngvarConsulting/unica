@@ -607,4 +607,91 @@ mod medium_tests {
             );
         }
     }
+
+    fn ack_recovery_fixture() -> (Pipe, BootstrapDaemonChild) {
+        let address = uuid::Uuid::new_v4().to_string();
+        let pipe = Pipe::listen(&address).unwrap();
+        let end = Instant::now() + Duration::from_secs(5);
+        let client = Pipe::connect(&address, end).unwrap();
+        let pid = client.server_pid().unwrap();
+        let image = FilePin::file(&std::env::current_exe().unwrap()).unwrap();
+        let server = verified_process(pid, &image).unwrap();
+        let daemon = server.try_clone().unwrap();
+        let child = BootstrapDaemonChild {
+            pipe: Some(client),
+            address,
+            server_pid: pid,
+            server,
+            daemon,
+            pid,
+            ticket: uuid::Uuid::new_v4().to_string(),
+            confirmed_abort: false,
+        };
+        (pipe, child)
+    }
+
+    /// rule: INV.RUNTIME.DAEMON-ACTIVE-OWNERS
+    #[test]
+    fn lost_ack_requires_the_same_live_frontend_and_exact_ticket() {
+        let (pipe, mut child) = ack_recovery_fixture();
+        let frontend = child.server.try_clone().unwrap();
+        let startup = Startup {
+            client: child.pid,
+            frontend,
+            ticket: child.ticket.clone(),
+            resolution: Some(Resolution::Committed),
+            unfinished: None,
+        };
+        let end = Instant::now() + Duration::from_secs(5);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                pipe.accept(None).unwrap();
+                assert!(matches!(
+                    pipe.read::<Request>(Some(end), None),
+                    Ok(Request::Commit)
+                ));
+                pipe.disconnect();
+                pipe.accept(None).unwrap();
+                let Request::Recover { ticket } = pipe.read::<Request>(Some(end), None).unwrap()
+                else {
+                    panic!("expected an exact recovery request");
+                };
+                assert!(matches!(
+                    startup.recover(startup.client, "other ticket"),
+                    Response::Refused(_)
+                ));
+                assert!(matches!(
+                    startup.recover(startup.client.wrapping_add(1), &ticket),
+                    Response::Refused(_)
+                ));
+                pipe.write(&startup.recover(startup.client, &ticket), Some(end), None)
+                    .unwrap();
+            });
+            assert!(matches!(
+                child.commit(end),
+                Ok(BootstrapDaemonCommit::Committed)
+            ));
+        });
+    }
+
+    #[test]
+    fn disappeared_owner_leaves_commit_unknown_without_terminating_the_daemon() {
+        let (pipe, mut child) = ack_recovery_fixture();
+        let end = Instant::now() + Duration::from_secs(5);
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                pipe.accept(None).unwrap();
+                assert!(matches!(
+                    pipe.read::<Request>(Some(end), None),
+                    Ok(Request::Commit)
+                ));
+                drop(pipe);
+            });
+            assert!(matches!(
+                child.commit(end),
+                Ok(BootstrapDaemonCommit::Unknown)
+            ));
+        });
+        assert!(child.daemon_is_alive());
+    }
 }

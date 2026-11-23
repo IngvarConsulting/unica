@@ -477,4 +477,57 @@ mod tests {
         wait_for_exit(process);
         assert_eq!(state, WAIT_TIMEOUT);
     }
+
+    const PUBLICATION_FIXTURE: &str = "UNICA_PENDING_DAEMON_PUBLICATION_FIXTURE";
+
+    #[test]
+    #[ignore = "helper process for the inherited private daemon gate"]
+    fn publication_gate_child() {
+        let marker = std::env::var_os(PUBLICATION_FIXTURE).expect("publication marker");
+        crate::await_bootstrap_daemon_publication().expect("owner permitted publication");
+        std::fs::write(marker, b"published").expect("record publication");
+    }
+
+    /// rule: INV.PLATFORM.PROCESS-TREE-LIFECYCLE
+    #[test]
+    fn private_readiness_without_commit_cannot_publish_an_endpoint() {
+        for commit in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let marker = directory.path().join("publication");
+            let environment = vec![(PUBLICATION_FIXTURE.into(), marker.as_os_str().into())];
+            let args = [
+                "--exact".into(),
+                "platform::pending_daemon::tests::publication_gate_child".into(),
+                "--ignored".into(),
+            ];
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let mut child = PendingDaemonProcess::spawn(
+                &std::env::current_exe().unwrap(),
+                &args,
+                directory.path(),
+                environment,
+                deadline,
+            )
+            .unwrap();
+            while !child.is_ready().unwrap() {
+                assert!(
+                    child.try_wait().unwrap().is_none(),
+                    "child exited before private readiness"
+                );
+                check_deadline(deadline).unwrap();
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(!marker.exists(), "private readiness was exposed early");
+            if commit {
+                child.commit(deadline).unwrap();
+                wait_for_exit(child.process.as_raw_handle());
+                assert_eq!(std::fs::read(&marker).unwrap(), b"published");
+                assert!(child.try_wait().unwrap().unwrap().success());
+            } else {
+                child.abort(deadline).unwrap();
+                assert!(child.try_wait().unwrap().is_some());
+                assert!(!marker.exists());
+            }
+        }
+    }
 }
