@@ -303,7 +303,6 @@ fn run_daemon_configured_until<
         .map_err(|error| state_io_error("inspect protocol-v5 listener", error))?
         .port();
     let record = V5EndpointRecord::new(config.core_identity.clone(), port)?;
-    #[cfg(windows)]
     unica_bootstrap::await_bootstrap_daemon_publication()
         .map_err(|error| state_io_error("await Windows daemon publication permit", error))?;
     let published = state.publish_v5_endpoint_record(&record)?;

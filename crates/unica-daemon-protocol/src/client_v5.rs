@@ -550,7 +550,6 @@ impl V5DaemonProcessOwner {
         // Under the spawn lock no other frontend starts a daemon here: a reason
         // left by an earlier process must not be reported for this child.
         let _ = state.remove_startup_failure();
-        #[cfg(windows)]
         if let Some(child) = unica_bootstrap::BootstrapDaemonChild::spawn_if_supervised(
             state_root,
             core_identity.as_str(),
@@ -585,7 +584,6 @@ impl V5DaemonProcessOwner {
         )
     }
 
-    #[cfg(windows)]
     fn await_bootstrap_startup(
         mut child: unica_bootstrap::BootstrapDaemonChild,
         state: &DaemonStateDirectory,

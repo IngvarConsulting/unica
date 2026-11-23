@@ -22,6 +22,23 @@ pub struct RuntimeHandoff<'a> {
     pub startup_notice: Option<&'a str>,
 }
 
+pub fn launch_plugin_runtime(
+    _plugin_root: &Path,
+    entrypoint: &Path,
+    handoff: &RuntimeHandoff<'_>,
+) -> Result<i32> {
+    #[cfg(windows)]
+    if super::daemon_owner::daemon_owner_enabled()? {
+        return super::daemon_owner::launch_runtime_with_daemon_owner(
+            _plugin_root,
+            &unica_artifact_delivery::RuntimeManifest::load(handoff.runtime_manifest)?,
+            entrypoint,
+            handoff,
+        );
+    }
+    launch_runtime(entrypoint, &[], handoff)
+}
+
 #[cfg(unix)]
 pub fn launch_runtime(
     entrypoint: &Path,

@@ -7,6 +7,7 @@ use super::pending_daemon::{check_deadline, PendingDaemonProcess};
 use super::process::{
     daemon_arguments, daemon_environment, runtime_command, wait_for_runtime, RuntimeHandoff,
 };
+use super::{BootstrapDaemonCommit, BootstrapDaemonStatus};
 use install::{FilePin, InstalledOwner};
 use peer::{is_alive, verified_frontend, verified_process};
 use pipe::Pipe;
@@ -35,7 +36,7 @@ const OPT_IN_ENV: &str = "UNICA_WINDOWS_DAEMON_OWNER";
 // on-reach: брокер закрывает сеанс и завершает принадлежащий ему pending запуск.
 const CONTROL_LIMIT: Duration = Duration::from_secs(30);
 
-pub fn daemon_owner_enabled() -> Result<bool, BootstrapError> {
+pub(super) fn daemon_owner_enabled() -> Result<bool, BootstrapError> {
     daemon_owner_opt_in(std::env::var_os(OPT_IN_ENV).as_deref())
 }
 
@@ -49,7 +50,7 @@ fn daemon_owner_opt_in(value: Option<&OsStr>) -> Result<bool, BootstrapError> {
     }
 }
 
-pub fn launch_runtime_with_daemon_owner(
+pub(super) fn launch_runtime_with_daemon_owner(
     plugin: &Path,
     runtime: &RuntimeManifest,
     entrypoint: &Path,
@@ -395,21 +396,6 @@ fn valid_digest(value: &str) -> bool {
 
 fn invalid(reason: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, reason)
-}
-
-#[doc(hidden)]
-pub enum BootstrapDaemonStatus {
-    Pending,
-    Ready,
-    Exited(ExitStatus),
-}
-
-/// A lost response is resolved by the original ticket or the retained
-/// daemon's final authenticated endpoint, never by a replacement process.
-#[doc(hidden)]
-pub enum BootstrapDaemonCommit {
-    Committed,
-    Unknown,
 }
 
 #[doc(hidden)]
