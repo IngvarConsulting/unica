@@ -16,7 +16,7 @@ use std::io::{self, Write};
 use std::os::windows::io::OwnedHandle;
 use std::os::windows::process::ExitStatusExt;
 use std::path::Path;
-use std::process::{Command, ExitStatus};
+use std::process::ExitStatus;
 use std::time::{Duration, Instant};
 use unica_artifact_delivery::{BootstrapError, RuntimeManifest};
 
