@@ -188,6 +188,18 @@ impl Startup {
         Ok(())
     }
 
+    fn retain_unconfirmed_cleanup(&mut self, mut child: PendingDaemonProcess, deadline: Instant) {
+        if self.resolution.is_none() {
+            if child.abort(deadline).is_ok() {
+                self.resolution = Some(Resolution::Aborted);
+            } else {
+                // A new start cannot displace this exact process until the Job
+                // is empty and its retained process handle signals.
+                self.unfinished = Some(child);
+            }
+        }
+    }
+
     fn recover(&self, client: u32, ticket: &str) -> Response {
         if client == self.client && is_alive(&self.frontend) && ticket == self.ticket {
             match self.resolution {
@@ -261,7 +273,7 @@ fn serve_client(
         &identity,
         u128::from(idle_grace_ms),
     );
-    let mut child = match PendingDaemonProcess::spawn(
+    let (mut child, thread) = match PendingDaemonProcess::create_for_startup(
         &installed.entrypoint.path,
         &args,
         &installed.provider.path,
@@ -278,6 +290,16 @@ fn serve_client(
             )
         }
     };
+    if let Err(error) = child.resume(thread, readiness_deadline) {
+        startup.retain_unconfirmed_cleanup(child, deadline);
+        *previous = Some(startup);
+        return finish(
+            pipe,
+            &Response::Refused(error.to_string()),
+            deadline,
+            &frontend,
+        );
+    }
     let result = serve_pending(
         pipe,
         &frontend,
@@ -287,15 +309,7 @@ fn serve_client(
         &mut child,
         &mut startup,
     );
-    if startup.resolution.is_none() {
-        if child.abort(deadline).is_ok() {
-            startup.resolution = Some(Resolution::Aborted);
-        } else {
-            // A new start cannot displace this exact process until the Job
-            // is empty and its retained process handle signals.
-            startup.unfinished = Some(child);
-        }
-    }
+    startup.retain_unconfirmed_cleanup(child, deadline);
     *previous = Some(startup);
     result
 }
@@ -719,7 +733,7 @@ mod medium_tests {
             .join("ping.exe");
         let directory = tempfile::tempdir().unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
-        let child = PendingDaemonProcess::spawn(
+        let (child, thread) = PendingDaemonProcess::create_for_startup(
             &command,
             &["-n".into(), "30".into(), "127.0.0.1".into()],
             directory.path(),
@@ -727,6 +741,7 @@ mod medium_tests {
             deadline,
         )
         .unwrap();
+        child.resume(thread, deadline).unwrap();
         let pending_pid = child.pid();
         let mut startup = Startup {
             client,

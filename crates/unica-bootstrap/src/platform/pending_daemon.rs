@@ -39,32 +39,26 @@ pub(super) struct PendingDaemonProcess {
 }
 
 impl PendingDaemonProcess {
-    pub(super) fn spawn(
+    pub(super) fn create_for_startup(
         program: &Path,
         args: &[OsString],
         cwd: &Path,
         environment: Vec<(OsString, OsString)>,
         deadline: Instant,
-    ) -> io::Result<Self> {
-        let (child, thread) =
-            Self::create_suspended(program, args, cwd, environment, deadline, true)?;
+    ) -> io::Result<(Self, OwnedHandle)> {
+        Self::create_suspended(program, args, cwd, environment, deadline, true)
+    }
+
+    pub(super) fn resume(&self, thread: OwnedHandle, deadline: Instant) -> io::Result<()> {
         check_deadline(deadline)?;
-        // SAFETY: this is the initial thread handle returned for this suspended process.
+        // SAFETY: this is the initial thread handle returned for the suspended process.
         let previous = unsafe { ResumeThread(thread.as_raw_handle() as HANDLE) };
-        if previous == 1 {
-            return Ok(child);
-        }
-        let mut child = child;
-        let failure = if previous == u32::MAX {
-            io::Error::last_os_error()
-        } else {
-            io::Error::other(format!(
+        match previous {
+            1 => Ok(()),
+            u32::MAX => Err(io::Error::last_os_error()),
+            _ => Err(io::Error::other(format!(
                 "unexpected daemon thread suspend count: {previous}"
-            ))
-        };
-        match child.abort(deadline) {
-            Ok(()) => Err(failure),
-            Err(cleanup) => Err(io::Error::other(format!("{failure}; {cleanup}"))),
+            ))),
         }
     }
 
@@ -482,6 +476,19 @@ mod tests {
         assert_eq!(state, WAIT_TIMEOUT);
     }
 
+    /// rule: INV.PLATFORM.PROCESS-TREE-LIFECYCLE
+    #[test]
+    fn an_expired_resume_leaves_the_exact_suspended_child_for_cleanup() {
+        let (mut child, thread) = fixture();
+        let error = child.resume(thread, Instant::now()).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(child.try_wait().unwrap().is_none());
+        child
+            .abort(Instant::now() + Duration::from_secs(5))
+            .unwrap();
+        assert!(child.try_wait().unwrap().is_some());
+    }
+
     const PUBLICATION_FIXTURE: &str = "UNICA_PENDING_DAEMON_PUBLICATION_FIXTURE";
 
     #[test]
@@ -505,7 +512,7 @@ mod tests {
                 "--ignored".into(),
             ];
             let deadline = Instant::now() + Duration::from_secs(10);
-            let mut child = PendingDaemonProcess::spawn(
+            let (mut child, thread) = PendingDaemonProcess::create_for_startup(
                 &std::env::current_exe().unwrap(),
                 &args,
                 directory.path(),
@@ -513,6 +520,7 @@ mod tests {
                 deadline,
             )
             .unwrap();
+            child.resume(thread, deadline).unwrap();
             while !child.is_ready().unwrap() {
                 assert!(
                     child.try_wait().unwrap().is_none(),
