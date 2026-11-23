@@ -402,7 +402,9 @@ impl DaemonStateDirectory {
             .map(|retained| retained.record))
     }
 
-    fn read_v5_endpoint_record_retained(&self) -> Result<Option<RetainedV5EndpointRecord>, String> {
+    pub(crate) fn read_v5_endpoint_record_retained(
+        &self,
+    ) -> Result<Option<RetainedV5EndpointRecord>, String> {
         self.verify_identity()?;
         let mut file =
             match open_state_regular_child(&self.directory, OsStr::new(ENDPOINT_FILE_NAME)) {
@@ -486,7 +488,7 @@ impl DaemonStateDirectory {
         let Some(current) = self.read_v5_endpoint_record_retained()? else {
             return Ok(false);
         };
-        if current.record != retained.record || current.identity != retained.identity {
+        if !current.same_publication(retained) {
             return Ok(false);
         }
         remove_state_regular_child(
@@ -631,6 +633,12 @@ pub struct RetainedV5EndpointRecord {
     pub record: V5EndpointRecord,
     file: File,
     identity: FileIdentity,
+}
+
+impl RetainedV5EndpointRecord {
+    pub(crate) fn same_publication(&self, other: &Self) -> bool {
+        self.identity == other.identity && self.record == other.record
+    }
 }
 
 pub struct SpawnLock {

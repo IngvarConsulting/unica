@@ -4,7 +4,7 @@ pub use crate::task_observation::{TaskObservation, TaskObservationStage, TaskObs
 pub use connections::V5DaemonClient;
 pub use lsp::V5LspExchangeError;
 
-use super::identity::{CoreIdentity, DaemonStateDirectory};
+use super::identity::{CoreIdentity, DaemonStateDirectory, RetainedV5EndpointRecord};
 use super::protocol_v5::{
     decode_v5_server_response, read_bounded_v5_probe_response_frame_before, V5ClientRequest,
     V5DaemonErrorCode, V5EndpointRecord, V5HandshakeServerResponse, V5InvocationRequest,
@@ -226,7 +226,7 @@ pub enum V5RawHandshake {
 
 struct StartupEndpointObservation {
     expected_pid: u32,
-    record: Option<V5EndpointRecord>,
+    record: Option<RetainedV5EndpointRecord>,
 }
 
 impl StartupEndpointObservation {
@@ -237,14 +237,14 @@ impl StartupEndpointObservation {
         }
     }
 
-    fn observe(&mut self, record: &V5EndpointRecord) -> bool {
-        if record.pid() != self.expected_pid {
+    fn observe(&mut self, record: RetainedV5EndpointRecord) -> bool {
+        if record.record.pid() != self.expected_pid {
             return false;
         }
         if let Some(observed) = self.record.as_ref() {
-            return observed == record;
+            return observed.same_publication(&record);
         }
-        self.record = Some(record.clone());
+        self.record = Some(record);
         true
     }
 
@@ -252,7 +252,7 @@ impl StartupEndpointObservation {
         let Some(record) = self.record.as_ref() else {
             return Ok(false);
         };
-        state.remove_matching_v5_endpoint_record(record)
+        state.remove_v5_endpoint_if_owned(record)
     }
 }
 
@@ -286,7 +286,11 @@ fn finish_ready_startup<C: V5StartupChildControl>(
                     .saturating_duration_since(Instant::now())
                     .min(STARTUP_CLEANUP_TIMEOUT),
             );
-            let endpoint_cleanup = endpoint.cleanup(state);
+            let endpoint_cleanup = if termination.is_ok() {
+                endpoint.cleanup(state)
+            } else {
+                Ok(false)
+            };
             let mut diagnostic =
                 format!("protocol-v5 daemon became ready but ownership detach failed: {error}");
             if let Err(cleanup) = termination {
@@ -585,17 +589,17 @@ impl V5DaemonProcessOwner {
             if let Some(status) = child_status {
                 break Err(exited_before_readiness(state, expected_pid, status).into());
             }
-            let record = match state.read_v5_endpoint_record() {
+            let record = match state.read_v5_endpoint_record_retained() {
                 Ok(record) => record,
                 Err(error) => break Err(error.into()),
             };
             if let Some(record) = record {
-                if record.core_identity() != core_identity {
+                if record.record.core_identity() != core_identity {
                     break Err("protocol-v5 endpoint belongs to a foreign core identity"
                         .to_string()
                         .into());
                 }
-                if record.pid() == expected_pid {
+                if record.record.pid() == expected_pid {
                     let child_status = match child.try_wait_status() {
                         Ok(status) => status,
                         Err(error) => break Err(error.into()),
@@ -603,8 +607,10 @@ impl V5DaemonProcessOwner {
                     if let Some(status) = child_status {
                         break Err(exited_before_readiness(state, expected_pid, status).into());
                     }
-                    if endpoint.observe(&record) {
-                        match Self::connect_classified_before(record, readiness_deadline) {
+                    let connection_record = record.record.clone();
+                    if endpoint.observe(record) {
+                        match Self::connect_classified_before(connection_record, readiness_deadline)
+                        {
                             Ok(owner) => break Ok(owner),
                             Err(ConnectionFailure::Rejected(message)) => break Err(message.into()),
                             // Not ready yet, or the readiness window ran out:
@@ -641,7 +647,11 @@ impl V5DaemonProcessOwner {
                         .saturating_duration_since(Instant::now())
                         .min(STARTUP_CLEANUP_TIMEOUT),
                 );
-                let endpoint_cleanup = endpoint.cleanup(state);
+                let endpoint_cleanup = if cleanup.is_ok() {
+                    endpoint.cleanup(state)
+                } else {
+                    Ok(false)
+                };
                 if let Err(cleanup) = cleanup {
                     note.push_str(&format!(
                         "; protocol-v5 daemon startup cleanup failed: {cleanup}"
@@ -1688,26 +1698,40 @@ mod medium_tests {
     fn failed_startup_cleanup_never_adopts_successor_with_reused_pid() {
         let (_root, state) = state_directory();
         let observed = V5EndpointRecord::new(CoreIdentity::production_v5(), 41_001).unwrap();
-        drop(state.publish_v5_endpoint_record(&observed).unwrap());
-        let observed = state.read_v5_endpoint_record().unwrap().unwrap();
+        let publication = state.publish_v5_endpoint_record(&observed).unwrap();
         let mut endpoint = StartupEndpointObservation::new(observed.pid());
-        assert!(endpoint.observe(&observed));
+        assert!(endpoint.observe(publication));
 
         let successor = V5EndpointRecord::new(CoreIdentity::production_v5(), 41_002).unwrap();
         assert_eq!(successor.pid(), observed.pid(), "PID-reuse fixture drift");
         assert_ne!(successor, observed, "full endpoint identity must change");
+        let replacement = state.publish_v5_endpoint_record(&successor).unwrap();
         assert!(
-            !endpoint.observe(&successor),
+            !endpoint.observe(replacement),
             "startup observation adopted a different same-PID record"
         );
-        drop(state.publish_v5_endpoint_record(&successor).unwrap());
-
         assert!(!endpoint.cleanup(&state).unwrap());
         assert_eq!(
             state.read_v5_endpoint_record().unwrap(),
             Some(successor),
             "cleanup adopted and removed the same-PID successor"
         );
+    }
+
+    /// rule: INV.SAFETY.DAEMON-ENDPOINT-OWNERSHIP
+    #[test]
+    fn failed_startup_preserves_a_byte_identical_replacement_endpoint() {
+        let (_root, state) = state_directory();
+        let record = V5EndpointRecord::new(CoreIdentity::production_v5(), 41_001).unwrap();
+        let publication = state.publish_v5_endpoint_record(&record).unwrap();
+        let mut endpoint = StartupEndpointObservation::new(record.pid());
+        assert!(endpoint.observe(publication));
+
+        let replacement = state.publish_v5_endpoint_record(&record).unwrap();
+        assert!(!endpoint.observe(replacement));
+
+        assert!(!endpoint.cleanup(&state).unwrap());
+        assert_eq!(state.read_v5_endpoint_record().unwrap(), Some(record));
     }
 
     #[test]
@@ -1947,7 +1971,7 @@ mod medium_tests {
         for budget in [Duration::ZERO, Duration::from_millis(40)] {
             let (owner, _peer) = connected_owner();
             let mut endpoint = StartupEndpointObservation::new(owner.record.pid());
-            endpoint.observe(&owner.record);
+            assert!(endpoint.observe(state.publish_v5_endpoint_record(&owner.record).unwrap()));
             let mut child = DetachFailingChild::default();
             let result = finish_ready_startup(
                 owner,
@@ -1962,14 +1986,47 @@ mod medium_tests {
         }
     }
 
+    /// rule: INV.SAFETY.DAEMON-ENDPOINT-OWNERSHIP
+    #[test]
+    fn unknown_handoff_does_not_remove_the_observed_endpoint() {
+        struct UnknownHandoff;
+
+        impl V5StartupChildControl for UnknownHandoff {
+            fn detach(&mut self, _: Instant) -> Result<(), String> {
+                Err("daemon handoff result unknown after recovery".into())
+            }
+
+            fn terminate_bounded(&mut self, _: Duration) -> Result<(), String> {
+                Err("cannot prove startup termination".into())
+            }
+        }
+
+        let (_root, state) = state_directory();
+        let (owner, _peer) = connected_owner();
+        let observed = owner.record.clone();
+        let publication = state.publish_v5_endpoint_record(&observed).unwrap();
+        let mut endpoint = StartupEndpointObservation::new(observed.pid());
+        assert!(endpoint.observe(publication));
+
+        let result = finish_ready_startup(
+            owner,
+            &mut UnknownHandoff,
+            &state,
+            &endpoint,
+            Instant::now() + CONNECT_TIMEOUT,
+        );
+        assert!(matches!(result, Err(error) if error.contains("handoff result unknown")));
+        assert_eq!(state.read_v5_endpoint_record().unwrap(), Some(observed));
+    }
+
     #[test]
     fn detach_failure_cleanup_is_identity_bound_to_observed_ready_record() {
         let (_root, state) = state_directory();
         let (owner, peer) = connected_owner();
         let observed = owner.record.clone();
-        drop(state.publish_v5_endpoint_record(&observed).unwrap());
+        let publication = state.publish_v5_endpoint_record(&observed).unwrap();
         let mut endpoint = StartupEndpointObservation::new(observed.pid());
-        assert!(endpoint.observe(&observed));
+        assert!(endpoint.observe(publication));
         let mut child = DetachFailingChild::default();
 
         let error = match finish_ready_startup(
