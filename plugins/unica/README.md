@@ -338,8 +338,11 @@ daemon owner from the installed release package.
 
 3. Set UNICA_WINDOWS_DAEMON_OWNER to 1 in the MCP server environment. Restart
    any existing MCP sessions. Use the same release, runtime cache and provider
-   state for every client in this mode. This setting works with the packaged
-   Git entry and with the native bootstrap run entry.
+   state for every client in this mode. In Codex, pass the variables in the
+   MCP server's explicit env configuration. Setting them in the owner terminal
+   alone does not configure Codex. Use the command, arguments and working
+   directory from the installed .mcp.json for the Git entry, or the installed
+   bootstrap with run --plugin-root for the native entry.
 
 The owner runs as your Windows user and accepts requests from the verified
 runtime of that installation. The usual host process groups still govern MCP
