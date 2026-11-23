@@ -30,6 +30,11 @@ READ_SELECTIONS = (
     ("S-3097-role-comment-subsystem-help", "Subsystem", 8, "/data/props/IncludeHelpInContents"),
     ("S-3098-xdto-synonym", "XDTOPackage", 1, "/data/props/Synonym"),
 )
+CHECK_SELECTIONS = (
+    ("S-1507-nested-subsystem-check", "Subsystem", 3,
+     "main:Subsystem.Parent", "subsystem", "passed"),
+    ("S347", "DocumentJournal", 2, "main:DocumentJournal.WarningJournal", "meta", "warning"),
+)
 SCENARIO_DIR = Path("tests/fixtures/acceptance/scenarios")
 MANIFEST_DIR = Path("tests/fixtures/acceptance/scenario-manifest")
 ROOT_TEST = "native_configuration_root_address_table_matches_published_branches"
@@ -177,6 +182,52 @@ def read_evidence(repo: Path, roots: list[str], selections: tuple) -> dict:
     return evidence
 
 
+def check_evidence(repo: Path, roots: list[str], selections: tuple) -> dict:
+    evidence = {kind: [] for kind in roots}
+    for scenario, kind, check_step, at, validator, outcome in selections:
+        if kind not in evidence or not re.fullmatch(
+                rf"([^:\r\n]+):{re.escape(kind)}\.(?:[^.\\\r\n]|\\[.\\])+", at):
+            raise ValueError(f"check target is not a registered root object of {kind}: {at}")
+        path, data = load_scenario(repo, scenario)
+        if not 1 <= check_step <= len(data["wire"]):
+            raise ValueError(f"invalid check step: {path}:{check_step}")
+        step = data["wire"][check_step - 1]
+        if (step["tool"] != "unica.check" or step.get("expect") != ["ok"]
+                or step.get("args") != {"at": at}):
+            raise ValueError(f"check witness must target the exact object: {path}:{check_step}")
+        if (step.get("status", "passed") != "passed"
+                or step.get("validators", [validator]) != [validator]):
+            raise ValueError(f"check witness is readable or has another validator: {path}:{check_step}")
+        assertions = step.get("assertions", [])
+        if outcome == "passed":
+            for pointer, value in (("/data/at", at), ("/data/status", "passed"),
+                                   ("/data/validators", [validator])):
+                actual = [a for a in assertions if a.get("pointer") == pointer]
+                if actual != [{"pointer": pointer, "eq": value}]:
+                    raise ValueError(f"check has no exact result/validator assertion: {path}:{pointer}")
+        elif outcome == "warning":
+            required = {"metadataPath": at.split(":", 1)[1], "validator": validator,
+                        "code": "validation_warning", "severity": "warning"}
+            diagnostics = [a for a in assertions if a.get("pointer") == "/data/diagnostics"
+                           and ("contains" in a or "eq" in a)]
+            if not diagnostics:
+                raise ValueError(f"check has no asserted warning: {path}:{check_step}")
+            for assertion in diagnostics:
+                values = [assertion["contains"]] if "contains" in assertion else assertion["eq"]
+                if not isinstance(values, list) or not any(
+                        isinstance(item, dict) and all(item.get(k) == v for k, v in required.items())
+                        for item in values):
+                    raise ValueError(f"check warning has another object/validator/result: {path}:{check_step}")
+        else:
+            raise ValueError(f"unsupported check outcome: {outcome}")
+        evidence[kind].append({
+            "scenario": path.as_posix(), "workspace": data["workspace"],
+            "declared_formats": data.get("formats"), "at": at, "check_step": check_step,
+            "validator": validator, "outcome": outcome, "assertions": assertions,
+        })
+    return evidence
+
+
 def repository_file(repo: Path, relative: str) -> None:
     path = Path(relative)
     if path.is_absolute() or ".." in path.parts or not (repo / path).is_file():
@@ -244,19 +295,22 @@ def cell(evidence: list[dict]) -> dict:
 
 def generate_report(repo: Path = REPO, address_report: dict | None = None,
                     scenarios: tuple[str, ...] = SCENARIOS,
-                    read_selections: tuple = READ_SELECTIONS) -> dict:
+                    read_selections: tuple = READ_SELECTIONS,
+                    check_selections: tuple = CHECK_SELECTIONS) -> dict:
     roots = root_kinds(repo)
     creations = creation_evidence(repo, roots, scenarios)
     reads = read_evidence(repo, roots, read_selections)
+    checks = check_evidence(repo, roots, check_selections)
     addresses, observations = address_evidence(repo, roots, address_report)
     rows = [{"kind": kind, "read": cell(creations[kind] + reads[kind]), "write": cell(creations[kind]),
              "address": {**cell(addresses[kind]), "absence_observations": sorted(
-                 observations[kind], key=canonical)}, "check": cell([])} for kind in roots]
+                 observations[kind], key=canonical)}, "check": cell(checks[kind])} for kind in roots]
     return {
         "schema_version": 1,
         "scope": {
             "write_operation": "object.create", "scenarios": list(scenarios),
             "read_only_scenarios": sorted({selection[0] for selection in read_selections}),
+            "check_scenarios": sorted({selection[0] for selection in check_selections}),
             "corpus_evidence": "References to existing asserted corpus steps; no new execution implied.",
             "declared_formats": "Scenario admission, not evidence of execution on every format.",
             "address": None if address_report is None else {

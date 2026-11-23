@@ -48,7 +48,7 @@ class KindCoverageTests(unittest.TestCase):
                    "\n".join(step["tool"] for step in self.wire) + "\n")
 
     def generate(self, addresses: dict | None = None) -> dict:
-        return GENERATOR.generate_report(self.repo, addresses, (SCENARIO,), ())
+        return GENERATOR.generate_report(self.repo, addresses, (SCENARIO,), (), ())
 
     def address_report(self) -> dict:
         self.write(GENERATOR.ROOT_TEST_FILE, f"fn {GENERATOR.ROOT_TEST}() {{}}")
@@ -83,7 +83,7 @@ class KindCoverageTests(unittest.TestCase):
                    "\n".join(step["tool"] for step in wire) + "\n")
         return GENERATOR.generate_report(self.repo, None, (SCENARIO,), (
             (scenario, "Beta", len(wire), "/data/props/Comment"),
-        ))
+        ), check_selections=())
 
     def test_read_only_evidence_binds_address_and_field_without_changing_write(self) -> None:
         before = self.generate()
@@ -148,6 +148,89 @@ class KindCoverageTests(unittest.TestCase):
                     wire[-1]["expect"] = ["not_found"]
                 with self.assertRaises(ValueError):
                     self.generate_read(wire)
+
+    def check_fixture(self, outcome: str) -> dict:
+        validator = "meta" if outcome == "warning" else "subsystem"
+        if outcome == "warning":
+            diagnostic = {"metadataPath": "Beta.Checked", "validator": validator,
+                          "code": "validation_warning", "severity": "warning"}
+            assertions = [{"pointer": "/data/diagnostics", "contains": diagnostic},
+                          {"pointer": "/data/diagnostics", "eq": [deepcopy(diagnostic)]}]
+        else:
+            assertions = [{"pointer": "/data/at", "eq": "main:Beta.Checked"},
+                          {"pointer": "/data/status", "eq": "passed"},
+                          {"pointer": "/data/validators", "eq": [validator]}]
+        return {"tool": "unica.check", "args": {"at": "main:Beta.Checked"}, "expect": ["ok"],
+                "status": "passed", "validators": [validator], "assertions": assertions}
+
+    def generate_check(self, step: dict, outcome: str) -> dict:
+        scenario = "S-Fixture-check"
+        self.write(GENERATOR.SCENARIO_DIR / f"{scenario}.json", json.dumps({
+            "id": scenario, "workspace": "tests/fixtures/workspace", "wire": [step],
+        }))
+        self.write(GENERATOR.MANIFEST_DIR / f"{scenario}.steps", step["tool"] + "\n")
+        validator = "meta" if outcome == "warning" else "subsystem"
+        return GENERATOR.generate_report(self.repo, None, (SCENARIO,), (), (
+            (scenario, "Beta", 1, "main:Beta.Checked", validator, outcome),
+        ))
+
+    def test_object_checks_keep_actual_assertions_and_warning_without_changing_other_columns(self) -> None:
+        before = self.generate()
+        for outcome in ("passed", "warning"):
+            with self.subTest(outcome=outcome):
+                step = self.check_fixture(outcome)
+                report = self.generate_check(step, outcome)
+                for old, new in zip(before["rows"], report["rows"]):
+                    for column in ("read", "write", "address"):
+                        self.assertEqual(old[column], new[column])
+                beta = report["rows"][1]
+                self.assertEqual(beta["check"]["status"], "evidenced")
+                witness = beta["check"]["evidence"][0]
+                self.assertEqual(witness["outcome"], outcome)
+                self.assertEqual(witness["assertions"], step["assertions"])
+                self.assertEqual(witness["at"], "main:Beta.Checked")
+                self.assertEqual(witness["check_step"], 1)
+                if outcome == "warning":
+                    self.assertEqual(witness["assertions"][0]["contains"]["severity"], "warning")
+
+    def test_check_requires_exact_object_result_and_validator_assertions(self) -> None:
+        for field, value in (("args", {}), ("args", {"at": "main:Beta"}),
+                             ("args", {"at": "main:Alpha.Checked"}),
+                             ("tool", "unica.view"), ("expect", ["refused"]),
+                             ("status", "readable"), ("validators", []),
+                             ("assertions", [{"pointer": "/ok", "eq": True}])):
+            with self.subTest(field=field, value=value):
+                step = self.check_fixture("passed")
+                step[field] = value
+                with self.assertRaises(ValueError):
+                    self.generate_check(step, "passed")
+        for pointer in ("/data/at", "/data/status", "/data/validators"):
+            with self.subTest(missing_assertion=pointer):
+                step = self.check_fixture("passed")
+                step["assertions"] = [a for a in step["assertions"] if a["pointer"] != pointer]
+                with self.assertRaises(ValueError):
+                    self.generate_check(step, "passed")
+        step = self.check_fixture("passed")
+        step["assertions"][0]["eq"] = "main:Alpha.Checked"
+        with self.assertRaises(ValueError):
+            self.generate_check(step, "passed")
+
+    def test_check_warning_requires_object_validator_code_and_warning_severity(self) -> None:
+        for field, value in (("metadataPath", "Alpha.Checked"), ("validator", "foreign"),
+                             ("code", "validation_error"), ("severity", "error")):
+            with self.subTest(field=field):
+                step = self.check_fixture("warning")
+                # The second assertion remains valid: an inconsistent foreign
+                # diagnostic must not be rescued by another assertion.
+                step["assertions"][0]["contains"][field] = value
+                with self.assertRaises(ValueError):
+                    self.generate_check(step, "warning")
+        step = self.check_fixture("warning")
+        step["assertions"] = []
+        with self.assertRaises(ValueError):
+            self.generate_check(step, "warning")
+        with self.assertRaises(ValueError):
+            self.generate_check(self.check_fixture("warning"), "passed")
 
     def test_all_declared_roots_have_rows_but_unknown_cells_stay_unknown(self) -> None:
         self.write("crates/unica-address/src/kinds/child.rs", 'KindDeclaration::new("Child")')
@@ -280,7 +363,9 @@ class KindCoverageTests(unittest.TestCase):
         report = GENERATOR.generate_report()
         GENERATOR.validate_report(report, GENERATOR.generate_report())
         self.assertTrue(any(row["write"]["evidence"] for row in report["rows"]))
-        self.assertTrue(all(row["check"]["status"] == "no_evidence" for row in report["rows"]))
+        check_kinds = {selection[1] for selection in GENERATOR.CHECK_SELECTIONS}
+        self.assertEqual({row["kind"] for row in report["rows"]
+                          if row["check"]["status"] == "evidenced"}, check_kinds)
 
 
 if __name__ == "__main__":
