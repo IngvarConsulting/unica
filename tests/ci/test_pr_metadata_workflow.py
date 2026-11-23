@@ -20,7 +20,13 @@ GUARD = ROOT / ".github/workflows/issue-milestone-guard.yml"
 CI = ROOT / ".github/workflows/ci.yml"
 FAKE_GH = """#!/usr/bin/env bash
 echo "$*" > "$FAKE_ARGS"
-cat "$FAKE_RESPONSE"
+if [[ "$*" == *"parentNumber="* ]]; then
+    [[ " $* " == *" parentNumber=2958 "* ]] || exit 1
+    [[ -s "$FAKE_PARENT" ]] || exit 1
+    cat "$FAKE_PARENT"
+else
+    cat "$FAKE_RESPONSE"
+fi
 """
 OWNER = "zeegin"
 
@@ -38,9 +44,9 @@ def issue(number, title="v0.16", *, repository="unica", actor=OWNER):
             "milestone": milestone(title) if title else None, "timelineItems": events(actor)}
 
 
-def response(actor=OWNER, assignees=1, issues=(), draft=False, title="v0.16") -> dict:
+def response(actor=OWNER, assignees=1, issues=(), draft=False, title="v0.16", body="") -> dict:
     return {"data": {"repository": {"id": "unica", "pullRequest": {
-        "isDraft": draft,
+        "isDraft": draft, "body": body,
         "milestone": milestone(title) if actor else None,
         "assignees": {"totalCount": assignees},
         "timelineItems": events(actor),
@@ -144,7 +150,7 @@ class GuardTests(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("jq"), "шаг читает ответ через jq; на раннере он есть")
 class CheckStepTests(unittest.TestCase):
-    def run_step(self, answer: dict, *, strict=True, working="v0.16", **env: str) -> tuple[subprocess.CompletedProcess, str, str]:
+    def run_step(self, answer: dict, *, strict=True, working="v0.16", parent=None, **env: str) -> tuple[subprocess.CompletedProcess, str, str]:
         script = load(METADATA)["jobs"]["metadata"]["steps"][0]["run"]
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -152,12 +158,14 @@ class CheckStepTests(unittest.TestCase):
             gh.write_text(FAKE_GH, encoding="utf-8", newline="\n")
             gh.chmod(gh.stat().st_mode | stat.S_IEXEC)
             (root / "response.json").write_text(json.dumps(answer), encoding="utf-8")
+            if parent is not None:
+                (root / "parent.json").write_text(json.dumps({"data": {"repository": {"issue": parent}}}), encoding="utf-8")
             variables = {
                 **os.environ, "PATH": f"{root}{os.pathsep}{os.environ['PATH']}", "GITHUB_REPOSITORY": "o/r",
                 "GITHUB_REF": "refs/pull/7/merge", "PR_NUMBER": "7", "MILESTONE_OWNER": OWNER,
                 "STRICT": "true" if strict else "false", "GITHUB_OUTPUT": "output.txt",
                 "WORKING_MILESTONE": working,
-                "FAKE_RESPONSE": "response.json", "FAKE_ARGS": "args.txt", **env,
+                "FAKE_PARENT": "parent.json", "FAKE_RESPONSE": "response.json", "FAKE_ARGS": "args.txt", **env,
             }
             completed = subprocess.run(["bash", "-c", script.replace("\r\n", "\n")], cwd=root, env=variables,
                                        capture_output=True, text=True, encoding="utf-8")
@@ -182,11 +190,42 @@ class CheckStepTests(unittest.TestCase):
         self.assert_verdict(response(actor="agent", issues=[issue(5), issue(8, None)]), False,
                             "Issue #8 без вехи, PR не рассматривается")
         self.assert_verdict(response(actor="agent", issues=[issue(5, "v0.15")]), False,
-                            "Веха PR должна совпадать с вехой одной из закрываемых задач этого репозитория")
+                            "Веха PR должна совпадать с вехой связанной задачи этого репозитория")
         self.assert_verdict(response(actor="agent", issues=[issue(5, repository="other")]), False,
                             "Веху на PR поставил agent, нужна от zeegin")
         self.assert_verdict(response(actor="agent", issues=[issue(5, actor="agent")]), False,
                             "Веху issue #5 должен подтвердить zeegin")
+
+    def test_intermediate_pr_inherits_the_owners_milestone_from_its_first_line(self) -> None:
+        answer = response(actor="kollega", body="Refs #2958\r\n\r\nМатрица #3304", title="v0.17")
+        for strict, environment in [(False, {}), (True, {"PR_NUMBER": "", "GITHUB_REF":
+                "refs/heads/gh-readonly-queue/main/pr-3304-abcd"})]:
+            with self.subTest(strict=strict):
+                result, args, output = self.run_step(answer, parent=issue(2958, "v0.17"), working="v0.17",
+                                                     strict=strict, **environment)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("parentNumber=2958", args)
+                self.assertIn("admitted=true", output)
+
+    def test_unconfirmed_wrong_or_unavailable_parent_cannot_admit_a_pr(self) -> None:
+        answer = response(actor="kollega", body="Refs #2958")
+        for parent in (None, issue(2958, None), issue(2958, "v0.15"), issue(2958, actor="kollega"),
+                       issue(2958, repository="foreign")):
+            with self.subTest(parent=parent):
+                result, _, output = self.run_step(answer, parent=parent)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("admitted=false", output, result.stderr)
+                if parent is None:
+                    self.assertIn("Не удалось прочитать родительскую задачу Refs #2958", result.stdout)
+                    self.assertNotIn("нужна от zeegin", result.stdout)
+
+    def test_only_a_local_parent_declaration_counts_and_closing_issues_take_precedence(self) -> None:
+        for body in ("Пример\nRefs #2958", "> Refs #2958", "Refs other/repo#2958", "Refs #2958 and #2"):
+            _, args, output = self.run_step(response(actor="kollega", body=body), parent=issue(2958))
+            self.assertNotIn("parentNumber=", args)
+            self.assertIn("admitted=false", output)
+        self.assert_verdict(response(actor="kollega", issues=[issue(7, "v0.15")], body="Refs #2958"), False)
+        self.assert_verdict(response(actor=OWNER, body="Refs #999999"), True)
 
     def test_the_required_check_refuses_future_milestones_but_pr_tests_can_run(self) -> None:
         future = response(actor="agent", title="v0.17", issues=[issue(5, "v0.17")])
