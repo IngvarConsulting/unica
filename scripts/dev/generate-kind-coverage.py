@@ -15,9 +15,11 @@ from pathlib import Path
 import re
 import runpy
 import sys
+import xml.etree.ElementTree as ET
 
 REPO = Path(__file__).resolve().parents[2]
-DECLARATIONS = runpy.run_path(str(REPO / "scripts/ci/check-kind-lists.py"))["declared"]
+KIND_REGISTRY = runpy.run_path(str(REPO / "scripts/ci/check-kind-lists.py"))
+DECLARATIONS = KIND_REGISTRY["declared"]
 ADDRESS = runpy.run_path(str(REPO / "scripts/dev/generate-address-coverage.py"))
 SCENARIOS = tuple(f"S-2994-{name}-create" for name in (
     "configurator-kinds", "declared-kinds", "descriptor-kinds", "queue",
@@ -61,6 +63,23 @@ def root_kinds(repo: Path) -> list[str]:
     if not roots:
         raise ValueError("root-kind registry is empty")
     return roots
+
+
+def root_object_address(at: str, kind: str) -> re.Match | None:
+    if not isinstance(at, str):
+        return None
+    return re.fullmatch(rf"([^:\r\n]+):{re.escape(kind)}\.((?:[^.\\\r\n]|\\[.\\])+)", at)
+
+
+def confirms_object_read(assertions: list[dict], kind: str, at: str) -> bool:
+    for assertion in assertions:
+        pointer = assertion.get("pointer", "")
+        if (pointer == "/data/kind" and assertion.get("eq") == kind
+                or pointer == "/data/at" and assertion.get("eq") == at
+                or pointer.startswith("/data/props/") and pointer != "/data/props/"
+                and "eq" in assertion and assertion["eq"] is not None):
+            return True
+    return False
 
 
 def load_scenario(repo: Path, scenario: str) -> tuple[Path, dict]:
@@ -115,13 +134,15 @@ def creation_evidence(repo: Path, roots: list[str], scenarios: tuple[str, ...]) 
                          if wire[index]["tool"] == "unica.view"
                          and wire[index].get("args", {}).get("at") == at
                          and wire[index].get("expect") == ["ok"]
-                         and wire[index].get("assertions")]
+                         and confirms_object_read(wire[index].get("assertions", []), kind, at)]
                 if not views:
                     raise ValueError(f"no asserted view after object.create: {path}:{at}")
                 for view in views:
                     for assertion in wire[view]["assertions"]:
-                        if assertion.get("pointer") == "/data/kind" and assertion.get("eq") != kind:
-                            raise ValueError(f"view asserts another kind: {path}:{view + 1}")
+                        expected = {"/data/kind": kind, "/data/at": at}
+                        if (assertion.get("pointer") in expected
+                                and assertion.get("eq") != expected[assertion["pointer"]]):
+                            raise ValueError(f"view asserts another object: {path}:{view + 1}")
                     evidence[kind].append({
                         "scenario": path.as_posix(), "declared_formats": data["formats"],
                         "workspace": data["workspace"], "at": at,
@@ -170,7 +191,7 @@ def read_evidence(repo: Path, roots: list[str], selections: tuple) -> dict:
                     break
             if capture is None:
                 raise ValueError(f"unresolved read address capture: {path}:{name}")
-        address = re.fullmatch(rf"([^:\r\n]+):{re.escape(kind)}\.(?:[^.\\\r\n]|\\[.\\])+", at)
+        address = root_object_address(at, kind)
         if address is None:
             raise ValueError(f"read address is not a root object of {kind}: {path}:{at}")
         if producer is not None and producer.get("args", {}).get("at") != f"{address[1]}:{kind}":
@@ -200,8 +221,7 @@ def require_result_assertions(assertions: list[dict], required: dict, label: Pat
 def check_evidence(repo: Path, roots: list[str], selections: tuple) -> dict:
     evidence = {kind: [] for kind in roots}
     for scenario, kind, check_step, at, validator, outcome, extra_assertions in selections:
-        if kind not in evidence or not re.fullmatch(
-                rf"([^:\r\n]+):{re.escape(kind)}\.(?:[^.\\\r\n]|\\[.\\])+", at):
+        if kind not in evidence or root_object_address(at, kind) is None:
             raise ValueError(f"check target is not a registered root object of {kind}: {at}")
         path, data = load_scenario(repo, scenario)
         if not 1 <= check_step <= len(data["wire"]):
@@ -213,10 +233,16 @@ def check_evidence(repo: Path, roots: list[str], selections: tuple) -> dict:
         if outcome not in {"passed", "failed", "warning"}:
             raise ValueError(f"unsupported check outcome: {outcome}")
         status = "passed" if outcome == "warning" else outcome
-        if (step.get("status", status) != status
-                or step.get("validators", [validator]) != [validator]):
-            raise ValueError(f"check witness is readable or has another validator: {path}:{check_step}")
         assertions = step.get("assertions", [])
+        for metadata, pointer, expected in (("status", "/data/status", status),
+                                            ("validators", "/data/validators", [validator])):
+            if metadata in step and canonical(step[metadata]) != canonical(expected):
+                raise ValueError(f"conflicting check {metadata}: {path}:{check_step}")
+            asserted = any(a.get("pointer") == pointer for a in assertions)
+            if asserted:
+                require_result_assertions(assertions, {pointer: expected}, path)
+            if outcome == "warning" and metadata not in step and not asserted:
+                raise ValueError(f"unconfirmed warning {metadata}: {path}:{check_step}")
         required_assertions = dict(extra_assertions)
         if outcome in {"passed", "failed"}:
             required_assertions.update({"/data/status": outcome, "/data/validators": [validator]})
@@ -259,13 +285,90 @@ def repository_file(repo: Path, relative: str) -> None:
         raise ValueError(f"invalid evidence source: {relative!r}")
 
 
+def described_lines(repo: Path) -> list[str]:
+    source = (repo / "crates/unica-source-contract/src/format_identity.rs").read_text()
+    table = re.search(r"pub const DESCRIBED_PLATFORM_LINES\s*:[^=]+?=\s*&\[(.*?)\];", source, re.S)
+    if table is None:
+        raise ValueError("canonical DESCRIBED_PLATFORM_LINES is missing")
+    entry = re.compile(r'\(\s*PlatformLine::new\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)\s*,\s*"([^"]+)"\s*\)')
+    entries = entry.findall(table[1])
+    if not entries or entry.sub("", table[1]).strip(" \r\n\t,"):
+        raise ValueError("unsupported DESCRIBED_PLATFORM_LINES declaration")
+    lines = []
+    for major, minor, release, label in entries:
+        if ADDRESS["line_number"](label) != tuple(map(int, (major, minor, release))) or label in lines:
+            raise ValueError("invalid canonical platform line")
+        lines.append(label)
+    return lines
+
+
+def root_requirements(repo: Path, roots: list[str]) -> dict:
+    since = {}
+    for path in sorted((repo / KIND_REGISTRY["DECLARATIONS"]).glob("*.rs")):
+        text = path.read_text()
+        tag = KIND_REGISTRY["TAG"].search(text)[1]
+        if tag not in roots:
+            continue
+        introduction = re.search(r"\bsince\s*:\s*Some\(\s*\[\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,?\s*\]\s*\)", text)
+        if introduction:
+            since[tag] = ".".join(introduction.groups())
+        elif re.search(r"\bsince\s*:", text) and not re.search(r"\bsince\s*:\s*None\b", text):
+            raise ValueError(f"unsupported introduction declaration: {path}")
+        else:
+            since[tag] = None
+    requirements = {}
+    for line in described_lines(repo):
+        for kind in roots:
+            key = {"line": line, "source_kind": "configuration", "role": None, "branch": kind,
+                   "owner_shape": [{"kind": "Configuration", "named": False, "role": None}]}
+            introduced = since[kind]
+            requirement = {"kind": "address"}
+            if introduced and ADDRESS["line_number"](line) < ADDRESS["line_number"](introduced):
+                requirement = {"kind": "introduced_in", "line": introduced}
+            record = {"schema_version": 1, "record_type": "required", "key": key, "requirement": requirement}
+            ADDRESS["validate_required_record"](record, ADDRESS["ROOT_KEYS_SHARD"])
+            requirements[ADDRESS["structural_key"](key)] = (ADDRESS["ROOT_KEYS_SHARD"], record)
+    return requirements
+
+
+def registered_root_address(repo: Path, kind: str, at: str, origin: str) -> None:
+    if at == f"main:{kind}":
+        return
+    address = root_object_address(at, kind)
+    if address is None or address[1] != "main":
+        raise ValueError(f"root evidence addresses a descendant or another kind: {at}")
+    name = re.sub(r"\\([.\\])", r"\1", address[2])
+    for directory in (repo / origin).parents:
+        if directory == repo.parent:
+            break
+        configuration = directory / "Configuration.xml"
+        if not configuration.is_file():
+            continue
+        root = ET.parse(configuration).getroot()
+        owners = [root] if root.tag.rsplit("}", 1)[-1] == "Configuration" else [
+            node for node in root if node.tag.rsplit("}", 1)[-1] == "Configuration"]
+        if not owners:
+            continue
+        if len(owners) != 1:
+            raise ValueError(f"ambiguous Configuration owner: {configuration}")
+        namespace = owners[0].tag.removesuffix("Configuration")
+        children = owners[0].find(f"{namespace}ChildObjects")
+        registrations = [] if children is None else children.findall(f"{namespace}{kind}")
+        if sum((node.text or "").strip() == name for node in registrations) != 1:
+            raise ValueError(f"root object is not uniquely registered: {at} in {configuration}")
+        return
+    raise ValueError(f"root evidence has no containing Configuration registration: {at}")
+
+
 def address_evidence(repo: Path, roots: list[str], report: dict | None) -> tuple[dict, dict]:
     positive = {kind: [] for kind in roots}
     observations = {kind: [] for kind in roots}
     if report is None:
         return positive, observations
-    if report.get("schema_version") != 1:
+    if type(report.get("schema_version")) is not int or report["schema_version"] != 1:
         raise ValueError("unsupported address report schema")
+    requirements = root_requirements(repo, roots)
+    groups = {}
     producers = {}
     test_root = repo / "crates/unica-coder/src/infrastructure/v13_read/tests"
     for path in sorted(test_root.rglob("*.rs")):
@@ -287,6 +390,11 @@ def address_evidence(repo: Path, roots: list[str], report: dict | None) -> tuple
             raise ValueError("duplicate root address row")
         seen.add(structural)
         kind = key["branch"]
+        if structural not in requirements:
+            raise ValueError(f"root address is outside the described line/kind pairs: {key}")
+        groups[structural] = row
+        requirement = requirements[structural][1]["requirement"]
+        expected_reason = None if requirement["kind"] == "address" else requirement
         if not row["witnesses"]:
             raise ValueError(f"root address row has no witness: {kind}")
         for witness in row["witnesses"]:
@@ -300,16 +408,17 @@ def address_evidence(repo: Path, roots: list[str], report: dict | None) -> tuple
             repository_file(repo, witness["origin"])
             if witness["owner"] != "main:Configuration":
                 raise ValueError("root address witness has another owner")
-            if witness["reason"] is None and not (
-                    witness["at"] == f"main:{kind}"
-                    or witness["at"].startswith(f"main:{kind}.")):
-                raise ValueError("root address witness names another kind")
+            if canonical(witness["reason"]) != canonical(expected_reason):
+                raise ValueError(f"root witness contradicts the line/kind requirement: {key}")
+            if witness["reason"] is None:
+                registered_root_address(repo, kind, witness["at"], witness["origin"])
             item = {"key": key, "witness": witness, "test_file": producers[producer]}
             target = observations if witness["reason"] is not None else positive
             target[kind].append(item)
         present.add(kind)
     if missing := set(roots) - present:
         raise ValueError(f"address report lacks root rows: {', '.join(sorted(missing))}")
+    ADDRESS["check_required_keys"](requirements, groups, native_only=True)
     return positive, observations
 
 
@@ -349,7 +458,8 @@ def generate_report(repo: Path = REPO, address_report: dict | None = None,
 
 
 def validate_report(report: dict, expected: dict) -> None:
-    if report.get("schema_version") != 1 or report.get("scope") != expected["scope"]:
+    if (type(report.get("schema_version")) is not int or report["schema_version"] != 1
+            or canonical(report.get("scope")) != canonical(expected["scope"])):
         raise ValueError("invalid kind coverage schema or scope")
     rows = {}
     for row in report["rows"]:
@@ -366,7 +476,7 @@ def validate_report(report: dict, expected: dict) -> None:
         if set(row) != {"kind", *COLUMNS}:
             raise ValueError(f"invalid columns: {kind}")
         for column in COLUMNS:
-            if row[column] != expected_rows[kind][column]:
+            if canonical(row[column]) != canonical(expected_rows[kind][column]):
                 raise ValueError(f"invalid or missing evidence: {kind}.{column}")
 
 
@@ -382,7 +492,7 @@ def main() -> int:
             validate_report(json.loads(args.check.read_text()), expected)
         else:
             print(json.dumps(expected, ensure_ascii=False, sort_keys=True, indent=2))
-    except (OSError, ValueError, KeyError, TypeError) as error:
+    except (OSError, ValueError, KeyError, TypeError, ET.ParseError) as error:
         parser.exit(1, f"{parser.prog}: {error}\n")
     return 0
 

@@ -20,6 +20,7 @@ class KindCoverageTests(unittest.TestCase):
         self.repo = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.declare("alpha", "Alpha")
         self.declare("beta", "Beta")
+        self.set_lines("8.3.27")
         self.wire = [
             {"tool": "unica.apply", "args": {"at": "main:Configuration", "ops": [
                 {"op": "object.create", "args": {"values": {"kind": "Alpha", "name": "Probe"}}},
@@ -35,9 +36,16 @@ class KindCoverageTests(unittest.TestCase):
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(text, encoding="utf-8")
 
-    def declare(self, filename: str, kind: str) -> None:
+    def declare(self, filename: str, kind: str, since: str | None = None) -> None:
+        addition = f"since: Some([{', '.join(since.split('.'))}]), " if since else ""
         self.write(f"crates/unica-address/src/kinds/{filename}.rs",
-                   f'root: Some(RootPlace {{}}), ..KindDeclaration::new("{kind}")')
+                   f'root: Some(RootPlace {{}}), {addition}..KindDeclaration::new("{kind}")')
+
+    def set_lines(self, *lines: str) -> None:
+        entries = "".join(f'(PlatformLine::new({", ".join(line.split("."))}), "{line}"),\n'
+                          for line in lines)
+        self.write("crates/unica-source-contract/src/format_identity.rs",
+                   "pub const DESCRIBED_PLATFORM_LINES: &[(PlatformLine, &str)] = &[\n" + entries + "];\n")
 
     def save_scenario(self) -> None:
         self.write(GENERATOR.SCENARIO_DIR / f"{SCENARIO}.json", json.dumps({
@@ -318,6 +326,105 @@ class KindCoverageTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "lacks distinct diagnostic assertions"):
                 self.generate_check(damaged, "warning", extra)
 
+    def test_warning_requires_confirmed_passed_and_validator_and_rejects_conflicts(self) -> None:
+        for field in ("status", "validators"):
+            with self.subTest(missing=field):
+                step = self.check_fixture("warning")
+                del step[field]
+                with self.assertRaises(ValueError):
+                    self.generate_check(step, "warning")
+        step = self.check_fixture("warning")
+        del step["status"], step["validators"]
+        step["assertions"].extend([{"pointer": "/data/status", "eq": "passed"},
+                                   {"pointer": "/data/validators", "eq": ["meta"]}])
+        self.assertEqual(self.generate_check(step, "warning")["rows"][1]["check"]["status"], "evidenced")
+        for pointer, value in (("/data/status", "failed"), ("/data/validators", ["foreign"])):
+            with self.subTest(conflict=pointer):
+                step = self.check_fixture("warning")
+                step["assertions"].append({"pointer": pointer, "eq": value})
+                with self.assertRaises(ValueError):
+                    self.generate_check(step, "warning")
+
+    def test_post_create_read_requires_object_data_instead_of_only_envelope(self) -> None:
+        self.wire[2]["assertions"] = [{"pointer": "/ok", "eq": True}]
+        self.save_scenario()
+        with self.assertRaisesRegex(ValueError, "no asserted view"):
+            self.generate()
+        for assertion in ({"pointer": "/data/kind", "eq": "Alpha"},
+                          {"pointer": "/data/at", "eq": "main:Alpha.Probe"},
+                          {"pointer": "/data/props/Comment", "eq": "Object property"}):
+            self.wire[2]["assertions"] = [assertion]
+            self.save_scenario()
+            self.assertEqual(self.generate()["rows"][0]["read"]["status"], "evidenced")
+
+    def test_address_rows_cover_each_declared_line_including_queue_introduction(self) -> None:
+        self.declare("queue", "Queue", since="8.5.4")
+        lines = ("8.3.27", "8.5.1", "8.5.4")
+        self.set_lines(*lines)
+        report = self.address_report()
+        originals = report["rows"]
+        report["rows"] = []
+        for line in lines:
+            for original in originals:
+                row = deepcopy(original)
+                row["key"]["line"] = line
+                report["rows"].append(row)
+            queue = deepcopy(originals[0])
+            queue["key"].update(line=line, branch="Queue")
+            queue["witnesses"][0].update(at="main:Queue" if line == "8.5.4" else None,
+                                          level="read" if line == "8.5.4" else None,
+                                          reason=None if line == "8.5.4" else {
+                                              "kind": "introduced_in", "line": "8.5.4"})
+            report["rows"].append(queue)
+        result = self.generate(report)
+        queue = next(row for row in result["rows"] if row["kind"] == "Queue")
+        self.assertEqual(len(queue["address"]["absence_observations"]), 2)
+        for line, kind in (("8.5.4", "Queue"), ("8.3.27", "Queue"), ("8.5.1", "Alpha")):
+            with self.subTest(missing=(line, kind)):
+                damaged = deepcopy(report)
+                damaged["rows"] = [row for row in damaged["rows"]
+                                    if (row["key"]["line"], row["key"]["branch"]) != (line, kind)]
+                with self.assertRaises(ValueError):
+                    self.generate(damaged)
+        damaged = deepcopy(report)
+        early = next(row for row in damaged["rows"]
+                     if row["key"]["line"] == "8.3.27" and row["key"]["branch"] == "Queue")
+        early["witnesses"][0].update(at="main:Queue", level="read", reason=None)
+        with self.assertRaises(ValueError):
+            self.generate(damaged)
+
+    def test_root_address_members_must_be_single_and_registered(self) -> None:
+        address = self.address_report()
+        self.write("native/Configuration.xml", "<Configuration><ChildObjects>"
+                   "<Alpha>Probe</Alpha><Alpha>Probe.One</Alpha></ChildObjects></Configuration>")
+        witness = address["rows"][0]["witnesses"][0]
+        for at in ("main:Alpha.Probe", "main:Alpha.Probe\\.One"):
+            witness["at"] = at
+            self.assertEqual(self.generate(address)["rows"][0]["address"]["status"], "evidenced")
+        for at in ("main:Alpha.Unknown", "main:Alpha.Probe.Form.Main", "main:Alpha.Probe.Module.Object"):
+            with self.subTest(at=at):
+                witness["at"] = at
+                with self.assertRaises(ValueError):
+                    self.generate(address)
+
+    def test_json_comparisons_distinguish_booleans_from_numeric_references(self) -> None:
+        expected = self.generate()
+        for target in ("schema", "scope", "prepare_step", "operation_index"):
+            with self.subTest(target=target):
+                damaged = deepcopy(expected)
+                if target == "schema":
+                    damaged["schema_version"] = True
+                elif target == "scope":
+                    damaged["scope"]["complete"] = 0
+                else:
+                    damaged["rows"][0]["read"]["evidence"][0][target] = True
+                with self.assertRaises(ValueError):
+                    GENERATOR.validate_report(damaged, expected)
+        address = self.address_report()
+        address["schema_version"] = True
+        with self.assertRaises(ValueError):
+            self.generate(address)
+
     def test_all_declared_roots_have_rows_but_unknown_cells_stay_unknown(self) -> None:
         self.write("crates/unica-address/src/kinds/child.rs", 'KindDeclaration::new("Child")')
         report = self.generate()
@@ -394,6 +501,7 @@ class KindCoverageTests(unittest.TestCase):
         address = self.address_report()
         witness = address["rows"][1]["witnesses"][0]
         witness.update(at=None, level=None, reason={"kind": "introduced_in", "line": "8.5.4"})
+        self.declare("beta", "Beta", since="8.5.4")
         report = self.generate(address)
         alpha, beta = report["rows"]
         item = alpha["address"]["evidence"][0]
