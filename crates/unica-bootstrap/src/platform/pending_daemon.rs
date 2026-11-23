@@ -24,7 +24,7 @@ use windows_sys::Win32::Storage::FileSystem::{
 use windows_sys::Win32::System::Threading::{
     CreateProcessW, DeleteProcThreadAttributeList, GetExitCodeProcess,
     InitializeProcThreadAttributeList, ResumeThread, UpdateProcThreadAttribute,
-    WaitForSingleObject, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT,
+    WaitForSingleObject, CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT,
     EXTENDED_STARTUPINFO_PRESENT, LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_INFORMATION,
     PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROC_THREAD_ATTRIBUTE_JOB_LIST, STARTF_USESTDHANDLES,
     STARTUPINFOEXW,
@@ -105,6 +105,7 @@ impl PendingDaemonProcess {
         // SAFETY: paths, command line, environment and attribute data outlive the call.
         // Inherit only null stdio and the least-privilege private gate handles.
         // The startup Job owns the child from creation, before its thread can run.
+        // A ready daemon also has no console lifetime tied to the owner terminal.
         if unsafe {
             CreateProcessW(
                 program_name.as_ptr(),
@@ -112,7 +113,10 @@ impl PendingDaemonProcess {
                 null(),
                 null(),
                 1,
-                EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
+                EXTENDED_STARTUPINFO_PRESENT
+                    | CREATE_SUSPENDED
+                    | CREATE_UNICODE_ENVIRONMENT
+                    | CREATE_NO_WINDOW,
                 environment.as_ptr().cast(),
                 cwd.as_ptr(),
                 &startup.StartupInfo,
