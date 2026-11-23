@@ -518,7 +518,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         # Изменение метки не должно создавать новый suite этого workflow:
         # ruleset смотрит на последний suite головы PR и перестаёт видеть
         # обязательный `Unica CI`, если тот suite состоит из skipped-джоб.
-        self.assertEqual(set(on["pull_request"]["types"]), {"opened", "synchronize", "reopened", "ready_for_review", "milestoned"})
+        self.assertEqual(set(on["pull_request"]["types"]), {"opened", "synchronize", "reopened", "ready_for_review", "milestoned", "edited"})
         self.assertNotIn("paths", on["pull_request"])
         self.assertNotIn("label ignored", "\n".join(strings(self.release)))
         # Имена — обязательные проверки ruleset.
