@@ -48,22 +48,7 @@ pub fn launch_runtime(
 }
 
 #[cfg(windows)]
-pub fn launch_runtime_with_daemon_owner(
-    plugin: &Path,
-    manifest: &unica_artifact_delivery::RuntimeManifest,
-    entrypoint: &Path,
-    handoff: &RuntimeHandoff<'_>,
-) -> Result<i32> {
-    let mut command = runtime_command(entrypoint, &[], handoff);
-    super::daemon_owner::configure_frontend(&mut command, plugin, manifest, entrypoint, handoff)
-        .map_err(|error| {
-            BootstrapError::new(format!("failed to bind the Windows daemon owner: {error}"))
-        })?;
-    wait_for_runtime(entrypoint, command)
-}
-
-#[cfg(windows)]
-fn wait_for_runtime(entrypoint: &Path, command: Command) -> Result<i32> {
+pub(super) fn wait_for_runtime(entrypoint: &Path, command: Command) -> Result<i32> {
     use super::job_object::{assign_to_job, spawn_supervised};
 
     let mut runtime = spawn_supervised(command, assign_to_job)

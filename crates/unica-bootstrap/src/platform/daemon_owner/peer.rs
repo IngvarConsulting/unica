@@ -5,7 +5,9 @@ use std::os::windows::ffi::OsStringExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::PathBuf;
 use std::ptr::{null_mut, read_unaligned};
-use windows_sys::Win32::Foundation::{LocalFree, HANDLE, WAIT_TIMEOUT};
+use windows_sys::Win32::Foundation::{
+    LocalFree, FILETIME, HANDLE, INVALID_HANDLE_VALUE, WAIT_TIMEOUT,
+};
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
 };
@@ -13,8 +15,11 @@ use windows_sys::Win32::Security::{
     GetTokenInformation, TokenIntegrityLevel, TokenUser, PSECURITY_DESCRIPTOR, PSID,
     SECURITY_ATTRIBUTES, TOKEN_MANDATORY_LABEL, TOKEN_QUERY, TOKEN_USER,
 };
+use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+};
 use windows_sys::Win32::System::Threading::{
-    GetCurrentProcess, OpenProcess, OpenProcessToken, QueryFullProcessImageNameW,
+    GetCurrentProcess, GetProcessTimes, OpenProcess, OpenProcessToken, QueryFullProcessImageNameW,
     WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
 };
 
@@ -82,6 +87,72 @@ pub(super) fn verified_process(pid: u32, image: &FilePin) -> io::Result<OwnedHan
         ));
     }
     Ok(process)
+}
+
+/// The core is cached independently of plugin installs. Its exact, live
+/// launcher must also be the approved bootstrap from this package.
+pub(super) fn verified_frontend(
+    pid: u32,
+    core: &FilePin,
+    bootstrap: &FilePin,
+) -> io::Result<(OwnedHandle, OwnedHandle)> {
+    let frontend = verified_process(pid, core)?;
+    let parent = verified_process(parent_pid(pid)?, bootstrap)?;
+    if creation_time(&parent)? > creation_time(&frontend)? || !is_alive(&frontend) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "daemon frontend's parent is not its live bootstrap",
+        ));
+    }
+    Ok((frontend, parent))
+}
+
+pub(super) fn is_alive(process: &OwnedHandle) -> bool {
+    // SAFETY: the retained process is queryable and waitable.
+    (unsafe { WaitForSingleObject(process.as_raw_handle(), 0) }) == WAIT_TIMEOUT
+}
+
+fn parent_pid(pid: u32) -> io::Result<u32> {
+    // SAFETY: the kernel returns a private handle to the process snapshot.
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    let snapshot = own(snapshot)?;
+    // SAFETY: the Win32 input is initialized and carries its struct size.
+    let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
+    entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+    let mut found = unsafe { Process32FirstW(snapshot.as_raw_handle(), &mut entry) };
+    while found != 0 {
+        if entry.th32ProcessID == pid {
+            return Ok(entry.th32ParentProcessID);
+        }
+        // SAFETY: the snapshot and record remain valid.
+        found = unsafe { Process32NextW(snapshot.as_raw_handle(), &mut entry) };
+    }
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        "daemon frontend is absent from the process snapshot",
+    ))
+}
+
+fn creation_time(process: &OwnedHandle) -> io::Result<u64> {
+    // SAFETY: Windows fills the four distinct FILETIME outputs.
+    let [mut created, mut exited, mut kernel, mut user]: [FILETIME; 4] =
+        unsafe { std::mem::zeroed() };
+    if unsafe {
+        GetProcessTimes(
+            process.as_raw_handle(),
+            &mut created,
+            &mut exited,
+            &mut kernel,
+            &mut user,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok((u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime))
 }
 
 pub(super) struct PipeSecurity(PSECURITY_DESCRIPTOR);
@@ -171,4 +242,44 @@ unsafe fn sid_string(sid: PSID) -> io::Result<String> {
     // SAFETY: ConvertSidToStringSidW uses LocalAlloc.
     unsafe { LocalFree(value.cast()) };
     Ok(text)
+}
+
+#[cfg(test)]
+mod medium_tests {
+    use super::*;
+    use std::os::windows::process::CommandExt;
+    use windows_sys::Win32::System::Threading::{GetProcessId, CREATE_NO_WINDOW};
+
+    #[test]
+    fn a_shared_core_proves_which_installation_launched_it() {
+        let system = PathBuf::from(std::env::var_os("SystemRoot").unwrap());
+        let core = system.join("System32").join("cmd.exe");
+        let bootstrap = std::env::current_exe().unwrap();
+        let temporary = tempfile::tempdir().unwrap();
+        let other_installation = temporary.path().join("unica-bootstrap.exe");
+        std::fs::copy(&bootstrap, &other_installation).unwrap();
+
+        let mut frontend = std::process::Command::new(&core)
+            .args(["/d", "/c", "pause > nul & ping -n 10 127.0.0.1 > nul"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let core = FilePin::file(&core).unwrap();
+        let result = verified_frontend(frontend.id(), &core, &FilePin::file(&bootstrap).unwrap());
+        let foreign = verified_frontend(
+            frontend.id(),
+            &core,
+            &FilePin::file(&other_installation).unwrap(),
+        );
+        let _ = frontend.kill();
+        let _ = frontend.wait();
+        let (_, approved_launcher) = result.unwrap();
+        // SAFETY: the retained queried launcher handle remains open.
+        assert_eq!(
+            unsafe { GetProcessId(approved_launcher.as_raw_handle()) },
+            std::process::id()
+        );
+        assert!(matches!(foreign, Err(error) if error.kind() == io::ErrorKind::PermissionDenied));
+    }
 }

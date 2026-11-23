@@ -19,7 +19,6 @@ pub use process::{launch_runtime, RuntimeHandoff};
 pub use daemon_gate::await_bootstrap_daemon_publication;
 #[cfg(windows)]
 pub use daemon_owner::{
-    daemon_owner_enabled, run_daemon_owner, BootstrapDaemonChild, BootstrapDaemonStatus,
+    daemon_owner_enabled, launch_runtime_with_daemon_owner, run_daemon_owner, BootstrapDaemonChild,
+    BootstrapDaemonCommit, BootstrapDaemonStatus,
 };
-#[cfg(windows)]
-pub use process::launch_runtime_with_daemon_owner;

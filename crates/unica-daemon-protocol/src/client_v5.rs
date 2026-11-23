@@ -593,7 +593,7 @@ impl V5DaemonProcessOwner {
         readiness_deadline: Instant,
         deadline: Instant,
     ) -> Result<Self, V5ConnectFailure> {
-        use unica_bootstrap::BootstrapDaemonStatus;
+        use unica_bootstrap::{BootstrapDaemonCommit, BootstrapDaemonStatus};
         let pid = child.id();
         let private_result = (|| {
             loop {
@@ -618,31 +618,45 @@ impl V5DaemonProcessOwner {
                 .commit(deadline)
                 .map_err(|error| error.to_string().into())
         })();
-        if let Err(error) = private_result {
-            // Until commit the gate prevents any public endpoint, so this
-            // branch must never try to adopt or delete an on-disk publication.
-            let cleanup_budget = deadline
-                .saturating_duration_since(Instant::now())
-                .min(STARTUP_CLEANUP_TIMEOUT);
-            return Err(match child.abort(Instant::now() + cleanup_budget) {
-                Ok(()) => error,
-                Err(cleanup) => error.with_note(format!(
-                    "; protocol-v5 daemon startup cleanup failed: {cleanup}"
-                )),
-            });
-        }
+        let commit = match private_result {
+            Ok(commit) => commit,
+            Err(error) => {
+                // A known failure is still private. Only the broker can
+                // abort the retained process for this startup.
+                let cleanup_budget = deadline
+                    .saturating_duration_since(Instant::now())
+                    .min(STARTUP_CLEANUP_TIMEOUT);
+                return Err(match child.abort(Instant::now() + cleanup_budget) {
+                    Ok(()) => error,
+                    Err(cleanup) => error.with_note(format!(
+                        "; protocol-v5 daemon startup cleanup failed: {cleanup}"
+                    )),
+                });
+            }
+        };
 
-        // Public protocol authentication remains the final readiness check.
-        // The committed daemon now owns the endpoint and its normal cleanup.
+        // A lost commit acknowledgement can outlive the broker itself. Only
+        // the retained child and its authenticated endpoint can prove this
+        // earlier startup committed. An unknown outcome authorizes no cleanup.
+        let stage = match commit {
+            BootstrapDaemonCommit::Committed => "committed daemon handshake",
+            BootstrapDaemonCommit::Unknown => "indeterminate daemon handoff",
+        };
         loop {
-            let remaining = in_time(deadline, "committed daemon handshake")?;
+            let remaining = in_time(deadline, stage)?;
+            if !child.daemon_is_alive() {
+                return Err(format!("the exact daemon exited during {stage}").into());
+            }
             if let Some(record) = state.read_v5_endpoint_record()? {
                 if record.core_identity() != core_identity {
                     return Err("protocol-v5 endpoint belongs to a foreign core identity".into());
                 }
                 if record.pid() == pid {
                     match Self::connect_classified_before(record, deadline) {
-                        Ok(owner) => return Ok(owner),
+                        Ok(owner) if child.daemon_is_alive() => return Ok(owner),
+                        Ok(_) => {
+                            return Err(format!("the exact daemon exited during {stage}").into())
+                        }
                         Err(ConnectionFailure::Unavailable(_)) => {}
                         Err(failure) => return Err(failure.into()),
                     }

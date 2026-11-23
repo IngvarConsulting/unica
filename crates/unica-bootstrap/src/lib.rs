@@ -20,5 +20,5 @@ pub use verification::verify_mcp_runtime;
 #[doc(hidden)]
 pub use platform::{
     await_bootstrap_daemon_publication, daemon_owner_enabled, launch_runtime_with_daemon_owner,
-    run_daemon_owner, BootstrapDaemonChild, BootstrapDaemonStatus,
+    run_daemon_owner, BootstrapDaemonChild, BootstrapDaemonCommit, BootstrapDaemonStatus,
 };

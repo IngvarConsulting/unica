@@ -127,7 +127,8 @@ impl FilePin {
     }
 
     pub(super) fn matches(&self, path: &Path) -> io::Result<bool> {
-        Ok(self.id == Self::file(path)?.id)
+        let other = Self::file(path)?;
+        Ok(self.id == other.id && self.path == other.path)
     }
 
     fn digest(&self) -> io::Result<String> {
@@ -188,5 +189,17 @@ mod medium_tests {
             pin.digest().unwrap(),
             FilePin::file(&copy).unwrap().digest().unwrap()
         );
+    }
+
+    #[test]
+    fn an_image_hardlinked_in_another_installation_does_not_prove_its_location() {
+        let root = tempfile::tempdir().unwrap();
+        let original = root.path().join("bootstrap.exe");
+        let foreign = root.path().join("foreign-bootstrap.exe");
+        std::fs::write(&original, b"fixture executable").unwrap();
+        std::fs::hard_link(&original, &foreign).unwrap();
+        let approved = FilePin::file(&original).unwrap();
+        assert_eq!(approved.id, FilePin::file(&foreign).unwrap().id);
+        assert!(!approved.matches(&foreign).unwrap());
     }
 }
