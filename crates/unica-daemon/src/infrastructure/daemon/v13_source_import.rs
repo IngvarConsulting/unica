@@ -30,7 +30,9 @@ use super::v13_infobase_exports::{
     runner_start_rejection, BaseDivergence, RunnerAbsence, CONFIG_NAME, LOCAL_CONFIG_NAME,
     RUNNER_OUTPUT_LIMIT,
 };
-use super::v13_source_set_name::{source_set_name_guidance, valid_source_set_name};
+use super::v13_source_set_name::{
+    exchange_source_set_name_guidance, valid_source_set_name_spelling,
+};
 use crate::infrastructure::workspace::discover_workspace;
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
@@ -258,11 +260,11 @@ fn parse_import_arguments(args: &Map<String, Value>) -> Result<ImportArguments, 
     }
     let source_set = match args.get("sourceSet") {
         None => None,
-        Some(Value::String(value)) if valid_source_set_name(value) => Some(value.clone()),
+        Some(Value::String(value)) if valid_source_set_name_spelling(value) => Some(value.clone()),
         Some(_) => {
             return Err(reject(
                 RefusalCode::BadValue,
-                source_set_name_guidance(OPERATION),
+                exchange_source_set_name_guidance(OPERATION),
             ))
         }
     };
@@ -483,7 +485,7 @@ fn planned_steps(envelope: &Value, external: &[String]) -> Result<Vec<PlannedSte
     for step in steps {
         let source_set = step["source_set"]
             .as_str()
-            .filter(|name| valid_source_set_name(name))
+            .filter(|name| valid_source_set_name_spelling(name))
             .ok_or_else(|| {
                 reject(
                     RefusalCode::InvalidResult,
@@ -557,7 +559,8 @@ fn execute_with_resolved_runner(
             &prepared.context.workspace_root,
             &prepared.call,
         ) {
-            if let Ok(preview) = invoke_runner(prepared, tool, runner, &cancellation, true) {
+            if let Ok(preview) = invoke_runner(prepared, &before, tool, runner, &cancellation, true)
+            {
                 if let Some(refusal) = super::v13_infobase_another_copy::refusal_for(
                     OPERATION,
                     &preview,
@@ -569,7 +572,7 @@ fn execute_with_resolved_runner(
         }
         return apply(prepared, &before, tool, runner, &cancellation);
     }
-    let preview = match invoke_runner(prepared, tool, runner, &cancellation, true) {
+    let preview = match invoke_runner(prepared, &before, tool, runner, &cancellation, true) {
         Ok(envelope) => envelope,
         Err(result) => return result,
     };
@@ -665,7 +668,7 @@ fn apply(
             "push cancelled before provider launch",
         );
     }
-    let applied = match invoke_runner(prepared, tool, runner, cancellation, false) {
+    let applied = match invoke_runner(prepared, inputs, tool, runner, cancellation, false) {
         Ok(envelope) => envelope,
         Err(result) => return result,
     };
@@ -1045,6 +1048,7 @@ fn check_plan(
 
 fn invoke_runner(
     prepared: &PreparedSourceImport,
+    inputs: &StableInputs,
     tool: &BundledTool,
     runner: &dyn ProcessRunner,
     cancellation: &CancellationToken,
@@ -1115,11 +1119,19 @@ fn invoke_runner(
             runner_start_rejection(Some(OPERATION.to_string()), &error, &tool.program)
         })?;
     parse_runner_output(output).map_err(|(rejection, envelope)| {
-        let mut result = exchange_refusal(prepared, rejection, &envelope["error"]);
-        note_unapplied_load(prepared, &mut result, &envelope);
+        let mut result = exchange_refusal(prepared, inputs, rejection, &envelope["error"]);
+        note_unapplied_load(prepared, inputs, &mut result, &envelope);
         note_runner_warnings(&mut result, &envelope);
         result
     })
+}
+
+fn selected_source_set(prepared: &PreparedSourceImport, inputs: &StableInputs, name: &str) -> bool {
+    valid_source_set_name_spelling(name)
+        && match prepared.arguments.source_set.as_deref() {
+            Some(selected) => selected == name,
+            None => inputs.declared.iter().any(|declared| declared == name),
+        }
 }
 
 /// Отказ `push`, у которого не удалось применение к конфигурации базы данных
@@ -1133,6 +1145,7 @@ fn invoke_runner(
 /// из выбора вызова.
 fn note_unapplied_load(
     prepared: &PreparedSourceImport,
+    inputs: &StableInputs,
     result: &mut DomainResult,
     envelope: &Value,
 ) {
@@ -1142,14 +1155,7 @@ fn note_unapplied_load(
     }
     let Some(source_set) = error["next"]["source_set"]
         .as_str()
-        .filter(|name| valid_source_set_name(name))
-        .filter(|name| {
-            prepared
-                .arguments
-                .source_set
-                .as_deref()
-                .is_none_or(|selected| selected == *name)
-        })
+        .filter(|name| selected_source_set(prepared, inputs, name))
     else {
         return;
     };
@@ -1224,6 +1230,7 @@ fn note_unapplied_load(
 /// ответ превью ничего не меняет, а выбор исполнял бы изменение.
 fn exchange_refusal(
     prepared: &PreparedSourceImport,
+    inputs: &StableInputs,
     rejection: DomainResult,
     error: &Value,
 ) -> DomainResult {
@@ -1237,7 +1244,7 @@ fn exchange_refusal(
     debug_assert_eq!(rejection.diagnostics[0]["code"], "invalid_state");
     let source_set = error["next"]["source_set"]
         .as_str()
-        .filter(|name| valid_source_set_name(name))
+        .filter(|name| selected_source_set(prepared, inputs, name))
         .map(str::to_owned)
         .or_else(|| prepared.arguments.source_set.clone());
     let mut data = json!({"op": OPERATION, "runnerCode": code});
@@ -1905,7 +1912,8 @@ pub(super) mod tests {
 
     #[test]
     fn preview_accepts_cyrillic_and_legacy_ascii_source_set_from_public_run_request() {
-        for name in ["Доработки", "1foo"] {
+        for name in ["Доработки", "1foo", "ДемонстрационноеРасширениеПримера1"]
+        {
             let root = workspace();
             let config = root.path().join(CONFIG_NAME);
             let yaml = fs::read_to_string(&config)
@@ -1933,6 +1941,38 @@ pub(super) mod tests {
                 .ends_with(&format!("push {name} --dry-run")));
             assert!(result.changed.is_empty());
         }
+    }
+
+    #[test]
+    fn push_keeps_the_long_declared_name_in_the_applied_receipt() {
+        let name = "ДемонстрационноеРасширениеПримера1";
+        let root = workspace();
+        let config = root.path().join(CONFIG_NAME);
+        let yaml = fs::read_to_string(&config)
+            .unwrap()
+            .replace("ext-sales", name);
+        fs::write(config, yaml).unwrap();
+        let runner = SequenceRunner::new(vec![process(envelope(&[(name, full())], true), true)]);
+        let result = run(
+            root.path(),
+            &prepared(root.path(), Some(name), false, false),
+            &runner,
+        );
+        assert!(result.ok, "{result:?}");
+        assert_eq!(result.data.unwrap()["steps"][0]["sourceSet"], name);
+        assert_eq!(result.changed[0]["sourceSet"], name);
+        assert!(runner.joined_args(0).ends_with(&format!("push {name}")));
+
+        let unknown = format!("{name}0");
+        let runner = SequenceRunner::new(Vec::new());
+        let result = run(
+            root.path(),
+            &prepared(root.path(), Some(&unknown), false, true),
+            &runner,
+        );
+        assert_eq!(result.diagnostics[0]["code"], "bad_value");
+        assert!(result.summary.contains("not declared in v8project.yaml"));
+        assert_eq!(runner.call_count(), 0);
     }
 
     #[test]
@@ -2883,9 +2923,15 @@ pub(super) mod tests {
         let plan = [("main", full()), ("ext-sales", partial(3))];
         let runner = SequenceRunner::new(vec![process(envelope(&plan, true), true)]);
         let cancellation = CancellationToken::new();
-        assert!(
-            invoke_runner(&prepared, &tool(root.path()), &runner, &cancellation, false,).is_ok()
-        );
+        assert!(invoke_runner(
+            &prepared,
+            &capture_inputs(&prepared).unwrap(),
+            &tool(root.path()),
+            &runner,
+            &cancellation,
+            false,
+        )
+        .is_ok());
         let (_, child) = runner.calls.lock().unwrap()[0]
             .cancellation
             .spawn_with_gate(|| Ok(()))
@@ -2896,9 +2942,15 @@ pub(super) mod tests {
 
         let runner = SequenceRunner::new(vec![process(envelope(&plan, false), true)]);
         let cancellation = CancellationToken::new();
-        assert!(
-            invoke_runner(&prepared, &tool(root.path()), &runner, &cancellation, true,).is_ok()
-        );
+        assert!(invoke_runner(
+            &prepared,
+            &capture_inputs(&prepared).unwrap(),
+            &tool(root.path()),
+            &runner,
+            &cancellation,
+            true,
+        )
+        .is_ok());
         let (_, child) = runner.calls.lock().unwrap()[0]
             .cancellation
             .spawn_with_gate(|| Ok(()))
