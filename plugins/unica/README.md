@@ -317,6 +317,43 @@ are read when a Unica process starts; the background process is shared by all
 sessions and exits after 15 minutes without work. If the OS does not trust the presented certificate, the refusal
 names TLS interception by security software or a gateway as the likely cause.
 
+
+## Shared daemon owner on Windows
+
+The standard launcher keeps the normal process lifetime. To share one daemon
+across Codex sessions with separate Windows process groups, explicitly run the
+daemon owner from the installed release package.
+
+1. Use a regular PowerShell session outside the MCP host. Set
+   UNICA_PROVIDER_STATE_DIR and UNICA_RUNTIME_CACHE_DIR to the same absolute
+   directories that your MCP host will use. Use a state directory dedicated to
+   this installation.
+2. Run the installed bootstrap in that session and leave it open until you are
+   done. The owner prints Unica daemon owner ready when it accepts local
+   connections. The first MCP request starts the daemon if needed.
+
+   ~~~powershell
+   & '<plugin root>\bootstrap\bin\win-x64\unica-bootstrap.exe' daemon-owner --plugin-root '<plugin root>'
+   ~~~
+
+3. Set UNICA_WINDOWS_DAEMON_OWNER to 1 in the MCP server environment. Restart
+   any existing MCP sessions. Use the same release, runtime cache and provider
+   state for every client in this mode. This setting works with the packaged
+   Git entry and with the native bootstrap run entry.
+
+The owner runs as your Windows user and accepts requests from the verified
+runtime of that installation. The usual host process groups still govern MCP
+frontends and their ordinary descendants. When the owner is unavailable, an
+opted-in frontend can reuse a live matching daemon. A request that needs a new
+daemon reports that the approved owner is unavailable.
+
+To disable this mode, remove UNICA_WINDOWS_DAEMON_OWNER from the MCP
+environment and restart those sessions. To stop or update the owner, close
+the MCP clients, let their daemon finish its work and exit on idle, then
+press Ctrl+C in the owner terminal. The daemon removes its connection
+record when it exits normally. For an upgrade, start the owner using the
+newly installed bootstrap and reconnect the clients to that installation.
+
 ## Skills
 
 The `skills/` tree covers configuration and extension metadata, forms, roles,

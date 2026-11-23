@@ -55,22 +55,48 @@ fn run(args: Vec<String>) -> Result<i32> {
             // Убитый прошлый запуск своего провода не имел. Провод есть у
             // рантайма — он и расскажет, если рассказывать есть о чём.
             let notice = killed.notice();
-            launch_runtime(
-                &installed.entrypoint,
-                &[],
-                &RuntimeHandoff {
-                    provider_state_root: &provider_state_root,
-                    artifact_cache: &artifact_cache,
-                    runtime_manifest: &plugin_root.join("runtime-manifest.json"),
-                    startup_notice: notice.as_deref(),
-                },
-            )
+            let manifest = plugin_root.join("runtime-manifest.json");
+            let handoff = RuntimeHandoff {
+                provider_state_root: &provider_state_root,
+                artifact_cache: &artifact_cache,
+                runtime_manifest: &manifest,
+                startup_notice: notice.as_deref(),
+            };
+            #[cfg(windows)]
+            if unica_bootstrap::daemon_owner_enabled()? {
+                return unica_bootstrap::launch_runtime_with_daemon_owner(
+                    &plugin_root,
+                    &RuntimeManifest::load(&manifest)?,
+                    &installed.entrypoint,
+                    &handoff,
+                );
+            }
+            launch_runtime(&installed.entrypoint, &[], &handoff)
         }
         Command::Verify => {
             install_and_verify_runtime(&plugin_root, &provider_state_root)?;
             Ok(0)
         }
         Command::Prefetch => prefetch_runtime(&plugin_root),
+        #[cfg(windows)]
+        Command::DaemonOwner => {
+            verify_installed_skill_package(&plugin_root, VERSION)?;
+            let artifact_cache = runtime_cache_root()?;
+            let installed = install_runtime(&plugin_root, &artifact_cache)?;
+            let path = plugin_root.join("runtime-manifest.json");
+            let manifest = RuntimeManifest::load(&path)?;
+            unica_bootstrap::run_daemon_owner(
+                &plugin_root,
+                &manifest,
+                &installed.entrypoint,
+                &RuntimeHandoff {
+                    provider_state_root: &provider_state_root,
+                    artifact_cache: &artifact_cache,
+                    runtime_manifest: &path,
+                    startup_notice: None,
+                },
+            )
+        }
     }
 }
 
@@ -222,18 +248,26 @@ enum Command {
     Run,
     Verify,
     Prefetch,
+    #[cfg(windows)]
+    DaemonOwner,
 }
 
 fn parse_command(args: &[String]) -> Result<(Command, PathBuf)> {
     if args.len() != 3 || args[1] != "--plugin-root" {
         return Err(unica_artifact_delivery::BootstrapError::new(
-            "usage: unica-bootstrap <run|verify|prefetch> --plugin-root <path>",
+            if cfg!(windows) {
+                "usage: unica-bootstrap <run|verify|prefetch|daemon-owner> --plugin-root <path>"
+            } else {
+                "usage: unica-bootstrap <run|verify|prefetch> --plugin-root <path>"
+            },
         ));
     }
     let command = match args[0].as_str() {
         "run" => Command::Run,
         "verify" => Command::Verify,
         "prefetch" => Command::Prefetch,
+        #[cfg(windows)]
+        "daemon-owner" => Command::DaemonOwner,
         command => {
             return Err(unica_artifact_delivery::BootstrapError::new(format!(
                 "unknown bootstrap command: {command}"

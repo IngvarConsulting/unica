@@ -550,6 +550,24 @@ impl V5DaemonProcessOwner {
         // Under the spawn lock no other frontend starts a daemon here: a reason
         // left by an earlier process must not be reported for this child.
         let _ = state.remove_startup_failure();
+        #[cfg(windows)]
+        if let Some(child) = unica_bootstrap::BootstrapDaemonChild::spawn_if_supervised(
+            state_root,
+            core_identity.as_str(),
+            idle_grace,
+            readiness_deadline,
+            deadline,
+        )
+        .map_err(|error| format!("failed to start with the Windows daemon owner: {error}"))?
+        {
+            return Self::await_bootstrap_startup(
+                child,
+                &state,
+                &core_identity,
+                readiness_deadline,
+                deadline,
+            );
+        }
         let command = crate::process_command::daemon_process_command(
             &executable,
             state_root,
@@ -565,6 +583,73 @@ impl V5DaemonProcessOwner {
             readiness_deadline,
             deadline,
         )
+    }
+
+    #[cfg(windows)]
+    fn await_bootstrap_startup(
+        mut child: unica_bootstrap::BootstrapDaemonChild,
+        state: &DaemonStateDirectory,
+        core_identity: &CoreIdentity,
+        readiness_deadline: Instant,
+        deadline: Instant,
+    ) -> Result<Self, V5ConnectFailure> {
+        use unica_bootstrap::BootstrapDaemonStatus;
+        let pid = child.id();
+        let private_result = (|| {
+            loop {
+                match child.status(readiness_deadline).map_err(|error| {
+                    if error.kind() == io::ErrorKind::TimedOut {
+                        V5ConnectFailure::not_in_time("private spawn readiness")
+                    } else {
+                        V5ConnectFailure::from(error.to_string())
+                    }
+                })? {
+                    BootstrapDaemonStatus::Ready => break,
+                    BootstrapDaemonStatus::Exited(status) => {
+                        return Err(exited_before_readiness(state, pid, status).into());
+                    }
+                    BootstrapDaemonStatus::Pending => {
+                        let remaining = in_time(readiness_deadline, "private spawn readiness")?;
+                        std::thread::sleep(RETRY_INTERVAL.min(remaining));
+                    }
+                }
+            }
+            child
+                .commit(deadline)
+                .map_err(|error| error.to_string().into())
+        })();
+        if let Err(error) = private_result {
+            // Until commit the gate prevents any public endpoint, so this
+            // branch must never try to adopt or delete an on-disk publication.
+            let cleanup_budget = deadline
+                .saturating_duration_since(Instant::now())
+                .min(STARTUP_CLEANUP_TIMEOUT);
+            return Err(match child.abort(Instant::now() + cleanup_budget) {
+                Ok(()) => error,
+                Err(cleanup) => error.with_note(format!(
+                    "; protocol-v5 daemon startup cleanup failed: {cleanup}"
+                )),
+            });
+        }
+
+        // Public protocol authentication remains the final readiness check.
+        // The committed daemon now owns the endpoint and its normal cleanup.
+        loop {
+            let remaining = in_time(deadline, "committed daemon handshake")?;
+            if let Some(record) = state.read_v5_endpoint_record()? {
+                if record.core_identity() != core_identity {
+                    return Err("protocol-v5 endpoint belongs to a foreign core identity".into());
+                }
+                if record.pid() == pid {
+                    match Self::connect_classified_before(record, deadline) {
+                        Ok(owner) => return Ok(owner),
+                        Err(ConnectionFailure::Unavailable(_)) => {}
+                        Err(failure) => return Err(failure.into()),
+                    }
+                }
+            }
+            std::thread::sleep(RETRY_INTERVAL.min(remaining));
+        }
     }
 
     fn await_startup_before(
