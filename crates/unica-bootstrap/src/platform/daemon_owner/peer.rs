@@ -248,7 +248,7 @@ unsafe fn sid_string(sid: PSID) -> io::Result<String> {
 mod medium_tests {
     use super::*;
     use std::os::windows::process::CommandExt;
-    use windows_sys::Win32::System::Threading::{GetProcessId, CREATE_NO_WINDOW};
+    use windows_sys::Win32::System::Threading::{GetProcessId, CREATE_NO_WINDOW, CREATE_SUSPENDED};
 
     #[test]
     fn a_shared_core_proves_which_installation_launched_it() {
@@ -260,9 +260,7 @@ mod medium_tests {
         std::fs::copy(&bootstrap, &other_installation).unwrap();
 
         let mut frontend = std::process::Command::new(&core)
-            .args(["/d", "/c", "pause > nul & ping -n 10 127.0.0.1 > nul"])
-            .creation_flags(CREATE_NO_WINDOW)
-            .stdin(std::process::Stdio::piped())
+            .creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED)
             .spawn()
             .unwrap();
         let core = FilePin::file(&core).unwrap();
