@@ -150,28 +150,41 @@ class KindCoverageTests(unittest.TestCase):
                     self.generate_read(wire)
 
     def check_fixture(self, outcome: str) -> dict:
-        validator = "meta" if outcome == "warning" else "subsystem"
+        validator = "meta" if outcome in {"warning", "failed"} else "subsystem"
         if outcome == "warning":
             diagnostic = {"metadataPath": "Beta.Checked", "validator": validator,
                           "code": "validation_warning", "severity": "warning"}
             assertions = [{"pointer": "/data/diagnostics", "contains": diagnostic},
                           {"pointer": "/data/diagnostics", "eq": [deepcopy(diagnostic)]}]
+        elif outcome == "failed":
+            assertions = [{"pointer": "/data/status", "eq": "failed"},
+                          {"pointer": "/data/validators", "eq": [validator]},
+                          {"pointer": "/data/diagnostics/0/code", "eq": "validation_failed"},
+                          {"pointer": "/data/diagnostics/0/severity", "eq": "error"},
+                          {"pointer": "/data/diagnostics/0/field", "eq": "details.type"}]
         else:
             assertions = [{"pointer": "/data/at", "eq": "main:Beta.Checked"},
                           {"pointer": "/data/status", "eq": "passed"},
                           {"pointer": "/data/validators", "eq": [validator]}]
         return {"tool": "unica.check", "args": {"at": "main:Beta.Checked"}, "expect": ["ok"],
-                "status": "passed", "validators": [validator], "assertions": assertions}
+                "status": "failed" if outcome == "failed" else "passed",
+                "validators": [validator], "assertions": assertions}
 
-    def generate_check(self, step: dict, outcome: str) -> dict:
+    def generate_check(self, step: dict, outcome: str, extra_assertions: dict | None = None) -> dict:
         scenario = "S-Fixture-check"
         self.write(GENERATOR.SCENARIO_DIR / f"{scenario}.json", json.dumps({
             "id": scenario, "workspace": "tests/fixtures/workspace", "wire": [step],
         }))
         self.write(GENERATOR.MANIFEST_DIR / f"{scenario}.steps", step["tool"] + "\n")
-        validator = "meta" if outcome == "warning" else "subsystem"
+        validator = "meta" if outcome in {"warning", "failed"} else "subsystem"
+        if extra_assertions is None:
+            extra_assertions = {"/data/at": "main:Beta.Checked"} if outcome == "passed" else {}
+            if outcome == "failed":
+                extra_assertions = {"/data/diagnostics/0/code": "validation_failed",
+                                    "/data/diagnostics/0/severity": "error",
+                                    "/data/diagnostics/0/field": "details.type"}
         return GENERATOR.generate_report(self.repo, None, (SCENARIO,), (), (
-            (scenario, "Beta", 1, "main:Beta.Checked", validator, outcome),
+            (scenario, "Beta", 1, "main:Beta.Checked", validator, outcome, extra_assertions),
         ))
 
     def test_object_checks_keep_actual_assertions_and_warning_without_changing_other_columns(self) -> None:
@@ -231,6 +244,79 @@ class KindCoverageTests(unittest.TestCase):
             self.generate_check(step, "warning")
         with self.assertRaises(ValueError):
             self.generate_check(self.check_fixture("warning"), "passed")
+
+    def direct_check_fixture(self, outcome: str) -> tuple[dict, dict]:
+        step = self.check_fixture(outcome)
+        if outcome == "passed":
+            step["assertions"] = [a for a in step["assertions"] if a["pointer"] != "/data/at"]
+            step["assertions"].append({"pointer": "/data/diagnosticCount", "eq": 1})
+            extra = {"/data/diagnosticCount": 1}
+        else:
+            extra = {"/data/diagnostics/0/code": "validation_failed",
+                     "/data/diagnostics/0/severity": "error",
+                     "/data/diagnostics/0/field": "details.type"}
+        return step, extra
+
+    def test_exact_requests_keep_failed_or_passed_with_diagnostics_without_response_at(self) -> None:
+        before = self.generate()
+        for outcome in ("failed", "passed"):
+            with self.subTest(outcome=outcome):
+                step, extra = self.direct_check_fixture(outcome)
+                report = self.generate_check(step, outcome, extra)
+                for old, new in zip(before["rows"], report["rows"]):
+                    for column in ("read", "write", "address"):
+                        self.assertEqual(old[column], new[column])
+                witness = report["rows"][1]["check"]["evidence"][0]
+                self.assertEqual(witness["outcome"], outcome)
+                self.assertEqual(witness["at"], "main:Beta.Checked")
+                self.assertEqual(witness["assertions"], step["assertions"])
+                self.assertFalse(any(a["pointer"] == "/data/at" for a in witness["assertions"]))
+
+    def test_direct_checks_reject_changed_status_validator_detail_or_address(self) -> None:
+        for outcome in ("failed", "passed"):
+            for damage in ("status", "validator", "request", "response", "detail", "missing-status"):
+                with self.subTest(outcome=outcome, damage=damage):
+                    step, extra = self.direct_check_fixture(outcome)
+                    if damage == "status":
+                        next(a for a in step["assertions"] if a["pointer"] == "/data/status")["eq"] = (
+                            "passed" if outcome == "failed" else "failed")
+                    elif damage == "validator":
+                        next(a for a in step["assertions"] if a["pointer"] == "/data/validators")["eq"] = ["foreign"]
+                    elif damage == "request":
+                        step["args"]["at"] = "main:Alpha.Checked"
+                    elif damage == "response":
+                        step["assertions"].append({"pointer": "/data/at", "eq": "main:Alpha.Checked"})
+                    elif damage == "detail":
+                        pointer = "/data/diagnostics/0/field" if outcome == "failed" else "/data/diagnosticCount"
+                        next(a for a in step["assertions"] if a["pointer"] == pointer)["eq"] = (
+                            "other.field" if outcome == "failed" else True)
+                    else:
+                        step["assertions"] = [a for a in step["assertions"] if a["pointer"] != "/data/status"]
+                    with self.assertRaises(ValueError):
+                        self.generate_check(step, outcome, extra)
+
+    def test_two_warning_diagnostics_are_distinct_and_remain_warning_under_passed_status(self) -> None:
+        step = self.check_fixture("warning")
+        first = step["assertions"][0]["contains"]
+        first["field"] = "childObjects.Form.Main"
+        second = deepcopy(first)
+        second["field"] = "childObjects.Template.Print"
+        step["assertions"] = [{"pointer": "/data/status", "eq": "passed"},
+                              {"pointer": "/data/diagnosticCount", "eq": 2},
+                              {"pointer": "/data/diagnostics", "contains": first},
+                              {"pointer": "/data/diagnostics", "contains": second}]
+        extra = {"/data/status": "passed", "/data/diagnosticCount": 2}
+        report = self.generate_check(step, "warning", extra)
+        witness = report["rows"][1]["check"]["evidence"][0]
+        self.assertEqual(witness["outcome"], "warning")
+        self.assertEqual(witness["assertions"], step["assertions"])
+        missing = deepcopy(step)
+        missing["assertions"].pop()
+        duplicate = deepcopy(step)
+        duplicate["assertions"][-1] = deepcopy(duplicate["assertions"][-2])
+        for damaged in (missing, duplicate):
+            with self.assertRaisesRegex(ValueError, "lacks distinct diagnostic assertions"):
+                self.generate_check(damaged, "warning", extra)
 
     def test_all_declared_roots_have_rows_but_unknown_cells_stay_unknown(self) -> None:
         self.write("crates/unica-address/src/kinds/child.rs", 'KindDeclaration::new("Child")')

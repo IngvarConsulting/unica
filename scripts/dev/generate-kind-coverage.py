@@ -32,8 +32,15 @@ READ_SELECTIONS = (
 )
 CHECK_SELECTIONS = (
     ("S-1507-nested-subsystem-check", "Subsystem", 3,
-     "main:Subsystem.Parent", "subsystem", "passed"),
-    ("S347", "DocumentJournal", 2, "main:DocumentJournal.WarningJournal", "meta", "warning"),
+     "main:Subsystem.Parent", "subsystem", "passed", {"/data/at": "main:Subsystem.Parent"}),
+    ("S347", "DocumentJournal", 2, "main:DocumentJournal.WarningJournal", "meta", "warning", {}),
+    ("S-1370-legacy-inline-warning", "Catalog", 2, "main:Catalog.Editable", "meta", "warning",
+     {"/data/status": "passed", "/data/diagnosticCount": 2}),
+    ("S-1627-constant-family-typeset", "Constant", 33, "main:Constant.ForeignFamily", "meta", "failed",
+     {"/data/diagnostics/0/code": "validation_failed", "/data/diagnostics/0/severity": "error",
+      "/data/diagnostics/0/field": "details.type"}),
+    ("S-1663-metadata-edit-type", "InformationRegister", 31,
+     "main:InformationRegister.History", "meta", "passed", {"/data/diagnosticCount": 1}),
 )
 SCENARIO_DIR = Path("tests/fixtures/acceptance/scenarios")
 MANIFEST_DIR = Path("tests/fixtures/acceptance/scenario-manifest")
@@ -182,9 +189,17 @@ def read_evidence(repo: Path, roots: list[str], selections: tuple) -> dict:
     return evidence
 
 
+def require_result_assertions(assertions: list[dict], required: dict, label: Path) -> None:
+    for pointer, value in required.items():
+        actual = [a for a in assertions if a.get("pointer") == pointer]
+        # JSON equality also distinguishes an integer diagnostic count from true.
+        if canonical(actual) != canonical([{"pointer": pointer, "eq": value}]):
+            raise ValueError(f"check has no exact result/validator assertion: {label}:{pointer}")
+
+
 def check_evidence(repo: Path, roots: list[str], selections: tuple) -> dict:
     evidence = {kind: [] for kind in roots}
-    for scenario, kind, check_step, at, validator, outcome in selections:
+    for scenario, kind, check_step, at, validator, outcome, extra_assertions in selections:
         if kind not in evidence or not re.fullmatch(
                 rf"([^:\r\n]+):{re.escape(kind)}\.(?:[^.\\\r\n]|\\[.\\])+", at):
             raise ValueError(f"check target is not a registered root object of {kind}: {at}")
@@ -195,31 +210,41 @@ def check_evidence(repo: Path, roots: list[str], selections: tuple) -> dict:
         if (step["tool"] != "unica.check" or step.get("expect") != ["ok"]
                 or step.get("args") != {"at": at}):
             raise ValueError(f"check witness must target the exact object: {path}:{check_step}")
-        if (step.get("status", "passed") != "passed"
+        if outcome not in {"passed", "failed", "warning"}:
+            raise ValueError(f"unsupported check outcome: {outcome}")
+        status = "passed" if outcome == "warning" else outcome
+        if (step.get("status", status) != status
                 or step.get("validators", [validator]) != [validator]):
             raise ValueError(f"check witness is readable or has another validator: {path}:{check_step}")
         assertions = step.get("assertions", [])
-        if outcome == "passed":
-            for pointer, value in (("/data/at", at), ("/data/status", "passed"),
-                                   ("/data/validators", [validator])):
-                actual = [a for a in assertions if a.get("pointer") == pointer]
-                if actual != [{"pointer": pointer, "eq": value}]:
-                    raise ValueError(f"check has no exact result/validator assertion: {path}:{pointer}")
-        elif outcome == "warning":
+        required_assertions = dict(extra_assertions)
+        if outcome in {"passed", "failed"}:
+            required_assertions.update({"/data/status": outcome, "/data/validators": [validator]})
+        # Exact named requests bind the direct cases. A response address, when
+        # asserted, must agree; Subsystem separately requires its presence.
+        if any(a.get("pointer") == "/data/at" for a in assertions):
+            required_assertions["/data/at"] = at
+        require_result_assertions(assertions, required_assertions, path)
+        if outcome == "warning":
             required = {"metadataPath": at.split(":", 1)[1], "validator": validator,
                         "code": "validation_warning", "severity": "warning"}
             diagnostics = [a for a in assertions if a.get("pointer") == "/data/diagnostics"
                            and ("contains" in a or "eq" in a)]
             if not diagnostics:
                 raise ValueError(f"check has no asserted warning: {path}:{check_step}")
+            observed = set()
             for assertion in diagnostics:
                 values = [assertion["contains"]] if "contains" in assertion else assertion["eq"]
-                if not isinstance(values, list) or not any(
-                        isinstance(item, dict) and all(item.get(k) == v for k, v in required.items())
-                        for item in values):
+                matching = []
+                if isinstance(values, list):
+                    matching = [item for item in values if isinstance(item, dict)
+                                and all(item.get(k) == v for k, v in required.items())]
+                if not matching:
                     raise ValueError(f"check warning has another object/validator/result: {path}:{check_step}")
-        else:
-            raise ValueError(f"unsupported check outcome: {outcome}")
+                observed.update(canonical(item) for item in matching)
+            count = extra_assertions.get("/data/diagnosticCount")
+            if count is not None and len(observed) != count:
+                raise ValueError(f"check warning count lacks distinct diagnostic assertions: {path}:{check_step}")
         evidence[kind].append({
             "scenario": path.as_posix(), "workspace": data["workspace"],
             "declared_formats": data.get("formats"), "at": at, "check_step": check_step,
