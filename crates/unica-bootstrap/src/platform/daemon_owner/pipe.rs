@@ -21,8 +21,20 @@ use windows_sys::Win32::System::Pipes::{
 };
 use windows_sys::Win32::System::Threading::WaitForSingleObject;
 
+// resource-limit: bootstrap.daemon-owner-control-frame-bytes
+// class: format
+// unit: bytes
+// scope: frame
+// value: 1024
+// resource: Размер одного сообщения закрытого управляющего протокола владельца.
+// status: unproven
+// origin: протокол частного запуска Windows-демона
+// problem: Чтение полного управляющего сообщения без неограниченного буфера.
+// on-reach: управляющий запрос отклоняется, передача владения не подтверждается.
 const FRAME_BYTES: usize = 1024;
+// resource-limit-excluded: период опроса канала, отдельный бюджет вызова не задаёт
 const CONNECT_POLL: Duration = Duration::from_millis(32);
+// resource-limit-excluded: период опроса сообщения, конечный срок приходит от вызова
 const MESSAGE_POLL: Duration = Duration::from_millis(4);
 
 /// A local, message-mode control pipe. PIPE_NOWAIT makes each kernel call a

@@ -23,6 +23,16 @@ use unica_artifact_delivery::{BootstrapError, RuntimeManifest};
 pub(super) const PIPE_ENV: &str = "UNICA_DAEMON_OWNER_PIPE";
 pub(super) const IMAGE_ENV: &str = "UNICA_DAEMON_OWNER_IMAGE";
 const OPT_IN_ENV: &str = "UNICA_WINDOWS_DAEMON_OWNER";
+// resource-limit: bootstrap.daemon-owner-control-timeout
+// class: deadline
+// unit: ms
+// scope: process
+// value: 30000
+// resource: Срок, на который один сеанс ожидания может занять канал Windows-владельца.
+// status: unproven
+// origin: действующий 30-секундный бюджет запуска v5
+// problem: Подключение без запроса или ответа удерживает единственный управляющий канал.
+// on-reach: брокер закрывает сеанс и завершает принадлежащий ему pending запуск.
 const CONTROL_LIMIT: Duration = Duration::from_secs(30);
 
 pub fn daemon_owner_enabled() -> Result<bool, BootstrapError> {
@@ -166,9 +176,12 @@ struct Startup {
 }
 
 impl Startup {
-    fn finish_cleanup(&mut self, deadline: Instant) -> io::Result<()> {
+    fn finish_cleanup(
+        &mut self,
+        abort: impl FnOnce(&mut PendingDaemonProcess) -> io::Result<()>,
+    ) -> io::Result<()> {
         if let Some(child) = self.unfinished.as_mut() {
-            child.abort(deadline)?;
+            abort(child)?;
             self.unfinished.take();
             self.resolution = Some(Resolution::Aborted);
         }
@@ -222,7 +235,7 @@ fn serve_client(
     }
     check_deadline(readiness_deadline)?;
     if let Some(startup) = previous.as_mut() {
-        if let Err(error) = startup.finish_cleanup(readiness_deadline) {
+        if let Err(error) = startup.finish_cleanup(|child| child.abort(readiness_deadline)) {
             return finish(
                 pipe,
                 &Response::Refused(format!(
@@ -693,5 +706,53 @@ mod medium_tests {
             ));
         });
         assert!(child.daemon_is_alive());
+    }
+
+    /// rule: INV.PLATFORM.PROCESS-TREE-LIFECYCLE
+    #[test]
+    fn missing_exit_confirmation_retains_the_old_startup_until_exact_cleanup() {
+        let image = FilePin::file(&std::env::current_exe().unwrap()).unwrap();
+        let client = std::process::id();
+        let frontend = verified_process(client, &image).unwrap();
+        let command = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+            .join("System32")
+            .join("ping.exe");
+        let directory = tempfile::tempdir().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let child = PendingDaemonProcess::spawn(
+            &command,
+            &["-n".into(), "30".into(), "127.0.0.1".into()],
+            directory.path(),
+            std::env::vars_os().collect(),
+            deadline,
+        )
+        .unwrap();
+        let pending_pid = child.pid();
+        let mut startup = Startup {
+            client,
+            frontend,
+            ticket: "earlier startup".into(),
+            resolution: None,
+            unfinished: Some(child),
+        };
+        assert!(startup
+            .finish_cleanup(|_| Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "exit not confirmed"
+            )))
+            .is_err());
+        assert!(matches!(
+            startup.recover(client, "earlier startup"),
+            Response::Refused(_)
+        ));
+        assert_eq!(startup.unfinished.as_ref().unwrap().pid(), pending_pid);
+        startup
+            .finish_cleanup(|child| child.abort(deadline))
+            .unwrap();
+        assert!(startup.unfinished.is_none());
+        assert!(matches!(
+            startup.recover(client, "earlier startup"),
+            Response::Aborted
+        ));
     }
 }
