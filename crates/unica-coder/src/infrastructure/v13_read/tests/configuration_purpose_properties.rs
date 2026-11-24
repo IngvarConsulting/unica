@@ -140,6 +140,16 @@ fn medium_configuration_purpose_damage_is_visible_in_both_readers() {
             "<app:functionality><app:functionality>Location",
             "<app:functionality>unexpected<app:functionality>Location",
         ),
+        (
+            "</UsedMobileApplicationFunctionalities>",
+            "<app:unknownListMember/></UsedMobileApplicationFunctionalities>",
+        ),
+        (
+            "<app:permissionMessage>",
+            "<app:permissionMessage xmlns:app=\"urn:foreign\">",
+        ),
+        ("<app:permission>Location</app:permission>", ""),
+        ("<v8:lang>en</v8:lang>", "<v8:unknown/>"),
         ("Role.Operator", "Catalog.Operator"),
         ("<UsePurposes>", "<UsePurposes/><UsePurposes>"),
         (
