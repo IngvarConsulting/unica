@@ -191,7 +191,7 @@ impl PreparedDebugServer {
         if self.dry_run
             && owned
             && data["action"] == "planned"
-            && session.is_none()
+            && data["session"].is_null()
             && data["pid"].is_null()
         {
             let mut result = DomainResult::success("debug server start planned");
@@ -203,10 +203,11 @@ impl PreparedDebugServer {
         }
         let actual_port = positive_u32(&data["port"]).and_then(|port| u16::try_from(port).ok());
         let url = actual_port.map(|port| format!("http://127.0.0.1:{port}"));
-        let ready = !self.dry_run
+        let started_here = !self.dry_run
             && owned
             && data["action"] == "started"
-            && positive_u32(&data["pid"]).is_some()
+            && positive_u32(&data["pid"]).is_some_and(|pid| pid != owner_pid);
+        let ready = started_here
             && url.as_deref().is_some_and(|url| data["url"] == url)
             && port.is_none_or(|expected| actual_port == Some(expected))
             && data["infobase_alias"] == "DefAlias";
@@ -221,7 +222,7 @@ impl PreparedDebugServer {
                     .push(json!({"debugServerSession":true,"action":"started"}));
                 return result;
             }
-            if !self.dry_run && owned {
+            if started_here {
                 let stopped = self.stop(tool, runner, session, false, &CancellationToken::new());
                 if !stopped.ok {
                     let mut failure = failure(START, RefusalCode::ProviderFailed,
@@ -606,6 +607,62 @@ mod tests {
         let calls = runner.calls.borrow();
         assert_eq!(calls.len(), 1, "preview dispatched a stop");
         assert!(calls[0].0.iter().any(|arg| arg == "--dry-run"));
+    }
+
+    #[test]
+    fn a_session_in_a_nonstarted_receipt_is_never_released() {
+        let root = tempfile::tempdir().unwrap();
+        let (mut prepared, tool) = fixture(root.path());
+        for (preview, action, session) in [
+            (false, "planned", SESSION),
+            (false, "reused", SESSION),
+            (true, "planned", "invalid-token"),
+        ] {
+            prepared.dry_run = preview;
+            let runner = Provider {
+                calls: RefCell::default(),
+                results: RefCell::new(vec![envelope(
+                    "start",
+                    json!({
+                        "ok":true, "action":action, "owner":"runner", "owner_pid":42,
+                        "session":session
+                    }),
+                )]),
+                cancel_during_reply: None,
+            };
+            let result = prepared.start(&tool, &runner, &CancellationToken::new(), 42, None);
+            assert_eq!(result.diagnostics[0]["code"], "invalid_result");
+            assert_eq!(runner.calls.borrow().len(), 1);
+        }
+    }
+
+    #[test]
+    fn cancellation_never_releases_a_session_without_a_distinct_server_and_owner() {
+        let root = tempfile::tempdir().unwrap();
+        let (mut prepared, tool) = fixture(root.path());
+        for (preview, key, value) in [
+            (false, "pid", Value::Null),
+            (false, "pid", json!("invalid")),
+            (false, "pid", json!(42)),
+            (false, "session", Value::Null),
+            (false, "session", json!("invalid")),
+            (false, "owner_pid", json!(43)),
+            (false, "action", json!("planned")),
+            (true, "action", json!("started")),
+        ] {
+            prepared.dry_run = preview;
+            let cancellation = CancellationToken::new();
+            let mut receipt = start_data();
+            receipt["data"][key] = value;
+            let runner = Provider {
+                calls: RefCell::default(),
+                results: RefCell::new(vec![receipt]),
+                cancel_during_reply: Some(cancellation.clone()),
+            };
+            let result = prepared.start(&tool, &runner, &cancellation, 42, None);
+            assert!(!result.ok);
+            assert_eq!(runner.calls.borrow().len(), 1);
+        }
     }
 
     #[test]
