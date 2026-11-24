@@ -3921,6 +3921,29 @@ fn configuration_root_properties_match_the_platform_reexport() {
 }
 
 #[test]
+fn changing_help_keeps_mobile_permission_messages_verbatim() {
+    let original = include_str!("../../../../../../../tests/fixtures/acceptance/workspace-configuration-purpose/src/Configuration.xml");
+    let fixture = MetadataFixture::with_files(&[("Configuration.xml", original)]);
+    let (staged, _) = plan_all_with_effects(
+        &fixture,
+        &[(
+            "props.set",
+            json!({"at":"main:Configuration","values":{"IncludeHelpInContents":true}}),
+        )],
+    )
+    .unwrap();
+    let texts = staged_texts(&staged);
+    let changed = &texts[Path::new("Configuration.xml")];
+    assert!(changed.contains("<IncludeHelpInContents>true</IncludeHelpInContents>"));
+    let (start, end, _) = unica_metadata_designer::configuration::cf_edit_element_range(
+        original,
+        "UsedMobileApplicationFunctionalities",
+    )
+    .unwrap();
+    assert!(changed.contains(&original[start..end]));
+}
+
+#[test]
 fn extension_root_properties_match_the_platform_reexport() {
     let fixture = MetadataFixture::with_kind_and_files(
         SourceSetKind::Extension,

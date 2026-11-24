@@ -311,7 +311,7 @@ pub fn read_cf_purpose_properties_xml(xml: &str) -> Result<CfPurposeProperties, 
 fn read_cf_purpose_properties(
     props: roxmltree::Node<'_, '_>,
 ) -> Result<CfPurposeProperties, String> {
-    fn scalar(node: roxmltree::Node<'_, '_>) -> Result<String, String> {
+    fn raw_scalar(node: roxmltree::Node<'_, '_>) -> Result<String, String> {
         if node.children().any(|child| child.is_element()) {
             return Err(format!(
                 "{} must contain scalar text",
@@ -322,9 +322,10 @@ fn read_cf_purpose_properties(
             .children()
             .filter(|child| child.is_text())
             .filter_map(|child| child.text())
-            .collect::<String>()
-            .trim()
-            .to_string())
+            .collect())
+    }
+    fn scalar(node: roxmltree::Node<'_, '_>) -> Result<String, String> {
+        Ok(raw_scalar(node)?.trim().to_string())
     }
     fn boolean(node: roxmltree::Node<'_, '_>) -> Result<bool, String> {
         match scalar(node)?.as_str() {
@@ -387,15 +388,41 @@ fn read_cf_purpose_properties(
     }
     fn validate_permission_message(item: roxmltree::Node<'_, '_>) -> Result<(), String> {
         let [permission, description] = pair(item, ["permission", "description"], CF_CAI_NS)?;
-        if scalar(permission)?.is_empty() {
-            return Err("mobile permission message has no permission".into());
+        // RequiredMobileApplicationPermissionMessages in the supported XDTO profiles.
+        if !matches!(
+            raw_scalar(permission)?.as_str(),
+            "Biometrics"
+                | "Location"
+                | "BackgroundLocation"
+                | "BluetoothPrinters"
+                | "Contacts"
+                | "Calendars"
+                | "NumberDialing"
+                | "CallProcessing"
+                | "CallLog"
+                | "AutoSendSMS"
+                | "ReceiveSMS"
+                | "SMSLog"
+                | "Camera"
+                | "Microphone"
+                | "MusicLibrary"
+                | "PictureAndVideoLibraries"
+                | "AudioPlaybackAndVibration"
+                | "PermissionGroupPhone"
+                | "PermissionGroupCallLog"
+                | "PermissionGroupSMS"
+                | "PostNotifications"
+        ) {
+            return Err("mobile permission message has an invalid permission".into());
         }
         for translation in children(description, &["item"], CF_V8_NS)? {
             let [lang, content] = pair(translation, ["lang", "content"], CF_V8_NS)?;
-            if scalar(lang)?.is_empty() {
-                return Err("mobile permission message has no language".into());
+            if !unica_xml_format::names::xml_nmtoken_is_valid(
+                raw_scalar(lang)?.trim_matches([' ', '\t', '\r', '\n']),
+            ) {
+                return Err("mobile permission message has an invalid language".into());
             }
-            scalar(content)?;
+            raw_scalar(content)?;
         }
         Ok(())
     }
@@ -445,10 +472,15 @@ fn read_cf_purpose_properties(
     let used_mobile_application_functionalities = section("UsedMobileApplicationFunctionalities")?
         .map(|node| {
             let mut flags = Vec::new();
+            let mut reading_messages = false;
             for item in children(node, &["functionality", "permissionMessage"], CF_CAI_NS)? {
                 if item.tag_name().name() == "permissionMessage" {
                     validate_permission_message(item)?;
+                    reading_messages = true;
                     continue;
+                }
+                if reading_messages {
+                    return Err("mobile functionality follows a permission message".into());
                 }
                 if item.children().any(|child| {
                     child.is_text() && !child.text().unwrap_or_default().trim().is_empty()

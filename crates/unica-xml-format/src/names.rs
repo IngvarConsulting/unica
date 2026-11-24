@@ -34,6 +34,14 @@ pub fn xml_ncname_is_valid(value: &str) -> bool {
     characters.next().is_some_and(xml_ncname_is_start) && characters.all(xml_ncname_is_character)
 }
 
+/// XML Nmtoken permits one or more NameChars, including a colon.
+pub fn xml_nmtoken_is_valid(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .chars()
+            .all(|ch| ch == ':' || xml_ncname_is_character(ch))
+}
+
 fn xml_ncname_is_start(character: char) -> bool {
     in_xml_name_ranges(character, XML_NCNAME_START_RANGES)
 }
