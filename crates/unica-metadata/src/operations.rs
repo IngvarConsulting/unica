@@ -156,7 +156,8 @@ pub fn metadata_kind_collections(kind: super::MetadataKind) -> &'static [MetaCol
         | MetadataKind::EventSubscription
         | MetadataKind::HTTPService
         | MetadataKind::WebService
-        | MetadataKind::DefinedType => &[],
+        | MetadataKind::DefinedType
+        | MetadataKind::CommandGroup => &[],
     }
 }
 
@@ -770,8 +771,14 @@ pub fn metadata_fill_value_contexts(kind: MetadataKind) -> &'static [MetaFillVal
         | MetadataKind::EventSubscription
         | MetadataKind::HTTPService
         | MetadataKind::WebService
-        | MetadataKind::DefinedType => &[],
+        | MetadataKind::DefinedType
+        | MetadataKind::CommandGroup => &[],
     }
+}
+
+/// Есть ли у объекта вида справка `Ext/Help`. У группы команд справки нет.
+pub const fn metadata_kind_has_help(kind: MetadataKind) -> bool {
+    !matches!(kind, MetadataKind::CommandGroup)
 }
 
 pub fn metadata_fill_value_is_allowed(
@@ -1265,7 +1272,8 @@ pub fn metadata_relation_specs(kind: MetadataKind) -> &'static [MetaRelationSpec
         | MetadataKind::ScheduledJob
         | MetadataKind::HTTPService
         | MetadataKind::WebService
-        | MetadataKind::DefinedType => &[],
+        | MetadataKind::DefinedType
+        | MetadataKind::CommandGroup => &[],
     }
 }
 

@@ -50,26 +50,18 @@ impl ProviderReadAuthority {
                     .unwrap_or_else(|_| "metadata reader failed".to_string());
                 ViewError::detailed(RefusalDetail::SourceUnreadable, message)
             })?;
+        // Форма, макет или команда, которые не удалось проверить, не скрывают
+        // прочитанного из описания владельца (INV.APP.META-OBSERVATION).
+        let child_resources = self.child_resource_diagnostics(
+            target,
+            info.kind.as_str(),
+            &info.name,
+            &descriptor,
+            checkpoint,
+        )?;
+        info.diagnostics.extend(child_resources);
         if info.kind == MetadataKind::ExchangePlan {
-            let relative = Path::new("ExchangePlans")
-                .join(&info.name)
-                .join("Ext/Content.xml");
-            let observation = match self
-                .read_optional_relative_with_checkpoint(&relative, checkpoint)
-            {
-                Ok(Some(bytes)) => std::str::from_utf8(&bytes)
-                    .map_err(|e| e.to_string())
-                    .and_then(|text| {
-                        crate::infrastructure::family_codecs::metadata_read_codec()
-                            .exchange_content(text)
-                    })
-                    .map(Some),
-                Ok(None) => Ok(None),
-                Err(error) if matches!(error.detail(), Some(RefusalDetail::SourceUnreadable)) => {
-                    Err(error.to_string())
-                }
-                Err(error) => return Err(error),
-            };
+            let observation = self.exchange_plan_content(&info.name, checkpoint)?;
             let errors = match observation {
                 Ok(Some(observation)) => {
                     info.relations.content = Some(Some(observation.items));
@@ -162,6 +154,26 @@ impl ProviderReadAuthority {
         result
             .map(Some)
             .map_err(|message| ViewError::detailed(RefusalDetail::SourceUnreadable, message))
+    }
+
+    pub(crate) fn ordinary_interface_synonym(
+        &self,
+        name: &str,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+    ) -> Result<Option<String>, ViewError> {
+        use unica_source_designer::layout::ORDINARY_INTERFACE_DIRECTORY;
+        let relative = Path::new(ORDINARY_INTERFACE_DIRECTORY).join(format!("{name}.xml"));
+        let descriptor = self
+            .read_optional_relative_with_checkpoint(&relative, checkpoint)?
+            .ok_or_else(|| {
+                ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
+                    format!("registered interface `{name}` has no descriptor"),
+                )
+            })?;
+        crate::infrastructure::family_codecs::metadata_read_codec()
+            .ordinary_interface_synonym(&descriptor, name)
+            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))
     }
 
     pub(crate) fn identity_metadata_payload(
@@ -312,6 +324,21 @@ impl ProviderReadAuthority {
             crate::infrastructure::family_codecs::metadata_read_codec()
                 .palette_color(&descriptor, &mut payload)
                 .map_err(|message| ViewError::detailed(RefusalDetail::SourceUnreadable, message))?;
+        }
+        if let Err(message) = crate::infrastructure::family_codecs::metadata_read_codec()
+            .external_data_source_members(
+                &descriptor,
+                evidence.artifact_kind(),
+                target,
+                &mut payload,
+            )
+        {
+            let finding = json!({"field": "collections", "message": message});
+            if let Some(unreadable) = payload["unreadable"].as_array_mut() {
+                unreadable.push(finding);
+            } else {
+                payload["unreadable"] = json!([finding]);
+            }
         }
         if let Err(message) = crate::infrastructure::family_codecs::metadata_read_codec()
             .identity_root_facts(&descriptor, evidence.artifact_kind(), &mut payload)
@@ -501,14 +528,27 @@ pub(super) fn identity_metadata_payload_from_evidence(
     evidence: &PlatformXmlSourceSetOwnerEvidence,
 ) -> Result<Value, ViewError> {
     let parts = target.as_str().split('.').collect::<Vec<_>>();
-    let [expected_kind, expected_name] = parts.as_slice() else {
-        return Err(ViewError::new(
+    // Цель — один владелец или объявленная цепочка вложенных объектов
+    // (`ExternalDataSource.S.Cube.C`): описание доказывает последнее звено,
+    // а регистрацию звеньев проверяет маршрут.
+    let [expected_kind, expected_name] = (match parts.as_slice() {
+        [kind, name] => Some([*kind, *name]),
+        [.., owner, _, kind, name]
+            if parts.len() % 2 == 0
+                && unica_address::kinds::nested_place(owner, kind)
+                    .is_some_and(|place| place.directory.is_some()) =>
+        {
+            Some([*kind, *name])
+        }
+        _ => None,
+    })
+    .ok_or_else(|| {
+        ViewError::new(
             RefusalCode::ProviderUnavailable,
             "identity metadata target must name one owner",
-        ));
-    };
-    if evidence.artifact_kind() != *expected_kind
-        || evidence.artifact_name() != Some(*expected_name)
+        )
+    })?;
+    if evidence.artifact_kind() != expected_kind || evidence.artifact_name() != Some(expected_name)
     {
         return Err(ViewError::detailed(
             RefusalDetail::SourceUnreadable,
@@ -530,7 +570,29 @@ pub(super) fn identity_metadata_payload_from_evidence(
             _ => {}
         }
     }
-    Ok(json!({
+    // Формы, команды и макеты адресуются только у объекта верхнего уровня:
+    // у вложенного объекта их узлы не открылись бы. Зарегистрированные
+    // называются пределом, а не выдаются пустой ветвью.
+    let mut unreadable = Vec::new();
+    if parts.len() > 2 {
+        for (key, entries) in [
+            ("forms", &mut forms),
+            ("templates", &mut templates),
+            ("commands", &mut commands),
+        ] {
+            if !entries.is_empty() {
+                unreadable.push(json!({
+                    "field": format!("collections.{key}"),
+                    "message": format!(
+                        "{} {key} of a nested object are not addressable",
+                        entries.len()
+                    ),
+                }));
+                entries.clear();
+            }
+        }
+    }
+    let mut payload = json!({
         "name": expected_name,
         "kind": expected_kind,
         "support": {"state": "not_supported"},
@@ -548,5 +610,9 @@ pub(super) fn identity_metadata_payload_from_evidence(
             "templates": templates,
             "commands": commands
         }
-    }))
+    });
+    if !unreadable.is_empty() {
+        payload["unreadable"] = json!(unreadable);
+    }
+    Ok(payload)
 }

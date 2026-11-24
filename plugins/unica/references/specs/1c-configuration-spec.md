@@ -124,7 +124,7 @@ ClassId — фиксированные идентификаторы классо
 | `UseManagedFormInOrdinaryApplication` | `xs:boolean` | Управл. формы в обычном приложении |
 | `UseOrdinaryFormInManagedApplication` | `xs:boolean` | Обычные формы в управл. приложении |
 | `Content` | list | Состав конфигурации (обычно пуст — используется при расширениях) |
-| `StandaloneConfigurationRestrictionRoles` | list | Роли ограничения автономной конфигурации |
+| `StandaloneConfigurationRestrictionRoles` | list of `xr:MDObjectRef` | Роли ограничения автономной конфигурации. Элементы `xr:Item` ссылаются на роли. |
 
 #### Хранилища настроек
 
@@ -159,7 +159,7 @@ ClassId — фиксированные идентификаторы классо
 
 | Свойство | Тип | Описание |
 |----------|-----|----------|
-| `AdditionalFullTextSearchDictionaries` | `xs:string` | Дополнительные словари |
+| `AdditionalFullTextSearchDictionaries` | list of `xr:MDObjectRef` | Дополнительные словари. Элементы `xr:Item` ссылаются на общие макеты и константы. |
 
 #### Мобильные настройки
 
@@ -167,8 +167,8 @@ ClassId — фиксированные идентификаторы классо
 |----------|-----|----------|
 | `RequiredMobileApplicationPermissions` | list | Обязательные разрешения |
 | `UsedMobileApplicationFunctionalities` | list | Используемые функциональности (см. ниже) |
-| `MobileApplicationURLs` | list | URL мобильного приложения |
-| `AllowedIncomingShareRequestTypes` | list | Разрешённые типы входящих share-запросов |
+| `MobileApplicationURLs` | list of `xs:string` | URL мобильного приложения в элементах `v8:Value`. |
+| `AllowedIncomingShareRequestTypes` | list of `app:AllowedIncomingShareRequestType` | Элементы `v8:Value` с полями `mime`, `uti`, `ext`, `processingVariant` (0 или 1) и `isCustom`. |
 
 **UsedMobileApplicationFunctionalities** — список из `app:functionality` с подэлементами `app:functionality` (имя) и `app:use` (boolean):
 
@@ -1098,6 +1098,38 @@ ExternalDataSources/<Источник>/Cubes/<Куб>/DimensionTables/<Табл�
 | Таблица измерения | `ExternalDataSourceCubeDimensionTable{Ref,Object,Manager,List}` — по суффиксу |
 
 Без них импорт отвергает объект: «отсутствует один или более типов объекта».
+
+Адреса вложенных объектов чередуют пары `Вид.Имя`, модуль — последним
+сегментом:
+
+| Адрес | Модули |
+| --- | --- |
+| `ExternalDataSource.<Источник>.Table.<Таблица>` | `ObjectModule`, `ManagerModule`, `RecordSetModule` |
+| `ExternalDataSource.<Источник>.Cube.<Куб>` | `ManagerModule`, `RecordSetModule` |
+| `ExternalDataSource.<Источник>.Cube.<Куб>.DimensionTable.<Таблица>` | `ObjectModule`, `ManagerModule` |
+| `ExternalDataSource.<Источник>.Function.<Функция>` | нет |
+
+Русские написания: `ВнешнийИсточникДанных`, `Таблица`, `Куб`,
+`ТаблицаИзмерения`, `Функция`. Объект доказывается цепочкой: источник
+зарегистрирован в конфигурации, каждый владелец называет следующее звено
+в своих `ChildObjects`, и файл каждого звена описывает свой вид и имя.
+Функция своего файла не имеет и целью исходников не служит.
+
+Члены, описанные прямо в `ChildObjects` владельца, адресуются следующей
+парой за ним:
+
+| Владелец | Члены |
+| --- | --- |
+| Источник | `Function.<Имя>` — тип возвращаемого значения |
+| Таблица, таблица измерения | `Field.<Имя>` (`Поле`) |
+| Куб | `Dimension.<Имя>`, `Resource.<Имя>` |
+
+`view` читает таблицу, куб и таблицу измерения их собственными описаниями,
+а функции, поля, измерения и ресурсы — из описания владельца. Тип измерения
+куба ссылается на таблицу измерения (`ExternalDataSourceCubeDimensionTableRef`)
+и в модели наблюдаемого типа пока не выражается: узел называет его пределом.
+Формы, команды и макеты вложенных объектов не адресуются; зарегистрированные
+называются пределом узла.
 
 ---
 

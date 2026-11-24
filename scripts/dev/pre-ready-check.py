@@ -64,7 +64,7 @@ from collections import Counter
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, Iterable, Iterator, List, Optional, Sequence, Set, Tuple
+from typing import Callable, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Set, Tuple
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -1266,6 +1266,16 @@ def crash_report(unverified: Dict[str, List[str]], crash_logs: Dict[str, Path], 
     return lines
 
 
+def check_env(environ: Mapping[str, str]) -> Dict[str, str]:
+    """Окружение шагов гейта. Cargo собирает без инкремента, как CI
+    (`dtolnay/rust-toolchain` выставляет `CARGO_INCREMENTAL=0`): иначе `debug/incremental`
+    в каталоге исполнителя растёт с каждым прогоном, а ни гейт, ни CI его не читают.
+    Явно заданное значение остаётся."""
+    env = {**environ, "PYTHONUTF8": "1"}
+    env.setdefault("CARGO_INCREMENTAL", "0")
+    return env
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--base", default="origin/main", help="ветка базы, по умолчанию origin/main")
@@ -1278,7 +1288,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print("pre-ready-check: задайте CARGO_TARGET_DIR — свой каталог сборки исполнителя", file=sys.stderr)
         return 2
     cache_dir = cargo_target_dir(REPO_ROOT).resolve() / CACHE_DIR_NAME
-    env = {**os.environ, "PYTHONUTF8": "1"}
+    env = check_env(os.environ)
     try:
         claim_target(cache_dir.parent, REPO_ROOT)
         base = git(REPO_ROOT, "merge-base", args.base, "HEAD").strip()

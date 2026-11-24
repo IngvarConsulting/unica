@@ -106,6 +106,8 @@ pub enum ModuleRouteKind {
     CommonCommand,
     NestedForm,
     NestedCommand,
+    /// A module of a nested object that declares its place in its owner.
+    NestedObject,
     Service,
     Bot,
     WebSocketClient,
@@ -191,6 +193,7 @@ pub fn has_direct_module_route(owner_kind: NodeKind, role: ModuleRole) -> bool {
                 | NodeKind::AccumulationRegister
                 | NodeKind::AccountingRegister
                 | NodeKind::CalculationRegister
+                | NodeKind::Sequence
         ),
         ModuleRole::ValueManager => owner_kind == NodeKind::Constant,
         _ => false,
@@ -271,6 +274,9 @@ fn module_projection_suffix_is_valid(suffix: &[AddressSegment], role: ModuleRole
 }
 
 pub(crate) fn module_route_for_segments(segments: &[AddressSegment]) -> Option<ModuleRoute> {
+    if let Some(route) = nested_object_module(segments) {
+        return Some(route);
+    }
     match segments {
         [owner] if owner.name().is_some() && owner.kind() == NodeKind::CommonModule => Some(route(
             NodeKind::CommonModule,
@@ -330,6 +336,37 @@ fn direct_or_named_module(owner: NodeKind, raw_role: &str) -> Option<ModuleRoute
         }
         _ => None,
     }
+}
+
+/// `<Владелец>.<Имя>{.<Вид>.<Имя>}.Module.<Роль>` where every nested link is
+/// a kind that declares its place in the previous one and the role is one of
+/// the modules the last kind declares.
+fn nested_object_module(segments: &[AddressSegment]) -> Option<ModuleRoute> {
+    let [chain @ .., module] = segments else {
+        return None;
+    };
+    if chain.len() < 2 || module.kind() != NodeKind::Module {
+        return None;
+    }
+    if chain.iter().any(|segment| segment.name().is_none()) {
+        return None;
+    }
+    let mut place = None;
+    for pair in chain.windows(2) {
+        place = Some(crate::kinds::nested_place(
+            pair[0].kind().as_str(),
+            pair[1].kind().as_str(),
+        )?);
+    }
+    let role = ModuleRole::from_semantic_name(module.name()?)?;
+    let terminal = format!("{}Module", role.as_str());
+    place?.modules.contains(&terminal.as_str()).then(|| {
+        route(
+            chain[chain.len() - 1].kind(),
+            role,
+            ModuleRouteKind::NestedObject,
+        )
+    })
 }
 
 fn nested_module(owner: NodeKind, child: NodeKind, raw_role: &str) -> Option<ModuleRoute> {
@@ -422,6 +459,45 @@ mod tests {
         ] {
             let at = QualifiedAddress::parse(absent).unwrap();
             assert_eq!(module_route(&at), None, "{absent}");
+        }
+    }
+
+    /// Модули вложенных объектов внешнего источника адресуются на полной
+    /// глубине; владелец маршрута — сам вложенный объект.
+    #[test]
+    fn external_data_source_nested_objects_route_their_declared_modules() {
+        use crate::address::NodeKind;
+        for (raw, owner, role) in [
+            (
+                "main:ExternalDataSource.S.Table.T.Module.RecordSet",
+                NodeKind::Table,
+                ModuleRole::RecordSet,
+            ),
+            (
+                "main:ВнешнийИсточникДанных.S.Куб.C.Module.Manager",
+                NodeKind::Cube,
+                ModuleRole::Manager,
+            ),
+            (
+                "main:ExternalDataSource.S.Cube.C.DimensionTable.D.Module.Object",
+                NodeKind::DimensionTable,
+                ModuleRole::Object,
+            ),
+        ] {
+            let route = module_route(&QualifiedAddress::parse(raw).unwrap()).unwrap();
+            assert_eq!((route.owner_kind(), route.role()), (owner, role), "{raw}");
+        }
+        for absent in [
+            "main:ExternalDataSource.S.Cube.C.Module.Object",
+            "main:ExternalDataSource.S.Function.F.Module.Object",
+            "main:ExternalDataSource.S.Cube.C.DimensionTable.D.Module.RecordSet",
+            "main:Catalog.S.Table.T.Module.Object",
+        ] {
+            let at = QualifiedAddress::parse(absent);
+            assert!(
+                at.map_or(true, |at| module_route(&at).is_none()),
+                "{absent}"
+            );
         }
     }
 

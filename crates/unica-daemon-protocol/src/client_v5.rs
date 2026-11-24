@@ -4,7 +4,7 @@ pub use crate::task_observation::{TaskObservation, TaskObservationStage, TaskObs
 pub use connections::V5DaemonClient;
 pub use lsp::V5LspExchangeError;
 
-use super::identity::{CoreIdentity, DaemonStateDirectory};
+use super::identity::{CoreIdentity, DaemonStateDirectory, RetainedV5EndpointRecord};
 use super::protocol_v5::{
     decode_v5_server_response, read_bounded_v5_probe_response_frame_before, V5ClientRequest,
     V5DaemonErrorCode, V5EndpointRecord, V5HandshakeServerResponse, V5InvocationRequest,
@@ -226,7 +226,7 @@ pub enum V5RawHandshake {
 
 struct StartupEndpointObservation {
     expected_pid: u32,
-    record: Option<V5EndpointRecord>,
+    record: Option<RetainedV5EndpointRecord>,
 }
 
 impl StartupEndpointObservation {
@@ -237,14 +237,14 @@ impl StartupEndpointObservation {
         }
     }
 
-    fn observe(&mut self, record: &V5EndpointRecord) -> bool {
-        if record.pid() != self.expected_pid {
+    fn observe(&mut self, record: RetainedV5EndpointRecord) -> bool {
+        if record.record.pid() != self.expected_pid {
             return false;
         }
         if let Some(observed) = self.record.as_ref() {
-            return observed == record;
+            return observed.same_publication(&record);
         }
-        self.record = Some(record.clone());
+        self.record = Some(record);
         true
     }
 
@@ -252,7 +252,7 @@ impl StartupEndpointObservation {
         let Some(record) = self.record.as_ref() else {
             return Ok(false);
         };
-        state.remove_matching_v5_endpoint_record(record)
+        state.remove_v5_endpoint_if_owned(record)
     }
 }
 
@@ -286,7 +286,11 @@ fn finish_ready_startup<C: V5StartupChildControl>(
                     .saturating_duration_since(Instant::now())
                     .min(STARTUP_CLEANUP_TIMEOUT),
             );
-            let endpoint_cleanup = endpoint.cleanup(state);
+            let endpoint_cleanup = if termination.is_ok() {
+                endpoint.cleanup(state)
+            } else {
+                Ok(false)
+            };
             let mut diagnostic =
                 format!("protocol-v5 daemon became ready but ownership detach failed: {error}");
             if let Err(cleanup) = termination {
@@ -546,6 +550,23 @@ impl V5DaemonProcessOwner {
         // Under the spawn lock no other frontend starts a daemon here: a reason
         // left by an earlier process must not be reported for this child.
         let _ = state.remove_startup_failure();
+        if let Some(child) = unica_bootstrap::BootstrapDaemonChild::spawn_if_supervised(
+            state_root,
+            core_identity.as_str(),
+            idle_grace,
+            readiness_deadline,
+            deadline,
+        )
+        .map_err(|error| format!("failed to start with the Windows daemon owner: {error}"))?
+        {
+            return Self::await_bootstrap_startup(
+                child,
+                &state,
+                &core_identity,
+                readiness_deadline,
+                deadline,
+            );
+        }
         let command = crate::process_command::daemon_process_command(
             &executable,
             state_root,
@@ -561,6 +582,86 @@ impl V5DaemonProcessOwner {
             readiness_deadline,
             deadline,
         )
+    }
+
+    fn await_bootstrap_startup(
+        mut child: unica_bootstrap::BootstrapDaemonChild,
+        state: &DaemonStateDirectory,
+        core_identity: &CoreIdentity,
+        readiness_deadline: Instant,
+        deadline: Instant,
+    ) -> Result<Self, V5ConnectFailure> {
+        use unica_bootstrap::{BootstrapDaemonCommit, BootstrapDaemonStatus};
+        let pid = child.id();
+        let private_result = (|| {
+            loop {
+                match child.status(readiness_deadline).map_err(|error| {
+                    if error.kind() == io::ErrorKind::TimedOut {
+                        V5ConnectFailure::not_in_time("private spawn readiness")
+                    } else {
+                        V5ConnectFailure::from(error.to_string())
+                    }
+                })? {
+                    BootstrapDaemonStatus::Ready => break,
+                    BootstrapDaemonStatus::Exited(status) => {
+                        return Err(exited_before_readiness(state, pid, status).into());
+                    }
+                    BootstrapDaemonStatus::Pending => {
+                        let remaining = in_time(readiness_deadline, "private spawn readiness")?;
+                        std::thread::sleep(RETRY_INTERVAL.min(remaining));
+                    }
+                }
+            }
+            child
+                .commit(deadline)
+                .map_err(|error| error.to_string().into())
+        })();
+        let commit = match private_result {
+            Ok(commit) => commit,
+            Err(error) => {
+                // A known failure is still private. Only the broker can
+                // abort the retained process for this startup.
+                let cleanup_budget = deadline
+                    .saturating_duration_since(Instant::now())
+                    .min(STARTUP_CLEANUP_TIMEOUT);
+                return Err(match child.abort(Instant::now() + cleanup_budget) {
+                    Ok(()) => error,
+                    Err(cleanup) => error.with_note(format!(
+                        "; protocol-v5 daemon startup cleanup failed: {cleanup}"
+                    )),
+                });
+            }
+        };
+
+        // A lost commit acknowledgement can outlive the broker itself. Only
+        // the retained child and its authenticated endpoint can prove this
+        // earlier startup committed. An unknown outcome authorizes no cleanup.
+        let stage = match commit {
+            BootstrapDaemonCommit::Committed => "committed daemon handshake",
+            BootstrapDaemonCommit::Unknown => "indeterminate daemon handoff",
+        };
+        loop {
+            let remaining = in_time(deadline, stage)?;
+            if !child.daemon_is_alive() {
+                return Err(format!("the exact daemon exited during {stage}").into());
+            }
+            if let Some(record) = state.read_v5_endpoint_record()? {
+                if record.core_identity() != core_identity {
+                    return Err("protocol-v5 endpoint belongs to a foreign core identity".into());
+                }
+                if record.pid() == pid {
+                    match Self::connect_classified_before(record, deadline) {
+                        Ok(owner) if child.daemon_is_alive() => return Ok(owner),
+                        Ok(_) => {
+                            return Err(format!("the exact daemon exited during {stage}").into())
+                        }
+                        Err(ConnectionFailure::Unavailable(_)) => {}
+                        Err(failure) => return Err(failure.into()),
+                    }
+                }
+            }
+            std::thread::sleep(RETRY_INTERVAL.min(remaining));
+        }
     }
 
     fn await_startup_before(
@@ -585,17 +686,17 @@ impl V5DaemonProcessOwner {
             if let Some(status) = child_status {
                 break Err(exited_before_readiness(state, expected_pid, status).into());
             }
-            let record = match state.read_v5_endpoint_record() {
+            let record = match state.read_v5_endpoint_record_retained() {
                 Ok(record) => record,
                 Err(error) => break Err(error.into()),
             };
             if let Some(record) = record {
-                if record.core_identity() != core_identity {
+                if record.record.core_identity() != core_identity {
                     break Err("protocol-v5 endpoint belongs to a foreign core identity"
                         .to_string()
                         .into());
                 }
-                if record.pid() == expected_pid {
+                if record.record.pid() == expected_pid {
                     let child_status = match child.try_wait_status() {
                         Ok(status) => status,
                         Err(error) => break Err(error.into()),
@@ -603,8 +704,10 @@ impl V5DaemonProcessOwner {
                     if let Some(status) = child_status {
                         break Err(exited_before_readiness(state, expected_pid, status).into());
                     }
-                    if endpoint.observe(&record) {
-                        match Self::connect_classified_before(record, readiness_deadline) {
+                    let connection_record = record.record.clone();
+                    if endpoint.observe(record) {
+                        match Self::connect_classified_before(connection_record, readiness_deadline)
+                        {
                             Ok(owner) => break Ok(owner),
                             Err(ConnectionFailure::Rejected(message)) => break Err(message.into()),
                             // Not ready yet, or the readiness window ran out:
@@ -641,7 +744,11 @@ impl V5DaemonProcessOwner {
                         .saturating_duration_since(Instant::now())
                         .min(STARTUP_CLEANUP_TIMEOUT),
                 );
-                let endpoint_cleanup = endpoint.cleanup(state);
+                let endpoint_cleanup = if cleanup.is_ok() {
+                    endpoint.cleanup(state)
+                } else {
+                    Ok(false)
+                };
                 if let Err(cleanup) = cleanup {
                     note.push_str(&format!(
                         "; protocol-v5 daemon startup cleanup failed: {cleanup}"
@@ -1688,26 +1795,40 @@ mod medium_tests {
     fn failed_startup_cleanup_never_adopts_successor_with_reused_pid() {
         let (_root, state) = state_directory();
         let observed = V5EndpointRecord::new(CoreIdentity::production_v5(), 41_001).unwrap();
-        drop(state.publish_v5_endpoint_record(&observed).unwrap());
-        let observed = state.read_v5_endpoint_record().unwrap().unwrap();
+        let publication = state.publish_v5_endpoint_record(&observed).unwrap();
         let mut endpoint = StartupEndpointObservation::new(observed.pid());
-        assert!(endpoint.observe(&observed));
+        assert!(endpoint.observe(publication));
 
         let successor = V5EndpointRecord::new(CoreIdentity::production_v5(), 41_002).unwrap();
         assert_eq!(successor.pid(), observed.pid(), "PID-reuse fixture drift");
         assert_ne!(successor, observed, "full endpoint identity must change");
+        let replacement = state.publish_v5_endpoint_record(&successor).unwrap();
         assert!(
-            !endpoint.observe(&successor),
+            !endpoint.observe(replacement),
             "startup observation adopted a different same-PID record"
         );
-        drop(state.publish_v5_endpoint_record(&successor).unwrap());
-
         assert!(!endpoint.cleanup(&state).unwrap());
         assert_eq!(
             state.read_v5_endpoint_record().unwrap(),
             Some(successor),
             "cleanup adopted and removed the same-PID successor"
         );
+    }
+
+    /// rule: INV.SAFETY.DAEMON-ENDPOINT-OWNERSHIP
+    #[test]
+    fn failed_startup_preserves_a_byte_identical_replacement_endpoint() {
+        let (_root, state) = state_directory();
+        let record = V5EndpointRecord::new(CoreIdentity::production_v5(), 41_001).unwrap();
+        let publication = state.publish_v5_endpoint_record(&record).unwrap();
+        let mut endpoint = StartupEndpointObservation::new(record.pid());
+        assert!(endpoint.observe(publication));
+
+        let replacement = state.publish_v5_endpoint_record(&record).unwrap();
+        assert!(!endpoint.observe(replacement));
+
+        assert!(!endpoint.cleanup(&state).unwrap());
+        assert_eq!(state.read_v5_endpoint_record().unwrap(), Some(record));
     }
 
     #[test]
@@ -1947,7 +2068,7 @@ mod medium_tests {
         for budget in [Duration::ZERO, Duration::from_millis(40)] {
             let (owner, _peer) = connected_owner();
             let mut endpoint = StartupEndpointObservation::new(owner.record.pid());
-            endpoint.observe(&owner.record);
+            assert!(endpoint.observe(state.publish_v5_endpoint_record(&owner.record).unwrap()));
             let mut child = DetachFailingChild::default();
             let result = finish_ready_startup(
                 owner,
@@ -1962,14 +2083,47 @@ mod medium_tests {
         }
     }
 
+    /// rule: INV.SAFETY.DAEMON-ENDPOINT-OWNERSHIP
+    #[test]
+    fn unknown_handoff_does_not_remove_the_observed_endpoint() {
+        struct UnknownHandoff;
+
+        impl V5StartupChildControl for UnknownHandoff {
+            fn detach(&mut self, _: Instant) -> Result<(), String> {
+                Err("daemon handoff result unknown after recovery".into())
+            }
+
+            fn terminate_bounded(&mut self, _: Duration) -> Result<(), String> {
+                Err("cannot prove startup termination".into())
+            }
+        }
+
+        let (_root, state) = state_directory();
+        let (owner, _peer) = connected_owner();
+        let observed = owner.record.clone();
+        let publication = state.publish_v5_endpoint_record(&observed).unwrap();
+        let mut endpoint = StartupEndpointObservation::new(observed.pid());
+        assert!(endpoint.observe(publication));
+
+        let result = finish_ready_startup(
+            owner,
+            &mut UnknownHandoff,
+            &state,
+            &endpoint,
+            Instant::now() + CONNECT_TIMEOUT,
+        );
+        assert!(matches!(result, Err(error) if error.contains("handoff result unknown")));
+        assert_eq!(state.read_v5_endpoint_record().unwrap(), Some(observed));
+    }
+
     #[test]
     fn detach_failure_cleanup_is_identity_bound_to_observed_ready_record() {
         let (_root, state) = state_directory();
         let (owner, peer) = connected_owner();
         let observed = owner.record.clone();
-        drop(state.publish_v5_endpoint_record(&observed).unwrap());
+        let publication = state.publish_v5_endpoint_record(&observed).unwrap();
         let mut endpoint = StartupEndpointObservation::new(observed.pid());
-        assert!(endpoint.observe(&observed));
+        assert!(endpoint.observe(publication));
         let mut child = DetachFailingChild::default();
 
         let error = match finish_ready_startup(

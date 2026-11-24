@@ -1,0 +1,310 @@
+{
+  "formatVersion": "2.21",
+  "platformVersion": "8.5.1.1529",
+  "source": "Byte-identical file selection from one native ibcmd configuration export.",
+  "seed": "A retained settings-export of the same native platform build.",
+  "configurationSha256": "c17f7efd779038626b995904b1f46239e86f52dd412ac402f1481e3d419624b8",
+  "native": {
+    "ibcmdSha256": "4dde71c1d061cc14c619255ec524b4ca8aca1f9bc38a92d1d766eb7d57721d20",
+    "receiptSha256": "cdc017fea1948906c99857c60bfafbf977046393723e39d019bee42ee2e25fdb",
+    "packageSha256": "51ee6600a584cd0476b0dd360a7bff4af14925f4fc653b039f60f8a066190c6b",
+    "commands": [
+      {
+        "stage": "platform-version",
+        "exit": 0
+      },
+      {
+        "stage": "nested-modules-import",
+        "exit": 0
+      },
+      {
+        "stage": "nested-modules-apply",
+        "exit": 0
+      },
+      {
+        "stage": "nested-modules-export",
+        "exit": 0
+      }
+    ]
+  },
+  "mcp": {
+    "revision": "ec4aac54df2825e075a0d7c292b92dbcfec9ce45",
+    "binarySha256": "641d7dd01731d74f49d8258864e47621650bde9ca44c7274f5661e5cf32916c4",
+    "receiptSha256": "ff0377e3faa601076f89c0ed42b1df28af0b9b22d434908f186614ef7db2d19b",
+    "successfulCalls": 30,
+    "slices": [
+      {
+        "batch": "nested-modules",
+        "files": 20,
+        "sha256ByFile": {
+          "ChartsOfAccounts/Хозрасчетный/Commands/AddressProbeAccountsChartCommand/Ext/CommandModule.bsl": "934a596de5fe3cd3fb658f01979d5b3400ea7b14ca6085a54c00383842387f78",
+          "ChartsOfAccounts/Хозрасчетный/Ext/ObjectModule.bsl": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5",
+          "ChartsOfAccounts/Хозрасчетный/Forms/AddressProbeAccountsChartForm/Ext/Form/Module.bsl": "b3bbe24127905251fc21e18e6ed988f47b84d2ff19df73103f4f60d327304008",
+          "ChartsOfAccounts/Хозрасчетный/Forms/AddressProbeAccountsChartForm/Ext/Form.xml": "80315b737112328c821a684c840e00306733f14ecc41cc1b9b70635a7bbef97c",
+          "ChartsOfAccounts/Хозрасчетный/Forms/AddressProbeAccountsChartForm.xml": "8bf59b5e7bfa744658d21570d5976363d3cdb844e809dea31cf19a9e07ed781a",
+          "Configuration.xml": "c17f7efd779038626b995904b1f46239e86f52dd412ac402f1481e3d419624b8",
+          "ChartsOfAccounts/Хозрасчетный.xml": "79a63c4c986fd07b7ad179232920deebb6967241d6b0782f3e5f6409926ffe59",
+          "ChartsOfCalculationTypes/ВидыРасчета/Commands/AddressProbeCalculationTypesChartCommand/Ext/CommandModule.bsl": "2857fad4d9ded05151975dfa52b2688b2a14a763825d82abe9b9f07b3d15af85",
+          "ChartsOfCalculationTypes/ВидыРасчета/Ext/ObjectModule.bsl": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5",
+          "ChartsOfCalculationTypes/ВидыРасчета/Ext/Predefined.xml": "2d96258a75b756d490d9d5ac72c0db60a0485216529130f49b3a7075bcc3f725",
+          "ChartsOfCalculationTypes/ВидыРасчета/Forms/AddressProbeCalculationTypesChartForm/Ext/Form/Module.bsl": "c25dc93fbae695fe7a9aa8573843156805d1f220f65deb0c286879bba3b222e5",
+          "ChartsOfCalculationTypes/ВидыРасчета/Forms/AddressProbeCalculationTypesChartForm/Ext/Form.xml": "80315b737112328c821a684c840e00306733f14ecc41cc1b9b70635a7bbef97c",
+          "ChartsOfCalculationTypes/ВидыРасчета/Forms/AddressProbeCalculationTypesChartForm.xml": "0293150ab9ca7ab9c85578483e564ebeac1d864c79ab87c1d3d9a9f52ec18410",
+          "ChartsOfCalculationTypes/ВидыРасчета.xml": "dedd587140ed099deff50145bf495b31db47c782bc552a2767d7eadbc0210d19",
+          "ChartsOfCharacteristicTypes/Codes/Commands/AddressProbeCharacteristicTypesChartCommand/Ext/CommandModule.bsl": "12a11e62d214280396a4db87c4777aeea27b4fc2f7a4e03121c2e799bd4448a0",
+          "ChartsOfCharacteristicTypes/Codes/Ext/ObjectModule.bsl": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5",
+          "ChartsOfCharacteristicTypes/Codes/Forms/AddressProbeCharacteristicTypesChartForm/Ext/Form/Module.bsl": "b884cc043cd0b2d308b58bee7102a88a5829d8f9d0eff61edcb8712733cba188",
+          "ChartsOfCharacteristicTypes/Codes/Forms/AddressProbeCharacteristicTypesChartForm/Ext/Form.xml": "80315b737112328c821a684c840e00306733f14ecc41cc1b9b70635a7bbef97c",
+          "ChartsOfCharacteristicTypes/Codes/Forms/AddressProbeCharacteristicTypesChartForm.xml": "1f8dcf0bd29dd4bb72cae543b2dcd5a5bc661e3a57f6650c0b9be13d34a3986a",
+          "ChartsOfCharacteristicTypes/Codes.xml": "a87897f58541b78dd599ee5f8088a40b42535ebefa53f845139f121566968eca"
+        }
+      }
+    ]
+  },
+  "samples": [
+    {
+      "owner": "main:ChartOfAccounts.Хозрасчетный.Form.AddressProbeAccountsChartForm",
+      "owner_uuid": "a8630772-1555-50db-9ca8-a5ca930d76cd",
+      "child_kind": "Form",
+      "child_uuid": "fe6c6590-9b1f-5051-95f3-9165a33b0b89",
+      "bsl": "ChartsOfAccounts/Хозрасчетный/Forms/AddressProbeAccountsChartForm/Ext/Form/Module.bsl",
+      "marker": "Unica484AccountsChartForm_2_21",
+      "bsl_matches_input": true,
+      "files": {
+        "Configuration.xml": {
+          "bytes": 13678,
+          "sha256": "c17f7efd779038626b995904b1f46239e86f52dd412ac402f1481e3d419624b8"
+        },
+        "ChartsOfAccounts/Хозрасчетный.xml": {
+          "bytes": 20691,
+          "sha256": "79a63c4c986fd07b7ad179232920deebb6967241d6b0782f3e5f6409926ffe59"
+        },
+        "ChartsOfAccounts/Хозрасчетный/Forms/AddressProbeAccountsChartForm.xml": {
+          "bytes": 1577,
+          "sha256": "8bf59b5e7bfa744658d21570d5976363d3cdb844e809dea31cf19a9e07ed781a"
+        },
+        "ChartsOfAccounts/Хозрасчетный/Forms/AddressProbeAccountsChartForm/Ext/Form.xml": {
+          "bytes": 1443,
+          "sha256": "80315b737112328c821a684c840e00306733f14ecc41cc1b9b70635a7bbef97c"
+        },
+        "ChartsOfAccounts/Хозрасчетный/Forms/AddressProbeAccountsChartForm/Ext/Form/Module.bsl": {
+          "bytes": 142,
+          "sha256": "b3bbe24127905251fc21e18e6ed988f47b84d2ff19df73103f4f60d327304008"
+        }
+      }
+    },
+    {
+      "owner": "main:ChartOfAccounts.Хозрасчетный.Command.AddressProbeAccountsChartCommand",
+      "owner_uuid": "a8630772-1555-50db-9ca8-a5ca930d76cd",
+      "child_kind": "Command",
+      "child_uuid": "9e321d61-782c-5cdc-8579-71fef3af816b",
+      "bsl": "ChartsOfAccounts/Хозрасчетный/Commands/AddressProbeAccountsChartCommand/Ext/CommandModule.bsl",
+      "marker": "Unica484AccountsChartCommand_2_21",
+      "bsl_matches_input": true,
+      "files": {
+        "Configuration.xml": {
+          "bytes": 13678,
+          "sha256": "c17f7efd779038626b995904b1f46239e86f52dd412ac402f1481e3d419624b8"
+        },
+        "ChartsOfAccounts/Хозрасчетный.xml": {
+          "bytes": 20691,
+          "sha256": "79a63c4c986fd07b7ad179232920deebb6967241d6b0782f3e5f6409926ffe59"
+        },
+        "ChartsOfAccounts/Хозрасчетный/Commands/AddressProbeAccountsChartCommand/Ext/CommandModule.bsl": {
+          "bytes": 232,
+          "sha256": "934a596de5fe3cd3fb658f01979d5b3400ea7b14ca6085a54c00383842387f78"
+        }
+      }
+    },
+    {
+      "owner": "main:ChartOfCalculationTypes.ВидыРасчета.Form.AddressProbeCalculationTypesChartForm",
+      "owner_uuid": "6a48f32a-b124-57aa-b962-51cc40da3aa0",
+      "child_kind": "Form",
+      "child_uuid": "4c80c169-f6ed-5c40-815b-cef5ac98c4b7",
+      "bsl": "ChartsOfCalculationTypes/ВидыРасчета/Forms/AddressProbeCalculationTypesChartForm/Ext/Form/Module.bsl",
+      "marker": "Unica484CalculationTypesChartForm_2_21",
+      "bsl_matches_input": true,
+      "files": {
+        "Configuration.xml": {
+          "bytes": 13678,
+          "sha256": "c17f7efd779038626b995904b1f46239e86f52dd412ac402f1481e3d419624b8"
+        },
+        "ChartsOfCalculationTypes/ВидыРасчета.xml": {
+          "bytes": 14001,
+          "sha256": "dedd587140ed099deff50145bf495b31db47c782bc552a2767d7eadbc0210d19"
+        },
+        "ChartsOfCalculationTypes/ВидыРасчета/Forms/AddressProbeCalculationTypesChartForm.xml": {
+          "bytes": 1593,
+          "sha256": "0293150ab9ca7ab9c85578483e564ebeac1d864c79ab87c1d3d9a9f52ec18410"
+        },
+        "ChartsOfCalculationTypes/ВидыРасчета/Forms/AddressProbeCalculationTypesChartForm/Ext/Form.xml": {
+          "bytes": 1443,
+          "sha256": "80315b737112328c821a684c840e00306733f14ecc41cc1b9b70635a7bbef97c"
+        },
+        "ChartsOfCalculationTypes/ВидыРасчета/Forms/AddressProbeCalculationTypesChartForm/Ext/Form/Module.bsl": {
+          "bytes": 150,
+          "sha256": "c25dc93fbae695fe7a9aa8573843156805d1f220f65deb0c286879bba3b222e5"
+        }
+      }
+    },
+    {
+      "owner": "main:ChartOfCalculationTypes.ВидыРасчета.Command.AddressProbeCalculationTypesChartCommand",
+      "owner_uuid": "6a48f32a-b124-57aa-b962-51cc40da3aa0",
+      "child_kind": "Command",
+      "child_uuid": "e065f07d-3269-55bb-81fa-69d0a425243c",
+      "bsl": "ChartsOfCalculationTypes/ВидыРасчета/Commands/AddressProbeCalculationTypesChartCommand/Ext/CommandModule.bsl",
+      "marker": "Unica484CalculationTypesChartCommand_2_21",
+      "bsl_matches_input": true,
+      "files": {
+        "Configuration.xml": {
+          "bytes": 13678,
+          "sha256": "c17f7efd779038626b995904b1f46239e86f52dd412ac402f1481e3d419624b8"
+        },
+        "ChartsOfCalculationTypes/ВидыРасчета.xml": {
+          "bytes": 14001,
+          "sha256": "dedd587140ed099deff50145bf495b31db47c782bc552a2767d7eadbc0210d19"
+        },
+        "ChartsOfCalculationTypes/ВидыРасчета/Commands/AddressProbeCalculationTypesChartCommand/Ext/CommandModule.bsl": {
+          "bytes": 240,
+          "sha256": "2857fad4d9ded05151975dfa52b2688b2a14a763825d82abe9b9f07b3d15af85"
+        }
+      }
+    },
+    {
+      "owner": "main:ChartOfCharacteristicTypes.Codes.Form.AddressProbeCharacteristicTypesChartForm",
+      "owner_uuid": "ad61eec4-6a4e-5c38-b58c-f9b92037d1cd",
+      "child_kind": "Form",
+      "child_uuid": "053ebfde-2376-5e38-a071-891816b225cb",
+      "bsl": "ChartsOfCharacteristicTypes/Codes/Forms/AddressProbeCharacteristicTypesChartForm/Ext/Form/Module.bsl",
+      "marker": "Unica484CharacteristicTypesChartForm_2_21",
+      "bsl_matches_input": true,
+      "files": {
+        "Configuration.xml": {
+          "bytes": 13678,
+          "sha256": "c17f7efd779038626b995904b1f46239e86f52dd412ac402f1481e3d419624b8"
+        },
+        "ChartsOfCharacteristicTypes/Codes.xml": {
+          "bytes": 15274,
+          "sha256": "a87897f58541b78dd599ee5f8088a40b42535ebefa53f845139f121566968eca"
+        },
+        "ChartsOfCharacteristicTypes/Codes/Forms/AddressProbeCharacteristicTypesChartForm.xml": {
+          "bytes": 1599,
+          "sha256": "1f8dcf0bd29dd4bb72cae543b2dcd5a5bc661e3a57f6650c0b9be13d34a3986a"
+        },
+        "ChartsOfCharacteristicTypes/Codes/Forms/AddressProbeCharacteristicTypesChartForm/Ext/Form.xml": {
+          "bytes": 1443,
+          "sha256": "80315b737112328c821a684c840e00306733f14ecc41cc1b9b70635a7bbef97c"
+        },
+        "ChartsOfCharacteristicTypes/Codes/Forms/AddressProbeCharacteristicTypesChartForm/Ext/Form/Module.bsl": {
+          "bytes": 153,
+          "sha256": "b884cc043cd0b2d308b58bee7102a88a5829d8f9d0eff61edcb8712733cba188"
+        }
+      }
+    },
+    {
+      "owner": "main:ChartOfCharacteristicTypes.Codes.Command.AddressProbeCharacteristicTypesChartCommand",
+      "owner_uuid": "ad61eec4-6a4e-5c38-b58c-f9b92037d1cd",
+      "child_kind": "Command",
+      "child_uuid": "c3900f3c-2673-5956-a957-4e261c03526b",
+      "bsl": "ChartsOfCharacteristicTypes/Codes/Commands/AddressProbeCharacteristicTypesChartCommand/Ext/CommandModule.bsl",
+      "marker": "Unica484CharacteristicTypesChartCommand_2_21",
+      "bsl_matches_input": true,
+      "files": {
+        "Configuration.xml": {
+          "bytes": 13678,
+          "sha256": "c17f7efd779038626b995904b1f46239e86f52dd412ac402f1481e3d419624b8"
+        },
+        "ChartsOfCharacteristicTypes/Codes.xml": {
+          "bytes": 15274,
+          "sha256": "a87897f58541b78dd599ee5f8088a40b42535ebefa53f845139f121566968eca"
+        },
+        "ChartsOfCharacteristicTypes/Codes/Commands/AddressProbeCharacteristicTypesChartCommand/Ext/CommandModule.bsl": {
+          "bytes": 243,
+          "sha256": "12a11e62d214280396a4db87c4777aeea27b4fc2f7a4e03121c2e799bd4448a0"
+        }
+      }
+    }
+  ],
+  "files": {
+    "src/ChartsOfAccounts/Хозрасчетный.xml": {
+      "size": 20691,
+      "sha256": "79a63c4c986fd07b7ad179232920deebb6967241d6b0782f3e5f6409926ffe59"
+    },
+    "src/ChartsOfAccounts/Хозрасчетный/Commands/AddressProbeAccountsChartCommand/Ext/CommandModule.bsl": {
+      "size": 232,
+      "sha256": "934a596de5fe3cd3fb658f01979d5b3400ea7b14ca6085a54c00383842387f78"
+    },
+    "src/ChartsOfAccounts/Хозрасчетный/Ext/ObjectModule.bsl": {
+      "size": 3,
+      "sha256": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+    },
+    "src/ChartsOfAccounts/Хозрасчетный/Forms/AddressProbeAccountsChartForm.xml": {
+      "size": 1577,
+      "sha256": "8bf59b5e7bfa744658d21570d5976363d3cdb844e809dea31cf19a9e07ed781a"
+    },
+    "src/ChartsOfAccounts/Хозрасчетный/Forms/AddressProbeAccountsChartForm/Ext/Form.xml": {
+      "size": 1443,
+      "sha256": "80315b737112328c821a684c840e00306733f14ecc41cc1b9b70635a7bbef97c"
+    },
+    "src/ChartsOfAccounts/Хозрасчетный/Forms/AddressProbeAccountsChartForm/Ext/Form/Module.bsl": {
+      "size": 142,
+      "sha256": "b3bbe24127905251fc21e18e6ed988f47b84d2ff19df73103f4f60d327304008"
+    },
+    "src/ChartsOfCalculationTypes/ВидыРасчета.xml": {
+      "size": 14001,
+      "sha256": "dedd587140ed099deff50145bf495b31db47c782bc552a2767d7eadbc0210d19"
+    },
+    "src/ChartsOfCalculationTypes/ВидыРасчета/Commands/AddressProbeCalculationTypesChartCommand/Ext/CommandModule.bsl": {
+      "size": 240,
+      "sha256": "2857fad4d9ded05151975dfa52b2688b2a14a763825d82abe9b9f07b3d15af85"
+    },
+    "src/ChartsOfCalculationTypes/ВидыРасчета/Ext/ObjectModule.bsl": {
+      "size": 3,
+      "sha256": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+    },
+    "src/ChartsOfCalculationTypes/ВидыРасчета/Ext/Predefined.xml": {
+      "size": 819,
+      "sha256": "2d96258a75b756d490d9d5ac72c0db60a0485216529130f49b3a7075bcc3f725"
+    },
+    "src/ChartsOfCalculationTypes/ВидыРасчета/Forms/AddressProbeCalculationTypesChartForm.xml": {
+      "size": 1593,
+      "sha256": "0293150ab9ca7ab9c85578483e564ebeac1d864c79ab87c1d3d9a9f52ec18410"
+    },
+    "src/ChartsOfCalculationTypes/ВидыРасчета/Forms/AddressProbeCalculationTypesChartForm/Ext/Form.xml": {
+      "size": 1443,
+      "sha256": "80315b737112328c821a684c840e00306733f14ecc41cc1b9b70635a7bbef97c"
+    },
+    "src/ChartsOfCalculationTypes/ВидыРасчета/Forms/AddressProbeCalculationTypesChartForm/Ext/Form/Module.bsl": {
+      "size": 150,
+      "sha256": "c25dc93fbae695fe7a9aa8573843156805d1f220f65deb0c286879bba3b222e5"
+    },
+    "src/ChartsOfCharacteristicTypes/Codes.xml": {
+      "size": 15274,
+      "sha256": "a87897f58541b78dd599ee5f8088a40b42535ebefa53f845139f121566968eca"
+    },
+    "src/ChartsOfCharacteristicTypes/Codes/Commands/AddressProbeCharacteristicTypesChartCommand/Ext/CommandModule.bsl": {
+      "size": 243,
+      "sha256": "12a11e62d214280396a4db87c4777aeea27b4fc2f7a4e03121c2e799bd4448a0"
+    },
+    "src/ChartsOfCharacteristicTypes/Codes/Ext/ObjectModule.bsl": {
+      "size": 3,
+      "sha256": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+    },
+    "src/ChartsOfCharacteristicTypes/Codes/Forms/AddressProbeCharacteristicTypesChartForm.xml": {
+      "size": 1599,
+      "sha256": "1f8dcf0bd29dd4bb72cae543b2dcd5a5bc661e3a57f6650c0b9be13d34a3986a"
+    },
+    "src/ChartsOfCharacteristicTypes/Codes/Forms/AddressProbeCharacteristicTypesChartForm/Ext/Form.xml": {
+      "size": 1443,
+      "sha256": "80315b737112328c821a684c840e00306733f14ecc41cc1b9b70635a7bbef97c"
+    },
+    "src/ChartsOfCharacteristicTypes/Codes/Forms/AddressProbeCharacteristicTypesChartForm/Ext/Form/Module.bsl": {
+      "size": 153,
+      "sha256": "b884cc043cd0b2d308b58bee7102a88a5829d8f9d0eff61edcb8712733cba188"
+    },
+    "src/Configuration.xml": {
+      "size": 13678,
+      "sha256": "c17f7efd779038626b995904b1f46239e86f52dd412ac402f1481e3d419624b8"
+    }
+  }
+}

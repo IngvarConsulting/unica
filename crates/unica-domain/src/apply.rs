@@ -6,7 +6,7 @@ use unica_forms::operations::FormOperation;
 use unica_forms::{FormItemRole, FormObservation};
 
 use unica_metadata::event::EventOperation;
-use unica_metadata::MetadataKind;
+use unica_metadata::CreatableKind;
 use unica_metadata::{
     interface_operations::InterfaceOperation, subsystem_operations::SubsystemOperation,
 };
@@ -149,11 +149,10 @@ impl ApplyRequest {
                 let created = args.get("values").and_then(|value| {
                     let kind = match created_kind {
                         Some(kind) => kind,
-                        None => value.get("kind")?.as_str()?,
+                        None => CreatableKind::parse(value.get("kind")?.as_str()?)
+                            .ok()?
+                            .as_str(),
                     };
-                    if created_kind.is_none() {
-                        MetadataKind::parse(kind).ok()?;
-                    }
                     let object_name = value.get("name")?.as_str()?;
                     let object_name = if created_kind.is_some() {
                         unica_metadata::canonical_creation_identifier(object_name)?
@@ -532,6 +531,10 @@ operation_descriptors!(
     (unica_metadata::apply_operations::MetadataOperation::ObjectBorrow),
     (unica_metadata::apply_operations::MetadataOperation::ObjectCreate),
     (unica_metadata::apply_operations::MetadataOperation::ObjectRemove),
+    (unica_metadata::apply_operations::MetadataOperation::ExternalTableAdd),
+    (unica_metadata::apply_operations::MetadataOperation::ExternalCubeAdd),
+    (unica_metadata::apply_operations::MetadataOperation::ExternalFunctionAdd),
+    (unica_metadata::apply_operations::MetadataOperation::ExternalDimensionTableAdd),
     (PropertiesOperation::Set),
     (unica_metadata::apply_operations::MetadataOperation::ContentSet),
     (unica_metadata::apply_operations::MetadataOperation::RelationAdd),
@@ -636,6 +639,7 @@ operation_descriptors!(
     (Primitive::ConditionalAppearanceRemove),
     (Primitive::DataSetLinkSet),
     (Primitive::DataSetLinkRemove),
+    (unica_metadata::apply_operations::MetadataOperation::ExternalFieldAdd),
     (MxlOperation::Set),
     (MxlOperation::AreaAdd),
     (XdtoOperation::AddValueType),
@@ -1056,6 +1060,26 @@ mod tests {
     }
 
     #[test]
+    fn create_then_configure_accepts_only_the_declared_creatable_target() {
+        let request = |kind: &str, at: &str| {
+            parse(json!({"at":"main:Configuration","dryRun":true,"ops":[
+                {"op":"object.create","args":{"values":{"kind":kind,"name":"Probe"}}},
+                {"op":"props.set","args":{"at":at,"values":{"Comment":"x"}}}
+            ]}))
+        };
+        assert!(request("Style", "main:Style.Probe").is_ok());
+        for (kind, at) in [
+            ("Style", "main:Style.Other"),
+            ("Style", "extension:Style.Probe"),
+            ("Style", "main:Catalog.Probe"),
+            ("Role", "main:Role.Probe"),
+            ("Unknown", "main:Style.Probe"),
+        ] {
+            assert_eq!(request(kind, at).unwrap_err().location(), "ops[1].args.at");
+        }
+    }
+
+    #[test]
     fn apply_request_preserves_explicit_dry_run_and_one_batch_revision() {
         let request = parse(json!({
             "at": "main:Document.Order",
@@ -1419,6 +1443,10 @@ mod tests {
             "object.borrow",
             "object.create",
             "object.remove",
+            "table.add",
+            "cube.add",
+            "function.add",
+            "dimensionTable.add",
             "props.set",
             "content.set",
             "relation.add",
@@ -1521,6 +1549,7 @@ mod tests {
             "conditionalAppearance.remove",
             "dataSetLink.set",
             "dataSetLink.remove",
+            "field.add",
             "mxl.set",
             "area.add",
             "valueType.add",
@@ -1549,17 +1578,36 @@ mod tests {
             "event.implement",
         ];
         let registry = crate::apply::operation_registry();
-        assert_eq!(expected.len(), 131);
+        assert_eq!(expected.len(), 136);
         assert_eq!(registry.names(), expected);
-        // Реквизит и команда формы названы по своему узлу, как у объекта
-        // метаданных, свойства формы — как свойства описания:
-        // имя одно, семейство выбирает адрес. Других повторов в реестре нет.
-        const SHARED_NAMES: &[(&str, OperationFamily)] = &[
-            ("attribute.add", OperationFamily::Metadata),
-            ("attribute.remove", OperationFamily::Metadata),
-            ("column.add", OperationFamily::Metadata),
-            ("command.add", OperationFamily::Metadata),
-            ("props.set", OperationFamily::Properties),
+        // Семейство одноимённых операций выбирается по каноническому адресу.
+        const SHARED_NAMES: &[(&str, OperationFamily, OperationFamily)] = &[
+            (
+                "attribute.add",
+                OperationFamily::Metadata,
+                OperationFamily::Form,
+            ),
+            (
+                "attribute.remove",
+                OperationFamily::Metadata,
+                OperationFamily::Form,
+            ),
+            (
+                "column.add",
+                OperationFamily::Metadata,
+                OperationFamily::Form,
+            ),
+            (
+                "command.add",
+                OperationFamily::Metadata,
+                OperationFamily::Form,
+            ),
+            (
+                "props.set",
+                OperationFamily::Properties,
+                OperationFamily::Form,
+            ),
+            ("field.add", OperationFamily::Dcs, OperationFamily::Metadata),
         ];
         let mut unique = registry.names().to_vec();
         unique.sort_unstable();
@@ -1573,7 +1621,7 @@ mod tests {
         }
         assert_eq!(
             unica_metadata::apply_operations::MetadataOperation::ALL.len(),
-            36
+            41
         );
         assert_eq!(
             registry
@@ -1596,14 +1644,14 @@ mod tests {
                 "every Metadata identity must be registered exactly once: {operation:?}"
             );
         }
-        for (name, first) in SHARED_NAMES {
+        for (name, first, second) in SHARED_NAMES {
             let families = registry
                 .descriptors()
                 .iter()
                 .filter(|descriptor| descriptor.name() == *name)
                 .map(|descriptor| descriptor.family())
                 .collect::<Vec<_>>();
-            assert_eq!(families, [*first, OperationFamily::Form], "{name}");
+            assert_eq!(families, [*first, *second], "{name}");
         }
 
         assert_eq!(

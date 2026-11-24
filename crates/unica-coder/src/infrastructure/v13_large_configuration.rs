@@ -255,6 +255,9 @@ pub struct RegistrationCache {
     configuration: Mutex<Option<(ConfigurationStamps, Arc<Value>)>>,
     support: Mutex<Option<RetainedSupportState>>,
     subsystems: Mutex<Option<RetainedSubsystemTopology>>,
+    /// Объединённый состав планов обмена со стампами файлов, из которых он
+    /// собран; отсутствующий файл записан `None`.
+    exchange_membership: Mutex<Option<RetainedExchangeMembership>>,
     settle_window: std::time::Duration,
     /// Proven owner descriptors by source-root-relative path, each under the
     /// stamp it had before it was read.
@@ -264,6 +267,11 @@ pub struct RegistrationCache {
     /// Common module synonyms (with the limits of a damaged one) by
     /// descriptor path, each under the stamp it had before it was read.
     common_module_synonyms: Mutex<RetainedByDescriptor<CommonModuleSynonym>>,
+    /// Child resource diagnostics of an object by its descriptor path, under
+    /// the revision of its form, template and command directories. Unlike
+    /// the other records, the revision walks those directories: their files
+    /// are stamped, not read.
+    child_resources: Mutex<RetainedChildResources>,
     /// The background proof of all top-level descriptors has been started.
     /// Test builds start it marked, so tests that watch which files a call
     /// opens see only that call; the test of the warm-up clears the mark.
@@ -273,6 +281,16 @@ pub struct RegistrationCache {
     #[cfg(any(test, feature = "test-support"))]
     after_parse: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
+
+/// Child resource diagnostics by descriptor path, each under the revision
+/// of the object's child directories.
+type RetainedChildResources = std::collections::HashMap<
+    std::path::PathBuf,
+    (
+        crate::infrastructure::v13_read_port::ChildResourceRevision,
+        Arc<Vec<unica_metadata::MetaDiagnostic>>,
+    ),
+>;
 
 /// Records retained per descriptor path, each under the stamp the
 /// descriptor had before it was read.
@@ -303,9 +321,11 @@ impl Default for RegistrationCache {
             configuration: Mutex::new(None),
             support: Mutex::new(None),
             subsystems: Mutex::new(None),
+            exchange_membership: Mutex::new(None),
             settle_window: SETTLE_WINDOW,
             owner_evidence: Mutex::new(std::collections::HashMap::new()),
             common_module_synonyms: Mutex::new(std::collections::HashMap::new()),
+            child_resources: Mutex::new(std::collections::HashMap::new()),
             owner_warmup: std::sync::atomic::AtomicBool::new(cfg!(any(
                 test,
                 feature = "test-support"
@@ -321,6 +341,28 @@ impl Default for RegistrationCache {
 /// The registered subsystem topology with the stamp of every file it was
 /// built from: `Configuration.xml` and each subsystem descriptor.
 type RetainedSubsystemTopology = (Vec<(std::path::PathBuf, FileStamp)>, Arc<SubsystemTopology>);
+
+/// Стамп регистраций в `Configuration.xml`, затем стампы описаний и составов планов.
+pub(crate) struct ExchangeMembershipStamps {
+    pub(crate) configuration: FileStamp,
+    pub(crate) plans: Vec<(std::path::PathBuf, Option<FileStamp>)>,
+}
+
+impl ExchangeMembershipStamps {
+    fn still_matches(&self, root: &SourceDirectory) -> bool {
+        root.relative_file_stamp(std::path::Path::new("Configuration.xml"))
+            .is_ok_and(|current| current == Some(self.configuration))
+            && self.plans.iter().all(|(path, stamp)| {
+                root.relative_file_stamp(path)
+                    .is_ok_and(|current| current == *stamp)
+            })
+    }
+}
+
+type RetainedExchangeMembership = (
+    ExchangeMembershipStamps,
+    Arc<crate::infrastructure::v13_read::ExchangeMembership>,
+);
 
 /// Reads descriptors for the topology builder and keeps the stamp each file
 /// had when its bytes were read.
@@ -478,6 +520,32 @@ impl RegistrationCache {
         }
     }
 
+    pub(crate) fn retained_child_resources(
+        &self,
+        descriptor: &std::path::Path,
+        revision: &crate::infrastructure::v13_read_port::ChildResourceRevision,
+    ) -> Option<Arc<Vec<unica_metadata::MetaDiagnostic>>> {
+        let retained = self.child_resources.lock().ok()?;
+        retained
+            .get(descriptor)
+            .filter(|(cached, _)| cached == revision)
+            .map(|(_, diagnostics)| Arc::clone(diagnostics))
+    }
+
+    /// Kept only when every file of the revision has a settled stamp.
+    pub(crate) fn retain_child_resources(
+        &self,
+        descriptor: std::path::PathBuf,
+        revision: crate::infrastructure::v13_read_port::ChildResourceRevision,
+        diagnostics: Arc<Vec<unica_metadata::MetaDiagnostic>>,
+    ) {
+        if revision.file_stamps().all(|stamp| self.retains(stamp)) {
+            if let Ok(mut retained) = self.child_resources.lock() {
+                retained.insert(descriptor, (revision, diagnostics));
+            }
+        }
+    }
+
     fn retains(&self, stamp: &FileStamp) -> bool {
         stamp.settled(std::time::SystemTime::now(), self.settle_window)
     }
@@ -531,6 +599,28 @@ impl RegistrationCache {
         let settled = stamps.iter().flatten().all(|stamp| self.retains(stamp));
         *slot(&self.configuration) = settled.then(|| (stamps, Arc::clone(&built)));
         Ok(built)
+    }
+
+    /// Стамп прочитанных регистраций, подтверждённый тем же удержанным разбором.
+    pub(crate) fn configuration_stamp_for_payload(
+        &self,
+        payload: &Arc<Value>,
+    ) -> Option<FileStamp> {
+        let retained = slot(&self.configuration);
+        let (stamps, cached) = retained.as_ref()?;
+        if !Arc::ptr_eq(cached, payload) {
+            return None;
+        }
+        stamps[0]
+    }
+
+    pub(crate) fn configuration_stamp_for_index(
+        &self,
+        index: &Arc<RegistrationIndex>,
+    ) -> Option<FileStamp> {
+        let retained = slot(&self.registrations);
+        let (stamp, cached) = retained.as_ref()?;
+        Arc::ptr_eq(cached, index).then_some(*stamp)
     }
 
     /// The parsed support state of `Ext/ParentConfigurations.bin` (`None`
@@ -622,6 +712,38 @@ impl RegistrationCache {
         *slot(&self.subsystems) = settled.then(|| (stamps, Arc::clone(&topology)));
         checkpoint()?;
         Ok(topology)
+    }
+
+    /// Сохранённый состав планов обмена, если ни один файл, из которых он
+    /// собран, не изменился и не появился.
+    pub(crate) fn retained_exchange_membership(
+        &self,
+        root: &SourceDirectory,
+        configuration: FileStamp,
+    ) -> Option<Arc<crate::infrastructure::v13_read::ExchangeMembership>> {
+        let retained = slot(&self.exchange_membership);
+        let (stamps, membership) = retained.as_ref()?;
+        (stamps.configuration == configuration && stamps.still_matches(root))
+            .then(|| Arc::clone(membership))
+    }
+
+    /// Сохраняет состав, если стампы всех его файлов устоялись: файл моложе
+    /// окна мог измениться, не изменив стампа.
+    pub(crate) fn retain_exchange_membership(
+        &self,
+        root: &SourceDirectory,
+        stamps: ExchangeMembershipStamps,
+        membership: Arc<crate::infrastructure::v13_read::ExchangeMembership>,
+    ) {
+        if self.retains(&stamps.configuration)
+            && stamps
+                .plans
+                .iter()
+                .all(|(_, stamp)| stamp.as_ref().is_none_or(|stamp| self.retains(stamp)))
+            && stamps.still_matches(root)
+        {
+            *slot(&self.exchange_membership) = Some((stamps, membership));
+        }
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -892,6 +1014,15 @@ pub(crate) struct StreamedConfigurationRoot {
     pub(crate) counts: BTreeMap<String, usize>,
 }
 
+pub(super) fn configuration_registration_kind(tag: &str) -> Option<NodeKind> {
+    if tag == unica_source_designer::layout::ORDINARY_INTERFACE_XML_TAG {
+        return Some(NodeKind::OrdinaryInterface);
+    }
+    NodeKind::parse(tag)
+        .ok()
+        .filter(|kind| kind.is_metadata_kind())
+}
+
 /// Reads the whole root owner through the retained descriptor. The XML parser
 /// validates the tail before any answer is published; root facts and a bounded
 /// run of registration keys are held in memory. An individual XML token still
@@ -912,19 +1043,18 @@ pub(super) fn read_configuration_root(
         version,
         total_objects,
         registrations,
-        property_limits,
+        mut property_limits,
         ..
     } = state;
+    property_limits.extend(purpose.mobile_list_limits);
+    property_limits.extend(purpose.reference_list_limits);
     let mut counts = BTreeMap::<String, usize>::new();
     registrations.for_each_unique(checkpoint, |kind, _name| {
-        let Ok(kind_value) = NodeKind::parse(kind) else {
+        let Some(kind) = configuration_registration_kind(kind) else {
             return Ok(());
         };
-        if !kind_value.is_metadata_kind() {
-            return Ok(());
-        }
         checkpoint()?;
-        let count = counts.entry(kind.to_string()).or_default();
+        let count = counts.entry(kind.as_str().to_string()).or_default();
         *count = count.checked_add(1).ok_or_else(|| {
             ViewError::detailed(
                 RefusalDetail::SourceUnreadable,
@@ -974,7 +1104,8 @@ pub(super) fn read_configuration_root(
         "properties": {
             "usePurposes": purpose.use_purposes,
             "defaultRoles": purpose.default_roles,
-            "usedMobileApplicationFunctionalities": purpose.used_mobile_application_functionalities,
+            "additionalFullTextSearchDictionaries": purpose.additional_full_text_search_dictionaries,
+            "standaloneConfigurationRestrictionRoles": purpose.standalone_configuration_restriction_roles,
             "includeHelpInContents": purpose.include_help_in_contents,
             "compatibilityMode": optional("CompatibilityMode"),
             "defaultRunMode": optional("DefaultRunMode"),
@@ -1010,6 +1141,11 @@ pub(super) fn read_configuration_root(
         "interface": interface,
         "panels": panels,
     });
+    payload["properties"]["mobileApplicationURLs"] = json!(purpose.mobile_application_urls);
+    payload["properties"]["allowedIncomingShareRequestTypes"] =
+        json!(purpose.allowed_incoming_share_request_types);
+    payload["properties"]["usedMobileApplicationFunctionalities"] =
+        json!(purpose.used_mobile_application_functionalities);
     if !property_limits.is_empty() {
         payload["propertyLimits"] = json!(property_limits);
     }
@@ -1142,7 +1278,7 @@ fn parse_configuration_owner(
     };
     let mut parser = configuration_parser_config().create_reader(BufReader::new(checked));
     let mut state = RootState::new();
-    // Retain only the four structured purpose properties, using the same
+    // Retain the structured configuration properties, using the same
     // namespace-aware codec as the ordinary root. The rest remains streamed.
     let mut purpose_xml = xml::writer::EmitterConfig::new()
         .write_document_declaration(false)
@@ -1170,7 +1306,9 @@ fn parse_configuration_owner(
             if state.ignored_depth == 0
                 && matches!(state.stack.last().map(|frame| &frame.role), Some(FrameRole::Properties))
                 && name.namespace.as_deref() == Some(MD_NS)
-                && matches!(name.local_name.as_str(), "UsePurposes" | "DefaultRoles" | "UsedMobileApplicationFunctionalities" | "IncludeHelpInContents"));
+                && matches!(name.local_name.as_str(), "UsePurposes" | "DefaultRoles" | "UsedMobileApplicationFunctionalities" | "IncludeHelpInContents"
+                    | "MobileApplicationURLs" | "AllowedIncomingShareRequestTypes"
+                    | "AdditionalFullTextSearchDictionaries" | "StandaloneConfigurationRestrictionRoles"));
         if purpose_depth != 0 || starts_purpose {
             if let Some(writer_event) = event.as_writer_event() {
                 purpose_xml
@@ -1778,6 +1916,75 @@ mod tests {
         source.push(0xff);
         source.extend_from_slice(b"</Ignored><ChildObjects/></Configuration></MetaDataObject>");
         assert!(parsed(&source, &|| Ok(())).is_err());
+    }
+
+    #[test]
+    fn streamed_mobile_lists_preserve_urls_when_a_share_type_is_incomplete() {
+        let source = format!(
+            r#"<MetaDataObject xmlns="{MD_NS}" xmlns:d="http://v8.1c.ru/8.1/data/core"
+                      xmlns:s="http://www.w3.org/2001/XMLSchema-instance"
+                      xmlns:t="http://www.w3.org/2001/XMLSchema"
+                      xmlns:m="http://v8.1c.ru/8.2/managed-application/core" version="2.20">
+                <Configuration>
+                    <Properties>
+                        <Name>Demo</Name>
+                        <MobileApplicationURLs>
+                            <d:Value s:type="t:string">https://one.example</d:Value>
+                            <d:Value s:type="t:string">https://two.example</d:Value>
+                        </MobileApplicationURLs>
+                        <AllowedIncomingShareRequestTypes>
+                            <d:Value s:type="m:AllowedIncomingShareRequestType"><m:mime>text/plain</m:mime></d:Value>
+                        </AllowedIncomingShareRequestTypes>
+                    </Properties>
+                    <ChildObjects/>
+                </Configuration>
+            </MetaDataObject>"#
+        );
+        let result = parsed(source.as_bytes(), &|| Ok(())).unwrap();
+        assert_eq!(result.payload["name"], "Demo");
+        assert_eq!(
+            result.payload["properties"]["mobileApplicationURLs"],
+            json!(["https://one.example", "https://two.example"])
+        );
+        assert!(result.payload["properties"]["allowedIncomingShareRequestTypes"].is_null());
+        assert!(result.payload["propertyLimits"][0]
+            .as_str()
+            .unwrap()
+            .contains("AllowedIncomingShareRequestTypes"));
+    }
+
+    #[test]
+    fn streamed_reference_lists_preserve_order_and_localize_malformed_values() {
+        let source = format!(
+            r#"<MetaDataObject xmlns="{MD_NS}" xmlns:r="http://v8.1c.ru/8.3/xcf/readable"
+                      xmlns:s="http://www.w3.org/2001/XMLSchema-instance" version="2.20">
+                <Configuration>
+                    <Properties>
+                        <Name>Demo</Name>
+                        <AdditionalFullTextSearchDictionaries>
+                            <r:Item s:type="r:MDObjectRef">Constant.Second</r:Item>
+                            <r:Item s:type="r:MDObjectRef">CommonTemplate.First</r:Item>
+                        </AdditionalFullTextSearchDictionaries>
+                        <StandaloneConfigurationRestrictionRoles>
+                            <r:Item s:type="r:WrongType">Role.Reader</r:Item>
+                        </StandaloneConfigurationRestrictionRoles>
+                    </Properties>
+                    <ChildObjects/>
+                </Configuration>
+            </MetaDataObject>"#
+        );
+
+        let result = parsed(source.as_bytes(), &|| Ok(())).unwrap();
+        assert_eq!(result.payload["name"], "Demo");
+        assert_eq!(
+            result.payload["properties"]["additionalFullTextSearchDictionaries"],
+            json!(["Constant.Second", "CommonTemplate.First"])
+        );
+        assert!(result.payload["properties"]["standaloneConfigurationRestrictionRoles"].is_null());
+        assert!(result.payload["propertyLimits"][0]
+            .as_str()
+            .unwrap()
+            .contains("StandaloneConfigurationRestrictionRoles"));
     }
 
     #[test]

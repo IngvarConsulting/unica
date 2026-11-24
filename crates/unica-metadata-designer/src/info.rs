@@ -563,11 +563,18 @@ pub fn typed_element(
         || (Vec::new(), Vec::new()),
         |profile| super::member_properties::observe(node, profile, field, target, diagnostics),
     );
-    incomplete |= !property_limits.is_empty();
-    let property_limits = own_limits.into_iter().chain(property_limits).collect();
+    let (external_facts, external_limits) =
+        crate::external_data_source_facts::inline(target, node, properties, field);
+    incomplete |= !property_limits.is_empty() || !external_limits.is_empty();
+    let property_limits = own_limits
+        .into_iter()
+        .chain(property_limits)
+        .chain(external_limits)
+        .collect();
     let properties_readback = properties_readback
         .into_iter()
         .chain(profile_properties)
+        .chain(external_facts)
         .collect();
     let color = (node.tag_name().name() == "EnumValue")
         .then(|| crate::info_projection::direct_md_child_text(properties, "Color"))
@@ -777,12 +784,21 @@ pub fn parse_typed_meta_local_info_inner(
         target,
         &mut diagnostics,
     );
-    let declarations = crate::info_projection::project_meta_info_declarations(
+    let mut declarations = crate::info_projection::project_meta_info_declarations(
         kind,
         properties,
         target,
         &mut diagnostics,
     );
+    if declarations.standard_attributes == Some(None) {
+        declarations.standard_attributes = Some(
+            crate::info_projection::implicit_document_standard_attributes(
+                kind,
+                properties,
+                source_kind,
+            ),
+        );
+    }
     let format = unica_source_designer::roots::root_version_literal(xml, doc.root_element());
     let member_read_profile = source_kind.and_then(|source| {
         unica_metadata::MetaMemberReadProfile::for_source(

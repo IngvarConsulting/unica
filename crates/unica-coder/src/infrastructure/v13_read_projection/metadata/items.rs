@@ -6,6 +6,13 @@ use crate::domain::node_view::{BranchRef, NodeView};
 use serde_json::{Map, Value};
 use unica_address::address::{NodeKind, QualifiedAddress};
 
+pub(super) const METADATA_ITEM_BRANCH_FIELDS: [(&str, NodeKind); 4] = [
+    ("attributes", NodeKind::Attribute),
+    ("methods", NodeKind::Method),
+    ("parameters", NodeKind::Parameter),
+    ("standardAttributes", NodeKind::StandardAttribute),
+];
+
 /// Скаляры члена объекта метаданных в его `props`.
 const ITEM_SCALAR_KEYS: &[&str] = &[
     "synonym",
@@ -196,19 +203,14 @@ pub(super) fn metadata_item_node(
             );
         }
     }
-    let mut branches = [
-        ("attributes", NodeKind::Attribute),
-        ("methods", NodeKind::Method),
-        ("parameters", NodeKind::Parameter),
-        ("standardAttributes", NodeKind::StandardAttribute),
-    ]
-    .into_iter()
-    .filter_map(|(field, kind)| {
-        let items = item.get(field)?.as_array()?;
-        (!items.is_empty())
-            .then(|| BranchRef::new(format!("{}.{}", address, kind.as_str()), items.len()))
-    })
-    .collect::<Vec<_>>();
+    let mut branches = METADATA_ITEM_BRANCH_FIELDS
+        .into_iter()
+        .filter_map(|(field, kind)| {
+            let items = item.get(field)?.as_array()?;
+            (!items.is_empty())
+                .then(|| BranchRef::new(format!("{}.{}", address, kind.as_str()), items.len()))
+        })
+        .collect::<Vec<_>>();
     branches.extend(
         item.get("logicalBranches")
             .and_then(Value::as_array)
@@ -246,6 +248,34 @@ pub(super) fn metadata_item_node(
         );
     props.extend(member_props);
     limits.extend(member_limits);
+    if unica_metadata::external_data_source::kind(address.segments()) == Some(kind) {
+        let allowed = unica_metadata::external_data_source::inline_read_facts(kind);
+        for property in item
+            .get("properties")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let Some(key) = property
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|key| allowed.contains(key))
+            else {
+                continue;
+            };
+            if let Some(value) = property.get("value") {
+                place_prop(
+                    &mut props,
+                    &mut limits,
+                    address,
+                    key,
+                    value,
+                    true,
+                    &format!("external data source property {key}"),
+                );
+            }
+        }
+    }
     NodeView::new(
         address.to_string(),
         kind.as_str(),

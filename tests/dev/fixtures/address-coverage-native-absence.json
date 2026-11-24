@@ -1,0 +1,439 @@
+{
+  "scope": "Captured native import attempts and exact named MCP probes for the attempted children.",
+  "native_receipt_sha256": {
+    "2.20": "def2b8b77324ea3eac5a084d55ecaee2757a757e4a6b5eec90c09e42a8e4e078",
+    "2.21": "84e3866136d8f241e2dacf3dc5919169f3cd7c7a91dabeb49a319f5c0a751279",
+    "2.22": "ff7fa9e44607b7fa37bc90f7233bafa765da9fe5866823bf6a5fd9a1f76bc3e7"
+  },
+  "mcp_revision": "ec4aac54df2825e075a0d7c292b92dbcfec9ce45",
+  "mcp_binary_sha256": "641d7dd01731d74f49d8258864e47621650bde9ca44c7274f5661e5cf32916c4",
+  "qualification_sha256": "a609101cb4846eef6558e8169815b36ad505f4cdb2aee2e952982f5164d645d9",
+  "probes": [
+    {
+      "line": "8.3.27",
+      "format": "2.20",
+      "platform": "8.3.27.2342",
+      "owner": "main:Constant.Enabled",
+      "child_kind": "Form",
+      "child": "AddressProbeConstantForm",
+      "stages": {
+        "import": 4294967295
+      },
+      "diagnostic": "[ERROR] Файл - Enabled.xml: ошибка формата документа - читаемое свойство не соответствует ожидаемому. Текущее ChildObjects, ожидаемое Constant.",
+      "owner_sha256": "0c4e2df41da2603b8cbc5f43ace3eb08b4a653bc970278c8d0c84351b294dc86",
+      "import_log_sha256": "d1151a2948d0e76c09ab7a7b0efbff95698aa5448e57edc9bb6ef472ebc70e52",
+      "named_probes": {
+        "named_child": "not_found",
+        "module_group": "not_found",
+        "named_module": "not_found",
+        "resolve_address": "not_found",
+        "resolve_file_path": "not_found"
+      }
+    },
+    {
+      "line": "8.3.27",
+      "format": "2.20",
+      "platform": "8.3.27.2342",
+      "owner": "main:Constant.Enabled",
+      "child_kind": "Command",
+      "child": "AddressProbeConstantCommand",
+      "stages": {
+        "import": 4294967295
+      },
+      "diagnostic": "[ERROR] Файл - Enabled.xml: ошибка формата документа - читаемое свойство не соответствует ожидаемому. Текущее ChildObjects, ожидаемое Constant.",
+      "owner_sha256": "0c4e2df41da2603b8cbc5f43ace3eb08b4a653bc970278c8d0c84351b294dc86",
+      "import_log_sha256": "d1151a2948d0e76c09ab7a7b0efbff95698aa5448e57edc9bb6ef472ebc70e52",
+      "named_probes": {
+        "named_child": "not_found",
+        "module_group": "not_found",
+        "named_module": "not_found",
+        "resolve_address": "not_found",
+        "resolve_file_path": "not_found"
+      }
+    },
+    {
+      "line": "8.3.27",
+      "format": "2.20",
+      "platform": "8.3.27.2342",
+      "owner": "main:DocumentNumerator.Sales",
+      "child_kind": "Form",
+      "child": "AddressProbeDocumentNumeratorForm",
+      "stages": {
+        "import": 4294967295
+      },
+      "diagnostic": "[ERROR] Файл - Sales.xml: ошибка формата документа - читаемое свойство не соответствует ожидаемому. Текущее ChildObjects, ожидаемое DocumentNumerator.",
+      "owner_sha256": "6f0c4996003e1443bcae17318c1948158ca0e644a38f2b88cd2643c7062884d0",
+      "import_log_sha256": "ff060b39fe112ea73de8b8c8251263e80b1d277e55572e95a5aa0906630b0f77",
+      "named_probes": {
+        "named_child": "not_found",
+        "module_group": "not_found",
+        "named_module": "not_found",
+        "resolve_address": "not_found",
+        "resolve_file_path": "not_found"
+      }
+    },
+    {
+      "line": "8.3.27",
+      "format": "2.20",
+      "platform": "8.3.27.2342",
+      "owner": "main:DocumentNumerator.Sales",
+      "child_kind": "Command",
+      "child": "AddressProbeDocumentNumeratorCommand",
+      "stages": {
+        "import": 4294967295
+      },
+      "diagnostic": "[ERROR] Файл - Sales.xml: ошибка формата документа - читаемое свойство не соответствует ожидаемому. Текущее ChildObjects, ожидаемое DocumentNumerator.",
+      "owner_sha256": "6f0c4996003e1443bcae17318c1948158ca0e644a38f2b88cd2643c7062884d0",
+      "import_log_sha256": "ff060b39fe112ea73de8b8c8251263e80b1d277e55572e95a5aa0906630b0f77",
+      "named_probes": {
+        "named_child": "not_found",
+        "module_group": "not_found",
+        "named_module": "not_found",
+        "resolve_address": "not_found",
+        "resolve_file_path": "not_found"
+      }
+    },
+    {
+      "line": "8.3.27",
+      "format": "2.20",
+      "platform": "8.3.27.2342",
+      "owner": "main:Sequence.Probe",
+      "child_kind": "Form",
+      "child": "AddressProbeSequenceForm",
+      "stages": {
+        "import": 0,
+        "apply": 0,
+        "export": 0
+      },
+      "diagnostic": "[WARN] Файл - Probe.xml: ошибка формата документа - объект метаданных Form не был загружен поскольку не является подчиненным для объекта Sequence.",
+      "owner_sha256": "b28ca694d0673c3bfd1658e0981e7a5fa956087be369a92fffb29e36f7461829",
+      "import_log_sha256": "add87c75b4d2a4699ab2c38aaa6ea4360c0495b55c545aebbc3d6864f974ecc5",
+      "named_probes": {
+        "named_child": "not_found",
+        "module_group": "not_found",
+        "named_module": "not_found",
+        "resolve_address": "not_found",
+        "resolve_file_path": "not_found"
+      },
+      "export": {
+        "owner_sha256": "b28ca694d0673c3bfd1658e0981e7a5fa956087be369a92fffb29e36f7461829",
+        "child_registration_count": 0,
+        "child_files": [],
+        "dump_entry_count": 0
+      }
+    },
+    {
+      "line": "8.3.27",
+      "format": "2.20",
+      "platform": "8.3.27.2342",
+      "owner": "main:Sequence.Probe",
+      "child_kind": "Command",
+      "child": "AddressProbeSequenceCommand",
+      "stages": {
+        "import": 0,
+        "apply": 0,
+        "export": 0
+      },
+      "diagnostic": "[WARN] Файл - Probe.xml: ошибка формата документа - объект метаданных Command не был загружен поскольку не является подчиненным для объекта Sequence.",
+      "owner_sha256": "b28ca694d0673c3bfd1658e0981e7a5fa956087be369a92fffb29e36f7461829",
+      "import_log_sha256": "126039eff8c6b882e3be7d7fa9a57102bbec0d1ad64bb27c6ead0104666df85b",
+      "named_probes": {
+        "named_child": "not_found",
+        "module_group": "not_found",
+        "named_module": "not_found",
+        "resolve_address": "not_found",
+        "resolve_file_path": "not_found"
+      },
+      "export": {
+        "owner_sha256": "b28ca694d0673c3bfd1658e0981e7a5fa956087be369a92fffb29e36f7461829",
+        "child_registration_count": 0,
+        "child_files": [],
+        "dump_entry_count": 0
+      }
+    },
+    {
+      "line": "8.5.1",
+      "format": "2.21",
+      "platform": "8.5.1.1529",
+      "owner": "main:Constant.Enabled",
+      "child_kind": "Form",
+      "child": "AddressProbeConstantForm",
+      "stages": {
+        "import": 4294967295
+      },
+      "diagnostic": "[ERROR] Файл - Enabled.xml: ошибка формата документа - читаемое свойство не соответствует ожидаемому. Текущее ChildObjects, ожидаемое Constant.",
+      "owner_sha256": "ba54724172ff689219bcff601aebe43859be2637512db519412fd5cba3caf44e",
+      "import_log_sha256": "d1151a2948d0e76c09ab7a7b0efbff95698aa5448e57edc9bb6ef472ebc70e52",
+      "named_probes": {
+        "named_child": "not_found",
+        "module_group": "not_found",
+        "named_module": "not_found",
+        "resolve_address": "not_found",
+        "resolve_file_path": "not_found"
+      }
+    },
+    {
+      "line": "8.5.1",
+      "format": "2.21",
+      "platform": "8.5.1.1529",
+      "owner": "main:Constant.Enabled",
+      "child_kind": "Command",
+      "child": "AddressProbeConstantCommand",
+      "stages": {
+        "import": 4294967295
+      },
+      "diagnostic": "[ERROR] Файл - Enabled.xml: ошибка формата документа - читаемое свойство не соответствует ожидаемому. Текущее ChildObjects, ожидаемое Constant.",
+      "owner_sha256": "ba54724172ff689219bcff601aebe43859be2637512db519412fd5cba3caf44e",
+      "import_log_sha256": "d1151a2948d0e76c09ab7a7b0efbff95698aa5448e57edc9bb6ef472ebc70e52",
+      "named_probes": {
+        "named_child": "not_found",
+        "module_group": "not_found",
+        "named_module": "not_found",
+        "resolve_address": "not_found",
+        "resolve_file_path": "not_found"
+      }
+    },
+    {
+      "line": "8.5.1",
+      "format": "2.21",
+      "platform": "8.5.1.1529",
+      "owner": "main:DocumentNumerator.Sales",
+      "child_kind": "Form",
+      "child": "AddressProbeDocumentNumeratorForm",
+      "stages": {
+        "import": 4294967295
+      },
+      "diagnostic": "[ERROR] Файл - Sales.xml: ошибка формата документа - читаемое свойство не соответствует ожидаемому. Текущее ChildObjects, ожидаемое DocumentNumerator.",
+      "owner_sha256": "fdfb5b524ca98618b5061260938ddf4457e68a01050eb44f4ff6c2bf78fd7a7d",
+      "import_log_sha256": "ff060b39fe112ea73de8b8c8251263e80b1d277e55572e95a5aa0906630b0f77",
+      "named_probes": {
+        "named_child": "not_found",
+        "module_group": "not_found",
+        "named_module": "not_found",
+        "resolve_address": "not_found",
+        "resolve_file_path": "not_found"
+      }
+    },
+    {
+      "line": "8.5.1",
+      "format": "2.21",
+      "platform": "8.5.1.1529",
+      "owner": "main:DocumentNumerator.Sales",
+      "child_kind": "Command",
+      "child": "AddressProbeDocumentNumeratorCommand",
+      "stages": {
+        "import": 4294967295
+      },
+      "diagnostic": "[ERROR] Файл - Sales.xml: ошибка формата документа - читаемое свойство не соответствует ожидаемому. Текущее ChildObjects, ожидаемое DocumentNumerator.",
+      "owner_sha256": "fdfb5b524ca98618b5061260938ddf4457e68a01050eb44f4ff6c2bf78fd7a7d",
+      "import_log_sha256": "ff060b39fe112ea73de8b8c8251263e80b1d277e55572e95a5aa0906630b0f77",
+      "named_probes": {
+        "named_child": "not_found",
+        "module_group": "not_found",
+        "named_module": "not_found",
+        "resolve_address": "not_found",
+        "resolve_file_path": "not_found"
+      }
+    },
+    {
+      "line": "8.5.1",
+      "format": "2.21",
+      "platform": "8.5.1.1529",
+      "owner": "main:Sequence.Probe",
+      "child_kind": "Form",
+      "child": "AddressProbeSequenceForm",
+      "stages": {
+        "import": 0,
+        "apply": 0,
+        "export": 0
+      },
+      "diagnostic": "[WARN] Файл - Probe.xml: ошибка формата документа - объект метаданных Form не был загружен поскольку не является подчиненным для объекта Sequence.",
+      "owner_sha256": "0a31faa0b702bd3427cc7861e3f736d6a6b0400a039cd53ae3f8bb75d0380181",
+      "import_log_sha256": "add87c75b4d2a4699ab2c38aaa6ea4360c0495b55c545aebbc3d6864f974ecc5",
+      "named_probes": {
+        "named_child": "not_found",
+        "module_group": "not_found",
+        "named_module": "not_found",
+        "resolve_address": "not_found",
+        "resolve_file_path": "not_found"
+      },
+      "export": {
+        "owner_sha256": "0a31faa0b702bd3427cc7861e3f736d6a6b0400a039cd53ae3f8bb75d0380181",
+        "child_registration_count": 0,
+        "child_files": [],
+        "dump_entry_count": 0
+      }
+    },
+    {
+      "line": "8.5.1",
+      "format": "2.21",
+      "platform": "8.5.1.1529",
+      "owner": "main:Sequence.Probe",
+      "child_kind": "Command",
+      "child": "AddressProbeSequenceCommand",
+      "stages": {
+        "import": 0,
+        "apply": 0,
+        "export": 0
+      },
+      "diagnostic": "[WARN] Файл - Probe.xml: ошибка формата документа - объект метаданных Command не был загружен поскольку не является подчиненным для объекта Sequence.",
+      "owner_sha256": "0a31faa0b702bd3427cc7861e3f736d6a6b0400a039cd53ae3f8bb75d0380181",
+      "import_log_sha256": "126039eff8c6b882e3be7d7fa9a57102bbec0d1ad64bb27c6ead0104666df85b",
+      "named_probes": {
+        "named_child": "not_found",
+        "module_group": "not_found",
+        "named_module": "not_found",
+        "resolve_address": "not_found",
+        "resolve_file_path": "not_found"
+      },
+      "export": {
+        "owner_sha256": "0a31faa0b702bd3427cc7861e3f736d6a6b0400a039cd53ae3f8bb75d0380181",
+        "child_registration_count": 0,
+        "child_files": [],
+        "dump_entry_count": 0
+      }
+    },
+    {
+      "line": "8.5.4",
+      "format": "2.22",
+      "platform": "8.5.4.2028",
+      "owner": "main:Constant.Enabled",
+      "child_kind": "Form",
+      "child": "AddressProbeConstantForm",
+      "stages": {
+        "import": 4294967295
+      },
+      "diagnostic": "[ERROR] Файл - Enabled.xml: ошибка формата документа - читаемое свойство не соответствует ожидаемому. Текущее ChildObjects, ожидаемое Constant.",
+      "owner_sha256": "6b064ec079d4ba12a3090bac56f7c739e9067ab49bb29a08c247b4512c20f563",
+      "import_log_sha256": "d1151a2948d0e76c09ab7a7b0efbff95698aa5448e57edc9bb6ef472ebc70e52",
+      "named_probes": {
+        "named_child": "not_found",
+        "module_group": "not_found",
+        "named_module": "not_found",
+        "resolve_address": "not_found",
+        "resolve_file_path": "not_found"
+      }
+    },
+    {
+      "line": "8.5.4",
+      "format": "2.22",
+      "platform": "8.5.4.2028",
+      "owner": "main:Constant.Enabled",
+      "child_kind": "Command",
+      "child": "AddressProbeConstantCommand",
+      "stages": {
+        "import": 4294967295
+      },
+      "diagnostic": "[ERROR] Файл - Enabled.xml: ошибка формата документа - читаемое свойство не соответствует ожидаемому. Текущее ChildObjects, ожидаемое Constant.",
+      "owner_sha256": "6b064ec079d4ba12a3090bac56f7c739e9067ab49bb29a08c247b4512c20f563",
+      "import_log_sha256": "d1151a2948d0e76c09ab7a7b0efbff95698aa5448e57edc9bb6ef472ebc70e52",
+      "named_probes": {
+        "named_child": "not_found",
+        "module_group": "not_found",
+        "named_module": "not_found",
+        "resolve_address": "not_found",
+        "resolve_file_path": "not_found"
+      }
+    },
+    {
+      "line": "8.5.4",
+      "format": "2.22",
+      "platform": "8.5.4.2028",
+      "owner": "main:DocumentNumerator.Sales",
+      "child_kind": "Form",
+      "child": "AddressProbeDocumentNumeratorForm",
+      "stages": {
+        "import": 4294967295
+      },
+      "diagnostic": "[ERROR] Файл - Sales.xml: ошибка формата документа - читаемое свойство не соответствует ожидаемому. Текущее ChildObjects, ожидаемое DocumentNumerator.",
+      "owner_sha256": "b1f74bad48e1d469cb7ae3f390b72a2640359075860f5592e1539da22def0d2c",
+      "import_log_sha256": "ff060b39fe112ea73de8b8c8251263e80b1d277e55572e95a5aa0906630b0f77",
+      "named_probes": {
+        "named_child": "not_found",
+        "module_group": "not_found",
+        "named_module": "not_found",
+        "resolve_address": "not_found",
+        "resolve_file_path": "not_found"
+      }
+    },
+    {
+      "line": "8.5.4",
+      "format": "2.22",
+      "platform": "8.5.4.2028",
+      "owner": "main:DocumentNumerator.Sales",
+      "child_kind": "Command",
+      "child": "AddressProbeDocumentNumeratorCommand",
+      "stages": {
+        "import": 4294967295
+      },
+      "diagnostic": "[ERROR] Файл - Sales.xml: ошибка формата документа - читаемое свойство не соответствует ожидаемому. Текущее ChildObjects, ожидаемое DocumentNumerator.",
+      "owner_sha256": "b1f74bad48e1d469cb7ae3f390b72a2640359075860f5592e1539da22def0d2c",
+      "import_log_sha256": "ff060b39fe112ea73de8b8c8251263e80b1d277e55572e95a5aa0906630b0f77",
+      "named_probes": {
+        "named_child": "not_found",
+        "module_group": "not_found",
+        "named_module": "not_found",
+        "resolve_address": "not_found",
+        "resolve_file_path": "not_found"
+      }
+    },
+    {
+      "line": "8.5.4",
+      "format": "2.22",
+      "platform": "8.5.4.2028",
+      "owner": "main:Sequence.Probe",
+      "child_kind": "Form",
+      "child": "AddressProbeSequenceForm",
+      "stages": {
+        "import": 0,
+        "apply": 0,
+        "export": 0
+      },
+      "diagnostic": "[WARN] Файл - Probe.xml: ошибка формата документа - объект метаданных Form не был загружен поскольку не является подчиненным для объекта Sequence.",
+      "owner_sha256": "3d03549fd211ea92cd7d0d633fdfb41277ba2a2527137b5c5dd551b7b414fbe4",
+      "import_log_sha256": "add87c75b4d2a4699ab2c38aaa6ea4360c0495b55c545aebbc3d6864f974ecc5",
+      "named_probes": {
+        "named_child": "not_found",
+        "module_group": "not_found",
+        "named_module": "not_found",
+        "resolve_address": "not_found",
+        "resolve_file_path": "not_found"
+      },
+      "export": {
+        "owner_sha256": "3d03549fd211ea92cd7d0d633fdfb41277ba2a2527137b5c5dd551b7b414fbe4",
+        "child_registration_count": 0,
+        "child_files": [],
+        "dump_entry_count": 0
+      }
+    },
+    {
+      "line": "8.5.4",
+      "format": "2.22",
+      "platform": "8.5.4.2028",
+      "owner": "main:Sequence.Probe",
+      "child_kind": "Command",
+      "child": "AddressProbeSequenceCommand",
+      "stages": {
+        "import": 0,
+        "apply": 0,
+        "export": 0
+      },
+      "diagnostic": "[WARN] Файл - Probe.xml: ошибка формата документа - объект метаданных Command не был загружен поскольку не является подчиненным для объекта Sequence.",
+      "owner_sha256": "3d03549fd211ea92cd7d0d633fdfb41277ba2a2527137b5c5dd551b7b414fbe4",
+      "import_log_sha256": "126039eff8c6b882e3be7d7fa9a57102bbec0d1ad64bb27c6ead0104666df85b",
+      "named_probes": {
+        "named_child": "not_found",
+        "module_group": "not_found",
+        "named_module": "not_found",
+        "resolve_address": "not_found",
+        "resolve_file_path": "not_found"
+      },
+      "export": {
+        "owner_sha256": "3d03549fd211ea92cd7d0d633fdfb41277ba2a2527137b5c5dd551b7b414fbe4",
+        "child_registration_count": 0,
+        "child_files": [],
+        "dump_entry_count": 0
+      }
+    }
+  ]
+}

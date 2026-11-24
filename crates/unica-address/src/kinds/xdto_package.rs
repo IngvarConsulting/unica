@@ -15,5 +15,9 @@ pub(super) const KIND: KindDeclaration = KindDeclaration {
         ..LayoutDeclaration::EMPTY
     }),
     generated_types: Some(&[]),
+    creation: Some(CreationDeclaration {
+        main_configuration_only: true,
+        ..CreationDeclaration::properties(&[])
+    }),
     ..KindDeclaration::new("XDTOPackage")
 };

@@ -2,25 +2,65 @@
 
 use crate::{MetadataKind, RelationEditMode};
 use serde_json::{json, Map, Value};
-use unica_operation_contract::{object, text, OperationContract};
+use unica_operation_contract::{object, text, FormatValidator, OperationContract};
 
 const METADATA_HELP: &str = "skills/meta-edit/SKILL.md";
+
+pub const XDTO_NAMESPACE_FORMATS: &[FormatValidator] = &[FormatValidator {
+    name: "uri",
+    validate: validate_xdto_namespace_uri,
+}];
+
+fn validate_xdto_namespace_uri(value: &Value) -> Result<(), String> {
+    // Use the same RFC URI parser as JSON Schema's standard URI format.
+    value
+        .as_str()
+        .filter(|text| fluent_uri::Uri::parse(*text).is_ok())
+        .map(|_| ())
+        .ok_or_else(|| "namespace must be an absolute URI".to_string())
+}
 
 pub fn metadata_object_create_input_schema() -> &'static Value {
     static SCHEMA: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
     SCHEMA.get_or_init(|| {
-        object(
+        let kinds = crate::CreatableKind::all().collect::<Vec<_>>();
+        let typed = kinds
+            .iter()
+            .copied()
+            .filter(|kind| kind.requires_creation_type())
+            .map(crate::CreatableKind::as_str)
+            .collect::<Vec<_>>();
+        let namespaced = kinds
+            .iter()
+            .copied()
+            .filter(|kind| kind.requires_creation_namespace())
+            .map(crate::CreatableKind::as_str)
+            .collect::<Vec<_>>();
+        let specialized = typed.iter().chain(&namespaced).copied().collect::<Vec<_>>();
+        let mut values = object(
             &[
-                ("at", text(true)),
-                ("values", object(&[
-                    ("kind", json!({"type":"string","enum":crate::CreatableKind::all().map(crate::CreatableKind::as_str).collect::<Vec<_>>()})),
-                    // The identifier is checked during staging. Raw decoding
-                    // must not move it ahead of a later operation's error.
-                    ("name", json!({"type":"string","minLength":1})),
-                ], &["kind", "name"])),
+                ("kind", json!({"type":"string","enum":kinds.into_iter().map(crate::CreatableKind::as_str).collect::<Vec<_>>()})),
+                // The identifier is checked during staging. Raw decoding
+                // must not move it ahead of a later operation's error.
+                ("name", json!({"type":"string","minLength":1})),
+                ("type", crate::metadata_type_schema()),
+                ("namespace", json!({
+                    "type":"string",
+                    "pattern":r"^[A-Za-z][A-Za-z0-9+.-]*:(?:[A-Za-z0-9._~:/?@\[\]!$&'()*+,;=-]|%[A-Fa-f0-9]{2})+(?:#(?:[A-Za-z0-9._~:/?@\[\]!$&'()*+,;=-]|%[A-Fa-f0-9]{2})*)?$",
+                    "format":"uri",
+                    "description":"Explicit namespace URI for a new XDTOPackage. The server validates URI syntax and preserves the supplied spelling."
+                })),
             ],
-            &["values"],
-        )
+            &["kind", "name"],
+        );
+        values["anyOf"] = json!([
+            {"properties":{"kind":{"enum":typed}},"required":["type"],"not":{"required":["namespace"]}},
+            {"properties":{"kind":{"enum":namespaced}},"required":["namespace"],"not":{"required":["type"]}},
+            {"properties":{"kind":{"not":{"enum":specialized}}},"not":{"anyOf":[
+                {"required":["type"]},{"required":["namespace"]}
+            ]}}
+        ]);
+        object(&[("at", text(true)), ("values", values)], &["values"])
     })
 }
 
@@ -487,10 +527,10 @@ pub fn metadata_object_create() -> OperationContract {
         schema,
         target: "The Configuration root: <source-set>:Configuration.",
         effect: "Create and register a new metadata object with its minimal supported files.",
-        notes: "Choose an unused valid 1C identifier. The operation accepts kind and name; configure properties and members with subsequent operations in the same apply call.",
+        notes: "Choose an unused valid 1C identifier. FilterCriterion also requires type as a structured metadata type and starts with empty content. XDTOPackage requires an explicit namespace URI and starts with no types. Configure other properties and members with subsequent operations in the same apply call.",
         example_args: json!({"values":{"kind":"Catalog","name":"Sample"}}),
         help: "skills/meta-add/SKILL.md",
-        format_validators: &[],
+        format_validators: XDTO_NAMESPACE_FORMATS,
     }
 }
 
@@ -499,7 +539,7 @@ pub fn metadata_object_remove() -> OperationContract {
         schema: metadata_object_remove_input_schema().clone(),
         target: "The existing metadata object: <source-set>:<Kind>.<Name>.",
         effect: "Remove the object descriptor, its resource directory and its registration; update subsystem membership.",
-        notes: "References from other metadata refuse the removal and are listed by the referring address and property; remove them first. References only in module code or in query-language text (form and data composition queries, data composition expressions of templates and dynamic lists, role access restriction conditions; English or Russian kind names) are listed by address and line in the code_references warning of the plan; that text is left as it is, and executing its token confirms the removal. Compositions that list the object — subsystem content, role rights, command interfaces, the home page, exchange plan and functional option content — lose its entries in the same apply, named in the composition_cleaned warning of the plan. An editable vendor object is removed while staying on support; a locked vendor object, or one with a locked child, refuses under the deny support policy until a separate supportRule.set apply takes it off support, warns support_locked under warn and is removed silently under off. The support marker is not changed.",
+        notes: "References from other metadata refuse the removal and are listed by the referring address and property; remove them first. References only in module code or in query-language text (form and data composition queries, data composition expressions of templates and dynamic lists, role access restriction conditions; English or Russian kind names) are listed by address and line in the code_references warning of the plan; that text is left as it is, and executing its token confirms the removal. Compositions that list the object — subsystem content, role rights, command interfaces, the home page, exchange plan and functional option content — lose its entries in the same apply, named in the composition_cleaned warning of the plan. A removed command group also leaves the command interfaces of subsystems, the main section and forms: a form item keeps its other settings and goes whole only when nothing but the command and its type is left; the commands placed in the group return to their default groups. An editable vendor object is removed while staying on support; a locked vendor object, or one with a locked child, refuses under the deny support policy until a separate supportRule.set apply takes it off support, warns support_locked under warn and is removed silently under off. The support marker is not changed.",
         example_args: json!({}),
         help: METADATA_HELP,
         format_validators: &[],

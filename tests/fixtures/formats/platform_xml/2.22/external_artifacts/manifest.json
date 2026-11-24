@@ -1,0 +1,141 @@
+{
+  "formatVersion": "2.22",
+  "platformVersion": "8.5.4.2028",
+  "seed": "tests/fixtures/formats/platform_xml/2.20/external_artifacts",
+  "source": "synthetic independent platform export from a fresh local file infobase",
+  "derivation": [
+    "Designer /LoadExternalDataProcessorOrReportFromFiles",
+    "Designer /DumpExternalDataProcessorOrReportToFiles -Format Hierarchical"
+  ],
+  "files": {
+    "epf/SyntheticProcessor/Ext/ObjectModule.bsl": {
+      "size": 280,
+      "sha256": "62125960e9343418373dc6a733129f8c570870b0ea557cab99dab2f4a3cf8f3c"
+    },
+    "epf/SyntheticProcessor/Forms/Auxiliary/Ext/Form.xml": {
+      "size": 1295,
+      "sha256": "7dfb39dbbd08459c5e144efb7c88475b618261cca18d4632a506e7305f9f5e31"
+    },
+    "epf/SyntheticProcessor/Forms/Auxiliary.xml": {
+      "size": 1654,
+      "sha256": "8f6b9676ae9a0c3fa58ac5de584b35c0da5f50c8dec010079f804a4332ecb0c6"
+    },
+    "epf/SyntheticProcessor/Forms/Main/Ext/Form/Module.bsl": {
+      "size": 516,
+      "sha256": "84d121addcb8265c1d042eea07efe8b9b9f3f1456cdd809c9c924b116fe7878b"
+    },
+    "epf/SyntheticProcessor/Forms/Main/Ext/Form.xml": {
+      "size": 4544,
+      "sha256": "f1f0dc132e3cf65d553cae3db234f270b48ad9be766cbaff72e3113f8bc82b85"
+    },
+    "epf/SyntheticProcessor/Forms/Main.xml": {
+      "size": 1644,
+      "sha256": "7634aca9bd0c42c1be10cd7ef81bf2a0050b8d6ab92948e15b90171b9e772a87"
+    },
+    "epf/SyntheticProcessor/Templates/Blob/Ext/Template.bin": {
+      "size": 16,
+      "sha256": "be45cb2605bf36bebde684841a28f0fd43c69850a3dce5fedba69928ee3a8991"
+    },
+    "epf/SyntheticProcessor/Templates/Blob.xml": {
+      "size": 1302,
+      "sha256": "9958eb9dee93eff91c096496f628ef9f5f5fe790f50e29566a23d7ff72fcb987"
+    },
+    "epf/SyntheticProcessor/Templates/Layout/Ext/Template.xml": {
+      "size": 6555,
+      "sha256": "5ccc5052f6495896714f9d24cf9a7cde77198756460fc4a1b280c49b4fcd2123"
+    },
+    "epf/SyntheticProcessor/Templates/Layout.xml": {
+      "size": 1311,
+      "sha256": "38e80ec102234258ba34f6d98c1023733b1573a4ffa31e28e6691f233895fb03"
+    },
+    "epf/SyntheticProcessor/Templates/Notes/Ext/Template.txt": {
+      "size": 85,
+      "sha256": "f7267f02d0fdf4df38088bd1281e1d1ec3cd769407a10d11267dedc7d6192590"
+    },
+    "epf/SyntheticProcessor/Templates/Notes.xml": {
+      "size": 1307,
+      "sha256": "27e13464de933519cbe30e1512df98fa0480aa93fe1d43efd39d0dca52955f19"
+    },
+    "epf/SyntheticProcessor.xml": {
+      "size": 11384,
+      "sha256": "a3a3dbda26994349b09576725163e2790535759d9feab5034d5abc1ab9a3688f"
+    },
+    "erf/SyntheticReport/Ext/ObjectModule.bsl": {
+      "size": 280,
+      "sha256": "62125960e9343418373dc6a733129f8c570870b0ea557cab99dab2f4a3cf8f3c"
+    },
+    "erf/SyntheticReport/Forms/Auxiliary/Ext/Form.xml": {
+      "size": 1499,
+      "sha256": "a79c4f94708cb4128e20993cbbd2d5bfe204514fdb77fb280815314833964528"
+    },
+    "erf/SyntheticReport/Forms/Auxiliary.xml": {
+      "size": 1654,
+      "sha256": "29847713b078cf59e930f3c22dab225700488756f15199061ef06724a0b11036"
+    },
+    "erf/SyntheticReport/Forms/Main/Ext/Form/Module.bsl": {
+      "size": 646,
+      "sha256": "73e647add8c0bfdcb81df6605aca1fb476ff89d089cf84de8f5136ae5b4b2b19"
+    },
+    "erf/SyntheticReport/Forms/Main/Ext/Form.xml": {
+      "size": 5721,
+      "sha256": "9c15fbd137db7bae949b4a2cfbf6d3c5d075a1d85ea6b123d875b7d101c5c2a0"
+    },
+    "erf/SyntheticReport/Forms/Main.xml": {
+      "size": 1644,
+      "sha256": "0cf5f99c40af307b351cfb205886f943990f9cd63b8729c75207d41fa3d249d0"
+    },
+    "erf/SyntheticReport/Forms/Settings/Ext/Form.xml": {
+      "size": 1503,
+      "sha256": "123a836a5b0e3642077bf0724a8306d7eb4ce74dff98527dd01ce933fe229103"
+    },
+    "erf/SyntheticReport/Forms/Settings.xml": {
+      "size": 1652,
+      "sha256": "19b09d44533c569027f995230eccb3aadef04ad325d78713605fa16fae216af7"
+    },
+    "erf/SyntheticReport/Forms/Variant/Ext/Form.xml": {
+      "size": 1502,
+      "sha256": "a9cde5dfce783b4d7bc096e76d88bec196d528f399516400cfe093af2f959eb9"
+    },
+    "erf/SyntheticReport/Forms/Variant.xml": {
+      "size": 1650,
+      "sha256": "7e1b8e05b7e820cf018354ed2aa683baf7cda0d5e4a423a989bf30a130af57b7"
+    },
+    "erf/SyntheticReport/Templates/Blob/Ext/Template.bin": {
+      "size": 16,
+      "sha256": "be45cb2605bf36bebde684841a28f0fd43c69850a3dce5fedba69928ee3a8991"
+    },
+    "erf/SyntheticReport/Templates/Blob.xml": {
+      "size": 1302,
+      "sha256": "200f7eb23400218de22bd3e8f81d697cb0139106c417ebf2e8efaa74acfe8dc5"
+    },
+    "erf/SyntheticReport/Templates/Layout/Ext/Template.xml": {
+      "size": 6555,
+      "sha256": "5ccc5052f6495896714f9d24cf9a7cde77198756460fc4a1b280c49b4fcd2123"
+    },
+    "erf/SyntheticReport/Templates/Layout.xml": {
+      "size": 1311,
+      "sha256": "509d94c7729e5ba630601323d32f0d203649309090f9c03521f8a6ec3457f6b6"
+    },
+    "erf/SyntheticReport/Templates/MainSchema/Ext/Template.xml": {
+      "size": 3183,
+      "sha256": "68f0f4eded69176080b007a63eff5ec17cb9cb894301f24fc2ad3f70a55b3704"
+    },
+    "erf/SyntheticReport/Templates/MainSchema.xml": {
+      "size": 1334,
+      "sha256": "3e97742f71d7df8ef29a16f1a11f453063f156cc61713a48cdd870e25bfa8b4d"
+    },
+    "erf/SyntheticReport/Templates/Notes/Ext/Template.txt": {
+      "size": 85,
+      "sha256": "f7267f02d0fdf4df38088bd1281e1d1ec3cd769407a10d11267dedc7d6192590"
+    },
+    "erf/SyntheticReport/Templates/Notes.xml": {
+      "size": 1307,
+      "sha256": "4d83a8676489a11981025cc84ff987df2935bd25d910437bcd97b783d058f120"
+    },
+    "erf/SyntheticReport.xml": {
+      "size": 11790,
+      "sha256": "e31f66745e0b5fd91d74613b08c0bc7e2f757abaf4e94330f820b4f2d0d9ae41"
+    }
+  },
+  "designerBinarySha256": "61d856ae57a4e4bf0b3f49d67b0a16443dacd8151a6964c7c580b5f46f43f6b5"
+}

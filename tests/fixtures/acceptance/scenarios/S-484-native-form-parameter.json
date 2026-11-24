@@ -1,0 +1,276 @@
+{
+  "id": "S-484-native-form-parameter",
+  "issue": 484,
+  "area": "Адресация",
+  "workspace": "tests/fixtures/acceptance/workspace-native-form-parameter",
+  "task": "Прочитать именованный параметр общей формы из нативных выгрузок трёх линий, проверить его тип и признак ключевого параметра, получить отказ по отсутствующему имени.",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "line20:CommonForm.MainA"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "line20:CommonForm.MainA"
+        },
+        {
+          "pointer": "/data/branches/1/at",
+          "eq": "line20:CommonForm.MainA.Parameter"
+        },
+        {
+          "pointer": "/data/branches/1/count",
+          "eq": 1
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "line20:CommonForm.MainA.Parameter"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "line20:CommonForm.MainA.Parameter"
+        },
+        {
+          "pointer": "/data/total",
+          "eq": 1
+        },
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "line20:CommonForm.MainA.Parameter.AddressScope"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "line20:CommonForm.MainA.Parameter.AddressScope"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "line20:CommonForm.MainA.Parameter.AddressScope"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Parameter"
+        },
+        {
+          "pointer": "/data/props/type",
+          "eq": "string"
+        },
+        {
+          "pointer": "/data/props/isKey",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "line20:CommonForm.MainA.Parameter.UnregisteredParameter"
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "not_found"
+        }
+      ],
+      "refusal": "not_found: form Parameter `UnregisteredParameter` was not found"
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "line21:CommonForm.MainA"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "line21:CommonForm.MainA"
+        },
+        {
+          "pointer": "/data/branches/1/at",
+          "eq": "line21:CommonForm.MainA.Parameter"
+        },
+        {
+          "pointer": "/data/branches/1/count",
+          "eq": 1
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "line21:CommonForm.MainA.Parameter"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "line21:CommonForm.MainA.Parameter"
+        },
+        {
+          "pointer": "/data/total",
+          "eq": 1
+        },
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "line21:CommonForm.MainA.Parameter.AddressScope"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "line21:CommonForm.MainA.Parameter.AddressScope"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "line21:CommonForm.MainA.Parameter.AddressScope"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Parameter"
+        },
+        {
+          "pointer": "/data/props/type",
+          "eq": "string"
+        },
+        {
+          "pointer": "/data/props/isKey",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "line21:CommonForm.MainA.Parameter.UnregisteredParameter"
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "not_found"
+        }
+      ],
+      "refusal": "not_found: form Parameter `UnregisteredParameter` was not found"
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "line22:CommonForm.MainA"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "line22:CommonForm.MainA"
+        },
+        {
+          "pointer": "/data/branches/1/at",
+          "eq": "line22:CommonForm.MainA.Parameter"
+        },
+        {
+          "pointer": "/data/branches/1/count",
+          "eq": 1
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "line22:CommonForm.MainA.Parameter"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "line22:CommonForm.MainA.Parameter"
+        },
+        {
+          "pointer": "/data/total",
+          "eq": 1
+        },
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "line22:CommonForm.MainA.Parameter.AddressScope"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "line22:CommonForm.MainA.Parameter.AddressScope"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "line22:CommonForm.MainA.Parameter.AddressScope"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Parameter"
+        },
+        {
+          "pointer": "/data/props/type",
+          "eq": "string"
+        },
+        {
+          "pointer": "/data/props/isKey",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "line22:CommonForm.MainA.Parameter.UnregisteredParameter"
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "not_found"
+        }
+      ],
+      "refusal": "not_found: form Parameter `UnregisteredParameter` was not found"
+    }
+  ]
+}

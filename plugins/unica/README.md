@@ -317,6 +317,46 @@ are read when a Unica process starts; the background process is shared by all
 sessions and exits after 15 minutes without work. If the OS does not trust the presented certificate, the refusal
 names TLS interception by security software or a gateway as the likely cause.
 
+
+## Shared daemon owner on Windows
+
+The standard launcher keeps the normal process lifetime. To share one daemon
+across Codex sessions with separate Windows process groups, explicitly run the
+daemon owner from the installed release package.
+
+1. Use a regular PowerShell session outside the MCP host. Set
+   UNICA_PROVIDER_STATE_DIR and UNICA_RUNTIME_CACHE_DIR to the same absolute
+   directories that your MCP host will use. Use a state directory dedicated to
+   this installation.
+2. Run the installed bootstrap in that session and leave it open until you are
+   done. The owner prints Unica daemon owner ready when it accepts local
+   connections. The first MCP request starts the daemon if needed.
+
+   ~~~powershell
+   & '<plugin root>\bootstrap\bin\win-x64\unica-bootstrap.exe' daemon-owner --plugin-root '<plugin root>'
+   ~~~
+
+3. Set UNICA_WINDOWS_DAEMON_OWNER to 1 in the MCP server environment. Restart
+   any existing MCP sessions. Use the same release, runtime cache and provider
+   state for every client in this mode. In Codex, pass the variables in the
+   MCP server's explicit env configuration. Setting them in the owner terminal
+   alone does not configure Codex. Use the command, arguments and working
+   directory from the installed .mcp.json for the Git entry, or the installed
+   bootstrap with run --plugin-root for the native entry.
+
+The owner runs as your Windows user and accepts requests from the verified
+runtime of that installation. The usual host process groups still govern MCP
+frontends and their ordinary descendants. When the owner is unavailable, an
+opted-in frontend can reuse a live matching daemon. A request that needs a new
+daemon reports that the approved owner is unavailable.
+
+To disable this mode, remove UNICA_WINDOWS_DAEMON_OWNER from the MCP
+environment and restart those sessions. To stop or update the owner, close
+the MCP clients, let their daemon finish its work and exit on idle, then
+press Ctrl+C in the owner terminal. The daemon removes its connection
+record when it exits normally. For an upgrade, start the owner using the
+newly installed bootstrap and reconnect the clients to that installation.
+
 ## Skills
 
 The `skills/` tree covers configuration and extension metadata, forms, roles,
@@ -348,8 +388,8 @@ scripts/dev/install-local-unica.sh
 ```
 
 On native Windows x64, run the script from **Git Bash** included with 64-bit Git
-for Windows. The local build requires Python 3.12 or newer, stable Rust with the
-native MSVC toolchain, Microsoft C++ Build Tools, and the Windows SDK. A current
+for Windows. The local build requires Python 3.12 or newer, Rust of the version
+pinned in `rust-toolchain.toml` with the native MSVC toolchain, Microsoft C++ Build Tools, and the Windows SDK. A current
 Codex CLI is required for the install and fresh-prompt verification steps.
 
 WSL keeps Linux semantics and builds `linux-x64`. MSYS2 and Cygwin are not
@@ -380,6 +420,38 @@ and an absolute-root binary launcher. Add the generated `marketplace/`
 directory in the Desktop marketplace UI; do not install the source checkout's
 Cargo launcher as the local binary package. Registration, installation and
 fresh-task acceptance are manual steps. No global ZCode CLI is required.
+
+## Internal error reports
+
+Versions containing the error reporter send internal Unica failures to
+`https://glitch.ingvar.pro` (Ingvar Consulting's GlitchTip). Reporting is on by
+default. It covers Rust panics and explicitly classified internal failures;
+ordinary operation refusals and diagnostics in your BSL code are not reports.
+
+Reports contain the Unica version, operating system/architecture, a fixed failure
+category and cleaned frames from Unica's own code. They exclude panic/error text,
+source contents, project paths and object names, MCP arguments, 1C data, user or
+computer names, logs, breadcrumbs and persistent installation identifiers. The
+receiving server necessarily sees technical connection information, including
+the network IP address. Performance, session and usage tracking are disabled.
+
+To disable reporting, set `UNICA_ERROR_REPORTING=0` in the environment of the
+application that starts Unica, for example:
+
+```sh
+UNICA_ERROR_REPORTING=0 codex
+UNICA_ERROR_REPORTING=0 claude
+```
+
+For a desktop host, configure its process environment before starting it. Close
+all Unica sessions and stop remaining Unica processes before restarting the host:
+an existing shared daemon retains its old environment. The setting is inherited
+by newly launched child processes. Disabled reporting makes no reporting network
+requests. A full queue or unavailable receiver drops reports; it never prevents
+working locally. Reports are not queued on disk.
+
+The public data policy is available in [Russian](https://ingvar.pro/products/unica/privacy)
+and [English](https://ingvar.pro/products/unica/privacy/en).
 
 ## Release pipeline
 

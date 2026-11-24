@@ -193,23 +193,9 @@ impl<'a> ReaderReach<'a> {
                 .iter()
                 .filter(|(name, _)| *name == address.source_set())
                 .any(|(_, authority)| {
-                    authority.snapshot(&address).is_ok_and(|admitted| {
-                        match authority.read_exact(&address, &admitted) {
-                            Ok(_) => true,
-                            // WebSocketClient is the one profile identity whose
-                            // source layout 8.3.27 leaves unspecified: it
-                            // answers a typed `provider_unavailable` while the
-                            // reader still knows the address. No other provider
-                            // failure counts as coverage.
-                            Err(error) => {
-                                error.code().as_str() == "provider_unavailable"
-                                    && address.segments().first().is_some_and(|segment| {
-                                        segment.kind()
-                                            == unica_address::address::NodeKind::WebSocketClient
-                                    })
-                            }
-                        }
-                    })
+                    authority
+                        .snapshot(&address)
+                        .is_ok_and(|admitted| authority.read_exact(&address, &admitted).is_ok())
                 })
         });
         FindResult::reader_probe(at, reached)
@@ -669,6 +655,8 @@ impl RealReaderFixture {
             ("Document", "Заказ"),
             ("Document", "ЕщеНеВыгружен"),
             ("InformationRegister", "Цены"),
+            ("Sequence", "Probe"),
+            ("CalculationRegister", "Начисления"),
             ("Constant", "ОсновнаяВалюта"),
             ("CommonModule", "ЗаказыСервер"),
             ("CommonForm", "Подбор"),
@@ -707,6 +695,24 @@ impl RealReaderFixture {
             "Цены",
             "",
         );
+        for (fixture, relative) in [
+            ("all_kinds", "Sequences/Probe.xml"),
+            ("all_kinds", "Sequences/Probe/Ext/RecordSetModule.bsl"),
+            ("recalculation", "CalculationRegisters/Начисления.xml"),
+            (
+                "recalculation",
+                "CalculationRegisters/Начисления/Recalculations/Перерасчет1.xml",
+            ),
+            (
+                "recalculation",
+                "CalculationRegisters/Начисления/Recalculations/Перерасчет1/Ext/RecordSetModule.bsl",
+            ),
+        ] {
+            copy_fixture(
+                &format!("formats/platform_xml/2.20/{fixture}/src/{relative}"),
+                &self.source.join(relative),
+            );
+        }
         write_metadata_owner(&self.source, "Constants", "Constant", "ОсновнаяВалюта", "");
         let common = fixture_text(
             "formats/platform_xml/2.20/support-edit-bin-only/src/CommonModules/РеактивныйСервер.xml",
@@ -730,6 +736,7 @@ impl RealReaderFixture {
             ("WebServices", "WebService", "Обмен"),
             ("IntegrationServices", "IntegrationService", "Шина"),
             ("Bots", "Bot", "Помощник"),
+            ("WebSocketClients", "WebSocketClient", "Телефония"),
         ] {
             write_metadata_owner(&self.source, directory, kind, name, "");
         }

@@ -170,6 +170,7 @@ static MUTATOR_REGISTRY: &[MutatorRegistryEntry] = &[
             "meta-compile-http-service",
             "meta-compile-web-service",
             "meta-compile-defined-type",
+            "meta-compile-command-group",
         ],
         required_branches: &[
             "Catalog",
@@ -195,6 +196,7 @@ static MUTATOR_REGISTRY: &[MutatorRegistryEntry] = &[
             "HTTPService",
             "WebService",
             "DefinedType",
+            "CommandGroup",
         ],
     },
     MutatorRegistryEntry {
@@ -455,6 +457,11 @@ pub(crate) static EXECUTABLE_CASES: &[ExecutableCase] = &[
         id: "meta-compile-defined-type",
         tool: CANONICAL_APPLY_TOOL,
         branch: "DefinedType",
+    },
+    ExecutableCase {
+        id: "meta-compile-command-group",
+        tool: CANONICAL_APPLY_TOOL,
+        branch: "CommandGroup",
     },
     ExecutableCase {
         id: "meta-edit-predefined-items",
@@ -1808,6 +1815,7 @@ fn meta_object_name(kind: &str) -> Option<&'static str> {
         "HTTPService" => "CorpusHTTPService",
         "WebService" => "CorpusWebService",
         "DefinedType" => "CorpusDefinedType",
+        "CommandGroup" => "CorpusCommandGroup",
         _ => return None,
     })
 }
@@ -5175,7 +5183,7 @@ fn meta_info_manifest_platform_cases_are_exact_executable_object_create_branches
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/fixtures/formats/platform_xml/2.20/meta_info/manifest.json");
     let manifest: MetaInfoManifest = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    assert_eq!(manifest.kinds.len(), 23);
+    assert_eq!(manifest.kinds.len(), 24);
 
     for entry in manifest.kinds {
         let executable = EXECUTABLE_CASES

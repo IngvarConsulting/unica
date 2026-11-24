@@ -1,0 +1,96 @@
+{
+  "editor": [
+    "Открыть конфигурацию",
+    "Регистры расчета → Начисления → Перерасчеты → Добавить",
+    "Перерасчет1 → Открыть модуль набора записей",
+    "Procedure UnicaRecalculationRoundTripProbe() Export\r\nEndProcedure\r\n",
+    "Ctrl+S",
+    "Alt+F4"
+  ],
+  "seed": "tests/fixtures/formats/platform_xml/2.20/all_kinds/src",
+  "seedGitCommit": "6dde426eb4b46e00489f8f4683c9528b3a9931d0",
+  "preparation": [
+    "Keep the languages, the calculation register, its chart of calculation types and its recorder document. Keep only the calculation register in the recorder document movements.",
+    "Create the recalculation and enter the marked BSL using the Designer.",
+    "Set the chart DependenceOnCalculationTypes to OnActionPeriod, BaseCalculationTypes to a reference to the same chart, and ActionPeriodUse to true. Retain the register property values.",
+    "For each export, run ibcmd infobase create, config import, config apply --force, and config export sequentially in a new file infobase. Drop ConfigDumpInfo.xml from the input and from the committed fixture."
+  ],
+  "exports": [
+    {
+      "format": "2.20",
+      "build": "8.3.27.2342",
+      "ibcmdSha256": "38f37715535cea530e58d5ba2e7e072c184b61b12f3e903ac290b299cf39fd38",
+      "exportedFiles": {
+        "CalculationRegisters/Начисления/Ext/RecordSetModule.bsl": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5",
+        "CalculationRegisters/Начисления/Recalculations/Перерасчет1/Ext/RecordSetModule.bsl": "77b117c1f7c9ad6531812070fa86b335f2d166bc502ac09d6ebabf0aa37df0d6",
+        "CalculationRegisters/Начисления/Recalculations/Перерасчет1.xml": "0d23bd3a58b80c66cf1f1f03b24ffdf06c0cce132b0d019857e6d19be5f785af",
+        "CalculationRegisters/Начисления.xml": "b0392a16873af151748a8b1be8e9f675d5043f6eb39fad8dbb7db93d6f4bf97d",
+        "ChartsOfCalculationTypes/ВидыРасчета/Ext/ObjectModule.bsl": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5",
+        "ChartsOfCalculationTypes/ВидыРасчета/Ext/Predefined.xml": "18aa492e09bcbcb70ea0be5fe1b929a89fdcdf955f2435febf80d5aa7d9b23cf",
+        "ChartsOfCalculationTypes/ВидыРасчета.xml": "60c00c2916e4d4268556f9be3ef08253e77a4f864cf141ecea1c6aa6ed9a73d1",
+        "Configuration.xml": "ea0de636076c9106f6c96eabf0c228800e33b63a64f6e15671fc69a6e640a50a",
+        "Documents/Приход/Ext/ObjectModule.bsl": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5",
+        "Documents/Приход.xml": "16d53a1d90e30136e38a1a3ad58e7e591a8c1516b00bd7e6336953dd751c2f31",
+        "Languages/English.xml": "9cbd6735655f3cf0d003a960978f3103be90d8034d04f0117f6e13125407598b",
+        "Languages/Русский.xml": "9099d64a5d034a8271b74b44eaf1bc5a4c57bc08a0167cfd952f9ca46adf1308"
+      },
+      "dumpInfoMetadataIds": {
+        "CalculationRegister.Начисления.Recalculation.Перерасчет1": "04ef8930-d404-47c7-8580-a6d9635ccc8d",
+        "CalculationRegister.Начисления.Recalculation.Перерасчет1.RecordSetModule": "04ef8930-d404-47c7-8580-a6d9635ccc8d.0"
+      }
+    },
+    {
+      "format": "2.21",
+      "build": "8.5.1.1529",
+      "ibcmdSha256": "4dde71c1d061cc14c619255ec524b4ca8aca1f9bc38a92d1d766eb7d57721d20",
+      "exportedFiles": {
+        "CalculationRegisters/Начисления.xml": "e9cf7f442a2459862bfb8720dbd5a4a9a10cc92ffc7b849b2cedf712b0741899",
+        "CalculationRegisters/Начисления/Recalculations/Перерасчет1.xml": "a53fc81df83fde0278c5f2f3cbc3b76acf09946e0f9b8d604c10ff0f1bba97ea",
+        "CalculationRegisters/Начисления/Recalculations/Перерасчет1/Ext/RecordSetModule.bsl": "77b117c1f7c9ad6531812070fa86b335f2d166bc502ac09d6ebabf0aa37df0d6"
+      },
+      "dumpInfoMetadataIds": {
+        "CalculationRegister.Начисления.Recalculation.Перерасчет1": "04ef8930-d404-47c7-8580-a6d9635ccc8d",
+        "CalculationRegister.Начисления.Recalculation.Перерасчет1.RecordSetModule": "04ef8930-d404-47c7-8580-a6d9635ccc8d.0"
+      }
+    },
+    {
+      "format": "2.22",
+      "build": "8.5.4.2028",
+      "ibcmdSha256": "d17ba65155a3eec47f8be3d558d2a12e704281f6b9f33fa5350a3eb2dd585181",
+      "exportedFiles": {
+        "CalculationRegisters/Начисления.xml": "7247d44cdab667cd69b62015ab8653679f2a34df0f6580e000501af3fcb7a04d",
+        "CalculationRegisters/Начисления/Recalculations/Перерасчет1.xml": "668d6e60c2edf020bcb277b491ada065fc74051810652b0304f09baf913b8987",
+        "CalculationRegisters/Начисления/Recalculations/Перерасчет1/Ext/RecordSetModule.bsl": "77b117c1f7c9ad6531812070fa86b335f2d166bc502ac09d6ebabf0aa37df0d6"
+      },
+      "dumpInfoMetadataIds": {
+        "CalculationRegister.Начисления.Recalculation.Перерасчет1": "04ef8930-d404-47c7-8580-a6d9635ccc8d",
+        "CalculationRegister.Начисления.Recalculation.Перерасчет1.RecordSetModule": "04ef8930-d404-47c7-8580-a6d9635ccc8d.0"
+      }
+    }
+  ],
+  "materializationIn2.20": {
+    "absent": {
+      "moduleHex": null,
+      "parentChildAndSiblingModuleUnchanged": true,
+      "dumpInfoMetadataIds": {
+        "CalculationRegister.Начисления.Recalculation.Перерасчет1": "04ef8930-d404-47c7-8580-a6d9635ccc8d"
+      }
+    },
+    "present": {
+      "moduleHex": "efbbbf2050726f63656475726520556e696361526563616c63756c6174696f6e526f756e645472697050726f62652829204578706f72740d0a456e6450726f6365647572650d0a",
+      "parentChildAndSiblingModuleUnchanged": true,
+      "dumpInfoMetadataIds": {
+        "CalculationRegister.Начисления.Recalculation.Перерасчет1": "04ef8930-d404-47c7-8580-a6d9635ccc8d",
+        "CalculationRegister.Начисления.Recalculation.Перерасчет1.RecordSetModule": "04ef8930-d404-47c7-8580-a6d9635ccc8d.0"
+      }
+    },
+    "blank": {
+      "moduleHex": "efbbbf0d0a",
+      "parentChildAndSiblingModuleUnchanged": true,
+      "dumpInfoMetadataIds": {
+        "CalculationRegister.Начисления.Recalculation.Перерасчет1": "04ef8930-d404-47c7-8580-a6d9635ccc8d",
+        "CalculationRegister.Начисления.Recalculation.Перерасчет1.RecordSetModule": "04ef8930-d404-47c7-8580-a6d9635ccc8d.0"
+      }
+    }
+  }
+}

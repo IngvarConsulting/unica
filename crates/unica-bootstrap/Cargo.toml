@@ -14,18 +14,22 @@ name = "unica_bootstrap"
 path = "src/lib.rs"
 
 [dependencies]
+unica-error-reporting = { path = "../unica-error-reporting" }
 unica-artifact-delivery = { path = "../unica-artifact-delivery" }
 serde.workspace = true
 serde_json.workspace = true
 url.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-windows-sys.workspace = true
+sha2.workspace = true
+uuid.workspace = true
+windows-sys = { workspace = true, features = ["Win32_System_Pipes", "Win32_System_SystemInformation"] }
 
 [dev-dependencies]
 flate2.workspace = true
 sha2.workspace = true
 tar.workspace = true
+tempfile.workspace = true
 uuid.workspace = true
 
 [package.metadata.unica]

@@ -254,10 +254,17 @@ fn refuse_targets_on_locked_vendor_objects(
 ) -> Result<Vec<GateWarning>, ApplyPlanError> {
     let policy = admission.support_policy_mode();
     let mut warnings = Vec::new();
-    for (target, removes) in gate_targets(request, binding) {
-        warnings.extend(refuse_target_on_locked_vendor_object(
-            target, removes, policy, binding, staged,
-        )?);
+    for target in gate_targets(request, binding) {
+        if let Some(mut warning) = refuse_target_on_locked_vendor_object(
+            target.at,
+            target.removes,
+            policy,
+            binding,
+            staged,
+        )? {
+            warning.operation_indices = target.operation_indices;
+            warnings.push(warning);
+        }
     }
     Ok(warnings)
 }
@@ -273,8 +280,14 @@ fn locks_on_targets(
 ) -> Result<Vec<SupportLock>, ApplyPlanError> {
     let policy = admission.support_policy_mode();
     let mut locks = Vec::new();
-    for (target, removes) in gate_targets(request, binding) {
-        match refuse_target_on_locked_vendor_object(target, removes, policy, binding, staged) {
+    for target in gate_targets(request, binding) {
+        match refuse_target_on_locked_vendor_object(
+            target.at,
+            target.removes,
+            policy,
+            binding,
+            staged,
+        ) {
             Ok(_) => {}
             Err(error) => match error.support_lock() {
                 Some(lock) => locks.push(lock.clone()),
@@ -285,22 +298,47 @@ fn locks_on_targets(
     Ok(locks)
 }
 
+struct GateTarget<'a> {
+    at: &'a unica_address::address::QualifiedAddress,
+    removes: bool,
+    operation_indices: Option<Vec<usize>>,
+}
+
 /// The targets the gate checks: every operation answers for its own target,
 /// since an `args.at` below the request's node may sit under a node with its
 /// own `locked` record; with whether an operation removes it.
 fn gate_targets<'a>(
     request: &'a ApplyRequest,
     binding: &ProviderRootBinding,
-) -> Vec<(&'a unica_address::address::QualifiedAddress, bool)> {
-    let mut targets: Vec<(&unica_address::address::QualifiedAddress, bool)> = Vec::new();
-    for operation in request.ops() {
+) -> Vec<GateTarget<'a>> {
+    let mut targets: Vec<GateTarget<'_>> = Vec::new();
+    for (index, operation) in request.ops().iter().enumerate() {
         if changes_support_state(operation.name(), Some(operation.at()), binding) {
             continue;
         }
         let removes = removes_support_node(operation.name(), operation.at());
-        match targets.iter_mut().find(|(at, _)| *at == operation.at()) {
-            Some((_, target_removes)) => *target_removes |= removes,
-            None => targets.push((operation.at(), removes)),
+        match targets
+            .iter_mut()
+            .find(|target| target.at == operation.at())
+        {
+            Some(target) => {
+                target.removes |= removes;
+                if let Some(indices) = &mut target.operation_indices {
+                    indices.push(index);
+                }
+            }
+            None => targets.push(GateTarget {
+                at: operation.at(),
+                removes,
+                operation_indices: operation
+                    .at()
+                    .segments()
+                    .first()
+                    .is_some_and(|segment| {
+                        segment.kind() == unica_address::address::NodeKind::ExternalDataSource
+                    })
+                    .then(|| vec![index]),
+            }),
         }
     }
     targets
@@ -335,6 +373,9 @@ struct GateWarning {
     /// The paths of a locked node below its owner: the warning stands only
     /// when the plan changes one of them. `None`: any change of the plan.
     scope: Option<Vec<std::path::PathBuf>>,
+    /// External-source nodes can share a descriptor. Require an effect of
+    /// an operation checked for this target even if another target edits it.
+    operation_indices: Option<Vec<usize>>,
 }
 
 /// The gate's warnings that the plan's changes bear out, one per node: a
@@ -343,16 +384,34 @@ struct GateWarning {
 fn planned_gate_warnings(
     warnings: Vec<GateWarning>,
     changed: &[unica_source_contract::proposal::StagedApplyChange],
+    provisional: &[ProvisionalApplyEffect],
 ) -> Vec<serde_json::Value> {
     let mut kept: Vec<serde_json::Value> = Vec::new();
-    for GateWarning { warning, scope } in warnings {
-        let touched = match &scope {
-            None => !changed.is_empty(),
-            Some(scope) => changed.iter().any(|change| {
-                scope
-                    .iter()
-                    .any(|path| change.relative_path.starts_with(path))
-            }),
+    if warnings.is_empty() || changed.is_empty() {
+        return kept;
+    }
+    let changed_paths: std::collections::BTreeSet<_> = changed
+        .iter()
+        .map(|change| change.relative_path.as_path())
+        .collect();
+    for GateWarning {
+        warning,
+        scope,
+        operation_indices,
+    } in warnings
+    {
+        let in_scope = |candidate: &std::path::Path| {
+            scope
+                .as_ref()
+                .is_none_or(|paths| paths.iter().any(|path| candidate.starts_with(path)))
+        };
+        let touched = match operation_indices {
+            None => changed_paths.iter().any(|path| in_scope(path)),
+            Some(indices) => provisional
+                .iter()
+                .filter(|effect| indices.contains(&effect.operation_index()))
+                .flat_map(ProvisionalApplyEffect::paths)
+                .any(|path| in_scope(path) && changed_paths.contains(path.as_path())),
         };
         if touched && !kept.iter().any(|seen| seen["at"] == warning["at"]) {
             kept.push(warning);
@@ -414,6 +473,7 @@ fn refuse_target_on_locked_vendor_object(
                     format!("{reason}; the project support policy `warn` permits this edit"),
                 ),
                 scope: None,
+                operation_indices: None,
             }));
         }
         if !unreadable.marker {
@@ -480,6 +540,7 @@ fn refuse_target_on_locked_vendor_object(
         return Ok(Some(GateWarning {
             warning: support_locked(&lock.owner, message),
             scope: lock.scope,
+            operation_indices: None,
         }));
     }
     let mut error = ApplyPlanError::new(ApplyPlanErrorKind::InvalidState, message)
@@ -635,7 +696,23 @@ pub(crate) fn support_gate_facts<E>(
     let Some(bytes) = read(&owner_relative)? else {
         return Ok(free(marker, None));
     };
-    let owner_uuid = if owner == "Configuration" && source_kind == SourceSetKind::Configuration {
+    let external_path = if at.segments().first().is_some_and(|segment| {
+        segment.kind() == unica_address::address::NodeKind::ExternalDataSource
+    }) {
+        Some(support_records_on_path(
+            at,
+            &owner,
+            &owner_relative,
+            &bytes,
+            &state,
+            read,
+        )?)
+    } else {
+        None
+    };
+    let owner_uuid = if let Some(path) = &external_path {
+        path.owner_uuid.clone()
+    } else if owner == "Configuration" && source_kind == SourceSetKind::Configuration {
         configuration_support_uuid(&bytes)
     } else {
         support_root_uuid_from_bytes(&bytes)
@@ -651,7 +728,9 @@ pub(crate) fn support_gate_facts<E>(
             node_rule: None,
             lock: None,
             unreadable: Some(SupportUnreadable {
-                reason: format!("the descriptor of `{source_set}:{owner}` names no uuid, so its vendor support rule cannot be read"),
+                reason: external_path.and_then(|path| path.unreadable).unwrap_or_else(|| {
+                    format!("the descriptor of `{source_set}:{owner}` names no uuid, so its vendor support rule cannot be read")
+                }),
                 marker: false,
             }),
         });
@@ -720,7 +799,10 @@ pub(crate) fn support_gate_facts<E>(
     }
     // A node under the owner with its own record answers for itself too:
     // the first `locked` record on the path closes the target.
-    let path = support_records_on_path(at, &owner, &owner_relative, &bytes, &state, read)?;
+    let path = match external_path {
+        Some(path) => path,
+        None => support_records_on_path(at, &owner, &owner_relative, &bytes, &state, read)?,
+    };
     if support_rule == Some(0) {
         let subject = if owner == "Configuration" {
             "has its own vendor support rule `locked`"
@@ -796,6 +878,19 @@ pub(crate) fn support_gate_facts<E>(
             return Ok(facts);
         }
     }
+    if let Some(reason) = path.unreadable {
+        return Ok(SupportGateFacts {
+            marker,
+            owner_rule: support_rule,
+            owner_uuid_missing,
+            node_rule: path.node_rule,
+            lock: None,
+            unreadable: Some(SupportUnreadable {
+                reason,
+                marker: false,
+            }),
+        });
+    }
     let mut facts = free(marker, support_rule);
     facts.node_rule = path.node_rule;
     Ok(facts)
@@ -803,6 +898,8 @@ pub(crate) fn support_gate_facts<E>(
 
 /// The own support records on the path from the owner to `at`.
 struct PathRecords {
+    /// The strictly identified owner, when the path has an external source root.
+    owner_uuid: Option<String>,
     /// The first node (owner excluded) whose own record is `locked`, with
     /// the source paths that hold it.
     locked: Option<(String, Vec<std::path::PathBuf>)>,
@@ -811,6 +908,8 @@ struct PathRecords {
     /// `at` itself when the walk reaches it below the owner: where the nodes
     /// under it are described.
     reached: Option<ReachedNode>,
+    /// A registered descendant exists but its exact UUID cannot be proved.
+    unreadable: Option<String>,
 }
 
 /// A node below the owner that the walk reached, and the descriptor that
@@ -849,15 +948,45 @@ fn support_records_on_path<E>(
     use unica_metadata_designer::support::support_root_uuid_from_bytes;
 
     let mut records = PathRecords {
+        owner_uuid: None,
         locked: None,
         node_rule: None,
         reached: None,
+        unreadable: None,
     };
     let segments = at.segments();
     let Some(first) = segments.first() else {
         return Ok(records);
     };
     if first.kind() == NodeKind::Configuration || !first.kind().is_metadata_kind() {
+        return Ok(records);
+    }
+    if first.kind() == NodeKind::ExternalDataSource {
+        let path = unica_metadata_designer::external_data_source_support::walk(
+            at,
+            owner_relative,
+            owner_bytes,
+            read,
+        )?;
+        records.owner_uuid = path.nodes.first().map(|root| root.uuid.clone());
+        let logical = at.logical_path();
+        // Scope the warning to the checked target's physical files. A locked
+        // cube covers a dimension table, without covering a sibling target.
+        let mut scope = path.nodes.last().map(|target| {
+            std::iter::once(target.descriptor.clone())
+                .chain(target.directory.clone())
+                .collect::<Vec<_>>()
+        });
+        for node in path.nodes.into_iter().skip(1) {
+            let rule = state.object_rule(&node.uuid);
+            if node.logical == logical {
+                records.node_rule = rule;
+            }
+            if rule == Some(0) && records.locked.is_none() {
+                records.locked = scope.take().map(|scope| (node.logical, scope));
+            }
+        }
+        records.unreadable = path.unreadable;
         return Ok(records);
     }
     let mut node = owner.to_string();
@@ -2118,6 +2247,7 @@ fn plan_apply(
             _ => None,
         }),
     );
+    let first_request_effect = chosen_planned.len();
     let mut provisional = chosen_planned;
     let mut code_support_warnings = Vec::new();
     let mut xdto_validation = unica_xdto_designer::planner::XdtoValidationLedger::default();
@@ -2343,11 +2473,17 @@ fn plan_apply(
         binding.source_kind(),
     )?;
     let legacy_inline = collapse_legacy_inline_registrations(&mut staged, binding)?;
-    let mut effects = reconcile_effects(staged.planned_changes(), provisional);
+    let changed = staged.planned_changes();
+    let gate_warnings = planned_gate_warnings(
+        support_warning,
+        &changed,
+        &provisional[first_request_effect..],
+    );
+    let mut effects = reconcile_effects(changed, provisional);
     // A plan whose operations cancel out edits nothing protected. The gate's
     // warnings go first: a module whose own owner is the locked node then
     // reports it once.
-    for warning in planned_gate_warnings(support_warning, &staged.planned_changes()) {
+    for warning in gate_warnings {
         effects.push_warning(warning);
     }
     for warning in code_support_warnings {

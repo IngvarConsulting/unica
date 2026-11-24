@@ -1645,6 +1645,32 @@ mod tests {
             parse_form_resource_plan_operation("right.add", &args, 0, &fixture.binding)
                 .unwrap_or_else(|error| panic!("{object}: {error:?}"));
         }
+        // Объекты внешнего источника и их члены — с правами, которые
+        // платформа оставляет в Rights.xml.
+        for (object, right) in [
+            ("ExternalDataSource.Shop", "Use"),
+            ("ExternalDataSource.Shop.Table.Items", "InteractiveInsert"),
+            ("ExternalDataSource.Shop.Table.Items.Field.Code", "Edit"),
+            ("ExternalDataSource.Shop.Cube.Sales", "Read"),
+            (
+                "ExternalDataSource.Shop.Cube.Sales.Dimension.Product",
+                "View",
+            ),
+            ("ExternalDataSource.Shop.Cube.Sales.Resource.Amount", "View"),
+            (
+                "ExternalDataSource.Shop.Cube.Sales.DimensionTable.Products",
+                "View",
+            ),
+            (
+                "ExternalDataSource.Shop.Cube.Sales.DimensionTable.Products.Field.Code",
+                "Edit",
+            ),
+            ("ExternalDataSource.Shop.Function.Total", "Use"),
+        ] {
+            let args = json!({"at": "main:Role.Reader", "items": [{"object": object, "rights": {right: true}}]});
+            parse_form_resource_plan_operation("right.add", &args, 0, &fixture.binding)
+                .unwrap_or_else(|error| panic!("{object}: {error:?}"));
+        }
         for (object, rights, path) in [
             (
                 "Catalog.Items.Comand.Open",
@@ -1670,6 +1696,16 @@ mod tests {
                 "Catalog.Items.Command.Open",
                 json!({"Read": true}),
                 "ops[0].args.items[0].rights.Read",
+            ),
+            (
+                "ExternalDataSource.Shop.Cube.Sales.Field.Code",
+                json!({"View": true}),
+                "ops[0].args.items[0].object",
+            ),
+            (
+                "ExternalDataSource.Shop.Cube.Sales",
+                json!({"Insert": true}),
+                "ops[0].args.items[0].rights.Insert",
             ),
         ] {
             let args =

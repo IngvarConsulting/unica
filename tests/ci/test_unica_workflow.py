@@ -518,7 +518,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         # Изменение метки не должно создавать новый suite этого workflow:
         # ruleset смотрит на последний suite головы PR и перестаёт видеть
         # обязательный `Unica CI`, если тот suite состоит из skipped-джоб.
-        self.assertEqual(set(on["pull_request"]["types"]), {"opened", "synchronize", "reopened", "ready_for_review", "milestoned"})
+        self.assertEqual(set(on["pull_request"]["types"]), {"opened", "synchronize", "reopened", "ready_for_review", "milestoned", "edited"})
         self.assertNotIn("paths", on["pull_request"])
         self.assertNotIn("label ignored", "\n".join(strings(self.release)))
         # Имена — обязательные проверки ruleset.
@@ -787,9 +787,10 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         # Маршрут считается для своей ОС.
         classify = step_by_id(lint, "classify")
         self.assertIn(lint["runs-on"], classify["run"])
-        toolchain = steps_using(lint, "dtolnay/rust-toolchain")
+        # Версию и clippy задаёт rust-toolchain.toml; своё действие ставит их.
+        toolchain = steps_using(lint, "./.github/actions/rust-toolchain")
         self.assertEqual(len(toolchain), 1)
-        self.assertEqual(toolchain[0]["with"], {"toolchain": "stable", "components": "clippy"})
+        self.assertNotIn("with", toolchain[0])
         # Кэш только читается: ключ Windows пишет ночной `large`.
         cache = steps_using(lint, "Swatinem/rust-cache")
         self.assertEqual(len(cache), 1)

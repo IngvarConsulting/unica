@@ -75,7 +75,8 @@ pub fn metadata_kind_value_types(kind: MetadataKind) -> &'static [&'static str] 
         | MetadataKind::ScheduledJob
         | MetadataKind::EventSubscription
         | MetadataKind::HTTPService
-        | MetadataKind::WebService => &[],
+        | MetadataKind::WebService
+        | MetadataKind::CommandGroup => &[],
     }
 }
 
@@ -116,6 +117,7 @@ mod tests {
                     | MetadataKind::EventSubscription
                     | MetadataKind::HTTPService
                     | MetadataKind::WebService
+                    | MetadataKind::CommandGroup
             );
             assert_eq!(
                 !spellings.is_empty(),

@@ -1,0 +1,177 @@
+{
+  "scope": "Raw Template.xml exports. Overlay each Template.xml at its recorded path on the corresponding native all_kinds/src tree.",
+  "baseFixtureRevision": "8e8e9c49bdb37ff19a103f121dc77c51d96002f9",
+  "inputChange": "Add one calculatedField to the prior native named-structure export.",
+  "operations": [
+    "ibcmd infobase create --import=<isolated source> --apply --force",
+    "ibcmd config check --force",
+    "ibcmd config export <empty directory>"
+  ],
+  "publicMcp": {
+    "version": "0.17.0-alpha.2",
+    "revision": "030bc8bd5dfb30d4edaec195f418f9f3f00b63cc",
+    "binarySha256": "27b3bc0be4088c11c51af88da9963a52959b317837e54a2bcaa7a9f31c3a928d",
+    "receiptSha256": "551641a348f1385508ed0594d2193feee2e4db84c51a6c01208024ef3658ee2a"
+  },
+  "captures": [
+    {
+      "formatVersion": "2.20",
+      "platformVersion": "8.3.27.2342",
+      "ibcmdSha256": "38f37715535cea530e58d5ba2e7e072c184b61b12f3e903ac290b299cf39fd38",
+      "captureReceiptSha256": "824585fefeb9245f4a60e8bc1319c90e01dff1765946597c1ccb80ba8b4d7fcf",
+      "stages": {
+        "import": 0,
+        "check": 0,
+        "export": 0
+      },
+      "stageLogSha256": {
+        "import": "bb6e943d010c9c2ef93aae5e8bf3c400d14a965d624f918509ea9f49922dfe86",
+        "check": "6925f0b2b324c112796d6d58eb5e8162c33feca1b26308a0f8e8294e1d05ad4f",
+        "export": "2776a981f0670d938da7c8846e4a3b0ff033681900056ac579e9359086c63500"
+      },
+      "base": "tests/fixtures/formats/platform_xml/2.20/all_kinds/src",
+      "baseRegistrationFiles": {
+        "Configuration.xml": {
+          "size": 12881,
+          "sha256": "2ce1483b4af352aa5f759130cbab4a8c198fa7f2f1103191ccbd4a76a551e97d"
+        },
+        "Reports/АнализВерсийОбъектов.xml": {
+          "size": 2526,
+          "sha256": "0a46905f990ffee093946b8046051e3f026d1a3c017d1ad502ca07f8320feea7"
+        },
+        "Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных.xml": {
+          "size": 1361,
+          "sha256": "5777efcd178f34b8a9c689b27a6a04ad481504d23054fae35fc88a5c42f7cec8"
+        }
+      },
+      "priorNamedStructureResourceSha256": "97d24a83f257ae2fc15d640dc49adde264a95e6029a5bd3f8d5804b34c4ee979",
+      "nativeResource": {
+        "file": "2.20/Template.xml",
+        "overlayAt": "Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
+        "size": 8909,
+        "sha256": "8f44c555ab0bf6ff040d7fc4db1663de3189d962cfb086998cfd53eda6a81372"
+      },
+      "calculatedField": {
+        "dataPath": "AddressProbeCalculated",
+        "expression": "Количество + 1"
+      },
+      "directReads": [
+        "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.CalculatedField",
+        "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.CalculatedField.AddressProbeCalculated",
+        "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.Setting.Основной.Item.AddressProbeParent",
+        "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.Setting.Основной.Item.AddressProbeParent.Item.AddressProbeChild"
+      ],
+      "collectionMember": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.CalculatedField.AddressProbeCalculated",
+      "refusals": {
+        "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.CalculatedField.MissingCalculatedField": "not_found"
+      },
+      "publicMcpSourceFilesUnchanged": 113
+    },
+    {
+      "formatVersion": "2.21",
+      "platformVersion": "8.5.1.1529",
+      "ibcmdSha256": "4dde71c1d061cc14c619255ec524b4ca8aca1f9bc38a92d1d766eb7d57721d20",
+      "captureReceiptSha256": "223a07e882434f9ccc4c7f17080dfed8ef4bd99fb0206f3cec8d85e8526745f1",
+      "stages": {
+        "import": 0,
+        "check": 0,
+        "export": 0
+      },
+      "stageLogSha256": {
+        "import": "8ce4f21fec84f6a9c83633f9cbd26e6b1bc35d77b15362082859849a40194924",
+        "check": "6925f0b2b324c112796d6d58eb5e8162c33feca1b26308a0f8e8294e1d05ad4f",
+        "export": "2776a981f0670d938da7c8846e4a3b0ff033681900056ac579e9359086c63500"
+      },
+      "base": "tests/fixtures/formats/platform_xml/2.21/all_kinds/src",
+      "baseRegistrationFiles": {
+        "Configuration.xml": {
+          "size": 13678,
+          "sha256": "c17f7efd779038626b995904b1f46239e86f52dd412ac402f1481e3d419624b8"
+        },
+        "Reports/АнализВерсийОбъектов.xml": {
+          "size": 2609,
+          "sha256": "406c1eec22d880fcf3d4438fe45e9911e52f75196f4b9df8f614502f37f41409"
+        },
+        "Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных.xml": {
+          "size": 1416,
+          "sha256": "22b1c2819caa27216fd817a94c23cf9f9540fd06ea06743bcd5d3623fd61ae95"
+        }
+      },
+      "priorNamedStructureResourceSha256": "fc9655f5714b2fcb996460071bad02efd93ace48d501038ea76cf90339772a59",
+      "nativeResource": {
+        "file": "2.21/Template.xml",
+        "overlayAt": "Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
+        "size": 8964,
+        "sha256": "fcc492ac7bad1c55ee2db97ddc1496c408708a117522ac63b531109d767ab3da"
+      },
+      "calculatedField": {
+        "dataPath": "AddressProbeCalculated",
+        "expression": "Количество + 1"
+      },
+      "directReads": [
+        "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.CalculatedField",
+        "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.CalculatedField.AddressProbeCalculated",
+        "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.Setting.Основной.Item.AddressProbeParent",
+        "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.Setting.Основной.Item.AddressProbeParent.Item.AddressProbeChild"
+      ],
+      "collectionMember": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.CalculatedField.AddressProbeCalculated",
+      "refusals": {
+        "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.CalculatedField.MissingCalculatedField": "not_found"
+      },
+      "publicMcpSourceFilesUnchanged": 114
+    },
+    {
+      "formatVersion": "2.22",
+      "platformVersion": "8.5.4.2028",
+      "ibcmdSha256": "d17ba65155a3eec47f8be3d558d2a12e704281f6b9f33fa5350a3eb2dd585181",
+      "captureReceiptSha256": "9b139e874cb6913d6f945c03046479edc86cdffa05280a38d6ccf00f455544ff",
+      "stages": {
+        "import": 0,
+        "check": 0,
+        "export": 0
+      },
+      "stageLogSha256": {
+        "import": "add51e1c6fe6d07e675316da11134ff0aee98618a83f6fb89510ae60d6741650",
+        "check": "6925f0b2b324c112796d6d58eb5e8162c33feca1b26308a0f8e8294e1d05ad4f",
+        "export": "2776a981f0670d938da7c8846e4a3b0ff033681900056ac579e9359086c63500"
+      },
+      "base": "tests/fixtures/formats/platform_xml/2.22/all_kinds/src",
+      "baseRegistrationFiles": {
+        "Configuration.xml": {
+          "size": 13703,
+          "sha256": "1bb459565bf1d66d9ba00dcece7b8e80b0213213fe8341072ca4d58cca0607a5"
+        },
+        "Reports/АнализВерсийОбъектов.xml": {
+          "size": 2642,
+          "sha256": "a791e84a170b8947e68acc293216fbf634a5ed4a6870e8a812804c268fd7623c"
+        },
+        "Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных.xml": {
+          "size": 1416,
+          "sha256": "4a4cb76eb34fb6b93667af54789d65dc34d2a192ac8e75145ac93f7ff781d6b6"
+        }
+      },
+      "priorNamedStructureResourceSha256": "fc9655f5714b2fcb996460071bad02efd93ace48d501038ea76cf90339772a59",
+      "nativeResource": {
+        "file": "2.22/Template.xml",
+        "overlayAt": "Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
+        "size": 8964,
+        "sha256": "fcc492ac7bad1c55ee2db97ddc1496c408708a117522ac63b531109d767ab3da"
+      },
+      "calculatedField": {
+        "dataPath": "AddressProbeCalculated",
+        "expression": "Количество + 1"
+      },
+      "directReads": [
+        "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.CalculatedField",
+        "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.CalculatedField.AddressProbeCalculated",
+        "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.Setting.Основной.Item.AddressProbeParent",
+        "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.Setting.Основной.Item.AddressProbeParent.Item.AddressProbeChild"
+      ],
+      "collectionMember": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.CalculatedField.AddressProbeCalculated",
+      "refusals": {
+        "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.CalculatedField.MissingCalculatedField": "not_found"
+      },
+      "publicMcpSourceFilesUnchanged": 116
+    }
+  ]
+}

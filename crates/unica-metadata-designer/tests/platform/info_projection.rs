@@ -800,6 +800,74 @@ fn applicable_declaration_collections_distinguish_absent_from_inapplicable() {
 }
 
 #[test]
+fn implicit_document_attributes_do_not_replace_an_explicit_or_unreadable_declaration() {
+    use unica_source_contract::SourceSetKind;
+    let native = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/Documents/Orders.xml"
+    ));
+    let target = MetadataAddress::parse_logical("Document.Orders").unwrap();
+    let read = |xml: &str, kind| {
+        crate::info::parse_typed_meta_local_info_for_source(
+            xml.as_bytes(),
+            &target,
+            unica_metadata::MetaSupportStatus::Supported,
+            kind,
+        )
+        .unwrap()
+    };
+    let inferred = read(native, SourceSetKind::Configuration)
+        .declarations
+        .standard_attributes
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        inferred
+            .iter()
+            .map(|row| row.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Posted", "Ref", "DeletionMark", "Date", "Number"]
+    );
+    assert!(inferred.iter().all(|row| row.properties.is_empty()));
+    assert_eq!(
+        read(native, SourceSetKind::Extension)
+            .declarations
+            .standard_attributes,
+        Some(None)
+    );
+
+    for (override_xml, expected_names) in [
+        ("<StandardAttributes/>", Some(vec![])),
+        (
+            "<StandardAttributes><xr:StandardAttribute name=\"Date\"/></StandardAttributes>",
+            Some(vec!["Date".to_owned()]),
+        ),
+        ("<StandardAttributes/><StandardAttributes/>", None),
+        ("<StandardAttributes xmlns=\"urn:foreign\"/>", None),
+    ] {
+        let xml = native.replacen("</Properties>", &format!("{override_xml}</Properties>"), 1);
+        let parsed = read(&xml, SourceSetKind::Configuration);
+        let names = parsed
+            .declarations
+            .standard_attributes
+            .unwrap()
+            .map(|rows| rows.into_iter().map(|row| row.name).collect::<Vec<_>>());
+        assert_eq!(names, expected_names, "{override_xml}");
+        if expected_names.is_none() {
+            assert!(
+                parsed
+                    .diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.field.as_deref()
+                        == Some("properties.StandardAttributes")),
+                "{override_xml}: {:?}",
+                parsed.diagnostics
+            );
+        }
+    }
+}
+
+#[test]
 fn declaration_localized_leaves_reject_unmodelled_attributes() {
     let xml = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:foreign="urn:foreign"><ChartOfAccounts><Properties><Name>Accounts</Name><StandardTabularSections><xr:StandardTabularSection name="ExtDimensionTypes"><xr:Synonym foreign:source="poison"/><xr:Comment/><xr:ToolTip/><xr:FillChecking>DontCheck</xr:FillChecking><xr:StandardAttributes/></xr:StandardTabularSection></StandardTabularSections></Properties></ChartOfAccounts></MetaDataObject>"#;
     let document = roxmltree::Document::parse(xml).unwrap();
@@ -2182,5 +2250,116 @@ fn reference_family_never_downgrades_malformed_qualifiers_or_value_storage_compo
         let (observed, unmodelled) = parse_reference_family_control(primitive);
         assert!(observed.is_err(), "{primitive}");
         assert!(!unmodelled, "invalid composition must remain an error: {primitive}");
+    }
+}
+
+fn command_group(properties: &str) -> String {
+    format!(
+        "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" \
+         xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" \
+         xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" version=\"2.20\">\
+         <CommandGroup uuid=\"16000000-0000-4000-8000-000000002060\"><Properties>\
+         <Name>Печать</Name>{properties}</Properties></CommandGroup></MetaDataObject>"
+    )
+}
+
+fn command_group_details(properties: &str) -> (serde_json::Value, Vec<String>) {
+    let xml = command_group(properties);
+    let document = roxmltree::Document::parse(&xml).unwrap();
+    let object = document.root_element().first_element_child().unwrap();
+    let properties = unica_xml_format::read::child_element(object, "Properties");
+    let target = MetadataAddress::parse_logical("CommandGroup.Печать").unwrap();
+    let mut diagnostics = Vec::new();
+    let details = crate::info_projection::project_meta_info_details(
+        MetadataKind::CommandGroup,
+        properties,
+        None,
+        &target,
+        &mut diagnostics,
+    );
+    (
+        serde_json::to_value(details).unwrap()["details"].clone(),
+        diagnostics
+            .into_iter()
+            .map(|diagnostic| diagnostic.field.unwrap_or_default())
+            .collect(),
+    )
+}
+
+/// rule: INV.SOURCE.METADATA-NODE-PROPERTIES
+#[test]
+fn command_group_picture_keeps_platform_reference_and_transparency() {
+    let (details, diagnostics) = command_group_details(
+        "<Picture><xr:Ref>StdPicture.Print</xr:Ref>\
+         <xr:LoadTransparent>false</xr:LoadTransparent></Picture>",
+    );
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    assert_eq!(
+        details["picture"],
+        serde_json::json!({"Ref": "StdPicture.Print", "LoadTransparent": false})
+    );
+    // Признак прозрачности не подставляется, пустая картинка значения не даёт.
+    let (details, _) =
+        command_group_details("<Picture><xr:Ref>CommonPicture.Печать</xr:Ref></Picture>");
+    assert_eq!(
+        details["picture"],
+        serde_json::json!({"Ref": "CommonPicture.Печать"})
+    );
+    let (details, diagnostics) = command_group_details("<Picture/>");
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    assert!(details["picture"].is_null());
+}
+
+#[test]
+fn a_damaged_command_group_picture_is_a_diagnostic_not_an_absence() {
+    for damaged in [
+        "<Picture><xr:LoadTransparent>true</xr:LoadTransparent></Picture>",
+        "<Picture><xr:Ref>StdPicture.A</xr:Ref><xr:LoadTransparent>yes</xr:LoadTransparent></Picture>",
+        "<Picture><xr:Ref>StdPicture.A</xr:Ref><xr:Ref>StdPicture.B</xr:Ref></Picture>",
+        "<Picture>StdPicture.A</Picture>",
+    ] {
+        let (details, diagnostics) = command_group_details(damaged);
+        assert_eq!(diagnostics, ["details.picture"], "{damaged}");
+        assert!(details["picture"].is_null(), "{damaged}");
+    }
+}
+
+/// rule: INV.SOURCE.METADATA-NODE-PROPERTIES
+#[test]
+fn command_group_settings_are_read_with_platform_enumerations() {
+    let xml = command_group(
+        "<Representation>PictureAndText</Representation>\
+         <ToolTip><v8:item><v8:lang>ru</v8:lang><v8:content>Печать</v8:content></v8:item></ToolTip>\
+         <Category>FormNavigationPanel</Category><Representation2/>",
+    );
+    let document = roxmltree::Document::parse(&xml).unwrap();
+    let object = document.root_element().first_element_child().unwrap();
+    let props = unica_xml_format::read::child_element(object, "Properties").unwrap();
+    let observe = |name| {
+        crate::info_projection::observe_meta_info_property(props, MetadataKind::CommandGroup, name)
+    };
+    assert_eq!(
+        serde_json::to_value(observe("Representation").unwrap()).unwrap(),
+        "PictureAndText"
+    );
+    assert_eq!(
+        serde_json::to_value(observe("Category").unwrap()).unwrap(),
+        "FormNavigationPanel"
+    );
+    assert!(observe("ToolTip").unwrap().is_some());
+    assert!(observe("Representation2").is_err());
+
+    for (name, value) in [("Representation", "Button"), ("Category", "Toolbar")] {
+        let xml = command_group(&format!("<{name}>{value}</{name}>"));
+        let document = roxmltree::Document::parse(&xml).unwrap();
+        let object = document.root_element().first_element_child().unwrap();
+        let props = unica_xml_format::read::child_element(object, "Properties").unwrap();
+        let error = crate::info_projection::observe_meta_info_property(
+            props,
+            MetadataKind::CommandGroup,
+            name,
+        )
+        .unwrap_err();
+        assert_eq!(error.field, format!("properties.{name}"));
     }
 }

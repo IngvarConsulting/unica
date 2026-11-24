@@ -1,6 +1,6 @@
 //! Bounded metadata reference/subsystem removal planning over issued read observations.
 use memchr::memmem;
-use roxmltree::Document;
+use roxmltree::{Document, Node};
 use std::collections::HashSet;
 use std::ffi::OsString;
 use std::io::ErrorKind;
@@ -105,6 +105,19 @@ pub fn meta_remove_composition(
             entry: "Value",
             parent: None,
             key: CompositionKey::Attribute("name"),
+        },
+        // A command group: its place in the order of groups, and the
+        // placement and order of the commands put into it. The commands
+        // return to their default groups.
+        CompositionRule {
+            entry: "Group",
+            parent: Some("GroupsOrder"),
+            key: CompositionKey::Text,
+        },
+        CompositionRule {
+            entry: "Command",
+            parent: None,
+            key: CompositionKey::Child("CommandGroup"),
         },
     ];
     const HOME_PAGE: &[CompositionRule] = &[CompositionRule {
@@ -244,6 +257,60 @@ pub fn remove_home_page_form_entries(
         })
         .map(|item| item.range())
         .collect();
+    Ok(remove_entry_ranges(xml_text, ranges))
+}
+
+/// Whether `relative` is a form whose command interface may place commands
+/// into a command group: `<Kind>/<Object>/Forms/<Form>/Ext/Form.xml` or
+/// `CommonForms/<Form>/Ext/Form.xml`.
+pub fn meta_remove_is_form(relative: &Path) -> bool {
+    let parts = relative
+        .components()
+        .filter_map(|component| component.as_os_str().to_str())
+        .collect::<Vec<_>>();
+    matches!(
+        parts.as_slice(),
+        [_, _, "Forms", _, "Ext", "Form.xml"] | ["CommonForms", _, "Ext", "Form.xml"]
+    )
+}
+
+/// Takes the command group `qualified_group` out of the command interface of
+/// a form. An item keeps its other settings — visibility, order — and loses
+/// only `<CommandGroup>`, so its command returns to the default group. An
+/// item left with nothing but `<Command>` and `<Type>` carries no setting and
+/// goes whole. The platform accepts such an item and keeps it on dump; dropping
+/// it is a normalisation, not a load requirement.
+pub fn remove_form_command_group_entries(
+    xml_text: &str,
+    qualified_group: &str,
+) -> Result<(String, usize), String> {
+    let document =
+        Document::parse(xml_text).map_err(|error| format!("XML parse error: {error}"))?;
+    let root = document.root_element();
+    let mut ranges = Vec::new();
+    let panels = root
+        .children()
+        .filter(|node| node.is_element() && node.tag_name().name() == "CommandInterface")
+        .flat_map(|interface| interface.children().filter(Node::is_element));
+    for item in panels
+        .flat_map(|panel| panel.children())
+        .filter(|node| node.is_element() && node.tag_name().name() == "Item")
+    {
+        let Some(group) = item.children().find(|child| {
+            child.is_element()
+                && child.tag_name().name() == "CommandGroup"
+                && child
+                    .text()
+                    .is_some_and(|text| text.trim() == qualified_group)
+        }) else {
+            continue;
+        };
+        let bare = item
+            .children()
+            .filter(Node::is_element)
+            .all(|child| matches!(child.tag_name().name(), "Command" | "Type" | "CommandGroup"));
+        ranges.push(if bare { item.range() } else { group.range() });
+    }
     Ok(remove_entry_ranges(xml_text, ranges))
 }
 
@@ -1298,6 +1365,124 @@ mod tests {
         assert_eq!(
             meta_remove_composition_image(b"\xef\xbb\xbf", updated.clone()),
             format!("\u{feff}{updated}").into_bytes()
+        );
+    }
+
+    /// rule: INV.SOURCE.COMMAND-GROUP-REMOVAL
+    #[test]
+    fn command_group_leaves_subsystem_and_main_section_interfaces_with_its_commands() {
+        let text = "<CommandInterface>\r\n\
+                    \t<CommandsPlacement>\r\n\
+                    \t\t<Command name=\"CommonCommand.Б\">\r\n\
+                    \t\t\t<CommandGroup>CommandGroup.Группа</CommandGroup>\r\n\
+                    \t\t\t<Placement>Auto</Placement>\r\n\
+                    \t\t</Command>\r\n\
+                    \t\t<Command name=\"CommonCommand.В\">\r\n\
+                    \t\t\t<CommandGroup>CommandGroup.ГруппаДругая</CommandGroup>\r\n\
+                    \t\t\t<Placement>Auto</Placement>\r\n\
+                    \t\t</Command>\r\n\
+                    \t</CommandsPlacement>\r\n\
+                    \t<CommandsOrder>\r\n\
+                    \t\t<Command name=\"Catalog.Т.StandardCommand.Create\">\r\n\
+                    \t\t\t<CommandGroup>CommandGroup.Группа</CommandGroup>\r\n\
+                    \t\t</Command>\r\n\
+                    \t\t<Command name=\"Catalog.Т.StandardCommand.OpenList\">\r\n\
+                    \t\t\t<CommandGroup>NavigationPanelOrdinary</CommandGroup>\r\n\
+                    \t\t</Command>\r\n\
+                    \t</CommandsOrder>\r\n\
+                    \t<GroupsOrder>\r\n\
+                    \t\t<Group>ActionsPanelCreate</Group>\r\n\
+                    \t\t<Group>CommandGroup.Группа</Group>\r\n\
+                    \t\t<Group>CommandGroup.ГруппаДругая</Group>\r\n\
+                    \t</GroupsOrder>\r\n\
+                    </CommandInterface>\r\n";
+        for path in [
+            "Subsystems/П/Ext/CommandInterface.xml",
+            "Ext/MainSectionCommandInterface.xml",
+        ] {
+            let (rules, _) = meta_remove_composition(Path::new(path)).unwrap();
+            let (updated, removed) =
+                remove_composition_entries(text, rules, "CommandGroup.Группа").unwrap();
+            assert_eq!(removed, 3, "{path}");
+            assert_eq!(
+                updated,
+                "<CommandInterface>\r\n\
+                 \t<CommandsPlacement>\r\n\
+                 \t\t<Command name=\"CommonCommand.В\">\r\n\
+                 \t\t\t<CommandGroup>CommandGroup.ГруппаДругая</CommandGroup>\r\n\
+                 \t\t\t<Placement>Auto</Placement>\r\n\
+                 \t\t</Command>\r\n\
+                 \t</CommandsPlacement>\r\n\
+                 \t<CommandsOrder>\r\n\
+                 \t\t<Command name=\"Catalog.Т.StandardCommand.OpenList\">\r\n\
+                 \t\t\t<CommandGroup>NavigationPanelOrdinary</CommandGroup>\r\n\
+                 \t\t</Command>\r\n\
+                 \t</CommandsOrder>\r\n\
+                 \t<GroupsOrder>\r\n\
+                 \t\t<Group>ActionsPanelCreate</Group>\r\n\
+                 \t\t<Group>CommandGroup.ГруппаДругая</Group>\r\n\
+                 \t</GroupsOrder>\r\n\
+                 </CommandInterface>\r\n",
+                "{path}"
+            );
+        }
+    }
+
+    /// rule: INV.SOURCE.COMMAND-GROUP-REMOVAL
+    #[test]
+    fn command_group_leaves_a_form_interface_keeping_the_other_settings() {
+        let text = "<Form>\n\
+                    \t<CommandInterface>\n\
+                    \t\t<NavigationPanel>\n\
+                    \t\t\t<Item>\n\
+                    \t\t\t\t<Command>CommonCommand.Б</Command>\n\
+                    \t\t\t\t<Type>Auto</Type>\n\
+                    \t\t\t\t<CommandGroup>CommandGroup.Группа</CommandGroup>\n\
+                    \t\t\t</Item>\n\
+                    \t\t</NavigationPanel>\n\
+                    \t\t<CommandBar>\n\
+                    \t\t\t<Item>\n\
+                    \t\t\t\t<Command>Catalog.Т.StandardCommand.Copy</Command>\n\
+                    \t\t\t\t<Type>Auto</Type>\n\
+                    \t\t\t\t<CommandGroup>CommandGroup.Группа</CommandGroup>\n\
+                    \t\t\t\t<DefaultVisible>false</DefaultVisible>\n\
+                    \t\t\t</Item>\n\
+                    \t\t\t<Item>\n\
+                    \t\t\t\t<Command>CommonCommand.В</Command>\n\
+                    \t\t\t\t<Type>Auto</Type>\n\
+                    \t\t\t\t<CommandGroup>CommandGroup.ГруппаДругая</CommandGroup>\n\
+                    \t\t\t</Item>\n\
+                    \t\t</CommandBar>\n\
+                    \t</CommandInterface>\n\
+                    </Form>\n";
+        assert!(meta_remove_is_form(Path::new(
+            "Catalogs/Т/Forms/ФормаЭлемента/Ext/Form.xml"
+        )));
+        assert!(meta_remove_is_form(Path::new("CommonForms/Ф/Ext/Form.xml")));
+        assert!(!meta_remove_is_form(Path::new("Catalogs/Т/Ext/Form.xml")));
+        let (updated, removed) =
+            remove_form_command_group_entries(text, "CommandGroup.Группа").unwrap();
+        assert_eq!(removed, 2);
+        assert_eq!(
+            updated,
+            "<Form>\n\
+             \t<CommandInterface>\n\
+             \t\t<NavigationPanel>\n\
+             \t\t</NavigationPanel>\n\
+             \t\t<CommandBar>\n\
+             \t\t\t<Item>\n\
+             \t\t\t\t<Command>Catalog.Т.StandardCommand.Copy</Command>\n\
+             \t\t\t\t<Type>Auto</Type>\n\
+             \t\t\t\t<DefaultVisible>false</DefaultVisible>\n\
+             \t\t\t</Item>\n\
+             \t\t\t<Item>\n\
+             \t\t\t\t<Command>CommonCommand.В</Command>\n\
+             \t\t\t\t<Type>Auto</Type>\n\
+             \t\t\t\t<CommandGroup>CommandGroup.ГруппаДругая</CommandGroup>\n\
+             \t\t\t</Item>\n\
+             \t\t</CommandBar>\n\
+             \t</CommandInterface>\n\
+             </Form>\n"
         );
     }
 }

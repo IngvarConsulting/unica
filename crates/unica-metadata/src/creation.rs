@@ -10,18 +10,25 @@ use unica_source_contract::format_identity::{
 };
 
 /// A top-level kind that `object.create` writes from the template catalog:
-/// the typed set, and the declared kinds whose template the catalog holds.
+/// the typed set, and the declared kinds whose declaration holds a creation
+/// template (`unica_address::kinds::CreationDeclaration`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CreatableKind {
     Typed(MetadataKind),
-    /// «Очередь» of 8.5.4: its template writes the generated types the
-    /// platform requires to import it.
-    Queue,
+    /// A declared root kind outside the typed set, by its tag.
+    Declared(&'static str),
 }
 
 impl CreatableKind {
-    /// The declared kinds outside the typed set that creation writes.
-    pub const DECLARED: &'static [Self] = &[Self::Queue];
+    /// The declared kinds outside the typed set that creation writes, in the
+    /// order of the configuration's `ChildObjects`.
+    pub fn declared() -> impl Iterator<Item = Self> {
+        unica_address::kinds::DECLARED_ROOT_KINDS
+            .iter()
+            .copied()
+            .filter(|tag| MetadataKind::parse(tag).is_err() && Self::creation(tag).is_some())
+            .map(Self::Declared)
+    }
 
     /// Every creatable kind: the typed set, then the declared ones.
     pub fn all() -> impl Iterator<Item = Self> {
@@ -29,13 +36,17 @@ impl CreatableKind {
             .iter()
             .copied()
             .map(Self::Typed)
-            .chain(Self::DECLARED.iter().copied())
+            .chain(Self::declared())
+    }
+
+    pub fn requires_creation_namespace(self) -> bool {
+        matches!(self, Self::Declared("XDTOPackage"))
     }
 
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Typed(kind) => kind.as_str(),
-            Self::Queue => "Queue",
+            Self::Declared(tag) => tag,
         }
     }
 
@@ -43,8 +54,33 @@ impl CreatableKind {
     pub const fn typed(self) -> Option<MetadataKind> {
         match self {
             Self::Typed(kind) => Some(kind),
-            Self::Queue => None,
+            Self::Declared(_) => None,
         }
+    }
+
+    /// The creation template a declared kind holds.
+    pub fn template(self) -> Option<unica_address::kinds::CreationDeclaration> {
+        match self {
+            Self::Typed(_) => None,
+            Self::Declared(tag) => Self::creation(tag),
+        }
+    }
+
+    pub fn requires_creation_type(self) -> bool {
+        self.template()
+            .is_some_and(|template| template.requires_type)
+    }
+
+    /// Whether an extension creates its own object of the kind: it borrows
+    /// the kinds the declaration keeps to the main configuration.
+    pub fn created_in_extension(self) -> bool {
+        !self
+            .template()
+            .is_some_and(|template| template.main_configuration_only)
+    }
+
+    fn creation(tag: &str) -> Option<unica_address::kinds::CreationDeclaration> {
+        unica_address::kinds::declared(tag).and_then(|(_, declaration)| declaration.creation)
     }
 
     /// The kind `object.create` names, or the refusal that says why it
@@ -53,9 +89,7 @@ impl CreatableKind {
         if let Ok(kind) = MetadataKind::parse(value) {
             return Ok(Self::Typed(kind));
         }
-        Self::DECLARED
-            .iter()
-            .copied()
+        Self::declared()
             .find(|kind| kind.as_str() == value)
             .ok_or_else(|| creation_refusal(value))
     }
@@ -192,13 +226,13 @@ mod tests {
         }
     }
 
-    /// A kind Unica reads but cannot create is refused differently from a
-    /// kind another operation creates and from a name that is no kind.
+    /// Root kinds supported by object.create parse, while a kind created by
+    /// another operation and an unknown name get their own refusals.
     #[test]
     fn creation_refusals_name_what_is_wrong() {
         assert_eq!(
             CreatableKind::parse("Queue"),
-            Ok(CreatableKind::Queue),
+            Ok(CreatableKind::Declared("Queue")),
             "the queue has a template"
         );
         assert_eq!(
@@ -207,19 +241,17 @@ mod tests {
         );
         for (kind, message) in [
             (
-                "Bot",
-                "Unica reads and edits metadata kind `Bot` but cannot create it yet; create the object in Designer and export the source set again",
+                "Role",
+                "metadata kind `Role` is created by the `role.create` operation",
             ),
-            (
-                "PaletteColor",
-                "Unica reads and edits metadata kind `PaletteColor` but cannot create it yet; create the object in Designer and export the source set again",
-            ),
-            ("Role", "metadata kind `Role` is created by the `role.create` operation"),
             (
                 "Subsystem",
                 "metadata kind `Subsystem` is created by the `subsystem.create` operation",
             ),
-            ("SyntheticMetadata", "unsupported metadata kind `SyntheticMetadata`"),
+            (
+                "SyntheticMetadata",
+                "unsupported metadata kind `SyntheticMetadata`",
+            ),
             ("catalog", "unsupported metadata kind `catalog`"),
             ("Attribute", "unsupported metadata kind `Attribute`"),
         ] {
@@ -248,8 +280,7 @@ mod tests {
             );
             uncreatable.push(kind);
         }
-        assert!(uncreatable.contains(&"Bot"));
-        assert!(uncreatable.contains(&"PaletteColor"));
-        assert!(!uncreatable.contains(&"Queue"));
+        uncreatable.sort_unstable();
+        assert_eq!(uncreatable, ["Role", "Subsystem"]);
     }
 }

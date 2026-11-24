@@ -1048,7 +1048,7 @@ class CorpusAdapterTests(unittest.TestCase):
     def test_mandatory_corpus_is_the_canonical_apply_inventory(self):
         verifier = load_verifier()
 
-        self.assertEqual(len(verifier.MANDATORY_CASE_IDS), 48)
+        self.assertEqual(len(verifier.MANDATORY_CASE_IDS), 49)
         self.assertTrue(
             {
                 "cfe-borrow-object",

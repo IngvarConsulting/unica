@@ -53,12 +53,6 @@ impl<'a> LogicalViewReadAuthority<'a> {
             ));
         }
         self.verify_module_owner(&module_at, capability, admitted)?;
-        if capability.role() == ModuleRole::WebSocketClient {
-            return Err(ViewError::detailed(
-                RefusalDetail::ProviderAbsent,
-                "WebSocketClient source layout is not specified for platform profile 8.3.27",
-            ));
-        }
         if module_body {
             let target = module_source_address(&module_at, capability)?;
             let count = self
@@ -333,12 +327,6 @@ impl<'a> LogicalViewReadAuthority<'a> {
         };
         let (module_at, prefix_len) = module_prefix(route.at(), self.profile, capability)?;
         self.verify_module_owner(&module_at, capability, admitted)?;
-        if capability.role() == ModuleRole::WebSocketClient {
-            return Err(ViewError::detailed(
-                RefusalDetail::ProviderAbsent,
-                "WebSocketClient source layout is not specified for platform profile 8.3.27",
-            ));
-        }
         if self.read.source_set_kind() == SourceSetKind::Configuration
             && route.at().segments().last().is_some_and(|segment| {
                 segment.kind() == NodeKind::Event && segment.name().is_some()
@@ -541,22 +529,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 "external source sets have no configuration runtime module branch",
             ));
         }
-        if let Some(owner) = branch
-            .segments()
-            .first()
-            .filter(|owner| owner.kind() == NodeKind::WebSocketClient)
-        {
-            self.ensure_owner_registered_parts(
-                NodeKind::WebSocketClient.as_str(),
-                owner.name().ok_or_else(|| {
-                    ViewError::new(
-                        RefusalCode::NotFound,
-                        "WebSocketClient owner name is absent",
-                    )
-                })?,
-                admitted,
-            )?;
-        } else if let Some(owner) = module_branch_owner(branch)? {
+        if let Some(owner) = module_branch_owner(branch)? {
             self.verify_registered_module_owner(&owner, admitted)?;
         }
         project_module_branch(branch, self.profile)
@@ -582,21 +555,6 @@ impl<'a> LogicalViewReadAuthority<'a> {
                     ))
                 }
             };
-        }
-        if capability.role() == ModuleRole::WebSocketClient {
-            let owner = module_at.segments().first().ok_or_else(|| {
-                ViewError::new(RefusalCode::NotFound, "WebSocketClient owner is absent")
-            })?;
-            return self.ensure_owner_registered_parts(
-                NodeKind::WebSocketClient.as_str(),
-                owner.name().ok_or_else(|| {
-                    ViewError::new(
-                        RefusalCode::NotFound,
-                        "WebSocketClient owner name is absent",
-                    )
-                })?,
-                admitted,
-            );
         }
         let owner = module_owner_address(module_at, capability)?;
         self.verify_registered_module_owner(&owner, admitted)

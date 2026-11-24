@@ -3515,6 +3515,7 @@ pub(crate) mod tests {
             (MetadataKind::HTTPService, &[]),
             (MetadataKind::WebService, &[]),
             (MetadataKind::DefinedType, &[]),
+            (MetadataKind::CommandGroup, &[]),
         ];
 
         assert_eq!(cases.len(), MetadataKind::ALL.len());

@@ -2,18 +2,6 @@ use serde::Serialize;
 use std::fmt;
 use std::path::PathBuf;
 
-// resource-limit: metadata.subsystem-address-depth
-// class: format
-// unit: depth
-// scope: record
-// value: 8
-// resource: Число имён в адресе подсистемы (вложенность подсистем); удвоенное значение ограничивает глубину обхода Subsystems/.
-// status: unproven
-// origin: a8c0c30fa
-// problem: неизвестно
-// on-reach: Ошибка адреса «subsystem address must contain from 1 to 8 names»; в логическом дереве — not_found.
-pub const SUBSYSTEM_ADDRESS_MAX_DEPTH: usize = 8;
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 #[serde(transparent)]
 pub struct SubsystemAddress(String);
@@ -31,10 +19,10 @@ impl SubsystemAddress {
         names: impl IntoIterator<Item = &'a str>,
     ) -> Result<Self, SubsystemAddressError> {
         let names = names.into_iter().collect::<Vec<_>>();
-        if names.is_empty() || names.len() > SUBSYSTEM_ADDRESS_MAX_DEPTH {
-            return Err(SubsystemAddressError::new(format!(
-                "subsystem address must contain from 1 to {SUBSYSTEM_ADDRESS_MAX_DEPTH} names"
-            )));
+        if names.is_empty() {
+            return Err(SubsystemAddressError::new(
+                "subsystem address must contain at least one name",
+            ));
         }
         for name in &names {
             if !crate::identifier::is_1c_identifier(name) {
@@ -113,10 +101,9 @@ mod tests {
     }
 
     #[test]
-    fn depth_budget_counts_subsystem_names_not_a_kind_token() {
-        let maximum = "A.B.C.D.E.F.G.H";
-        assert_eq!(SubsystemAddress::parse(maximum).unwrap().as_str(), maximum);
-        assert!(SubsystemAddress::parse("A.B.C.D.E.F.G.H.I").is_err());
+    fn address_keeps_every_name_without_a_format_depth_limit() {
+        let names = "A.B.C.D.E.F.G.H.I";
+        assert_eq!(SubsystemAddress::parse(names).unwrap().as_str(), names);
     }
 
     #[test]

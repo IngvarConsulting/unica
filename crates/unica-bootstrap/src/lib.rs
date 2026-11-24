@@ -15,3 +15,9 @@ pub use host::{
 };
 pub use platform::{launch_runtime, run_platform_main, RuntimeHandoff};
 pub use verification::verify_mcp_runtime;
+
+#[doc(hidden)]
+pub use platform::{
+    await_bootstrap_daemon_publication, daemon_owner_supported, launch_plugin_runtime,
+    run_daemon_owner, BootstrapDaemonChild, BootstrapDaemonCommit, BootstrapDaemonStatus,
+};

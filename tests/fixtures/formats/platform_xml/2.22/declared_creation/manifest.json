@@ -1,0 +1,10 @@
+{
+  "format": "2.22",
+  "build": "8.5.4.2028",
+  "purpose": "Descriptors of the declared kinds of the 8.5 lines that object.create writes, as the platform exports them. A palette color with only its name was imported into a clean file infobase and exported again: the platform gives it the color #000000. 8.5.1.1529 exports the same bytes apart from the format version.",
+  "steps": [
+    {"step": "create", "tool": "ibcmd infobase create --create-database", "build": "8.5.4.2028"},
+    {"step": "load", "tool": "ibcmd infobase config import", "build": "8.5.4.2028"},
+    {"step": "export", "tool": "ibcmd infobase config export", "build": "8.5.4.2028"}
+  ]
+}

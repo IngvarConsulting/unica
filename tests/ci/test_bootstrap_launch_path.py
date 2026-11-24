@@ -48,8 +48,14 @@ class BootstrapLaunchPathTests(unittest.TestCase):
     def test_run_hands_the_runtime_off_without_a_handshake(self) -> None:
         arm = command_arm(self.main, "Run")
 
-        self.assertIn("launch_runtime", arm)
+        self.assertIn("launch_plugin_runtime(", arm)
         self.assertNotIn("verify", arm)
+        process = (MAIN_RS.parent / "platform" / "process.rs").read_text(encoding="utf-8")
+        facade = re.search(r"fn launch_plugin_runtime\(.*?\n\}", process, re.DOTALL)
+        self.assertIsNotNone(facade, "launch_plugin_runtime не найдена")
+        self.assertIn("launch_runtime(", facade.group())
+        self.assertIn("launch_runtime_with_daemon_owner(", facade.group())
+        self.assertNotIn("verify", facade.group())
 
     def test_verify_performs_the_handshake_within_a_fixed_budget(self) -> None:
         arm = command_arm(self.main, "Verify")

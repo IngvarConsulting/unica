@@ -179,6 +179,7 @@ fn assert_complete_large_external_inventory(payload: &serde_json::Value) {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ModuleCapabilityFixture {
+    profile: String,
     module_capabilities: Vec<ModuleCapabilityCase>,
 }
 
@@ -186,6 +187,15 @@ struct ModuleCapabilityFixture {
 struct ModuleCapabilityCase {
     at: String,
     exists: bool,
+    role: Option<String>,
+}
+
+fn module_capability_fixture() -> ModuleCapabilityFixture {
+    serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/v013/address-profile-8.3.27.json"
+    )))
+    .unwrap()
 }
 
 mod canonical_module_diagnostics {

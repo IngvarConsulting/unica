@@ -1,0 +1,190 @@
+{
+  "id": "S-484-bot-module-roundtrip",
+  "issue": 484,
+  "area": "Адресация",
+  "workspace": "tests/fixtures/acceptance/workspace-bot-module-roundtrip",
+  "task": "Найти зарегистрированного бота по пути дескриптора, открыть его модуль и прочитать BSL. Проверить, что адрес модуля и путь выгрузки разрешаются друг в друга.",
+  "wire": [
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "$workspace/src/Bots/Notifications.xml"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Bot.Notifications"
+        }
+      ],
+      "captures": {
+        "owner": {
+          "pointer": "/data/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Bot.Notifications"
+        },
+        {
+          "pointer": "/data/branches/0/at",
+          "eq": "main:Bot.Notifications.Module"
+        }
+      ],
+      "captures": {
+        "modules": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.modules"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Bot.Notifications.Module.Bot"
+        }
+      ],
+      "captures": {
+        "module": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.module"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Bot.Notifications.Module.Bot"
+        },
+        {
+          "pointer": "/data/branches/4/at",
+          "eq": "main:Bot.Notifications.Module.Bot.Body"
+        }
+      ],
+      "captures": {
+        "body": {
+          "pointer": "/data/branches/4/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.body"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Bot.Notifications.Module.Bot.Body"
+        },
+        {
+          "pointer": "/sourceText",
+          "eq": "Процедура Probe() Экспорт\nКонецПроцедуры\n"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "at": "$capture.module"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Bot.Notifications.Module.Bot"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "Bots/Notifications/Ext/Module.bsl"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Module"
+        }
+      ],
+      "captures": {
+        "path": {
+          "pointer": "/data/path"
+        }
+      }
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "$capture.path"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Bot.Notifications.Module.Bot"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "Bots/Notifications/Ext/Module.bsl"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Module"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "$workspace/src/Bots/Notifications/Ext/Module.bsl"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Bot.Notifications.Module.Bot"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "Bots/Notifications/Ext/Module.bsl"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Module"
+        }
+      ]
+    }
+  ]
+}
