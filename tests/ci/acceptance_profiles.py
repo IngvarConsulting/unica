@@ -202,8 +202,11 @@ def helper_invalidation_step(step):
             and isinstance(operation["args"]["text"], str))
 
 
+DBGS_PROFILE = "research-dbgs"
+
+
 def select_profile(corpus, profile):
-    if profile not in {"source", "delivery", "agent-evaluation", "fault-injection"}:
+    if profile not in {"source", "delivery", "agent-evaluation", "fault-injection", DBGS_PROFILE}:
         raise ValueError(f"profile {profile!r} has no executable driver")
     selected = []
     for scenario in corpus["scenarios"]:
@@ -266,6 +269,21 @@ def select_profile(corpus, profile):
                 raise ValueError(f"{scenario['id']}: invalid agent driver, evaluation or fixture")
             if any(step["tool"] not in {"unica.view", "unica.check"} for step in scenario["wire"]):
                 raise ValueError(f"{scenario['id']}: agent post-image wire must be read-only")
+        elif current == DBGS_PROFILE:
+            expected = [
+                {},
+                {"op": "debug-server.start", "args": {"ownerPid": "$dbgsOwnerPid", "port": "$dbgsOccupiedPort"}},
+                {"op": "debug-server.start", "args": {"ownerPid": "$dbgsOwnerPid"}},
+            ]
+            if (
+                scenario["id"] != "S-3250-debug-server" or driver != "native-windows-dbgs"
+                or workspace != "tests/fixtures/acceptance/workspace-xdto-rename"
+                or "evaluation" in scenario or "formats" in scenario
+                or any(step["tool"] != "unica.run" for step in scenario["wire"])
+                or [step["args"] for step in scenario["wire"]] != expected
+                or [step["expect"] for step in scenario["wire"]] != [["ok"], ["provider"], ["ok"]]
+            ):
+                raise ValueError(f"{scenario['id']}: invalid native Windows DBGS case")
         else:
             raise ValueError(f"{scenario['id']}: profile {current!r} has no executable driver")
         if current == profile:
