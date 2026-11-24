@@ -6,6 +6,9 @@
 # линии закрепляется появлением файла, а не правкой этой строки.
 crates/unica-metadata/src/platform-event-catalog-*.json text eol=lf
 
+# Preserve upstream license bytes for published asset checksums.
+plugins/unica/third-party/licenses/bsl-analyzer/** -text
+
 # Platform name-validation sources and logs retain their original bytes.
 tests/fixtures/platform_8_3_27/tabular_standard_names/cases/*/source/** -text -whitespace
 tests/fixtures/platform_8_3_27/tabular_standard_names/cases/*/stdout.txt -text -whitespace

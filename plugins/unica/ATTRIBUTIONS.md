@@ -26,7 +26,7 @@
 
 - Репозиторий: [itrous/bsl-analyzer](https://github.com/itrous/bsl-analyzer)
 - Автор: [BSL Analyzer Contributors](https://github.com/itrous/bsl-analyzer/graphs/contributors)
-- Закреплённая версия: `0.4.6`, commit `0a82ed78e597dc3ffb1bbaebc66a98974a988435`
+- Закреплённая версия: `0.4.7`, commit `c6a79df039efbcc4465ed05539ff136fae9c31db`
 - Лицензия: [MIT](third-party/licenses/bsl-analyzer/LICENSE-MIT)
 - Дополнительные условия и происхождение: [NOTICE](third-party/licenses/bsl-analyzer/NOTICE)
 
