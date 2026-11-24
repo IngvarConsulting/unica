@@ -86,6 +86,19 @@ impl PinnedRunner {
         }
     }
 
+    fn run_staged_with(
+        &self,
+        command: &ProcessCommand,
+        dispatch: impl FnOnce(&ProcessCommand) -> Result<ProcessOutput, ProcessStreamFailure>,
+    ) -> Result<ProcessOutput, ProcessStreamFailure> {
+        let _lock = lock_for(command).map_err(ProcessStreamFailure::Run)?;
+        let answers = command.cancellation.interrupt_answers();
+        let mut output = dispatch(command)?;
+        self.take_answer_to_interrupt(command, answers, &mut output);
+        self.note(&output);
+        Ok(output)
+    }
+
     /// Whether the runner abandoned a command of its Designer agent.
     fn abandoned(&self) -> bool {
         self.abandoned.load(std::sync::atomic::Ordering::Acquire)
@@ -129,12 +142,18 @@ impl ProcessRunner for PinnedRunner {
     /// a failed launch of the runner: it is reported as a failure after start,
     /// never as an unstartable engine.
     fn run_staged(&self, command: &ProcessCommand) -> Result<ProcessOutput, ProcessStreamFailure> {
-        let _lock = lock_for(command).map_err(ProcessStreamFailure::Run)?;
-        let answers = command.cancellation.interrupt_answers();
-        let mut output = BreakawayProcessRunner.run_staged(command)?;
-        self.take_answer_to_interrupt(command, answers, &mut output);
-        self.note(&output);
-        Ok(output)
+        self.run_staged_with(command, |command| {
+            BreakawayProcessRunner.run_staged(command)
+        })
+    }
+
+    fn run_staged_without_windows_interrupt(
+        &self,
+        command: &ProcessCommand,
+    ) -> Result<ProcessOutput, ProcessStreamFailure> {
+        self.run_staged_with(command, |command| {
+            BreakawayProcessRunner.run_staged_without_windows_interrupt(command)
+        })
     }
 
     fn run_pending_handoff(

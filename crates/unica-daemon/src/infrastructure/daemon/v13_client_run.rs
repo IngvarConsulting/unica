@@ -83,6 +83,7 @@ impl ClientMode {
 #[derive(Debug, Clone)]
 struct LaunchArguments {
     mode: ClientMode,
+    debug_url: Option<String>,
     /// Внешняя обработка для `/Execute`: относительный путь для ответа и
     /// абсолютный для раннера. Проверена как обычный файл внутри рабочего
     /// пространства до вызова: превью раннера существование не проверяет.
@@ -101,19 +102,48 @@ pub(super) struct PreparedClientRun {
     context: WorkspaceContext,
 }
 
+#[derive(Debug)]
+pub(super) enum PreparedTerminalRun {
+    Client(PreparedClientRun),
+    DebugServer(super::v13_debug_server::PreparedDebugServer),
+}
+
+impl PreparedTerminalRun {
+    pub(super) fn workspace_identity_hash(&self) -> SafeIdentityHash {
+        match self {
+            Self::Client(run) => run.workspace_identity_hash(),
+            Self::DebugServer(run) => run.workspace_identity_hash(),
+        }
+    }
+
+    pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
+        match self {
+            Self::Client(run) => run.execute(cancellation),
+            Self::DebugServer(run) => run.execute(cancellation),
+        }
+    }
+}
+
 pub(super) enum Preparation {
     NotApplicable,
     Rejected(Box<DomainResult>),
-    Ready(Arc<PreparedClientRun>),
+    Ready(Arc<PreparedTerminalRun>),
 }
 
 pub(super) fn prepare(request: &InvocationRequest) -> Preparation {
-    if request.tool() != ToolIdentity::Run
-        || request.arguments().get("op").and_then(Value::as_str) != Some(OPERATION)
-    {
+    if request.tool() != ToolIdentity::Run {
         return Preparation::NotApplicable;
     }
-    match PreparedClientRun::parse(request) {
+    let operation = request.arguments().get("op").and_then(Value::as_str);
+    let prepared = match operation {
+        Some(OPERATION) => PreparedClientRun::parse(request).map(PreparedTerminalRun::Client),
+        Some(operation @ (super::v13_debug_server::START | super::v13_debug_server::STOP)) => {
+            super::v13_debug_server::PreparedDebugServer::parse(request, operation)
+                .map(PreparedTerminalRun::DebugServer)
+        }
+        _ => return Preparation::NotApplicable,
+    };
+    match prepared {
         Ok(prepared) => Preparation::Ready(Arc::new(prepared)),
         Err(result) => Preparation::Rejected(Box::new(result)),
     }
@@ -179,8 +209,9 @@ fn parse_launch_arguments(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> Result<LaunchArguments, DomainResult> {
-    const ACCEPTED: [&str; 5] = [
+    const ACCEPTED: [&str; 6] = [
         "clientMode",
+        "debugUrl",
         "execute",
         "applicationParameter",
         "waitForExit",
@@ -189,7 +220,7 @@ fn parse_launch_arguments(
     if let Some(unknown) = args.keys().find(|key| !ACCEPTED.contains(&key.as_str())) {
         return Err(reject(
             RefusalCode::BadValue,
-            format!("launch does not accept `{unknown}`; the closed args are clientMode, execute, applicationParameter, waitForExit and waitTimeoutMs"),
+            format!("launch does not accept `{unknown}`; the closed args are clientMode, debugUrl, execute, applicationParameter, waitForExit and waitTimeoutMs"),
         ));
     }
     let mode = args
@@ -202,6 +233,18 @@ fn parse_launch_arguments(
                 "launch clientMode must be one of designer, thin, thick, ordinary",
             )
         })?;
+    let debug_url = match args.get("debugUrl") {
+        None => None,
+        Some(Value::String(url)) if mode == ClientMode::Thin && debug_port(url).is_some() => {
+            Some(url.clone())
+        }
+        Some(_) => {
+            return Err(reject(
+                RefusalCode::BadValue,
+                "launch debugUrl requires clientMode thin and http://127.0.0.1:<port>",
+            ))
+        }
+    };
     let application_parameter =
         match args.get("applicationParameter") {
             None => None,
@@ -337,10 +380,17 @@ fn parse_launch_arguments(
     }
     Ok(LaunchArguments {
         mode,
+        debug_url,
         execute,
         application_parameter,
         wait_timeout_ms: if wait_for_exit { wait_timeout_ms } else { None },
     })
+}
+
+fn debug_port(url: &str) -> Option<u16> {
+    let text = url.strip_prefix("http://127.0.0.1:")?;
+    let port = text.parse::<u16>().ok()?;
+    (port != 0 && text == port.to_string()).then_some(port)
 }
 
 fn execute_with_runner(
@@ -384,6 +434,12 @@ fn execute_with_resolved_runner(
         Err(result) => return result,
     };
     let data = &envelope["data"];
+    if prepared.arguments.debug_url.as_deref() != data["debug"]["url"].as_str() {
+        return reject(
+            RefusalCode::InvalidResult,
+            "v8-runner did not confirm the requested client debug URL",
+        );
+    }
     if prepared.dry_run {
         if data["mode"] != prepared.arguments.mode.as_str() {
             return reject(
@@ -426,6 +482,11 @@ fn execute_with_resolved_runner(
             "providerDispatched": false,
             "requiresPlatform": true,
         }));
+        if let Some(url) = &prepared.arguments.debug_url {
+            if let Some(Value::Object(data)) = result.data.as_mut() {
+                data.insert("debugUrl".into(), json!(url));
+            }
+        }
         // A runnable continuation must not silently drop /C, nor expose its value.
         if prepared.arguments.application_parameter.is_none() {
             result.next.push(json!({
@@ -480,6 +541,12 @@ fn execute_with_resolved_runner(
         "providerDispatched": true,
         "wait": waited,
     }));
+    if let Some(url) = &prepared.arguments.debug_url {
+        if let Some(Value::Object(data)) = result.data.as_mut() {
+            data.insert("debugUrl".into(), json!(url));
+            data.insert("debugState".into(), json!("requested"));
+        }
+    }
     if outcome == RunnerOutcome::StructuralWaitTimeout {
         return result;
     }
@@ -666,6 +733,9 @@ fn invoke_runner(
         RUNNER_COMMAND.to_string(),
         prepared.arguments.mode.as_str().to_string(),
     ];
+    if let Some(url) = &prepared.arguments.debug_url {
+        args.extend(["--debug".to_string(), url.clone()]);
+    }
     if let Some((_, absolute)) = &prepared.arguments.execute {
         args.extend(["--execute".to_string(), absolute.display().to_string()]);
     }
@@ -898,6 +968,9 @@ fn public_arguments(prepared: &PreparedClientRun) -> Value {
         "clientMode".to_string(),
         Value::String(prepared.arguments.mode.as_str().to_string()),
     );
+    if let Some(url) = &prepared.arguments.debug_url {
+        args.insert("debugUrl".to_string(), json!(url));
+    }
     if let Value::String(execute) = execute_text(prepared) {
         args.insert("execute".to_string(), Value::String(execute));
     }
@@ -1586,6 +1659,62 @@ fn main() {
                 .unwrap_err();
             assert_eq!(result.diagnostics[0]["code"], "bad_value");
         }
+    }
+
+    /// rule: INV.WIRE.TERMINAL-RUN-HAS-NO-FENCE
+    #[test]
+    fn thin_debug_url_is_typed_and_forwarded_without_relaunch() {
+        let root = workspace();
+        let url = "http://127.0.0.1:11856";
+        for args in [
+            json!({"clientMode":"thick","debugUrl":url}),
+            json!({"clientMode":"thin","debugUrl":"http://127.0.0.1:65536"}),
+            json!({"clientMode":"thin","debugUrl":"http://127.0.0.1:11856/path"}),
+        ] {
+            assert!(
+                parse_launch_arguments(args.as_object().unwrap(), &context(root.path())).is_err()
+            );
+        }
+        let prepared = prepared(
+            root.path(),
+            json!({"clientMode":"thin","debugUrl":url}),
+            false,
+        );
+        let runner = SequenceRunner::new(vec![process(
+            json!({
+                "command":"launch","ok":false,"error":{"code":"environment_unavailable"}
+            }),
+            false,
+        )]);
+        let answer = execute_with_resolved_runner(
+            &prepared,
+            &runner,
+            CancellationToken::new(),
+            &tool(root.path()),
+        );
+        assert!(!answer.ok);
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0]
+            .args
+            .windows(2)
+            .any(|pair| pair == ["--debug", url]));
+        assert_eq!(public_arguments(&prepared)["debugUrl"], url);
+        let runner = SequenceRunner::new(vec![process(
+            json!({"command":"launch", "ok":true, "data":{"debug":{"url":"http://127.0.0.1:12345"}}}),
+            true,
+        )]);
+        let answer = execute_with_resolved_runner(
+            &prepared,
+            &runner,
+            CancellationToken::new(),
+            &tool(root.path()),
+        );
+        assert_eq!(answer.diagnostics[0]["code"], "invalid_result");
+        assert_eq!(
+            runner.discarded.load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
     }
 
     /// rule: INV.WIRE.TERMINAL-RUN-HAS-NO-FENCE
