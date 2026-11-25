@@ -1901,6 +1901,43 @@ mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.MODULE-EXTENSION-BINDING
+    #[test]
+    fn change_and_validate_projects_a_replaced_if_header() {
+        let source = concat!(
+            "&ИзменениеИКонтроль(\"Признак\")\r\n",
+            "Функция Демо_Признак(Число)\r\n",
+            "#Удаление\r\n",
+            "    Если Число > 0 Тогда\r\n",
+            "#КонецУдаления\r\n",
+            "#Вставка\r\n",
+            "    Если Число >= 0 Тогда\r\n",
+            "#КонецВставки\r\n",
+            "        Возврат Истина;\r\n",
+            "    КонецЕсли;\r\n",
+            "    Возврат Ложь;\r\n",
+            "КонецФункции\r\n\r\n",
+            "&ИзменениеИКонтроль(\"Итог\")\r\n",
+            "Функция Демо_Итог()\r\n",
+            "    Возврат 1\r\n",
+            "#Вставка\r\n",
+            "        + 2\r\n",
+            "#КонецВставки;\r\n",
+            "КонецФункции",
+        );
+        let projection = project("demo:CommonModule.ДемоМодуль", Some(source));
+        let [method, expression_method] = projection.methods() else {
+            panic!("expected both extension methods");
+        };
+        let extension = method.extension.as_ref().unwrap();
+        assert_eq!(method.name, "Демо_Признак");
+        assert_eq!(method.to_line, 12);
+        assert_eq!(extension.kind, ExtensionKind::ChangeAndValidate);
+        assert_eq!(extension.directive, "&ИзменениеИКонтроль(\"Признак\")");
+        assert_eq!(expression_method.name, "Демо_Итог");
+        assert_eq!(projection.source_text(), source);
+    }
+
     #[test]
     fn epf_erf_and_extension_sources_project_end_to_end() {
         let epf = project(

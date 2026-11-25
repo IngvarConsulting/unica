@@ -219,3 +219,36 @@ fn diagnostic_module_scope_refuses_module_replaced_by_foreign_symlink() {
         .is_err());
     assert_eq!(fs::read_to_string(foreign).unwrap(), "// foreign module\n");
 }
+
+#[test]
+fn diagnostic_module_scope_accepts_a_change_and_validate_method_with_a_split_if() {
+    let workspace = fixture_path("acceptance/workspace-change-and-validate")
+        .canonicalize()
+        .unwrap();
+    let source = workspace.join("src/ext");
+    let cache = tempfile::tempdir().unwrap();
+    let context = WorkspaceContext {
+        cwd: workspace.clone(),
+        workspace_root: workspace,
+        cache_root: cache.path().to_path_buf(),
+        workspace_epoch: 1,
+    };
+    let cancellation = CancellationToken::new();
+    let authority = LogicalViewReadAuthority::new(
+        &cancellation,
+        "demo",
+        "split-if-extension",
+        SourceSetKind::Extension,
+        Arc::new(unica_workspace::read::open_source_directory(&source).unwrap()),
+        PlatformProfile::v8_3_27(),
+    );
+    let at = QualifiedAddress::parse("demo:CommonModule.ДемоМодуль").unwrap();
+    let mapping = authority.diagnostic_mapping(&at, &context).unwrap();
+    let scope = mapping.module_scope().unwrap();
+    assert_eq!(scope.source_set, "demo");
+    assert_eq!(scope.source_root, source);
+    assert_eq!(
+        scope.module_path,
+        source.join("CommonModules/ДемоМодуль/Ext/Module.bsl")
+    );
+}

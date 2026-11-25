@@ -1,5 +1,6 @@
 //! Owned syntax facts for the existing BSL readers and planners.
 
+mod change_control;
 mod editor;
 mod notify;
 mod outline;
@@ -147,6 +148,27 @@ pub fn parse(text: &str) -> ParsedModule<'_> {
         source: text,
         parsed,
         diagnostics,
+    }
+}
+
+/// Parse the effective text of a change-and-validate method when directives
+/// split a BSL construct. Retain the original source and its byte coordinates.
+pub fn parse_for_module_projection(text: &str) -> ParsedModule<'_> {
+    let original = parse(text);
+    if original.errors().is_empty() {
+        return original;
+    }
+    let Some(effective) = change_control::effective_source(&original) else {
+        return original;
+    };
+    let parsed = bsl_parser::parse(&effective);
+    if !parsed.errors().is_empty() {
+        return original;
+    }
+    ParsedModule {
+        source: text,
+        parsed,
+        diagnostics: Vec::new(),
     }
 }
 
@@ -413,6 +435,30 @@ mod tests {
         assert_eq!(method.annotations[0].target.as_deref(), Some("Original"));
         assert_eq!(method.annotations[1].text, "&AtServer");
         assert!(method.annotations[1].is_compiler_directive);
+    }
+
+    #[test]
+    fn module_projection_does_not_recover_invalid_active_code_or_unbalanced_markers() {
+        for body in [
+            concat!(
+                "#УдалениеОпечатка\nЕсли Число > 0 Тогда\n#КонецУдаления\n",
+                "#Вставка\nЕсли Число >= 0 Тогда\n#КонецВставки\n",
+                "Возврат Истина;\nКонецЕсли;",
+            ),
+            "#Вставка\nЕсли Число >= 0\n#КонецВставки\nВозврат Истина;\nКонецЕсли;",
+            "#Вставка\nЕсли Число >= 0 Тогда\n#КонецВставки\nКонецЕсли;\n#КонецУдаления",
+        ] {
+            let source = format!(
+                "&ИзменениеИКонтроль(\"Признак\")\nФункция Демо_Признак(Число)\n{body}\nКонецФункции"
+            );
+            let original = parse(&source);
+            assert!(!original.errors().is_empty(), "{source}");
+            assert_eq!(
+                super::parse_for_module_projection(&source).errors(),
+                original.errors(),
+                "{source}",
+            );
+        }
     }
 
     #[test]
