@@ -366,9 +366,16 @@ fn invoke_on(
     tool: ToolIdentity,
     arguments: Value,
 ) -> DomainResult {
-    runtime
-        .bind(InvocationRequest::new(tool, arguments, workspace.to_string_lossy(), 7_000).unwrap())
-        .unwrap()
+    let request =
+        InvocationRequest::new(tool, arguments, workspace.to_string_lossy(), 7_000).unwrap();
+    let bound = match runtime.bind(request) {
+        Ok(bound) => bound,
+        Err(unica_execution::receipt_runtime::ports::V5CanonicalPrepareError::Rejected(result)) => {
+            return *result
+        }
+        Err(error) => panic!("binding failed: {error:?}"),
+    };
+    bound
         .prepare()
         .unwrap()
         .execute(CancellationToken::new())
@@ -431,7 +438,16 @@ fn walk(workspace: &Path, root: &str) -> Walk {
         // адрес, который сервер сам выдал (#1467). Отказ поставщика или
         // отсутствие движка — другой исход.
         let checked = invoke(workspace, ToolIdentity::Check, json!({"at": at}));
-        if !checked.ok
+        if address.is_configuration_relation() {
+            // This computed branch has a view-only address. Its targets are
+            // still visited below and checked as ordinary source-backed nodes.
+            assert!(!checked.ok, "{at}: {checked:?}");
+            assert_eq!(refusal_field(&checked, "code"), Some("bad_value"));
+            assert!(checked
+                .next
+                .iter()
+                .any(|next| next["tool"] == "unica.view" && next["args"]["at"] == at));
+        } else if !checked.ok
             && (refusal_field(&checked, "code") == Some("bad_value")
                 || refusal_field(&checked, "outcome") == Some("fixCall"))
         {

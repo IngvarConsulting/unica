@@ -78,19 +78,48 @@
           }
         },
         {
-          "pointer": "/data/branches/47/at",
+          "pointer": "/data/branches/47",
+          "eq": {
+            "at": "main:Configuration.Relation",
+            "count": 0
+          }
+        },
+        {
+          "pointer": "/data/branches/48/at",
           "eq": "main:Module"
         },
         {
-          "pointer": "/data/branches/48",
+          "pointer": "/data/branches/49",
           "absent": true
         }
       ],
       "captures": {
+        "relations": {
+          "pointer": "/data/branches/47/at"
+        },
         "documents": {
           "pointer": "/data/branches/30/at"
         }
       }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.relations"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        },
+        {
+          "pointer": "/data/can",
+          "eq": []
+        }
+      ]
     },
     {
       "tool": "unica.view",
