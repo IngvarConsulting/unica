@@ -51,6 +51,7 @@ pub enum RunIntent {
     InfobaseExport,
     InfobaseImport,
     ClientRun,
+    WebPublish,
     DebugServerStart,
     DebugServerStop,
     ExtensionList,
@@ -84,6 +85,7 @@ impl RunOperation {
             RunIntent::InfobaseExport => "infobase.dump",
             RunIntent::InfobaseImport => "infobase.restore",
             RunIntent::ClientRun => "launch",
+            RunIntent::WebPublish => "web.publish",
             RunIntent::DebugServerStart => "debug-server.start",
             RunIntent::DebugServerStop => "debug-server.stop",
             RunIntent::ExtensionList => "extensions.list",
@@ -127,6 +129,7 @@ impl RunOperation {
             RunIntent::ConfigurationApply => "Apply the working configuration to the database configuration; unlike unica.apply this changes the infobase.",
             RunIntent::ConfigurationReset => "Discard pending configuration changes in the infobase, restoring its database configuration.",
             RunIntent::ClientRun => "Launch an interactive 1C client session.",
+            RunIntent::WebPublish => "Prepare or verify a web publication for HTTP debugging before launching the browser.",
             RunIntent::DebugServerStart => "Start an owned ready local debug server for the project file infobase.",
             RunIntent::DebugServerStop => "Release the owned debug server of this working copy by session identifier.",
         }
@@ -165,6 +168,7 @@ impl RunOperation {
             | RunIntent::CfImport
             | RunIntent::InfobaseImport => &["infobase"],
             RunIntent::ClientRun => &["clientSession"],
+            RunIntent::WebPublish => &["webPublication"],
             RunIntent::DebugServerStart | RunIntent::DebugServerStop => &["debugServerSession"],
             RunIntent::ExtensionList => &["infobaseRead"],
             RunIntent::ExtensionActivate
@@ -253,6 +257,10 @@ impl RunOperation {
                 },
                 "required": ["input", "mode"]
             })),
+            RunIntent::WebPublish => Some(json!({
+                "type":"object","additionalProperties":false,"required":["prepareDebug"],
+                "properties":{"prepareDebug":{"type":"string","pattern":"^http://(?:127[.]0[.]0[.]1|localhost):[0-9]+/?$","description":"IDE HTTP debugger endpoint with an explicit port. The receipt separately names the address for the web client."}}
+            })),
             RunIntent::DebugServerStart => Some(json!({
                 "type":"object","additionalProperties":false,"required":["ownerPid"],
                 "properties":{"ownerPid":{"type":"integer","minimum":1,"maximum":u32::MAX},
@@ -266,7 +274,8 @@ impl RunOperation {
                 "type": "object",
                 "additionalProperties": false,
                 "properties": {
-                    "clientMode": {"type": "string", "enum": ["designer", "thin", "thick", "ordinary"], "description": "1C client to launch."},
+                    "clientMode": {"type": "string", "enum": ["designer", "thin", "thick", "ordinary", "web"], "description": "1C client to launch."},
+                    "webDebugUrl": {"type":"string","description":"HTTP debugger address confirmed for the web client by web.publish."},
                     "debugUrl": {"type": "string", "pattern": "^http://127[.]0[.]0[.]1:(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])(?![\\s\\S])", "description": "Ready loopback dbgs URL; thin client only. Launch receipts confirm the request and process, while DAP confirms attachment."},
                     "execute": {"type": "string", "description": "Workspace-relative .epf or .erf external processor to run with /Execute; enterprise clients only."},
                     "applicationParameter": {"type": "string", "description": "Exact /C value for an enterprise client; empty is distinct from omitted, NUL and designer are rejected. May accompany execute."},
@@ -275,6 +284,11 @@ impl RunOperation {
                 },
                 "required": ["clientMode"],
                 "allOf": [{
+                    "if":{"required":["webDebugUrl"]}, "then":{"properties":{"clientMode":{"const":"web"}}}
+                }, {
+                    "if":{"properties":{"clientMode":{"const":"web"}}},
+                    "then":{"not":{"anyOf":[{"required":["execute"]},{"required":["applicationParameter"]},{"required":["waitForExit"]},{"required":["waitTimeoutMs"]}]}}
+                }, {
                     "if": {"required": ["applicationParameter"]},
                     "then": {"properties": {"clientMode": {"enum": ["thin", "thick", "ordinary"]}}}
                 }, {
@@ -540,6 +554,7 @@ fn run_dictionary() -> Vec<RunOperation> {
         RunIntent::InfobaseExport,
         RunIntent::InfobaseImport,
         RunIntent::ClientRun,
+        RunIntent::WebPublish,
         RunIntent::DebugServerStart,
         RunIntent::DebugServerStop,
         RunIntent::ExtensionList,
@@ -654,6 +669,7 @@ mod tests {
                 "infobase.dump",
                 "infobase.restore",
                 "launch",
+                "web.publish",
                 "debug-server.start",
                 "debug-server.stop",
                 "extensions.list",
@@ -1086,6 +1102,7 @@ mod tests {
                 RunIntent::InfobaseExport,
                 RunIntent::InfobaseImport,
                 RunIntent::ClientRun,
+                RunIntent::WebPublish,
                 RunIntent::DebugServerStart,
                 RunIntent::DebugServerStop,
                 RunIntent::ExtensionList,
@@ -1122,6 +1139,7 @@ mod tests {
                 "infobase.dump",
                 "infobase.restore",
                 "launch",
+                "web.publish",
                 "debug-server.start",
                 "debug-server.stop",
                 "extensions.list",
@@ -1245,6 +1263,7 @@ mod tests {
                 "infobase.dump",
                 "infobase.restore",
                 "launch",
+                "web.publish",
                 "debug-server.start",
                 "debug-server.stop",
                 "extensions.list",
@@ -1285,6 +1304,7 @@ mod tests {
                 "infobase.dump",
                 "infobase.restore",
                 "launch",
+                "web.publish",
                 "debug-server.start",
                 "debug-server.stop",
                 "extensions.list",
@@ -1315,8 +1335,8 @@ mod tests {
                 .iter()
                 .filter(|operation| operation.implemented)
                 .count()
-                == 13,
-            "the implemented runtime dictionary includes both debug-server operations"
+                == 14,
+            "the implemented runtime dictionary includes web publication preparation"
         );
     }
 
@@ -1515,14 +1535,15 @@ mod tests {
                 "debugUrl",
                 "execute",
                 "waitForExit",
-                "waitTimeoutMs"
+                "waitTimeoutMs",
+                "webDebugUrl"
             ]
             .into_iter()
             .collect::<std::collections::BTreeSet<_>>()
         );
         assert_eq!(
             schema["properties"]["clientMode"]["enum"],
-            json!(["designer", "thin", "thick", "ordinary"])
+            json!(["designer", "thin", "thick", "ordinary", "web"])
         );
         let validator = jsonschema::validator_for(&schema).expect("valid launch args schema");
         for url in ["http://127.0.0.1:1", "http://127.0.0.1:65535"] {
@@ -1534,7 +1555,7 @@ mod tests {
                 "{url:?}"
             );
         }
-        for mode in ["designer", "thin", "thick", "ordinary"] {
+        for mode in ["designer", "thin", "thick", "ordinary", "web"] {
             assert!(validator.is_valid(&json!({"clientMode": mode})));
         }
         for mode in ["thin", "thick", "ordinary"] {
@@ -1545,6 +1566,10 @@ mod tests {
             }
         }
         for arguments in [
+            json!({"clientMode":"web","execute":"x.epf"}),
+            json!({"clientMode":"web","debugUrl":"http://127.0.0.1:1561"}),
+            json!({"clientMode":"thin","webDebugUrl":"http://host:1561"}),
+            json!({"clientMode":"web","applicationParameter":""}),
             json!({"clientMode": "designer", "applicationParameter": ""}),
             json!({"clientMode": "designer", "applicationParameter": "update"}),
             json!({"clientMode": "thin", "applicationParameter": null}),

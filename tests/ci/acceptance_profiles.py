@@ -203,10 +203,11 @@ def helper_invalidation_step(step):
 
 
 DBGS_PROFILE = "research-dbgs"
+WEB_DEBUG_PROFILE = "research-web-debug"
 
 
 def select_profile(corpus, profile):
-    if profile not in {"source", "delivery", "agent-evaluation", "fault-injection", DBGS_PROFILE}:
+    if profile not in {"source", "delivery", "agent-evaluation", "fault-injection", DBGS_PROFILE, WEB_DEBUG_PROFILE}:
         raise ValueError(f"profile {profile!r} has no executable driver")
     selected = []
     for scenario in corpus["scenarios"]:
@@ -269,6 +270,11 @@ def select_profile(corpus, profile):
                 raise ValueError(f"{scenario['id']}: invalid agent driver, evaluation or fixture")
             if any(step["tool"] not in {"unica.view", "unica.check"} for step in scenario["wire"]):
                 raise ValueError(f"{scenario['id']}: agent post-image wire must be read-only")
+        elif current == WEB_DEBUG_PROFILE:
+            if (scenario["id"] != "S-3252-web-debug" or driver != "external-web-debug-route"
+                    or workspace != "tests/fixtures/acceptance/workspace-xdto-rename"
+                    or any(step["tool"] != "unica.run" for step in scenario["wire"])):
+                raise ValueError(f"{scenario['id']}: invalid web debug publication case")
         elif current == DBGS_PROFILE:
             expected = [
                 {},

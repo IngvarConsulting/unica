@@ -124,7 +124,8 @@ pub(super) fn run_dictionary_result() -> DomainResult {
         .map(|operation| {
             let dry_run_required = matches!(
                 operation.intent,
-                RunIntent::InfobaseCreate
+                RunIntent::WebPublish
+                    | RunIntent::InfobaseCreate
                     | RunIntent::SourceImport
                     | RunIntent::SourceExport
                     | RunIntent::SourceReexport

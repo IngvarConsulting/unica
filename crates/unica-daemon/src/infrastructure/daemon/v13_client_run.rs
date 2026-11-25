@@ -105,6 +105,7 @@ pub(super) struct PreparedClientRun {
 #[derive(Debug)]
 pub(super) enum PreparedTerminalRun {
     Client(PreparedClientRun),
+    Web(super::v13_web_run::PreparedWebRun),
     DebugServer(super::v13_debug_server::PreparedDebugServer),
 }
 
@@ -112,6 +113,7 @@ impl PreparedTerminalRun {
     pub(super) fn workspace_identity_hash(&self) -> SafeIdentityHash {
         match self {
             Self::Client(run) => run.workspace_identity_hash(),
+            Self::Web(run) => run.workspace_identity_hash(),
             Self::DebugServer(run) => run.workspace_identity_hash(),
         }
     }
@@ -119,6 +121,7 @@ impl PreparedTerminalRun {
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
         match self {
             Self::Client(run) => run.execute(cancellation),
+            Self::Web(run) => run.execute(cancellation),
             Self::DebugServer(run) => run.execute(cancellation),
         }
     }
@@ -136,6 +139,21 @@ pub(super) fn prepare(request: &InvocationRequest) -> Preparation {
     }
     let operation = request.arguments().get("op").and_then(Value::as_str);
     let prepared = match operation {
+        Some(super::v13_web_run::PUBLISH) => {
+            super::v13_web_run::PreparedWebRun::parse(request, super::v13_web_run::PUBLISH)
+                .map(PreparedTerminalRun::Web)
+        }
+        Some(OPERATION)
+            if request
+                .arguments()
+                .get("args")
+                .and_then(|args| args.get("clientMode"))
+                .and_then(Value::as_str)
+                == Some("web") =>
+        {
+            super::v13_web_run::PreparedWebRun::parse(request, OPERATION)
+                .map(PreparedTerminalRun::Web)
+        }
         Some(OPERATION) => PreparedClientRun::parse(request).map(PreparedTerminalRun::Client),
         Some(operation @ (super::v13_debug_server::START | super::v13_debug_server::STOP)) => {
             super::v13_debug_server::PreparedDebugServer::parse(request, operation)
