@@ -1,5 +1,5 @@
 use crate::application::v13::resolve::{ModuleLine, ResolvedLines};
-use crate::application::v13::source_text::{admit_text, ModuleText};
+use crate::application::v13::source_text::{admit_text, ModuleText, ModuleTextObservation};
 use unica_bsl::projection::{
     CommonModuleProperties, EventProjection, MethodProjection, ModuleProjectionSet,
     RegionProjection, VariableProjection,
@@ -162,6 +162,7 @@ struct OwnerEdgeCacheKey {
     child: String,
 }
 
+mod body_syntax_read;
 mod diagnostic_scope;
 mod editability_view;
 mod exchange_membership;
@@ -447,6 +448,15 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         at: &QualifiedAddress,
         admitted: &ViewSourceSnapshot,
     ) -> Result<Option<ModuleText>, ViewError> {
+        self.read_module_body(at, admitted)
+            .map(|observation| observation.map(|observation| observation.text))
+    }
+
+    fn read_module_body(
+        &self,
+        at: &QualifiedAddress,
+        admitted: &ViewSourceSnapshot,
+    ) -> Result<Option<ModuleTextObservation>, ViewError> {
         let route = route_logical_address(at, self.profile)
             .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
         if route.reader() != LogicalReader::Module {
@@ -471,15 +481,13 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         }
         self.verify_module_owner(&module_at, capability, admitted)?;
         let target = module_source_address(&module_at, capability)?;
-        let text = match at.line_range() {
-            Some(range) => self
-                .read
-                .module_text_range(&target, range, || self.read_checkpoint())?,
-            None => self
-                .read
-                .module_text_within_limit(&target, || self.read_checkpoint())?,
-        };
-        Ok(Some(text))
+        let (text, full) =
+            self.read
+                .module_text_with_syntax_input(&target, at.line_range(), || {
+                    self.read_checkpoint()
+                })?;
+        self.body_syntax_observation(&module_at, text, full)
+            .map(Some)
     }
 
     fn snapshot(&self, at: &QualifiedAddress) -> Result<ViewSourceSnapshot, ViewError> {
