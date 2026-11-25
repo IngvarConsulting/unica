@@ -383,7 +383,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
         }
         let mut view = module_projection_view(route.at(), prefix_len, &projections, binding_items)?;
         if capability.role() == ModuleRole::Common && route.at() == &module_at {
-            let (synonym, limits) = self.common_module_synonym(&module_at)?;
+            let (synonym, limits) = self.object_synonym(&module_at)?;
             if let Some(synonym) = synonym {
                 view = view.with_prop("synonym", synonym);
             }
@@ -435,12 +435,12 @@ impl<'a> LogicalViewReadAuthority<'a> {
         Ok(view)
     }
 
-    pub(super) fn common_module_synonym(
+    pub(super) fn object_synonym(
         &self,
         at: &QualifiedAddress,
     ) -> Result<(Option<Value>, Vec<String>), ViewError> {
         self.read_checkpoint()?;
-        self.read.common_module_synonym(at)
+        self.read.object_synonym(at)
     }
 
     pub(super) fn module_projection(

@@ -16,6 +16,10 @@
     "InformationRegister": 773,
     "Report": 312
   },
+  "catalogs": {
+    "source": "Name lengths in characters of the 1 090 catalogs of 1C:Комплексная автоматизация 2 (2.6.2.72), built on the UT 11 code base, measured on 2026-11-19 at the quantile points above; no names are kept. Synonyms there are Russian only and spell the name with spaces, so the generator derives the synonym from the same words.",
+    "name_lengths": [3, 11, 14, 20, 24, 28, 33, 38, 42, 47, 54, 59, 65, 68, 72, 76, 77]
+  },
   "notes": [
     "Form modules of every kind are carried by catalog forms: the fixture templates give forms only to the catalog, so catalogs get about nine forms each instead of UT's two to five, while the number and bytes of form modules match.",
     "Data processors, common forms, roles, enums and pictures are not generated, so there are fewer object, manager and other modules than in UT; each role keeps its measured BSL bytes, so its modules are larger on average. XML bytes are well below UT."
