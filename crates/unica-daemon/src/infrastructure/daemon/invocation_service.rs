@@ -713,7 +713,16 @@ impl ActorBoundExecution {
             }
             _ => None,
         };
-        if let (true, Some(compared)) = (compares_modes, compared) {
+        let may_implement_borrowed_after = binding.source_kind()
+            == unica_source_contract::SourceSetKind::Extension
+            && request.ops().iter().any(|operation| {
+                operation.name() == "event.implement"
+                    && operation
+                        .args()
+                        .get("callType")
+                        .is_none_or(|value| value.as_str() == Some("After"))
+            });
+        if let (true, Some(compared)) = (compares_modes || may_implement_borrowed_after, compared) {
             for source in self.invocation.read_sources.iter() {
                 let name = source.binding.source_set_name();
                 // Only a set the admission takes: a peer it would refuse
@@ -722,6 +731,7 @@ impl ActorBoundExecution {
                     && source.binding.source_format() == SourceFormat::PlatformXml
                     && source.binding.source_profile().is_writable_platform_xml()
                     && name != binding.source_set_name()
+                    && !source.binding.overlaps_source_root(&binding)
                     && dependencies.iter().all(|dependency: &ProviderRootBinding| {
                         dependency.source_set_name() != name
                     })

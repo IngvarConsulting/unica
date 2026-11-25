@@ -1,0 +1,199 @@
+{
+  "id": "S-3277-borrowed-form-after-handler",
+  "issue": 3277,
+  "area": "Формы",
+  "task": "Реализовать After для события заимствованной формы без совпадения с обработчиком основной формы. Проверить привязку, процедуру и сохранность основной формы.",
+  "workspace": "tests/fixtures/acceptance/native-cfe-ownership-2.20",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.CorpusCatalog.Form.CorpusForm.Event.OnCreateAtServer"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/state",
+          "eq": "implemented"
+        },
+        {
+          "pointer": "/data/props/handler",
+          "eq": "ПриСозданииНаСервере"
+        }
+      ],
+      "captures": {
+        "baseHandler": {
+          "pointer": "/data/props/handler"
+        },
+        "baseForm": {
+          "file": "cf/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form.xml",
+          "kind": "sha256"
+        },
+        "baseModule": {
+          "file": "cf/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form/Module.bsl",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "ext:Catalog.CorpusCatalog.Form.CorpusForm.Event.OnCreateAtServer"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/state",
+          "eq": "available"
+        }
+      ],
+      "captures": {
+        "extensionForm": {
+          "file": "adopted/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form.xml",
+          "kind": "sha256"
+        },
+        "extensionModule": {
+          "file": "adopted/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form/Module.bsl",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "ext:Catalog.CorpusCatalog.Form.CorpusForm.Event.OnCreateAtServer",
+        "ops": [
+          {
+            "op": "event.implement",
+            "args": {
+              "callType": "After"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executable",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "adopted/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.extensionForm"
+        },
+        {
+          "path": "adopted/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.extensionModule"
+        }
+      ],
+      "captures": {
+        "planToken": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.planToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "cf/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.baseForm"
+        },
+        {
+          "path": "cf/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.baseModule"
+        },
+        {
+          "path": "adopted/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form.xml",
+          "kind": "xmlTags",
+          "select": "{http://v8.1c.ru/8.3/xcf/logform}Events/{http://v8.1c.ru/8.3/xcf/logform}Event[@name='OnCreateAtServer'][@callType='After']",
+          "eq": [
+            "Event"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "ext:Catalog.CorpusCatalog.Form.CorpusForm.Event.OnCreateAtServer"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/state",
+          "eq": "implemented"
+        },
+        {
+          "pointer": "/data/props/callType",
+          "eq": "After"
+        },
+        {
+          "pointer": "/data/props/handler",
+          "notEq": "$capture.baseHandler"
+        }
+      ],
+      "captures": {
+        "implementation": {
+          "pointer": "/data/props/implementationAt"
+        },
+        "extensionHandler": {
+          "pointer": "/data/props/handler"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.implementation"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Method"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "adopted/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/xcf/logform}Events/{http://v8.1c.ru/8.3/xcf/logform}Event[@name='OnCreateAtServer'][@callType='After']",
+          "contains": "$capture.extensionHandler"
+        }
+      ]
+    }
+  ]
+}

@@ -417,7 +417,12 @@ pub fn borrow_dependency_changed_after_destination_write_rolls_back_destination_
     policies: crate::policies::WorkspacePolicies,
 ) {
     let _policy_scope = policies_scope(policies);
+    for parent_before in [Some(&b"parent before"[..]), None] {
+        assert_optional_dependency_change_rolls_back(parent_before);
+    }
+}
 
+fn assert_optional_dependency_change_rolls_back(parent_before: Option<&[u8]>) {
     let fixture = actor_fixture("borrow-after-write-parent-fence", &["dst", "parent"]);
     let binding = fixture
         .actor
@@ -429,7 +434,9 @@ pub fn borrow_dependency_changed_after_destination_write_rolls_back_destination_
         .unwrap();
     let parent_path = fixture.roots[1].join("Module.bsl");
     let destination_path = fixture.roots[0].join("Module.bsl");
-    std::fs::write(&parent_path, b"parent before").unwrap();
+    if let Some(bytes) = parent_before {
+        std::fs::write(&parent_path, bytes).unwrap();
+    }
     std::fs::write(&destination_path, b"destination before").unwrap();
     let admission = fixture
         .actor
@@ -442,9 +449,13 @@ pub fn borrow_dependency_changed_after_destination_write_rolls_back_destination_
             &CancellationToken::new(),
         )
         .unwrap();
-    admission
-        .read_apply_dependency("parent", Path::new("Module.bsl"))
-        .unwrap();
+    assert_eq!(
+        admission
+            .read_optional_apply_dependency("parent", Path::new("Module.bsl"))
+            .unwrap()
+            .as_deref(),
+        parent_before
+    );
     let mut staged = admission.staged_state().unwrap();
     let before = staged.read(Path::new("Module.bsl")).unwrap().unwrap();
     staged

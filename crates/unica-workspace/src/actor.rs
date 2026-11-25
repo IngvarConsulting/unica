@@ -435,6 +435,12 @@ impl ProviderRootBinding {
         self.source_root.path()
     }
 
+    pub fn overlaps_source_root(&self, other: &Self) -> bool {
+        self.source_root.identity() == other.source_root.identity()
+            || self.source_root().starts_with(other.source_root())
+            || other.source_root().starts_with(self.source_root())
+    }
+
     pub fn retained_root(&self) -> Arc<unica_source_contract::read::SourceDirectory> {
         Arc::new(crate::read::retained_source_directory(
             (*self.source_root).clone(),
@@ -517,7 +523,7 @@ pub struct ApplyAdmission {
 /// Read-only authority retained by the actor that also owns the destination.
 struct ApplyReadDependency {
     binding: ProviderRootBinding,
-    reads: Mutex<std::collections::BTreeMap<PathBuf, Vec<u8>>>,
+    reads: Mutex<std::collections::BTreeMap<PathBuf, Option<Vec<u8>>>>,
 }
 
 /// Admission-sealed authority for dormant Code planning. It borrows the exact
@@ -883,6 +889,10 @@ impl ApplyAdmission {
                     ApplyStagingError::new(ApplyStagingErrorKind::UnsupportedProvider, error)
                 })?;
                 field(&mut hash, &path);
+                let Some(bytes) = bytes else {
+                    hash.update(u64::MAX.to_be_bytes());
+                    continue;
+                };
                 hash.update((bytes.len() as u64).to_be_bytes());
                 for chunk in bytes.chunks(64 * 1024) {
                     checkpoint()?;
@@ -913,11 +923,43 @@ impl ApplyAdmission {
             .collect()
     }
 
+    pub fn all_source_sets_of_kind_admitted(&self, kind: SourceSetKind) -> bool {
+        self.actor_identity
+            .source_sets()
+            .iter()
+            .filter(|set| set.kind == kind)
+            .all(|set| {
+                set == &self.source_set
+                    || self
+                        .read_dependencies
+                        .iter()
+                        .any(|dependency| &dependency.binding.source_set == set)
+            })
+    }
+
     pub fn read_apply_dependency(
         &self,
         source_name: &str,
         relative: &Path,
     ) -> Result<Vec<u8>, ApplyPlanError> {
+        self.read_optional_apply_dependency(source_name, relative)?
+            .ok_or_else(|| {
+                ApplyPlanError::new(
+                    ApplyPlanErrorKind::NotFound,
+                    format!(
+                        "read-only input `{source_name}:{}` is absent",
+                        relative.portable()
+                    ),
+                )
+            })
+    }
+
+    /// Retain both the bytes of a present input and the observed absence of an optional input.
+    pub fn read_optional_apply_dependency(
+        &self,
+        source_name: &str,
+        relative: &Path,
+    ) -> Result<Option<Vec<u8>>, ApplyPlanError> {
         apply_staging_checkpoint(self.deadline, &self.cancellation, "apply dependency read")
             .map_err(|error| ApplyPlanError::staging(error, source_name))?;
         let dependency = self
@@ -965,16 +1007,16 @@ impl ApplyAdmission {
         if let Some(error) = stopped {
             return Err(ApplyPlanError::staging(error, source_name));
         }
-        read.map_err(|error| {
-            ApplyPlanError::new(
-                if error.kind() == std::io::ErrorKind::NotFound {
-                    ApplyPlanErrorKind::NotFound
-                } else {
-                    ApplyPlanErrorKind::InvalidSource
-                },
-                error.to_string(),
-            )
-        })?;
+        let bytes = match read {
+            Ok(_) => Some(bytes),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => {
+                return Err(ApplyPlanError::new(
+                    ApplyPlanErrorKind::InvalidSource,
+                    error.to_string(),
+                ));
+            }
+        };
         apply_staging_checkpoint(
             self.deadline,
             &self.cancellation,
@@ -1955,17 +1997,7 @@ impl<R, C> WorkspaceActor<R, C> {
         let mut read_dependencies = Vec::new();
         for parent in dependency_bindings {
             self.validate_binding(&parent)?;
-            if parent.source_set == binding.source_set
-                || parent.source_root.identity() == binding.source_root.identity()
-                || parent
-                    .source_root
-                    .path()
-                    .starts_with(binding.source_root.path())
-                || binding
-                    .source_root
-                    .path()
-                    .starts_with(parent.source_root.path())
-            {
+            if parent.source_set == binding.source_set || parent.overlaps_source_root(binding) {
                 return Err(ApplyAdmissionError::Other(
                     "borrow parent must be a separate non-overlapping source root".to_string(),
                 ));
@@ -2093,7 +2125,11 @@ impl<R, C> WorkspaceActor<R, C> {
                             })
                         },
                         |chunk| {
-                            if expected.get(offset..offset + chunk.len()) != Some(chunk) {
+                            if expected
+                                .as_ref()
+                                .and_then(|bytes| bytes.get(offset..offset + chunk.len()))
+                                != Some(chunk)
+                            {
                                 return Err(std::io::Error::other(
                                     "apply dependency bytes changed",
                                 ));
@@ -2105,26 +2141,19 @@ impl<R, C> WorkspaceActor<R, C> {
                 if let Some(error) = stopped {
                     return Err(error);
                 }
-                read.map_err(|error| {
-                    ApplyPublicationError::new(
-                        ApplyPublicationErrorKind::ConcurrentRevision,
-                        format!(
-                            "read-only input `{}:{}` changed; the plan was prepared using this source dependency: {error}",
-                            dependency.binding.source_set_name(),
-                            path.portable(),
-                        ),
-                    )
-                })?;
-                if offset != expected.len() {
-                    return Err(ApplyPublicationError::new(
-                        ApplyPublicationErrorKind::ConcurrentRevision,
-                        format!(
-                            "read-only input `{}:{}` changed; the plan was prepared using this source dependency",
-                            dependency.binding.source_set_name(),
-                            path.portable(),
-                        ),
-                    ));
+                match (expected, read) {
+                    (Some(bytes), Ok(_)) if offset == bytes.len() => continue,
+                    (None, Err(error)) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                    _ => {}
                 }
+                return Err(ApplyPublicationError::new(
+                    ApplyPublicationErrorKind::ConcurrentRevision,
+                    format!(
+                        "read-only input `{}:{}` changed; the plan was prepared using this source dependency",
+                        dependency.binding.source_set_name(),
+                        path.portable(),
+                    ),
+                ));
             }
             self.validate_binding(&dependency.binding)
                 .map_err(|error| {

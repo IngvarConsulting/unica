@@ -89,6 +89,19 @@ pub struct EventImplementationShape {
     pub region: String,
 }
 
+impl EventImplementationShape {
+    pub fn with_handler(
+        mut self,
+        module_at: &QualifiedAddress,
+        handler: String,
+    ) -> Result<Self, EventProjectionError> {
+        self.signature = substitute_catalog_handler(&self.signature, &self.handler, &handler)?;
+        self.implementation_at = format!("{module_at}.Method.{handler}");
+        self.handler = handler;
+        Ok(self)
+    }
+}
+
 pub fn project_platform_event_implementation(
     event_at: &QualifiedAddress,
     module_at: &QualifiedAddress,

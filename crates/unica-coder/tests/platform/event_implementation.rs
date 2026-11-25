@@ -535,12 +535,8 @@ fn staged_regular_owner_matrix_composes_exact_form_and_module_postimages() {
 }
 
 #[test]
-fn borrowed_available_accepts_all_call_types_and_base_form_only_stays_byte_exact() {
-    for call_type in [
-        FormCallType::Before,
-        FormCallType::After,
-        FormCallType::Override,
-    ] {
+fn borrowed_available_keeps_before_and_override_and_base_form_only_stays_byte_exact() {
+    for call_type in [FormCallType::Before, FormCallType::Override] {
         let root = temp_root(call_type.as_str());
         let original = write_extension_catalog_form_fixture(&root, true);
         let (planned, _) = plan_event_implement_batch_owned_for_test(
