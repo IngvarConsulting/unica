@@ -34,6 +34,18 @@ pub fn is_file_sharing_violation(_error: &io::Error) -> bool {
     false
 }
 
+/// A Windows access-denied error does not distinguish permissions from a
+/// directory rename blocked by an open descendant.
+#[cfg(windows)]
+pub(crate) fn is_windows_access_denied(error: &io::Error) -> bool {
+    error.raw_os_error() == Some(windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED as i32)
+}
+
+#[cfg(not(windows))]
+pub(crate) fn is_windows_access_denied(_error: &io::Error) -> bool {
+    false
+}
+
 /// Тестовый наблюдатель файловой работы через удерживаемые каталоги.
 ///
 /// Записывает каждое открытие файла (относительный путь, удержание дочернего
