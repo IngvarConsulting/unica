@@ -66,14 +66,14 @@ A preview does not write sources or read the current extension contents.
 
 ### Work the call must not wait for
 
-A long operation does not need a separate call: any `unica.run` invocation
-that outlives the handoff window becomes a durable Task. A protocol
-`2026-07-28` call that does not declare Tasks itself never sees the Task: it
-waits for the end and answers with the result. A session of an earlier
-protocol gets a receipt: keep the returned `taskId`, read the state with
-`unica.task.get`, wait for a bounded interval with `unica.task.result`, and
-cancel with `unica.task.cancel`; a client with native Tasks uses `tasks/get`
-and `tasks/cancel` instead. The terminal result never
+A `unica.run` invocation that outlives the handoff window becomes a
+durable Task. In MCP `2026-07-28` without native Tasks, an executing
+`push` waits for one bounded observation. If it is still working, it
+returns a receipt with `taskId` and a follow-up call to `unica.task.result`.
+A quick `push` and other calls in this mode return their terminal result
+inline. Clients with native Tasks use `tasks/get` and `tasks/cancel`.
+Earlier protocol sessions also provide `unica.task.get` and
+`unica.task.cancel` for their receipts. The terminal result never
 publishes raw stdout. The Task state is the authority for the outcome; a
 `working` state alone does not prove that the runner is making progress.
 
@@ -96,9 +96,10 @@ work under its own `taskId` only while no source changed since it began;
 
 ### If a mutating runner remains `working`
 
-Keep the `taskId` and the operation's infobase and workspace identity. Read
-`tasks/get` (or `unica.task.get`) and use `unica.task.result` only for a bounded
-wait in the compatibility profile. A late `tasks/cancel` is a request, not a
+Keep the `taskId` and the operation's infobase and workspace identity. Use
+the follow-up tool in the receipt, or read a native Task through `tasks/get`.
+`unica.task.result` accepts a bounded wait in both profiles. A late
+`tasks/cancel` is a request, not a
 receipt that the mutation stopped: native Tasks report it in the next
 `tasks/get.statusMessage`; compatibility tools expose `cancelRequested: true`.
 If the cancel request itself times out, read the Task again before deciding

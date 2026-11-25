@@ -37,13 +37,10 @@ LIFECYCLE_SCENARIOS = (
     "rollback",
 )
 # The public surface is normed by arch/rules/mcp/mcp-tool-profiles.md and shown by the
-# ledger its producer renders from the built binary's `tools/list`. The proof
-# reads that ledger instead of keeping a copy of the names: a copy here would
-# be a second, unregistered enforcement point that a surface change could not
-# see coming (#699). The compatibility profile is the whole ledger; the native
-# Tasks profile is the ledger without the `unica.task.*` bridge — that split is
-# the contract's own prose, not a list of this script's.
-TASK_TOOL_PREFIX = "unica.task."
+# ledger its producer renders from the built binary's `tools/list`. The
+# compatibility profile uses the full ledger. Modern clients also read
+# receipts, while Task state and cancellation stay in the legacy profile.
+LEGACY_ONLY_TASK_TOOLS = frozenset({"unica.task.get", "unica.task.cancel"})
 LEDGER_TOOL_HEADING = re.compile(r"^### `(unica\.[a-z0-9.]+)`$", re.M)
 HEX_40 = re.compile(r"^[0-9a-f]{40}$")
 HEX_64 = re.compile(r"^[0-9a-f]{64}$")
@@ -121,12 +118,12 @@ def read_surface_ledger(path: Path) -> list[str]:
 
 
 def surface_profiles(names: list[str]) -> dict[str, frozenset[str]]:
-    task_tools = frozenset(name for name in names if name.startswith(TASK_TOOL_PREFIX))
-    if not task_tools:
-        raise ProofError("surface ledger describes no unica.task.* compatibility bridge")
+    published = frozenset(names)
+    if not (LEGACY_ONLY_TASK_TOOLS | {"unica.task.result"}) <= published:
+        raise ProofError("surface ledger omits a Task observer")
     return {
-        "native": frozenset(names) - task_tools,
-        "compatibility": frozenset(names),
+        "native": published - LEGACY_ONLY_TASK_TOOLS,
+        "compatibility": published,
     }
 
 

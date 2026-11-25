@@ -823,5 +823,22 @@ async fn an_awaited_task_asks_its_question_as_input_required() {
         request["params"]["message"],
         human_choice::question_text(&choice())
     );
+
+    // The later observation has no verified origin workspace for the saved
+    // choice. It returns the refusal without offering a mutation there.
+    client
+        .send(json!({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {
+                "name": "unica.task.result",
+                "arguments": {"taskId": task_id.to_string(), "waitMs": 0},
+                "_meta": modern_elicitation_meta()
+            }
+        }))
+        .await;
+    let observed = client.receive().await;
+    assert_eq!(observed["result"]["resultType"], "complete", "{observed}");
+    assert_eq!(observed["result"]["structuredContent"]["summary"], REFUSAL);
+    assert_eq!(observed["result"]["isError"], true);
     client.shutdown().await;
 }

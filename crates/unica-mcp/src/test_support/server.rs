@@ -348,7 +348,9 @@ pub fn assert_v13_profile_names(names: &[String], native_tasks: bool) {
         "unica.run",
         "unica.docs",
     ];
-    if !native_tasks {
+    if native_tasks {
+        expected.push("unica.task.result");
+    } else {
         expected.extend(["unica.task.get", "unica.task.result", "unica.task.cancel"]);
     }
     assert_eq!(names, expected, "wrong canonical v0.13 tools/list profile");
@@ -433,7 +435,7 @@ pub async fn surface_profiles_case() {
     assert_v13_profile_names(&listed_tool_names(&mut modern_compat, 1, None).await, false);
     modern_compat.shutdown().await;
 
-    // Direct-first 2026-07-28 requests get the eight tools whether or not
+    // Direct-first 2026-07-28 requests get the same catalog whether or not
     // the request declares Tasks: the catalog follows the protocol revision.
     let (mut direct, _) = spawn_unica_server(canonical_profile_server());
     assert_v13_profile_names(

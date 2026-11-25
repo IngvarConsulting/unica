@@ -138,7 +138,7 @@
         </div>
         <div class="card">
           <h4>Инструментами Unica</h4>
-          <p>Клиенту прежней версии протокола Unica добавляет в список три обычных инструмента <code>unica.task.*</code>. Они делают ровно то же: узнать состояние, забрать результат, отменить. Клиент протокола 2026-07-28, не объявивший задачи в самом вызове, задачу не видит: вызов дожидается её и отвечает итогом.</p>
+          <p>Клиенту прежней версии протокола доступны три инструмента <code>unica.task.*</code> для чтения состояния, получения результата и отмены. В MCP 2026-07-28 без Tasks долгий <code>push</code> возвращает квитанцию. Её <code>taskId</code> позволяет дочитать результат через <code>unica.task.result</code> в том же профиле. Быстрый <code>push</code> сразу отвечает итогом.</p>
         </div>
       </div>
       <p class="caption" style="margin-top:16px">
@@ -164,16 +164,16 @@
         <rect class="box" x="500" y="14" width="440" height="350" rx="12"/>
         <text class="t-tag" x="524" y="44">COMPATIBILITY</text>
         <text class="t-title" x="524" y="72">Предметные инструменты + 3 tasks</text>
-        <text class="t-muted" x="524" y="96">Агент задач протокола не объявляет — те же три</text>
-        <text class="t-muted" x="524" y="116">операции приходят обычными инструментами.</text>
+        <text class="t-muted" x="524" y="96">В прежних версиях MCP три операции</text>
+        <text class="t-muted" x="524" y="116">публикуются как обычные инструменты.</text>
         <text class="t-mono" x="524" y="152">unica.task.get</text>
         <text class="t-mono" x="524" y="176">unica.task.result</text>
         <text class="t-mono" x="524" y="200">unica.task.cancel</text>
         <text class="t-muted" x="524" y="236">Отмена идемпотентна, ожидание ограничено</text>
         <text class="t-muted" x="524" y="256">интервалом, полезная нагрузка — до 16 KiB.</text>
         <line x1="524" y1="282" x2="916" y2="282" stroke="currentColor" stroke-opacity="0.14"/>
-        <text class="t-muted" x="524" y="308">Клиент не объявил поддержку задач — сервер</text>
-        <text class="t-muted" x="524" y="328">добавляет эти три инструмента в список.</text>
+        <text class="t-muted" x="524" y="308">В MCP 2026-07-28 чтение итога тоже</text>
+        <text class="t-muted" x="524" y="328">доступно через unica.task.result.</text>
 
         <path class="flow" marker-end="url(#head)" d="M470 152 L490 152"/>
         <path class="flow" marker-end="url(#head)" d="M470 176 L490 176"/>
@@ -483,9 +483,10 @@
       </table>
       </div>
 
-      <h2 style="margin-top:44px">Три инструмента совместимости</h2>
+      <h2 style="margin-top:44px">Инструменты наблюдения за задачами</h2>
       <p class="caption">
-        Эти три Unica публикует, когда клиент не объявил поддержку задач протокола.
+        <code>unica.task.result</code> доступен в обоих профилях. Состояние и отмена через
+        остальные два инструмента доступны в прежних версиях MCP.
       </p>
       <div class="table-wrap">
       <table>
