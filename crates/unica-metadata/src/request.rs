@@ -726,6 +726,9 @@ pub fn parse_property_changes(
             MetaPropertyValueKind::Type => {
                 MetaPropertyValue::Type(parse_metadata_type(value, &field)?)
             }
+            MetaPropertyValueKind::Picture => {
+                MetaPropertyValue::Picture(crate::properties::parse_picture_value(value, &field)?)
+            }
             MetaPropertyValueKind::String if spec.key.is_localized() => {
                 let text = value
                     .as_str()

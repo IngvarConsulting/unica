@@ -1,0 +1,1096 @@
+{
+  "id": "S-3257-command-group-picture",
+  "name": "command-group-picture",
+  "issue": 3257,
+  "area": "Метаданные",
+  "task": "Изменить и сбросить Picture существующей группы команд, проверить закрытый контракт и сохранение остальных байтов.",
+  "workspace": "tests/fixtures/acceptance/workspace-all-kinds",
+  "formats": [
+    "2.20"
+  ],
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommandGroup"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "group": {
+          "pointer": "/data/items/0/at"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:CommandGroup.Probe"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.group"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Picture",
+          "absent": true
+        }
+      ],
+      "captures": {
+        "file0": {
+          "kind": "sha256",
+          "file": "src/CommandGroups/Probe.xml"
+        },
+        "file1": {
+          "kind": "sha256",
+          "file": "src/Configuration.xml"
+        },
+        "file2": {
+          "kind": "sha256",
+          "file": "src/CommonPictures/Probe.xml"
+        },
+        "file3": {
+          "kind": "sha256",
+          "file": "src/CommonPictures/Probe/Ext/Picture.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommandGroup.Probe.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/additionalProperties",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/Picture/additionalProperties",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/Picture/properties/LoadTransparent/type",
+          "eq": "boolean"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.group",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Picture": "StdPicture.Print"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: Picture must be an object; use {} to clear it",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values.Picture"
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommandGroups/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.file0"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.file1"
+        },
+        {
+          "path": "src/CommonPictures/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.file2"
+        },
+        {
+          "path": "src/CommonPictures/Probe/Ext/Picture.xml",
+          "kind": "sha256",
+          "eq": "$capture.file3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.group",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Picture": {
+                  "Ref": "Catalog.Probe"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: Picture.Ref must be StdPicture.<Name> or CommonPicture.<Name>",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values.Picture.Ref"
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommandGroups/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.file0"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.file1"
+        },
+        {
+          "path": "src/CommonPictures/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.file2"
+        },
+        {
+          "path": "src/CommonPictures/Probe/Ext/Picture.xml",
+          "kind": "sha256",
+          "eq": "$capture.file3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.group",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Picture": {
+                  "Ref": "StdPicture.abc/def"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: Picture.Ref must be StdPicture.<Name> or CommonPicture.<Name>",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values.Picture.Ref"
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommandGroups/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.file0"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.file1"
+        },
+        {
+          "path": "src/CommonPictures/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.file2"
+        },
+        {
+          "path": "src/CommonPictures/Probe/Ext/Picture.xml",
+          "kind": "sha256",
+          "eq": "$capture.file3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.group",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Picture": {
+                  "Ref": "CommonPicture.Missing"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: `CommonPicture.Missing` is not registered in Configuration.xml",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values.Picture.Ref"
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "not_found"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommandGroups/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.file0"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.file1"
+        },
+        {
+          "path": "src/CommonPictures/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.file2"
+        },
+        {
+          "path": "src/CommonPictures/Probe/Ext/Picture.xml",
+          "kind": "sha256",
+          "eq": "$capture.file3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.group",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Picture": {
+                  "Ref": "StdPicture.Print",
+                  "LoadTransparent": "false"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: Picture.LoadTransparent must be a boolean",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values.Picture.LoadTransparent"
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommandGroups/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.file0"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.file1"
+        },
+        {
+          "path": "src/CommonPictures/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.file2"
+        },
+        {
+          "path": "src/CommonPictures/Probe/Ext/Picture.xml",
+          "kind": "sha256",
+          "eq": "$capture.file3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.group",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Picture": {
+                  "LoadTransparent": true
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: Picture.Ref must be StdPicture.<Name> or CommonPicture.<Name>",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values.Picture.Ref"
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommandGroups/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.file0"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.file1"
+        },
+        {
+          "path": "src/CommonPictures/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.file2"
+        },
+        {
+          "path": "src/CommonPictures/Probe/Ext/Picture.xml",
+          "kind": "sha256",
+          "eq": "$capture.file3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.group",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Picture": {
+                  "Ref": "StdPicture.Print",
+                  "Extra": true
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: unknown Picture field",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values.Picture.Extra"
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommandGroups/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.file0"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.file1"
+        },
+        {
+          "path": "src/CommonPictures/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.file2"
+        },
+        {
+          "path": "src/CommonPictures/Probe/Ext/Picture.xml",
+          "kind": "sha256",
+          "eq": "$capture.file3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.group",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Picture": {
+                  "Ref": "StdPicture.Print",
+                  "LoadTransparent": true
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/executable",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommandGroups/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.file0"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.file1"
+        },
+        {
+          "path": "src/CommonPictures/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.file2"
+        },
+        {
+          "path": "src/CommonPictures/Probe/Ext/Picture.xml",
+          "kind": "sha256",
+          "eq": "$capture.file3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.diff",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/chunks/0/path",
+          "eq": "CommandGroups/Probe.xml"
+        },
+        {
+          "pointer": "/data/chunks/1/path",
+          "eq": "CommandGroups/Probe.xml"
+        },
+        {
+          "pointer": "/data/chunks/2",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommandGroups/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.file0"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.file1"
+        },
+        {
+          "path": "src/CommonPictures/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.file2"
+        },
+        {
+          "path": "src/CommonPictures/Probe/Ext/Picture.xml",
+          "kind": "sha256",
+          "eq": "$capture.file3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommandGroups/Probe.xml",
+          "kind": "sha256",
+          "eq": "0e0a04a08fc48947ec2f94f0e9fe5519d3419dab71a633d763eb028f9491b33a"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.file1"
+        },
+        {
+          "path": "src/CommonPictures/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.file2"
+        },
+        {
+          "path": "src/CommonPictures/Probe/Ext/Picture.xml",
+          "kind": "sha256",
+          "eq": "$capture.file3"
+        },
+        {
+          "path": "src/CommandGroups/Probe.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}CommandGroup/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Picture/{http://v8.1c.ru/8.3/xcf/readable}Ref",
+          "eq": [
+            "StdPicture.Print"
+          ]
+        },
+        {
+          "path": "src/CommandGroups/Probe.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}CommandGroup/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Picture/{http://v8.1c.ru/8.3/xcf/readable}LoadTransparent",
+          "eq": [
+            "true"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.group"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Picture",
+          "eq": {
+            "Ref": "StdPicture.Print",
+            "LoadTransparent": true
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.group",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Picture": {
+                  "Ref": "StdPicture.Print",
+                  "LoadTransparent": false
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/executable",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommandGroups/Probe.xml",
+          "kind": "sha256",
+          "eq": "0e0a04a08fc48947ec2f94f0e9fe5519d3419dab71a633d763eb028f9491b33a"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.file1"
+        },
+        {
+          "path": "src/CommonPictures/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.file2"
+        },
+        {
+          "path": "src/CommonPictures/Probe/Ext/Picture.xml",
+          "kind": "sha256",
+          "eq": "$capture.file3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.diff",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/chunks/0/path",
+          "eq": "CommandGroups/Probe.xml"
+        },
+        {
+          "pointer": "/data/chunks/1/path",
+          "eq": "CommandGroups/Probe.xml"
+        },
+        {
+          "pointer": "/data/chunks/2",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommandGroups/Probe.xml",
+          "kind": "sha256",
+          "eq": "0e0a04a08fc48947ec2f94f0e9fe5519d3419dab71a633d763eb028f9491b33a"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.file1"
+        },
+        {
+          "path": "src/CommonPictures/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.file2"
+        },
+        {
+          "path": "src/CommonPictures/Probe/Ext/Picture.xml",
+          "kind": "sha256",
+          "eq": "$capture.file3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommandGroups/Probe.xml",
+          "kind": "sha256",
+          "eq": "b8faf1117ebbdde2c5eb99ab05be5c8340a462d4496366ab754b762790257a2d"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.file1"
+        },
+        {
+          "path": "src/CommonPictures/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.file2"
+        },
+        {
+          "path": "src/CommonPictures/Probe/Ext/Picture.xml",
+          "kind": "sha256",
+          "eq": "$capture.file3"
+        },
+        {
+          "path": "src/CommandGroups/Probe.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}CommandGroup/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Picture/{http://v8.1c.ru/8.3/xcf/readable}Ref",
+          "eq": [
+            "StdPicture.Print"
+          ]
+        },
+        {
+          "path": "src/CommandGroups/Probe.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}CommandGroup/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Picture/{http://v8.1c.ru/8.3/xcf/readable}LoadTransparent",
+          "eq": [
+            "false"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.group"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Picture",
+          "eq": {
+            "Ref": "StdPicture.Print",
+            "LoadTransparent": false
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.group",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Picture": {
+                  "Ref": "CommonPicture.Probe"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/executable",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommandGroups/Probe.xml",
+          "kind": "sha256",
+          "eq": "b8faf1117ebbdde2c5eb99ab05be5c8340a462d4496366ab754b762790257a2d"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.file1"
+        },
+        {
+          "path": "src/CommonPictures/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.file2"
+        },
+        {
+          "path": "src/CommonPictures/Probe/Ext/Picture.xml",
+          "kind": "sha256",
+          "eq": "$capture.file3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.diff",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/chunks/0/path",
+          "eq": "CommandGroups/Probe.xml"
+        },
+        {
+          "pointer": "/data/chunks/1/path",
+          "eq": "CommandGroups/Probe.xml"
+        },
+        {
+          "pointer": "/data/chunks/2",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommandGroups/Probe.xml",
+          "kind": "sha256",
+          "eq": "b8faf1117ebbdde2c5eb99ab05be5c8340a462d4496366ab754b762790257a2d"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.file1"
+        },
+        {
+          "path": "src/CommonPictures/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.file2"
+        },
+        {
+          "path": "src/CommonPictures/Probe/Ext/Picture.xml",
+          "kind": "sha256",
+          "eq": "$capture.file3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommandGroups/Probe.xml",
+          "kind": "sha256",
+          "eq": "6a1990a0901547b25a870017abba91676e362e91a592591bef0f306be4d28535"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.file1"
+        },
+        {
+          "path": "src/CommonPictures/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.file2"
+        },
+        {
+          "path": "src/CommonPictures/Probe/Ext/Picture.xml",
+          "kind": "sha256",
+          "eq": "$capture.file3"
+        },
+        {
+          "path": "src/CommandGroups/Probe.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}CommandGroup/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Picture/{http://v8.1c.ru/8.3/xcf/readable}Ref",
+          "eq": [
+            "CommonPicture.Probe"
+          ]
+        },
+        {
+          "path": "src/CommandGroups/Probe.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}CommandGroup/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Picture/{http://v8.1c.ru/8.3/xcf/readable}LoadTransparent",
+          "eq": [
+            "true"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.group"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Picture",
+          "eq": {
+            "Ref": "CommonPicture.Probe",
+            "LoadTransparent": true
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.group",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Picture": {}
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/executable",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommandGroups/Probe.xml",
+          "kind": "sha256",
+          "eq": "6a1990a0901547b25a870017abba91676e362e91a592591bef0f306be4d28535"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.file1"
+        },
+        {
+          "path": "src/CommonPictures/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.file2"
+        },
+        {
+          "path": "src/CommonPictures/Probe/Ext/Picture.xml",
+          "kind": "sha256",
+          "eq": "$capture.file3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.diff",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/chunks/0/path",
+          "eq": "CommandGroups/Probe.xml"
+        },
+        {
+          "pointer": "/data/chunks/1/path",
+          "eq": "CommandGroups/Probe.xml"
+        },
+        {
+          "pointer": "/data/chunks/2",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommandGroups/Probe.xml",
+          "kind": "sha256",
+          "eq": "6a1990a0901547b25a870017abba91676e362e91a592591bef0f306be4d28535"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.file1"
+        },
+        {
+          "path": "src/CommonPictures/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.file2"
+        },
+        {
+          "path": "src/CommonPictures/Probe/Ext/Picture.xml",
+          "kind": "sha256",
+          "eq": "$capture.file3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommandGroups/Probe.xml",
+          "kind": "sha256",
+          "eq": "9b371e00cddd6d314d93601d046cea49c7fe605ffe87e2922de72a1bd2ffa2a2"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.file1"
+        },
+        {
+          "path": "src/CommonPictures/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.file2"
+        },
+        {
+          "path": "src/CommonPictures/Probe/Ext/Picture.xml",
+          "kind": "sha256",
+          "eq": "$capture.file3"
+        },
+        {
+          "path": "src/CommandGroups/Probe.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}CommandGroup/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Picture/{http://v8.1c.ru/8.3/xcf/readable}Ref",
+          "eq": []
+        },
+        {
+          "path": "src/CommandGroups/Probe.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}CommandGroup/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Picture/{http://v8.1c.ru/8.3/xcf/readable}LoadTransparent",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.group"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Picture",
+          "absent": true
+        }
+      ]
+    }
+  ]
+}

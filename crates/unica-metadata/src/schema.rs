@@ -23,6 +23,7 @@ pub fn metadata_property_schemas(kind: Option<MetadataKind>) -> Map<String, Valu
             .entry(spec.public_name.to_string())
             .or_insert_with(|| match spec.value_kind {
                 MetaPropertyValueKind::Type => metadata_type_schema(),
+                MetaPropertyValueKind::Picture => crate::picture_value_schema(),
                 MetaPropertyValueKind::String => json!({"type": "string"}),
                 MetaPropertyValueKind::Boolean => json!({"type": "boolean"}),
                 MetaPropertyValueKind::UnsignedInteger => {

@@ -7,6 +7,9 @@ use std::collections::HashSet;
 // public name, so a new property does not edit a shared list here.
 include!(concat!(env!("OUT_DIR"), "/properties_modules.rs"));
 
+pub(crate) use picture::parse_picture_value;
+pub use picture::picture_value_schema;
+
 impl MetaPropertyKey {
     /// Многоязычное свойство: принимается строкой НСтр или списком переводов
     /// и пишется по языкам, как синоним.
@@ -18,6 +21,7 @@ impl MetaPropertyKey {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MetaPropertyValueKind {
     Type,
+    Picture,
     String,
     Boolean,
     UnsignedInteger,
@@ -27,6 +31,7 @@ pub enum MetaPropertyValueKind {
 #[serde(untagged)]
 pub enum MetaPropertyValue {
     Type(MetadataType),
+    Picture(Option<crate::MetaPicture>),
     String(String),
     /// Every language of a multilingual property, as `view` reads it at
     /// `<node>.Props.<name>` (#2163).
@@ -168,6 +173,7 @@ impl MetaPropertyValue {
     fn kind(&self) -> MetaPropertyValueKind {
         match self {
             Self::Type(_) => MetaPropertyValueKind::Type,
+            Self::Picture(_) => MetaPropertyValueKind::Picture,
             Self::String(_) | Self::Localized(_) => MetaPropertyValueKind::String,
             Self::Boolean(_) => MetaPropertyValueKind::Boolean,
             Self::UnsignedInteger(_) => MetaPropertyValueKind::UnsignedInteger,
@@ -405,6 +411,15 @@ impl MetaPropertyChanges {
                     format!("property `{}` has the wrong value kind", input.name),
                 )
                 .with_field(&field));
+            }
+            if let MetaPropertyValue::Picture(Some(value)) = &input.value {
+                if !picture::valid_picture_reference(&value.reference) {
+                    return Err(MetaDiagnostic::error(
+                        MetaDiagnosticCode::InvalidArguments,
+                        "Picture.Ref must be StdPicture.<Name> or CommonPicture.<Name>",
+                    )
+                    .with_field(&format!("{field}.Ref")));
+                }
             }
             if let MetaPropertyValue::String(value) = &input.value {
                 if spec
