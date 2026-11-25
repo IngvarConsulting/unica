@@ -1,4 +1,5 @@
 //! Закрытые записи связывают незавершённый или готовый снимок с его каталогом.
+use super::merge::{Binding, MergeSnapshot};
 use super::{valid_snapshot_id, SNAPSHOT_ROOT};
 use std::ffi::OsStr;
 use std::io;
@@ -13,6 +14,7 @@ use unica_workspace::state_fs::{
 
 type SnapshotIdentity = [u8; 16];
 const IDENTITY_LEN: usize = std::mem::size_of::<SnapshotIdentity>();
+const MERGE_RECORD_LIMIT: usize = 8 * 1024;
 
 struct Retirement {
     stage: SnapshotIdentity,
@@ -99,6 +101,10 @@ impl std::fmt::Display for CleanupFailure {
 }
 
 impl OwnedSnapshot {
+    pub(super) fn directory(&self) -> &StateDirectory {
+        &self.directory
+    }
+
     pub(super) fn modified(&self) -> SystemTime {
         self.directory
             .open_retained_handle()
@@ -339,7 +345,7 @@ impl SnapshotStorage {
             .map(|target| target.map(DropTarget::Ready))
     }
 
-    fn owned_snapshot(&self, id: &str) -> io::Result<Option<OwnedSnapshot>> {
+    pub(super) fn owned_snapshot(&self, id: &str) -> io::Result<Option<OwnedSnapshot>> {
         let owner = ownership_name(id);
         let Some(ownership) = self.record(&owner)? else {
             return Ok(None);
@@ -377,6 +383,99 @@ impl SnapshotStorage {
                 Ok(())
             })?;
         Ok(snapshots)
+    }
+
+    pub(super) fn remember_merge(
+        &self,
+        id: &str,
+        stage: &StateDirectory,
+        snapshot: &MergeSnapshot,
+    ) -> io::Result<()> {
+        stage.validate_named_identity()?;
+        let name = merge_name(id);
+        let encoded = serde_json::to_vec(snapshot)?;
+        if encoded.len() > MERGE_RECORD_LIMIT {
+            return Err(io::Error::other(
+                "fetch merge binding exceeds the record limit",
+            ));
+        }
+        self.require_records()?
+            .create_regular_child_atomically(
+                OsStr::new(&marker_stage_name()),
+                OsStr::new(&name),
+                &encoded,
+            )
+            .map_err(|failure| failure.into_observation().0)?
+            .validate_named_identity()?;
+        stage.validate_named_identity()
+    }
+
+    pub(super) fn merge_snapshot(
+        &self,
+        owned: &OwnedSnapshot,
+    ) -> io::Result<Option<MergeSnapshot>> {
+        let Some(record) = self.record(&merge_name(&owned.id))? else {
+            return Ok(None);
+        };
+        let snapshot = read_merge_record(&record)?;
+        if owned.directory.identity().stable_bytes() != snapshot.stage_identity {
+            return Err(ownership_changed());
+        }
+        owned.directory.validate_named_identity()?;
+        Ok(Some(snapshot))
+    }
+
+    pub(super) fn mark_merge_base(
+        &self,
+        owned: &OwnedSnapshot,
+        snapshot: &MergeSnapshot,
+    ) -> io::Result<()> {
+        owned.directory.validate_named_identity()?;
+        self.require_records()?
+            .replace_regular_child_atomically(
+                OsStr::new(&marker_stage_name()),
+                OsStr::new(&snapshot.binding.base_key()),
+                owned.id.as_bytes(),
+            )
+            .map_err(|failure| failure.into_observation().0)?
+            .validate_named_identity()
+    }
+
+    pub(super) fn merge_base(&self, binding: &Binding) -> io::Result<Option<OwnedSnapshot>> {
+        let Some(id) = self.merge_base_id(binding)? else {
+            return Ok(None);
+        };
+        self.owned_snapshot(&id)
+    }
+
+    fn merge_base_id(&self, binding: &Binding) -> io::Result<Option<String>> {
+        let Some(record) = self.record(&binding.base_key())? else {
+            return Ok(None);
+        };
+        record.validate_named_identity()?;
+        let bytes = record.read_bounded(32)?;
+        let id = String::from_utf8(bytes).map_err(|_| ownership_changed())?;
+        if !valid_snapshot_id(&id) {
+            return Err(ownership_changed());
+        }
+        Ok(Some(id))
+    }
+
+    pub(super) fn retained_as_base(&self, owned: &OwnedSnapshot) -> io::Result<bool> {
+        let Some(snapshot) = self.merge_snapshot(owned)? else {
+            return Ok(false);
+        };
+        Ok(self.merge_base_id(&snapshot.binding)?.as_deref() == Some(owned.id.as_str()))
+    }
+
+    pub(super) fn prunable_snapshots(&self) -> io::Result<Vec<OwnedSnapshot>> {
+        let mut prunable = Vec::new();
+        for snapshot in self.owned_snapshots()? {
+            if !self.retained_as_base(&snapshot)? {
+                prunable.push(snapshot);
+            }
+        }
+        Ok(prunable)
     }
 
     pub(super) fn remove(&self, snapshot: &OwnedSnapshot) -> Result<bool, CleanupFailure> {
@@ -511,6 +610,12 @@ impl SnapshotStorage {
         if let Some(preparing) = preparing {
             preparing.remove_named_identity().map_err(unknown)?;
         }
+        if let Some(merge) = self.record(&merge_name(id)).map_err(unknown)? {
+            if read_merge_record(&merge).map_err(unknown)?.stage_identity != expected.stage {
+                return Err(unknown(ownership_changed()));
+            }
+            merge.remove_named_identity().map_err(unknown)?;
+        }
         retiring.remove_named_identity().map_err(unknown)?;
         Ok(stage.is_some())
     }
@@ -568,4 +673,17 @@ fn retirement_name(id: &str) -> String {
 
 fn marker_stage_name() -> String {
     format!(".marker-stage-{}", uuid::Uuid::new_v4().simple())
+}
+
+fn merge_name(id: &str) -> String {
+    format!("{id}.merge")
+}
+
+fn read_merge_record(file: &StateFile) -> io::Result<MergeSnapshot> {
+    file.validate_named_identity()?;
+    let record: MergeSnapshot = serde_json::from_slice(&file.read_bounded(MERGE_RECORD_LIMIT)?)?;
+    if !record.runner.is_valid() {
+        return Err(ownership_changed());
+    }
+    Ok(record)
 }

@@ -47,6 +47,7 @@ pub enum RunIntent {
     SourceReexport,
     SourceFetch,
     SourceFetchDrop,
+    SourceFetchAccept,
     ArtifactBuild,
     CfExport,
     CfImport,
@@ -82,6 +83,7 @@ impl RunOperation {
             RunIntent::SourceReexport => "source.reexport",
             RunIntent::SourceFetch => "fetch",
             RunIntent::SourceFetchDrop => "fetch.drop",
+            RunIntent::SourceFetchAccept => "fetch.accept",
             RunIntent::ArtifactBuild => "make",
             RunIntent::CfExport => "download",
             RunIntent::CfImport => "upload",
@@ -114,8 +116,11 @@ impl RunOperation {
             RunIntent::SourceFetch => {
                 "Fetch the working configuration of the infobase into a new snapshot directory of the workspace without touching the sources, the runner's memory of exchanges or the infobase: the snapshot is the comparison base for incoming changes. The answer names the snapshot, its directory, the fingerprint of the source set at the moment of the fetch and the infobase generation when the runner confirms it."
             }
+            RunIntent::SourceFetchAccept => {
+                "Check a fetch snapshot against the current infobase generation, or adopt its raw state as the exchange baseline after a local merge. It does not change source files or the infobase."
+            }
             RunIntent::SourceFetchDrop => {
-                "Delete one snapshot of fetch by its snapshotId. Only the snapshot directory under .build/unica/fetch is removed; an absent snapshot is already deleted."
+                "Delete one snapshot of fetch by its snapshotId. It removes neither sources nor the current accepted comparison base. An absent snapshot is already deleted."
             }
             RunIntent::ArtifactBuild => {
                 "Build a CF, CFE, EPF or ERF artifact from attached sources. External artifacts require a singleton Designer sourceSet and a declared main configuration."
@@ -149,7 +154,7 @@ impl RunOperation {
             }
             RunIntent::SourceImport => Some("source push applies the database configuration; the generation check covers only the sets the runner loads, force:true overwrites the infobase without it, and noApply:true is unavailable"),
             RunIntent::SourceExport => Some("pull exports one source set with the runner; without force the runner chooses a partial or full export by its memory of earlier exchanges, force:true exports in full and replaces uncommitted and untracked files; Unica keeps no copy of the previous sources, and a failed export may leave a partial target"),
-            RunIntent::SourceFetch => Some("fetch exports one source set in full into a snapshot directory under .build/unica/fetch; the pinned runner does not report the infobase generation of a snapshot, so generation is null"),
+            RunIntent::SourceFetch => Some("fetch exports one source set in full into a snapshot directory under .build/unica/fetch; generation is null when the runner cannot confirm it"),
             RunIntent::InfobaseCreate => Some("creates an absent infobase; a file infobase gets the main configuration of the project from its sources, a cluster infobase is created empty; the answer names whether sources were loaded (initializesSources)"),
             _ => None,
         }
@@ -173,6 +178,7 @@ impl RunOperation {
             RunIntent::SourceReexport => &["workspaceFiles"],
             RunIntent::SourceFetch => &["infobaseRead", "workspaceFiles"],
             RunIntent::SourceFetchDrop => &["workspaceFiles"],
+            RunIntent::SourceFetchAccept => &["infobaseRead", "workspaceFiles"],
             RunIntent::InfobaseCreate
             | RunIntent::SourceImport
             | RunIntent::CfImport
@@ -241,7 +247,7 @@ impl RunOperation {
             RunIntent::SourceFetch => Some(
                 json!({"type":"object","additionalProperties":false,"properties":{"sourceSet":{"type":"string","description":"Declared source set to fetch from the infobase; omit for the main configuration."},"extension":{"type":"string","description":"1C extension name; required for an extension source set and must match it."}}}),
             ),
-            RunIntent::SourceFetchDrop => Some(
+            RunIntent::SourceFetchDrop | RunIntent::SourceFetchAccept => Some(
                 json!({"type":"object","additionalProperties":false,"required":["snapshotId"],"properties":{"snapshotId":{"type":"string","pattern":"^[0-9a-f]{32}$","description":"snapshotId from the answer of fetch."}}}),
             ),
             RunIntent::SourceExport => Some(
@@ -555,6 +561,7 @@ fn run_dictionary() -> Vec<RunOperation> {
         RunIntent::SourceReexport,
         RunIntent::SourceFetch,
         RunIntent::SourceFetchDrop,
+        RunIntent::SourceFetchAccept,
         RunIntent::ArtifactBuild,
         RunIntent::CfExport,
         RunIntent::CfImport,
@@ -671,6 +678,7 @@ mod tests {
                 "source.reexport",
                 "fetch",
                 "fetch.drop",
+                "fetch.accept",
                 "make",
                 "download",
                 "upload",
@@ -1105,6 +1113,7 @@ mod tests {
                 RunIntent::SourceReexport,
                 RunIntent::SourceFetch,
                 RunIntent::SourceFetchDrop,
+                RunIntent::SourceFetchAccept,
                 RunIntent::ArtifactBuild,
                 RunIntent::CfExport,
                 RunIntent::CfImport,
@@ -1144,6 +1153,7 @@ mod tests {
                 "source.reexport",
                 "fetch",
                 "fetch.drop",
+                "fetch.accept",
                 "make",
                 "download",
                 "infobase.dump",
@@ -1268,6 +1278,7 @@ mod tests {
                 "source.reexport",
                 "fetch",
                 "fetch.drop",
+                "fetch.accept",
                 "make",
                 "download",
                 "upload",
@@ -1311,6 +1322,7 @@ mod tests {
                 "source.reexport",
                 "fetch",
                 "fetch.drop",
+                "fetch.accept",
                 "make",
                 "download",
                 "infobase.dump",

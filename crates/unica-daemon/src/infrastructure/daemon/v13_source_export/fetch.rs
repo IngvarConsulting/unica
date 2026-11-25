@@ -21,6 +21,8 @@ use unica_workspace::state_fs::{DirectoryCursor, StateDirectory, StateFile};
 #[path = "fetch_storage.rs"]
 mod storage;
 use storage::{CleanupFailure, DropTarget, RememberFailure, SnapshotStorage};
+#[path = "fetch_merge.rs"]
+mod merge;
 
 /// Версия кадров внешней полной выгрузки раннера.
 const PROTOCOL_VERSION: u32 = 1;
@@ -78,6 +80,7 @@ enum Frame {
         source_set: String,
         target_path: PathBuf,
         stage_path: PathBuf,
+        merge_baseline: Option<merge::RunnerBaseline>,
     },
     Terminal {
         version: u32,
@@ -169,6 +172,7 @@ impl PreparedSourceExport {
             reexport: None,
             fetch: true,
             drop: None,
+            accept: None,
             call: request.arguments().clone(),
         })
     }
@@ -178,33 +182,46 @@ impl PreparedSourceExport {
     /// `fetch.drop {snapshotId}`: один снимок по идентификатору из ответа
     /// `fetch`. Раннер не нужен.
     pub(super) fn parse_fetch_drop(request: &InvocationRequest) -> Result<Self, DomainResult> {
-        let reject = |message: &str| reject_at(FETCH_DROP, RefusalCode::BadValue, message);
+        Self::parse_snapshot_action(request, FETCH_DROP)
+    }
+
+    pub(super) fn parse_fetch_accept(request: &InvocationRequest) -> Result<Self, DomainResult> {
+        Self::parse_snapshot_action(request, FETCH_ACCEPT)
+    }
+
+    fn parse_snapshot_action(
+        request: &InvocationRequest,
+        operation: &'static str,
+    ) -> Result<Self, DomainResult> {
+        let reject = |message: String| reject_at(operation, RefusalCode::BadValue, message);
         let arguments = request.arguments();
         let args = arguments
             .get("args")
             .and_then(Value::as_object)
-            .ok_or_else(|| reject("run args must be an object"))?;
+            .ok_or_else(|| reject("run args must be an object".into()))?;
         let dry_run = arguments
             .get("dryRun")
             .and_then(Value::as_bool)
             .ok_or_else(|| {
-                reject("fetch.drop requires dryRun: true to preview or dryRun: false to execute")
+                reject(format!(
+                    "{operation} requires dryRun: true to preview or dryRun: false to execute"
+                ))
             })?;
         if args.keys().any(|key| key != "snapshotId") {
-            return Err(reject(
-                "fetch.drop accepts only snapshotId, the identifier from the answer of fetch",
-            ));
+            return Err(reject(format!(
+                "{operation} accepts only snapshotId, the identifier from the answer of fetch"
+            )));
         }
         let id = args
             .get("snapshotId")
             .and_then(Value::as_str)
             .filter(|id| valid_snapshot_id(id))
             .ok_or_else(|| {
-                reject("fetch.drop snapshotId must be the 32 lowercase hexadecimal digits that fetch returned")
+                reject(format!("{operation} snapshotId must be the 32 lowercase hexadecimal digits that fetch returned"))
             })?
             .to_string();
         let context = discover_context(request).map_err(|mut refusal| {
-            refusal.at = Some(FETCH_DROP.to_string());
+            refusal.at = Some(operation.to_string());
             refusal
         })?;
         Ok(Self {
@@ -217,7 +234,8 @@ impl PreparedSourceExport {
             context,
             reexport: None,
             fetch: true,
-            drop: Some(id),
+            drop: (operation == FETCH_DROP).then(|| id.clone()),
+            accept: (operation == FETCH_ACCEPT).then_some(id),
             call: request.arguments().clone(),
         })
     }
@@ -269,6 +287,23 @@ pub(super) fn drop_snapshot(
         Ok(owned) => owned.flatten(),
         Err(error) => return storage_refusal(FETCH_DROP, error),
     };
+    if let (Some(storage), Some(DropTarget::Ready(owned))) = (&storage, &owned) {
+        match storage.retained_as_base(owned) {
+            Ok(true) => {
+                let mut result = DomainResult::success(
+                    "fetch.drop retained the current accepted comparison base",
+                );
+                result.data = Some(json!({
+                    "op": FETCH_DROP, "dryRun": prepared.dry_run, "snapshotId": id,
+                    "snapshot": snapshot, "removed": false, "retainedAsBase": true,
+                    "plan": {"snapshotId": id, "snapshot": snapshot, "exists": true},
+                }));
+                return result;
+            }
+            Ok(false) => {}
+            Err(error) => return storage_refusal(FETCH_DROP, error),
+        }
+    }
     if prepared.dry_run {
         let exists = matches!(&owned, Some(DropTarget::Ready(_)));
         let mut result = DomainResult::success(match &owned {
@@ -385,7 +420,9 @@ pub(super) fn execute(
 ) -> DomainResult {
     let tool = match resolve_bundled_runner(&prepared.context.cwd) {
         Ok(resolved) => resolved.tool,
-        Err(absence) => return missing_runner_rejection(Some(FETCH.to_string()), absence),
+        Err(absence) => {
+            return missing_runner_rejection(Some(prepared.operation().to_string()), absence)
+        }
     };
     execute_with_tool(prepared, runner, cancellation, &tool)
 }
@@ -396,6 +433,9 @@ pub(super) fn execute_with_tool(
     cancellation: CancellationToken,
     tool: &BundledTool,
 ) -> DomainResult {
+    if let Some(id) = &prepared.accept {
+        return merge::execute_with_tool(prepared, id, runner, &cancellation, tool);
+    }
     if cancellation.is_cancelled() {
         return reject_fetch(RefusalCode::Cancelled, "fetch cancelled before preparation");
     }
@@ -474,7 +514,7 @@ pub(super) fn execute_with_tool(
             return finish_failed_fetch(result, &storage, &id, &stage, None, warnings, &root);
         }
     };
-    let envelope = match exchange(
+    let (envelope, receipt) = match exchange(
         prepared,
         &root,
         &source_set,
@@ -489,6 +529,50 @@ pub(super) fn execute_with_tool(
             return finish_failed_fetch(result, &storage, &id, &stage, None, warnings, &root);
         }
     };
+    let metadata = if let Some(runner) = receipt {
+        let current_inputs = capture_inputs(prepared);
+        if !current_inputs.is_ok_and(|current| current == inputs) {
+            let failure = reject_fetch(
+                RefusalCode::ConcurrentChange,
+                "the project recipe changed during the snapshot export; fetch again",
+            );
+            return finish_failed_fetch(failure, &storage, &id, &stage, None, warnings, &root);
+        }
+        let metadata = merge::fingerprint(&stage, &cancellation).and_then(|fingerprint| {
+            let snapshot = merge::MergeSnapshot {
+                stage_identity: stage.identity().stable_bytes(),
+                fingerprint,
+                binding: merge::Binding::new(
+                    prepared,
+                    &inputs,
+                    &source_set,
+                    relative(&directory, &root),
+                ),
+                runner,
+            };
+            storage.remember_merge(&id, &stage, &snapshot)?;
+            Ok(snapshot)
+        });
+        match metadata {
+            Ok(metadata) => Some(metadata),
+            Err(error) => {
+                let result = if cancellation.is_cancelled() {
+                    reject_fetch(
+                        RefusalCode::Cancelled,
+                        "fetch was cancelled while verifying the snapshot",
+                    )
+                } else {
+                    storage_refusal(FETCH, error)
+                };
+                return finish_failed_fetch(result, &storage, &id, &stage, None, warnings, &root);
+            }
+        }
+    } else {
+        None
+    };
+    let base = metadata
+        .as_ref()
+        .and_then(|snapshot| merge::comparison_base(&storage, snapshot, &root, &cancellation));
     let Some(remembered) =
         cancellation.publish_snapshot_with_gate(|| storage.remember(&id, &stage, &preparing))
     else {
@@ -531,7 +615,7 @@ pub(super) fn execute_with_tool(
     let mut result = DomainResult::success(format!(
         "fetch exported source set `{source_set}` of the infobase into {snapshot}; the sources, the runner's memory and the infobase are unchanged"
     ));
-    result.data = Some(json!({
+    let mut data = json!({
         "op": FETCH,
         "dryRun": false,
         "snapshotId": id,
@@ -541,9 +625,16 @@ pub(super) fn execute_with_tool(
         "target": relative(&directory, &root),
         "performedMode": ExportMode::Full.public_name(),
         "sourceFingerprint": fingerprint,
-        "generation": Value::Null,
-        "generationReason": "the pinned v8-runner does not report the infobase generation of a snapshot",
-    }));
+        "generation": metadata.as_ref().map(|snapshot| &snapshot.runner.generation),
+    });
+    if let Some(base) = base {
+        data["baseSnapshot"] = json!(base);
+    }
+    if metadata.is_none() {
+        data["generationReason"] =
+            json!("v8-runner did not confirm the infobase generation of the snapshot");
+    }
+    result.data = Some(data);
     result
         .changed
         .push(json!({"path": snapshot, "kind": "created"}));
@@ -638,7 +729,7 @@ fn exchange(
     runner: &dyn ProcessRunner,
     cancellation: &CancellationToken,
     tool: &BundledTool,
-) -> Result<Value, DomainResult> {
+) -> Result<(Value, Option<merge::RunnerBaseline>), DomainResult> {
     stage
         .validate_named_identity()
         .map_err(|error| storage_refusal(FETCH, error))?;
@@ -653,6 +744,9 @@ fn exchange(
     ];
     if let Some(extension) = &prepared.arguments.extension {
         args.extend(["--extension".to_string(), extension.clone()]);
+    }
+    if merge::supports_preparation(root, runner, cancellation, tool) {
+        args.extend(merge::preparation_flags());
     }
     let command = ProcessCommand {
         program: tool.program.clone(),
@@ -669,6 +763,7 @@ fn exchange(
     let mut problem: Option<DomainResult> = None;
     let mut terminal: Option<(Publication, Memory, Value)> = None;
     let mut ready = false;
+    let mut receipt = None;
     let output = runner.run_controlled_streaming_staged(
         &command,
         RUNNER_OUTPUT_LIMIT,
@@ -709,6 +804,7 @@ fn exchange(
                     source_set: reported_set,
                     target_path,
                     stage_path,
+                    merge_baseline,
                     ..
                 } if phase == Phase::Ready => {
                     phase = Phase::Terminal;
@@ -720,11 +816,13 @@ fn exchange(
                         || reported_set != source_set
                         || !same_path(&target_path, directory)
                         || !same_path(&stage_path, stage.path())
+                        || merge_baseline.as_ref().is_some_and(|baseline| !baseline.is_valid())
                     {
                         problem = Some(invalid(
                             "v8-runner prepared a different operation, mode, extension, source set, target or stage",
                         ));
                     }
+                    receipt = merge_baseline;
                     // Публикации нет ни в каком случае: снимок — сама стадия.
                     reply(&nonce, "ready", "rejected")
                 }
@@ -828,7 +926,7 @@ fn exchange(
     {
         return Err(invalid("v8-runner prepared an empty fetch snapshot"));
     }
-    Ok(envelope)
+    Ok((envelope, receipt))
 }
 
 /// Раннер может перенести старую опись из исходников в стадию.
@@ -928,7 +1026,7 @@ fn prune_snapshots(
     remove: impl Fn(&storage::OwnedSnapshot) -> Result<bool, CleanupFailure>,
 ) -> Result<Vec<Value>, DomainResult> {
     let mut existing: Vec<_> = storage
-        .owned_snapshots()
+        .prunable_snapshots()
         .map_err(|error| storage_refusal(FETCH, error))?
         .into_iter()
         .map(|snapshot| (snapshot.modified(), snapshot))
@@ -957,7 +1055,7 @@ fn prune_snapshots(
         // Retirement can fail before revoking the old ready record. If it
         // succeeded, a residual tree remains removable by fetch.drop and no
         // longer occupies a ready slot.
-        let refusal = match storage.owned_snapshots() {
+        let refusal = match storage.prunable_snapshots() {
             Ok(ready) if ready.len() <= keep => None,
             Ok(_) => Some(reject_fetch(RefusalCode::InvalidState,
                 "fetch could not retire an older ready snapshot; close the preview and retry fetch.drop")),

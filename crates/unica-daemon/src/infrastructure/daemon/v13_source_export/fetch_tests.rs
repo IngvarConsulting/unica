@@ -9,6 +9,7 @@ const NONCE: &str = "fb9824d8-6c77-4219-86b6-54f935a83c8e";
 enum Script {
     /// Выгрузка готова, отказ от публикации принят.
     Exports,
+    PreparesMerge,
     DumpInfoIsDirectory,
     OnlyDumpInfo,
     CancelsAfterReady,
@@ -30,6 +31,8 @@ struct ProtocolRunner {
     replies: Mutex<Vec<Value>>,
     args: Mutex<Vec<String>>,
     preview: Option<Value>,
+    merges: Mutex<Vec<Value>>,
+    merge_base_generation: Option<String>,
 }
 
 impl ProtocolRunner {
@@ -39,6 +42,8 @@ impl ProtocolRunner {
             replies: Mutex::new(Vec::new()),
             args: Mutex::new(Vec::new()),
             preview: None,
+            merges: Mutex::new(Vec::new()),
+            merge_base_generation: None,
         }
     }
 
@@ -69,11 +74,32 @@ fn refused(message: &str) -> Value {
 impl ProcessRunner for ProtocolRunner {
     fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
         *self.args.lock().unwrap() = command.args.clone();
-        let envelope = self.preview.clone().ok_or("unexpected plain call")?;
+        let stdout = if command.args.iter().any(|arg| arg == "--help") {
+            if self.script != Script::PreparesMerge {
+                return Err("runner has no merge support".into());
+            }
+            "    --prepare-merge-baseline  Prepare a candidate".to_string()
+        } else if command
+            .args
+            .iter()
+            .any(|arg| arg == "--accept-merge-baseline" || arg == "--check-merge-baseline")
+        {
+            self.merges
+                .lock()
+                .unwrap()
+                .pop()
+                .ok_or("unexpected merge call")?
+                .to_string()
+        } else {
+            self.preview
+                .clone()
+                .ok_or("unexpected plain call")?
+                .to_string()
+        };
         Ok(ProcessOutput {
             status_success: true,
             status: "exit status: 0".into(),
-            stdout: envelope.to_string(),
+            stdout,
             stderr: String::new(),
             timed_out: false,
             cancelled: false,
@@ -155,13 +181,22 @@ impl ProcessRunner for ProtocolRunner {
             } else {
                 fs::write(dump_info, "<versions/>").unwrap();
             }
-            answer(frame(json!({
+            let mut ready = json!({
                 "phase": "ready", "version": 1, "nonce": NONCE, "command": "pull",
                 "requested_mode": "FULL", "mode": "FULL", "extension": extension,
                 "mode_reason": null, "provider_dispatched": true, "source_set": set,
                 "target_path": target, "stage_path": stage, "snapshot": "prepared",
                 "snapshot_warning": null,
-            })));
+            });
+            if self.script == Script::PreparesMerge {
+                ready["merge_baseline"] = json!({
+                    "id": NONCE,
+                    "generation": "sha256:g1",
+                    "provider": "designer",
+                    "base_generation": self.merge_base_generation,
+                });
+            }
+            answer(frame(ready));
             if self.script == Script::ChecksSnapshotLock {
                 verify_ready_snapshot_cannot_be_dropped(&command.cwd, &stage);
             }
@@ -1253,4 +1288,146 @@ fn fetch_accepts_only_its_closed_arguments() {
         refusal.summary.contains("sourceSet and extension"),
         "{refusal:?}"
     );
+}
+
+#[test]
+fn fetch_accept_is_dispatched_as_a_source_export() {
+    let workspace = workspace();
+    let request = InvocationRequest::new(
+        ToolIdentity::Run,
+        json!({"op": "fetch.accept", "args": {"snapshotId": NONCE.replace('-', "")}, "dryRun": false}),
+        workspace.path().display().to_string(),
+        7_000,
+    )
+    .unwrap();
+    assert!(matches!(
+        crate::infrastructure::daemon::v13_source_export::prepare(&request),
+        crate::infrastructure::daemon::v13_source_export::Preparation::Ready(_)
+    ));
+}
+
+fn accept_request(root: &Path, id: &str, dry_run: bool) -> InvocationRequest {
+    InvocationRequest::new(
+        ToolIdentity::Run,
+        json!({"op": "fetch.accept", "args": {"snapshotId": id}, "dryRun": dry_run}),
+        root.display().to_string(),
+        7_000,
+    )
+    .unwrap()
+}
+
+fn accept(root: &Path, id: &str, dry_run: bool, runner: &ProtocolRunner) -> DomainResult {
+    use crate::infrastructure::daemon::v13_source_export::{prepare, Preparation};
+    let Preparation::Ready(prepared) = prepare(&accept_request(root, id, dry_run)) else {
+        panic!("accept request was not dispatched");
+    };
+    run(root, &prepared, runner)
+}
+
+fn prepared_merge(root: &Path, runner: &ProtocolRunner) -> Value {
+    let result = run(root, &prepared(root, false), runner);
+    assert!(result.ok, "{result:?}");
+    let data = result.data.unwrap();
+    assert_eq!(data["generation"], "sha256:g1");
+    data
+}
+
+fn runner_merge_reply(baseline: &str, generation: &str) -> Value {
+    json!({"command": "pull", "ok": true, "data": {
+        "source_set": "main",
+        "generation": generation,
+        "provider": "designer",
+        "baseline": baseline,
+    }})
+}
+
+/// rule: INV.RUNTIME.FETCH-LEAVES-THE-WORKING-COPY
+#[test]
+fn an_accepted_merge_keeps_the_raw_base_and_leaves_locally_merged_files() {
+    let workspace = workspace();
+    let root = workspace.path();
+    let runner = ProtocolRunner::new(Script::PreparesMerge);
+    let received = prepared_merge(root, &runner);
+    assert!(received["baseSnapshot"].is_null());
+    let id = received["snapshotId"].as_str().unwrap();
+    fs::write(root.join("main/Configuration.xml"), "<merged/>").unwrap();
+    let local = tree(&root.join("main"));
+
+    runner
+        .merges
+        .lock()
+        .unwrap()
+        .push(runner_merge_reply("ready", "sha256:g1"));
+    let checked = accept(root, id, true, &runner);
+    assert!(checked.ok, "{checked:?}");
+    assert_eq!(checked.data.unwrap()["ready"], true);
+
+    runner
+        .merges
+        .lock()
+        .unwrap()
+        .push(runner_merge_reply("accepted", "sha256:g1"));
+    let accepted = accept(root, id, false, &runner);
+    assert!(accepted.ok, "{accepted:?}");
+    assert_eq!(accepted.data.unwrap()["accepted"], true);
+    assert_eq!(tree(&root.join("main")), local);
+
+    let mut runner = ProtocolRunner::new(Script::PreparesMerge);
+    runner.merge_base_generation = Some("sha256:g1".into());
+    let next = prepared_merge(root, &runner);
+    assert_eq!(next["baseSnapshot"], received["snapshot"]);
+    let drop = PreparedSourceExport::parse_fetch_drop(&drop_request(
+        root,
+        json!({"snapshotId": id}),
+        false,
+    ))
+    .unwrap();
+    let dropped = drop_snapshot(&drop, id, CancellationToken::new());
+    assert_eq!(dropped.data.unwrap()["removed"], false);
+    assert_eq!(
+        fs::read_to_string(
+            root.join(received["snapshot"].as_str().unwrap())
+                .join("Configuration.xml")
+        )
+        .unwrap(),
+        "<base/>"
+    );
+
+    runner.merge_base_generation = Some("sha256:g2".into());
+    let next = prepared_merge(root, &runner);
+    assert!(next["baseSnapshot"].is_null());
+}
+
+/// rule: INV.RUNTIME.FETCH-LEAVES-THE-WORKING-COPY
+#[test]
+fn fetch_accept_rejects_unowned_modified_or_unconfirmed_snapshots() {
+    let workspace = workspace();
+    let root = workspace.path();
+    let runner = ProtocolRunner::new(Script::PreparesMerge);
+    let received = prepared_merge(root, &runner);
+    let id = received["snapshotId"].as_str().unwrap();
+
+    let unknown = accept(root, &"a".repeat(32), false, &runner);
+    assert!(!unknown.ok, "{unknown:?}");
+
+    runner
+        .merges
+        .lock()
+        .unwrap()
+        .push(runner_merge_reply("accepted", "unexpected"));
+    let unconfirmed = accept(root, id, false, &runner);
+    assert!(!unconfirmed.ok, "{unconfirmed:?}");
+
+    let raw = root
+        .join(received["snapshot"].as_str().unwrap())
+        .join("Configuration.xml");
+    fs::write(raw, "<edited snapshot/>").unwrap();
+    runner
+        .merges
+        .lock()
+        .unwrap()
+        .push(runner_merge_reply("accepted", "sha256:g1"));
+    let modified = accept(root, id, false, &runner);
+    assert!(!modified.ok, "{modified:?}");
+    assert_eq!(runner.merges.lock().unwrap().len(), 1);
 }

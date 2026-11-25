@@ -130,6 +130,7 @@ pub(super) fn run_dictionary_result() -> DomainResult {
                     | RunIntent::SourceReexport
                     | RunIntent::SourceFetch
                     | RunIntent::SourceFetchDrop
+                    | RunIntent::SourceFetchAccept
                     | RunIntent::ArtifactBuild
                     | RunIntent::CfExport
                     | RunIntent::CfImport

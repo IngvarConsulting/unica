@@ -59,6 +59,8 @@ pub(super) const REEXPORT: &str = "source.reexport";
 pub(super) const FETCH: &str = "fetch";
 /// Удаление одного снимка `fetch` по его идентификатору.
 pub(super) const FETCH_DROP: &str = "fetch.drop";
+/// Adopt the provider-attested raw snapshot as the runner exchange base.
+pub(super) const FETCH_ACCEPT: &str = "fetch.accept";
 /// Имя команды раннера и в командной строке, и в конверте: с 0.12 раннер
 /// называет её словом словаря.
 const RUNNER_COMMAND: &str = "pull";
@@ -112,6 +114,8 @@ pub(super) struct PreparedSourceExport {
     fetch: bool,
     /// `fetch.drop`: the snapshot to delete; no runner is started.
     drop: Option<String>,
+    /// `fetch.accept`: the snapshot to check or adopt as the exchange base.
+    accept: Option<String>,
     /// The call as made: the question about the infobase of another copy
     /// repeats it.
     call: Map<String, Value>,
@@ -132,6 +136,7 @@ pub(super) fn prepare(request: &InvocationRequest) -> Preparation {
         Some(REEXPORT) => PreparedSourceExport::parse_reexport(request),
         Some(FETCH) => PreparedSourceExport::parse_fetch(request),
         Some(FETCH_DROP) => PreparedSourceExport::parse_fetch_drop(request),
+        Some(FETCH_ACCEPT) => PreparedSourceExport::parse_fetch_accept(request),
         _ => return Preparation::NotApplicable,
     };
     match parsed {
@@ -288,6 +293,7 @@ impl PreparedSourceExport {
             reexport: None,
             fetch: false,
             drop: None,
+            accept: None,
             call: request.arguments().clone(),
         })
     }
@@ -380,6 +386,7 @@ impl PreparedSourceExport {
             reexport: Some(format),
             fetch: false,
             drop: None,
+            accept: None,
             call: request.arguments().clone(),
         })
     }
@@ -400,6 +407,8 @@ impl PreparedSourceExport {
     fn operation(&self) -> &'static str {
         if self.drop.is_some() {
             FETCH_DROP
+        } else if self.accept.is_some() {
+            FETCH_ACCEPT
         } else if self.fetch {
             FETCH
         } else if self.reexport.is_some() {
@@ -420,13 +429,16 @@ impl PreparedSourceExport {
             return fetch::drop_snapshot(self, id, cancellation);
         }
         if self.fetch {
-            if let Err(result) = fetch::validate_snapshot_storage(&self.context.workspace_root) {
+            let operation = self.operation();
+            if let Err(mut result) = fetch::validate_snapshot_storage(&self.context.workspace_root)
+            {
+                result.at = Some(operation.to_string());
                 return result;
             }
             return super::runner::with_bundled_runner(
                 &self.context.workspace_root,
                 &self.context.cwd,
-                FETCH,
+                operation,
                 cancellation,
                 |runner, cancellation| fetch::execute(self, runner, cancellation),
             );
@@ -1924,6 +1936,7 @@ mod medium_tests {
             reexport: None,
             fetch: false,
             drop: None,
+            accept: None,
             call: super::super::v13_infobase_another_copy::with_consent(&Map::new()),
         }
     }
