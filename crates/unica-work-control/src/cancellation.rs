@@ -419,6 +419,39 @@ mod tests {
         assert!(released.protected_process_started());
     }
 
+    /// rule: INV.RUNTIME.FETCH-LEAVES-THE-WORKING-COPY
+    #[test]
+    fn only_a_committed_snapshot_survives_late_cancellation() {
+        use super::FactualOutcomeAuthority;
+        let token = CancellationToken::new();
+        assert_eq!(
+            token.publish_snapshot_with_gate(|| Err("cannot register")),
+            Some(Err("cannot register"))
+        );
+        assert_eq!(
+            token.factual_outcome_authority(),
+            FactualOutcomeAuthority::Cancellable
+        );
+        let invocation = token.clone();
+        assert_eq!(
+            invocation.publish_snapshot_with_gate(|| Ok::<_, ()>(())),
+            Some(Ok(()))
+        );
+        token.cancel();
+        assert!(invocation.is_cancelled());
+        assert!(!token.protected_process_started());
+        assert_eq!(
+            token.factual_outcome_authority(),
+            FactualOutcomeAuthority::PublishedWorkspaceSnapshot
+        );
+        assert_eq!(
+            invocation.publish_snapshot_with_gate(|| -> Result<(), ()> {
+                panic!("cancelled publication")
+            }),
+            None
+        );
+    }
+
     #[test]
     fn committed_apply_fact_survives_cancel_without_protecting_a_process_or_child() {
         use super::FactualOutcomeAuthority;
