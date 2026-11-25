@@ -2,6 +2,10 @@ use std::path::{Path, PathBuf};
 use unica_address::source_target::MetadataAddress;
 use unica_source_contract::SourceSetKind;
 
+/// Интерфейс обычного приложения имеет отдельный маршрут чтения.
+pub const ORDINARY_INTERFACE_XML_TAG: &str = "Interface";
+pub const ORDINARY_INTERFACE_DIRECTORY: &str = "Interfaces";
+
 /// Раскладки видов объявлены в `unica_address::kinds`, по файлу на вид.
 pub use unica_address::kinds::MetadataLayout;
 
@@ -54,6 +58,62 @@ pub fn root_child_objects_order(tag: &str) -> Option<usize> {
 /// `cfe.borrow`, which is wider than the typed [`MetadataKind`] surface.
 pub fn metadata_kind_requires_child_objects_8_3_27(tag: &str) -> Option<bool> {
     metadata_kind(tag).map(|kind| kind.requires_child_objects)
+}
+
+/// Namespace declarations of a `Form.xml` root in `format_version`.
+pub fn form_root_namespaces(format_version: &str) -> String {
+    format_namespace_declarations(FORM_ROOT_NAMESPACES, format_version)
+}
+
+/// Namespace declarations of a `Form.xml` root as 8.3.27 exports them.
+const FORM_ROOT_NAMESPACES: &str = concat!(
+    "xmlns=\"http://v8.1c.ru/8.3/xcf/logform\"",
+    " xmlns:app=\"http://v8.1c.ru/8.2/managed-application/core\"",
+    " xmlns:cfg=\"http://v8.1c.ru/8.1/data/enterprise/current-config\"",
+    " xmlns:dcscor=\"http://v8.1c.ru/8.1/data-composition-system/core\"",
+    " xmlns:dcssch=\"http://v8.1c.ru/8.1/data-composition-system/schema\"",
+    " xmlns:dcsset=\"http://v8.1c.ru/8.1/data-composition-system/settings\"",
+    " xmlns:ent=\"http://v8.1c.ru/8.1/data/enterprise\"",
+    " xmlns:lf=\"http://v8.1c.ru/8.2/managed-application/logform\"",
+    " xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\"",
+    " xmlns:sys=\"http://v8.1c.ru/8.1/data/ui/fonts/system\"",
+    " xmlns:v8=\"http://v8.1c.ru/8.1/data/core\"",
+    " xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\"",
+    " xmlns:web=\"http://v8.1c.ru/8.1/data/ui/colors/web\"",
+    " xmlns:win=\"http://v8.1c.ru/8.1/data/ui/colors/windows\"",
+    " xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\"",
+    " xmlns:xs=\"http://www.w3.org/2001/XMLSchema\"",
+    " xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\""
+);
+
+/// The name of the automatically generated command bar follows the script variant.
+pub fn form_command_bar_name(variant: unica_source_contract::ScriptVariant) -> &'static str {
+    match variant {
+        unica_source_contract::ScriptVariant::Russian => "ФормаКоманднаяПанель",
+        unica_source_contract::ScriptVariant::English => "FormCommandBar",
+    }
+}
+
+/// Empty managed form with no main attribute, elements or code.
+pub fn empty_managed_form_xml(
+    format_version: &str,
+    variant: unica_source_contract::ScriptVariant,
+) -> String {
+    let namespaces = form_root_namespaces(format_version);
+    let version = unica_xml_format::text::escape_xml(format_version);
+    let command_bar = form_command_bar_name(variant);
+    format!(
+        concat!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n",
+            "<Form {namespaces} version=\"{version}\">\r\n",
+            "\t<AutoCommandBar name=\"{command_bar}\" id=\"-1\"/>\r\n",
+            "\t<Attributes/>\r\n",
+            "</Form>"
+        ),
+        namespaces = namespaces,
+        version = version,
+        command_bar = command_bar,
+    )
 }
 
 pub fn attached_resource_relative(

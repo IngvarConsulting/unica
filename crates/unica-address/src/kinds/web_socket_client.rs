@@ -20,5 +20,17 @@ pub(super) const KIND: KindDeclaration = KindDeclaration {
         ..LayoutDeclaration::EMPTY
     }),
     generated_types: Some(&[]),
+    // Свойства нового объекта — как их пишет Конфигуратор 8.3.27 по «Добавить».
+    creation: Some(CreationDeclaration::properties(&[
+        "<Predefined>false</Predefined>",
+        "<AutoConnect>false</AutoConnect>",
+        "<ServerURL/>",
+        "<User/>",
+        "<Password/>",
+        "<Headers xsi:type=\"xr:ValueList\"/>",
+        "<UseOSProxy>false</UseOSProxy>",
+        "<UseOSAuthentication>false</UseOSAuthentication>",
+        "<Timeout>30</Timeout>",
+    ])),
     ..KindDeclaration::new("WebSocketClient")
 };

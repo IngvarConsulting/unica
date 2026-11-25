@@ -434,6 +434,9 @@ def apply_operation_cases(scenarios, registry) -> dict[tuple[str, str], list[str
                     # not known statically; the step address names the target.
                     args = operation.get("args")
                     target = (args.get("at") if isinstance(args, dict) else None) or step["args"]["at"]
+                    if name == "field.add":
+                        external = target.split(":", 1)[-1].startswith("ExternalDataSource.")
+                        candidates = [row for row in candidates if (row[0] == "Metadata") == external]
                     on_form = names_form(target)
                     candidates = [row for row in candidates if (
                         row[1] == "Form" and on_form is True

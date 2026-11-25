@@ -34,13 +34,13 @@ fn metadata_kind_branch_lists_registered_objects_with_canonical_addresses() {
                 "at": "main:Catalog.Items",
                 "kind": "Catalog",
                 "title": "Items",
-                "props": {"children": 5}
+                "props": {"inExchangePlan": false, "children": 5}
             },
             {
                 "at": "main:Catalog.Владельцы",
                 "kind": "Catalog",
                 "title": "Владельцы",
-                "props": {"synonym": "ru = 'Владельцы номенклатуры'", "children": 0}
+                "props": {"inExchangePlan": false, "synonym": "ru = 'Владельцы номенклатуры'", "children": 0}
             }
         ]),
     );

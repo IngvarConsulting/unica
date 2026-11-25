@@ -6,6 +6,9 @@
 # линии закрепляется появлением файла, а не правкой этой строки.
 crates/unica-metadata/src/platform-event-catalog-*.json text eol=lf
 
+# Preserve upstream license bytes for published asset checksums.
+plugins/unica/third-party/licenses/bsl-analyzer/** -text
+
 # Platform name-validation sources and logs retain their original bytes.
 tests/fixtures/platform_8_3_27/tabular_standard_names/cases/*/source/** -text -whitespace
 tests/fixtures/platform_8_3_27/tabular_standard_names/cases/*/stdout.txt -text -whitespace
@@ -72,6 +75,7 @@ tests/fixtures/acceptance/workspace-whole-template-removal/** -text -whitespace
 # The empty extension over it follows the cfe-init skill: BOM, CRLF, no role.
 /tests/fixtures/formats/platform_xml/2.20/empty_extension/** -text whitespace=cr-at-eol
 /tests/fixtures/formats/platform_xml/2.20/all_kinds/** -text whitespace=cr-at-eol
+/tests/fixtures/formats/platform_xml/2.20/recalculation/src/** -text whitespace=cr-at-eol
 # Metadata objects written once by the retained 8.3.27 writer for meta-info tests.
 /tests/fixtures/formats/platform_xml/2.20/meta_info_surface/** -text whitespace=cr-at-eol
 # External EPF/ERF hierarchical dumps keep BOM, CRLF, LF inside query text,

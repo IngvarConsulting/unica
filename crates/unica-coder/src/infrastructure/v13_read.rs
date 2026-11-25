@@ -1,5 +1,5 @@
 use crate::application::v13::resolve::{ModuleLine, ResolvedLines};
-use crate::application::v13::source_text::{admit_text, ModuleText};
+use crate::application::v13::source_text::{admit_text, ModuleText, ModuleTextObservation};
 use unica_bsl::projection::{
     CommonModuleProperties, EventProjection, MethodProjection, ModuleProjectionSet,
     RegionProjection, VariableProjection,
@@ -114,6 +114,8 @@ pub struct LogicalViewReadAuthority<'a> {
     deadline: ProviderDeadline,
     module_projections: Mutex<BTreeMap<ModuleProjectionCacheKey, Arc<ModuleProjectionSet>>>,
     configuration_payloads: Mutex<BTreeMap<RevisionCacheKey, Arc<Value>>>,
+    exchange_memberships:
+        Mutex<BTreeMap<RevisionCacheKey, Arc<exchange_membership::ExchangeMembership>>>,
     registered_owner_names: Mutex<BTreeMap<RevisionCacheKey, Arc<RegisteredOwnerNames>>>,
     verified_owners: Mutex<BTreeSet<OwnerProofCacheKey>>,
     owner_evidence: Mutex<BTreeMap<OwnerProofCacheKey, Arc<PlatformXmlSourceSetOwnerEvidence>>>,
@@ -161,14 +163,18 @@ struct OwnerEdgeCacheKey {
     child: String,
 }
 
+mod body_syntax_read;
 mod diagnostic_scope;
 mod editability_view;
+mod exchange_membership;
+pub(crate) use exchange_membership::ExchangeMembership;
 mod form_payload;
 mod http_service_handler;
 mod method_doc;
 mod module_body_read;
 mod module_variables;
 mod notification_bindings;
+mod ordinary_interface;
 mod scheduled_job_handler;
 mod typed_payload_read;
 mod validation_input;
@@ -247,6 +253,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
             deadline,
             module_projections: Mutex::new(BTreeMap::new()),
             configuration_payloads: Mutex::new(BTreeMap::new()),
+            exchange_memberships: Mutex::new(BTreeMap::new()),
             registered_owner_names: Mutex::new(BTreeMap::new()),
             verified_owners: Mutex::new(BTreeSet::new()),
             owner_evidence: Mutex::new(BTreeMap::new()),
@@ -285,6 +292,40 @@ impl<'a> LogicalViewReadAuthority<'a> {
             ));
         }
         Ok(())
+    }
+
+    /// Prove exactly the requested descriptor and its registered owners.
+    pub fn resolve_nested_subsystem_path(
+        &self,
+        at: &QualifiedAddress,
+    ) -> Result<String, ViewError> {
+        let snapshot = self.snapshot(at)?;
+        let route = route_logical_address(at, self.profile)
+            .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
+        let target = route
+            .reader_metadata_path()
+            .filter(|_| {
+                route.reader() == LogicalReader::Subsystem && !route.nested_subsystems().is_empty()
+            })
+            .ok_or_else(|| {
+                ViewError::new(
+                    RefusalCode::NotFound,
+                    "address has no nested subsystem descriptor",
+                )
+            })?;
+        self.verify_registered_owner(target, &snapshot)?;
+        let path = self.read.registered_nested_subsystem_export_path(
+            target,
+            route.nested_subsystems(),
+            &mut || self.read_checkpoint(),
+        )?;
+        if self.exact_revision()? != snapshot.revision {
+            return Err(ViewError::new(
+                RefusalCode::StaleCursor,
+                "source revision changed during source location resolution",
+            ));
+        }
+        Ok(path)
     }
 
     /// Resolve can reuse the typed identity locator only after reading the
@@ -408,6 +449,15 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         at: &QualifiedAddress,
         admitted: &ViewSourceSnapshot,
     ) -> Result<Option<ModuleText>, ViewError> {
+        self.read_module_body(at, admitted)
+            .map(|observation| observation.map(|observation| observation.text))
+    }
+
+    fn read_module_body(
+        &self,
+        at: &QualifiedAddress,
+        admitted: &ViewSourceSnapshot,
+    ) -> Result<Option<ModuleTextObservation>, ViewError> {
         let route = route_logical_address(at, self.profile)
             .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
         if route.reader() != LogicalReader::Module {
@@ -432,15 +482,13 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         }
         self.verify_module_owner(&module_at, capability, admitted)?;
         let target = module_source_address(&module_at, capability)?;
-        let text = match at.line_range() {
-            Some(range) => self
-                .read
-                .module_text_range(&target, range, || self.read_checkpoint())?,
-            None => self
-                .read
-                .module_text_within_limit(&target, || self.read_checkpoint())?,
-        };
-        Ok(Some(text))
+        let (text, full) =
+            self.read
+                .module_text_with_syntax_input(&target, at.line_range(), || {
+                    self.read_checkpoint()
+                })?;
+        self.body_syntax_observation(&module_at, text, full)
+            .map(Some)
     }
 
     fn snapshot(&self, at: &QualifiedAddress) -> Result<ViewSourceSnapshot, ViewError> {
@@ -504,6 +552,16 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         }
         let route = route_logical_address(at, self.profile)
             .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
+        if let [interface] = at.segments() {
+            if interface.kind() == NodeKind::OrdinaryInterface {
+                return Ok(interface.name().map(|name| {
+                    format!(
+                        "{}/{name}.xml",
+                        unica_source_designer::layout::ORDINARY_INTERFACE_DIRECTORY
+                    )
+                }));
+            }
+        }
         if route.reader() == LogicalReader::Configuration {
             return Ok(matches!(
                 self.read.source_set_kind(),
@@ -593,6 +651,18 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         }
         let route = route_logical_address(at, self.profile)
             .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
+        if let [interface] = at.segments() {
+            if interface.kind() == NodeKind::OrdinaryInterface {
+                let view = self.ordinary_interface_view(at, interface.name(), admitted)?;
+                if admitted.revision != self.exact_revision()? {
+                    return Err(ViewError::new(
+                        RefusalCode::StaleCursor,
+                        "source revision changed during ordinary application interface read",
+                    ));
+                }
+                return Ok(view);
+            }
+        }
         let inherited = self.inherited_route_part(&route, admitted)?;
         let projected = if let Some((borrowing, resource)) = &inherited {
             project_inherited_part(&route, borrowing, resource)?
@@ -630,7 +700,7 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                 .ok_or_else(|| {
                     ViewError::new(RefusalCode::NotFound, "metadata branch kind is absent")
                 })?;
-            if matches!(
+            let (branch, registrations) = if matches!(
                 self.read.source_set_kind(),
                 SourceSetKind::Configuration | SourceSetKind::Extension
             ) && self.read.configuration_xml_requires_streaming()
@@ -658,11 +728,15 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                     names.iter().map(String::as_str),
                     admitted,
                 )?;
-                crate::infrastructure::v13_read_projection::project_registered_metadata_branch_names(
+                let branch = crate::infrastructure::v13_read_projection::project_registered_metadata_branch_names(
                     route.at(),
                     &names,
                     support,
-                )?
+                )?;
+                (
+                    branch,
+                    exchange_membership::ExchangePlanRegistrations::Streamed(index),
+                )
             } else {
                 self.read.stamp_descriptors_by_directory();
                 let payload = self.configuration_payload(admitted)?;
@@ -702,12 +776,18 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                     .filter_map(|item| item.get("name").and_then(Value::as_str));
                 let support =
                     self.member_support(route.at().source_set(), branch_kind, names, admitted)?;
-                crate::infrastructure::v13_read_projection::project_registered_metadata_branch(
-                    route.at(),
-                    payload.as_ref(),
-                    support,
-                )?
-            }
+                let branch =
+                    crate::infrastructure::v13_read_projection::project_registered_metadata_branch(
+                        route.at(),
+                        payload.as_ref(),
+                        support,
+                    )?;
+                (
+                    branch,
+                    exchange_membership::ExchangePlanRegistrations::Bounded(payload),
+                )
+            };
+            self.with_exchange_membership(branch, branch_kind, &registrations, admitted)?
         } else if route.reader() == LogicalReader::Form {
             self.form_view(&route, admitted)?
         } else {

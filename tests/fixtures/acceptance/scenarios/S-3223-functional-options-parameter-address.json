@@ -1,0 +1,47 @@
+{
+  "id": "S-3223-functional-options-parameter-address",
+  "issue": 3223,
+  "area": "Адресация",
+  "task": "Открыть параметр функциональных опций по обоим русским написаниям вида и получить один канонический адрес",
+  "workspace": "tests/fixtures/acceptance/workspace-root-comments",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ПараметрФункциональнойОпции.Probe"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:FunctionalOptionsParameter.Probe"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "FunctionalOptionsParameter"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ПараметрФункциональныхОпций.Probe"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:FunctionalOptionsParameter.Probe"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "FunctionalOptionsParameter"
+        }
+      ]
+    }
+  ]
+}

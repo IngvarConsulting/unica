@@ -285,9 +285,9 @@ checksum = "175812e0be2bccb6abe50bb8d566126198344f707e304f45c648fd8f2cc0365e"
 
 [[package]]
 name = "bytes"
-version = "1.12.1"
+version = "1.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
+checksum = "776dfebd015e2d8732c684a2c71003674ccb49457b539b9e82151ba38e96dd7c"
 
 [[package]]
 name = "cap-fs-ext"
@@ -416,9 +416,9 @@ dependencies = [
 
 [[package]]
 name = "compression-codecs"
-version = "0.4.47"
+version = "0.4.48"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "84f840cff84d10085260e460023934d0af699e71212b09b2a41452e8bd9cda43"
+checksum = "5e41632c2efd201c62f1432f7cbee121b97878eab579da9d85676573d1fd33b9"
 dependencies = [
  "compression-core",
  "flate2",
@@ -676,9 +676,9 @@ checksum = "91622ff5e7162018101f2fea40d6ebf4a78bbe5a49736a2020649edf9693679e"
 
 [[package]]
 name = "email_address"
-version = "0.2.9"
+version = "0.2.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e079f19b08ca6239f47f8ba8509c11cf3ea30095831f7fed61441475edd8c449"
+checksum = "5ab6bbd053d3cdc62ba3de82aae11530a97bbd5b3a572fbdbcd0f0e545e3ff21"
 dependencies = [
  "serde",
 ]
@@ -718,9 +718,9 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
 name = "filetime"
-version = "0.2.29"
+version = "0.2.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5c287a33c7f0a620c38e641e7f60827713987b3c0f26e8ddc9462cc69cf75759"
+checksum = "e1255e7a9f1902190d4c10a75f2f7f495d3d3ce13e9ba26e6c48683a0f4dbed7"
 dependencies = [
  "cfg-if",
  "libc",
@@ -768,9 +768,9 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "form_urlencoded"
-version = "1.2.2"
+version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
+checksum = "afa489199eaffb1211795df1c6236ce1ad0d41a6fa45250add73e3b02420f06e"
 dependencies = [
  "percent-encoding",
 ]
@@ -1392,8 +1392,8 @@ checksum = "20870f649af7073d53e38067b2a84312175d56ea15217e1b15bc83506ec50afb"
 
 [[package]]
 name = "lexer"
-version = "0.4.6"
-source = "git+https://github.com/itrous/bsl-analyzer?rev=0a82ed78e597dc3ffb1bbaebc66a98974a988435#0a82ed78e597dc3ffb1bbaebc66a98974a988435"
+version = "0.4.7"
+source = "git+https://github.com/itrous/bsl-analyzer?rev=c6a79df039efbcc4465ed05539ff136fae9c31db#c6a79df039efbcc4465ed05539ff136fae9c31db"
 dependencies = [
  "logos",
  "smol_str",
@@ -1668,8 +1668,8 @@ dependencies = [
 
 [[package]]
 name = "parser"
-version = "0.4.6"
-source = "git+https://github.com/itrous/bsl-analyzer?rev=0a82ed78e597dc3ffb1bbaebc66a98974a988435#0a82ed78e597dc3ffb1bbaebc66a98974a988435"
+version = "0.4.7"
+source = "git+https://github.com/itrous/bsl-analyzer?rev=c6a79df039efbcc4465ed05539ff136fae9c31db#c6a79df039efbcc4465ed05539ff136fae9c31db"
 dependencies = [
  "lexer",
  "parser-error",
@@ -1681,8 +1681,8 @@ dependencies = [
 
 [[package]]
 name = "parser-error"
-version = "0.4.6"
-source = "git+https://github.com/itrous/bsl-analyzer?rev=0a82ed78e597dc3ffb1bbaebc66a98974a988435#0a82ed78e597dc3ffb1bbaebc66a98974a988435"
+version = "0.4.7"
+source = "git+https://github.com/itrous/bsl-analyzer?rev=c6a79df039efbcc4465ed05539ff136fae9c31db#c6a79df039efbcc4465ed05539ff136fae9c31db"
 dependencies = [
  "lexer",
  "smallvec",
@@ -1713,9 +1713,9 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "pin-project-lite"
-version = "0.2.17"
+version = "0.2.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
+checksum = "c938015719552d665fd0553b90d96cd7ff58e83e4c061ca99e6bb78865a72752"
 
 [[package]]
 name = "potential_utf"
@@ -1838,9 +1838,9 @@ dependencies = [
 
 [[package]]
 name = "regex"
-version = "1.13.1"
+version = "1.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f020237b6c8eed93db2e2cb53c00c60a8e1bc73da7d073199a1180401450218d"
+checksum = "9807af0e638c12e753aa1b4e601791bf2a8f71274023c8bbeec12fc149950857"
 dependencies = [
  "aho-corasick",
  "memchr",
@@ -1850,9 +1850,9 @@ dependencies = [
 
 [[package]]
 name = "regex-automata"
-version = "0.4.18"
+version = "0.4.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ad8553b9b26413251cbf30e620595c7a41b3887f03da04579c0e6b0d6a06b4b2"
+checksum = "41d60ef07df457506a0a1a2073112eb4aae5733dbd2813c3da77d1b0fd441158"
 dependencies = [
  "aho-corasick",
  "memchr",
@@ -1861,9 +1861,9 @@ dependencies = [
 
 [[package]]
 name = "regex-syntax"
-version = "0.8.11"
+version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
+checksum = "d902046e6a28a1e4c3cab97258a0ce11e994903f01c2d97a9447a0b3df85f4f6"
 
 [[package]]
 name = "reqwest"
@@ -2429,8 +2429,8 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "stdx"
-version = "0.4.6"
-source = "git+https://github.com/itrous/bsl-analyzer?rev=0a82ed78e597dc3ffb1bbaebc66a98974a988435#0a82ed78e597dc3ffb1bbaebc66a98974a988435"
+version = "0.4.7"
+source = "git+https://github.com/itrous/bsl-analyzer?rev=c6a79df039efbcc4465ed05539ff136fae9c31db#c6a79df039efbcc4465ed05539ff136fae9c31db"
 dependencies = [
  "crossbeam-channel",
  "crossbeam-utils",
@@ -2502,8 +2502,8 @@ dependencies = [
 
 [[package]]
 name = "syntax"
-version = "0.4.6"
-source = "git+https://github.com/itrous/bsl-analyzer?rev=0a82ed78e597dc3ffb1bbaebc66a98974a988435#0a82ed78e597dc3ffb1bbaebc66a98974a988435"
+version = "0.4.7"
+source = "git+https://github.com/itrous/bsl-analyzer?rev=c6a79df039efbcc4465ed05539ff136fae9c31db#c6a79df039efbcc4465ed05539ff136fae9c31db"
 dependencies = [
  "parser-error",
  "rowan",
@@ -2972,6 +2972,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tar",
+ "tempfile",
  "unica-artifact-delivery",
  "unica-error-reporting",
  "url",
@@ -3500,6 +3501,7 @@ dependencies = [
 name = "unica-metadata"
 version = "0.17.0"
 dependencies = [
+ "fluent-uri",
  "jsonschema",
  "serde",
  "serde_json",
@@ -3859,9 +3861,9 @@ checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
 name = "url"
-version = "2.5.8"
+version = "2.5.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff67a8a4397373c3ef660812acab3268222035010ab8680ec4215f38ba3d0eed"
+checksum = "f00cd2407bb42c0ef17be88d4cf020f5cceffd121665bac9b8b9493a369b3b1a"
 dependencies = [
  "form_urlencoded",
  "idna",
@@ -3919,9 +3921,9 @@ checksum = "5c3082ca00d5a5ef149bb8b555a72ae84c9c59f7250f013ac822ac2e49b19c64"
 
 [[package]]
 name = "walkdir"
-version = "2.5.0"
+version = "2.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "29790946404f91d9c5d06f9874efddea1dc06c5efe94541a7d6863108e3a5e4b"
+checksum = "b42e295b7452c4604982280d8586001fcad9b8b201cac67bca9771e7a7475403"
 dependencies = [
  "same-file",
  "winapi-util",
@@ -4315,18 +4317,18 @@ dependencies = [
 
 [[package]]
 name = "zerocopy"
-version = "0.8.63"
+version = "0.8.64"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e5fe1f8f1b06191a00962174c61aa5005e0bb391a6d80d07e24d115c01a92ed8"
+checksum = "ed43f3060383c64b000f3c630550aebdfa9d3b76d48de32390483dd2cc7e0865"
 dependencies = [
  "zerocopy-derive",
 ]
 
 [[package]]
 name = "zerocopy-derive"
-version = "0.8.63"
+version = "0.8.64"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "863ad3ac83293fb4d740aedbfdc9240dd8d1a50c1099acd76ce80ce7c7230c7f"
+checksum = "a5cbd820fe3e35fb38c83b6dc7e6b1618bc46e0cd10073ae94e8d52dc468d8b9"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4356,9 +4358,9 @@ dependencies = [
 
 [[package]]
 name = "zeroize"
-version = "1.9.1"
+version = "1.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e13084392c5e4bc371903e2935a5eaeed24905a7511356b883835e18a78f6879"
+checksum = "85ccff8a4805aba1eaa4cd4afcd49f7557dd2cf5fd79ffc37f8959466effc5aa"
 
 [[package]]
 name = "zerotrie"

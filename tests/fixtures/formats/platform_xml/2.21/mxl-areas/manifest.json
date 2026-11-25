@@ -1,0 +1,15 @@
+{
+  "format": "2.21",
+  "build": "8.5.1.1529",
+  "seed": "../all_kinds/src",
+  "initialTemplate": "tests/fixtures/acceptance/workspace-mxl/src/cf/Reports/F06Report/Templates/PlatformExport/Ext/Template.xml",
+  "steps": [
+    "ibcmd infobase create",
+    "replace the registered spreadsheet body in a copy of the seed",
+    "ibcmd config import",
+    "ibcmd config apply --force",
+    "ibcmd config export"
+  ],
+  "exportedResource": "Reports/АнализВерсийОбъектов/Templates/МакетОтчета/Ext/Template.xml",
+  "exportedResourceSha256": "5ccc5052f6495896714f9d24cf9a7cde77198756460fc4a1b280c49b4fcd2123"
+}

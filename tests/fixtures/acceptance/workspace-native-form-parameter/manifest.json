@@ -1,0 +1,104 @@
+{
+  "source": "Byte-preserved selection from native ibcmd exports. A native CommonForm descriptor and form supplied the seed; report-only fields were removed from the import input, and the isolated configuration was exported by the matching platform after import and apply.",
+  "files": {
+    "src-2.20/Configuration.xml": {
+      "size": 10341,
+      "sha256": "1cab6a8255358adb7a0a72ab1bd88d679ef52531905863e48101a5387d4729fc"
+    },
+    "src-2.20/Languages/Русский.xml": {
+      "size": 1251,
+      "sha256": "99c0ebe1ab0b911ea97ce759fb97e6d78e50404f989052b4e99e4bb654a6197b"
+    },
+    "src-2.20/CommonForms/MainA.xml": {
+      "size": 1599,
+      "sha256": "fd86ca6c4fab7d68225ebf711f3fdccb673d871ccf99c6b03f9335c11d53ec27"
+    },
+    "src-2.20/CommonForms/MainA/Ext/Form.xml": {
+      "size": 1350,
+      "sha256": "f30fbae57fe7ef3bf3110bb8d0232c287a420ad21c0dafba4aa5d6b12b8b3d4b"
+    },
+    "src-2.21/Configuration.xml": {
+      "size": 11098,
+      "sha256": "d2a6896a4aa9d2ec28d75b01d6bce37948abca35f95bafceb0a2c43f69555bea"
+    },
+    "src-2.21/Languages/Русский.xml": {
+      "size": 1306,
+      "sha256": "5e7c4e7b677543a209c571470266fdb7a4e7e22834d823539a1ab9bcc2a04bec"
+    },
+    "src-2.21/CommonForms/MainA.xml": {
+      "size": 1729,
+      "sha256": "29c8af5c37210c9033c34284910ef01a19c448fe99ad3cc9ac0164d36e373ff4"
+    },
+    "src-2.21/CommonForms/MainA/Ext/Form.xml": {
+      "size": 1405,
+      "sha256": "e43225b623418074b6d5c9efd608c2d3715bb1819453d729bb5985828217c0f1"
+    },
+    "src-2.22/Configuration.xml": {
+      "size": 11173,
+      "sha256": "580580b3d9e081c711151eddfed53fc95a9ec47baedfc45bafff4a24662e2d22"
+    },
+    "src-2.22/Languages/Русский.xml": {
+      "size": 1306,
+      "sha256": "f695d5995479ed9b9790f1f2f2e9d98ed52a78c1b12b112028b75b28d0234dd2"
+    },
+    "src-2.22/CommonForms/MainA.xml": {
+      "size": 1729,
+      "sha256": "4fdcefc09cdf6ebce6abc9b7a486e73d03622426733844c851a7f114278ab693"
+    },
+    "src-2.22/CommonForms/MainA/Ext/Form.xml": {
+      "size": 1405,
+      "sha256": "214ff92bd9c360a388269f35e4001d3c46123126ab5450b83fed3bef5257bf64"
+    }
+  },
+  "platforms": {
+    "2.20": {
+      "platformVersion": "8.3.27.2342",
+      "ibcmdSha256": "38f37715535cea530e58d5ba2e7e072c184b61b12f3e903ac290b299cf39fd38",
+      "stageExits": {
+        "create": 0,
+        "exportBlank": 0,
+        "import": 0,
+        "apply": 0,
+        "export": 0
+      },
+      "platformServiceSidecar": {
+        "path": "ConfigDumpInfo.xml",
+        "sha256": "c39f81f8bd16da025c458272077e68ef59c52325d91f4cd70ff752eaa266400d"
+      },
+      "directMcpReceiptSha256": "5cca7dcc2171b101c19993f97ff85401af75aaa1b972247a8290c716b98821b8"
+    },
+    "2.21": {
+      "platformVersion": "8.5.1.1529",
+      "ibcmdSha256": "4dde71c1d061cc14c619255ec524b4ca8aca1f9bc38a92d1d766eb7d57721d20",
+      "stageExits": {
+        "create": 0,
+        "exportBlank": 0,
+        "import": 0,
+        "apply": 0,
+        "export": 0
+      },
+      "platformServiceSidecar": {
+        "path": "ConfigDumpInfo.xml",
+        "sha256": "ca92f3ae7d4c6d7169128311b2a4f770fe887c019a273981fff46ec2fde64d32"
+      },
+      "directMcpReceiptSha256": "f5f3bca09bfdac1e0fe33fc7d87f20d1c1da817fded162b35c06d89ee46341f1"
+    },
+    "2.22": {
+      "platformVersion": "8.5.4.2028",
+      "ibcmdSha256": "d17ba65155a3eec47f8be3d558d2a12e704281f6b9f33fa5350a3eb2dd585181",
+      "stageExits": {
+        "create": 0,
+        "exportBlank": 0,
+        "import": 0,
+        "apply": 0,
+        "export": 0
+      },
+      "platformServiceSidecar": {
+        "path": "ConfigDumpInfo.xml",
+        "sha256": "04e11e3837600d11aa9b29836bd3ec29c13479845eb0bae25043cd8b77fa71aa"
+      },
+      "directMcpReceiptSha256": "f5f3bca09bfdac1e0fe33fc7d87f20d1c1da817fded162b35c06d89ee46341f1"
+    }
+  },
+  "mcpBinarySha256": "6e4d9abe7d143d60c209cd1fcdbc65fda9ce6d78994dc605911e69123b98ad7d"
+}

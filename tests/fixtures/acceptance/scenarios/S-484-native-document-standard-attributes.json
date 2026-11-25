@@ -1,0 +1,125 @@
+{
+  "id": "S-484-native-document-standard-attributes",
+  "issue": 484,
+  "area": "Метаданные",
+  "task": "Прочитать штатные реквизиты Номер и Дата документа Orders, выгруженного без XML-переопределений. Сверить ссылку ввода по строке и сравнить с явно выгруженным номером документа Приход.",
+  "workspace": "tests/fixtures/acceptance/workspace-all-kinds",
+  "formats": [
+    "2.20"
+  ],
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Orders.StandardAttribute"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "StandardAttribute"
+        },
+        {
+          "pointer": "/data/total",
+          "eq": 5
+        },
+        {
+          "pointer": "/data/items/3/at",
+          "eq": "main:Document.Orders.StandardAttribute.Date"
+        },
+        {
+          "pointer": "/data/items/4/at",
+          "eq": "main:Document.Orders.StandardAttribute.Number"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Orders.Relation"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/1/relation",
+          "eq": "inputByString"
+        },
+        {
+          "pointer": "/data/items/1/at",
+          "eq": "main:Document.Orders.StandardAttribute.Number"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Orders.StandardAttribute.Number"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Document.Orders.StandardAttribute.Number"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "StandardAttribute"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Orders.StandardAttribute.Date"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Document.Orders.StandardAttribute.Date"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "StandardAttribute"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход.StandardAttribute.Number"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Document.Приход.StandardAttribute.Number"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "StandardAttribute"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Orders.StandardAttribute.Unregistered"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: metadata node `Unregistered` was not found"
+    }
+  ]
+}

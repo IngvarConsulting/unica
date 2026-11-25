@@ -13,6 +13,12 @@ pub(super) const KIND: KindDeclaration = KindDeclaration {
         directory: Some("DimensionTables"),
         modules: &["ObjectModule", "ManagerModule"],
     }),
+    generated_types: Some(&[
+        ("ExternalDataSourceCubeDimensionTableManager", "Manager"),
+        ("ExternalDataSourceCubeDimensionTableObject", "Object"),
+        ("ExternalDataSourceCubeDimensionTableRef", "Ref"),
+        ("ExternalDataSourceCubeDimensionTableList", "List"),
+    ]),
     child_order: Some(&["Field"]),
     ..KindDeclaration::new("DimensionTable")
 };

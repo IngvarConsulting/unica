@@ -20,17 +20,7 @@ use unica_work_control::provider_deadline::ProviderDeadline;
 // membership; depth still guards against cycles.
 // resource-limit-excluded: usize::MAX: предел числа записей снят в #1119, тесты подставляют свой предел через entry_limit
 pub(super) const MAX_APPLY_NAMESPACE_ENTRIES: usize = usize::MAX;
-// resource-limit: apply.namespace-depth
-// class: format
-// unit: depth
-// scope: traversal
-// value: 256
-// resource: Глубина перечисления пространства имён оверлея apply и удаления каталогов.
-// status: unproven
-// origin: #1772
-// problem: неизвестно
-// on-reach: ошибка staging UnsupportedProvider «directory removal exceeds namespace depth bound»
-pub(super) const MAX_APPLY_NAMESPACE_DEPTH: usize = 256;
+pub(super) use unica_source_contract::read::SOURCE_TREE_TRAVERSAL_MAX_DEPTH as MAX_APPLY_NAMESPACE_DEPTH;
 
 /// A filesystem call on the planned route failed: access denied, I/O, or
 /// a retained name that no longer resolves. The source cannot be read, which

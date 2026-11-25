@@ -72,6 +72,8 @@ pub struct CreationDeclaration {
     /// Строки XML внутри `Properties`, без отступа самого `Properties`:
     /// вложенные строки начинаются со своих табуляций.
     pub properties: &'static [&'static str],
+    /// Write the caller's metadata type before the fixed properties.
+    pub requires_type: bool,
     /// Префикс кода языка, который новый объект получает после свойств:
     /// префикс и первое `N` от 1, при котором код не занят другим языком
     /// набора. `None` — объект кода языка не несёт.
@@ -79,6 +81,9 @@ pub struct CreationDeclaration {
     /// Вид создаётся только в основной конфигурации: расширение
     /// заимствует такие объекты.
     pub main_configuration_only: bool,
+    /// Модуль, который Конфигуратор пишет новому объекту по шаблону.
+    /// `None` — новый объект модуля не получает.
+    pub module: Option<CreationModule>,
 }
 
 impl CreationDeclaration {
@@ -86,10 +91,24 @@ impl CreationDeclaration {
     pub const fn properties(properties: &'static [&'static str]) -> Self {
         Self {
             properties,
+            requires_type: false,
             numbered_language_code: None,
             main_configuration_only: false,
+            module: None,
         }
     }
+}
+
+/// Модуль нового объекта в `<Имя>/Ext/`: текст шаблона зависит от варианта
+/// встроенного языка конфигурации (`ScriptVariant`).
+#[derive(Debug, Clone, Copy)]
+pub struct CreationModule {
+    /// Имя файла в `Ext`, например `CommandModule.bsl`.
+    pub file: &'static str,
+    /// Текст без BOM для `ScriptVariant` = `Russian`.
+    pub russian: &'static str,
+    /// Текст без BOM для `ScriptVariant` = `English`.
+    pub english: &'static str,
 }
 
 /// Вид объекта метаданных в адресе исходников.

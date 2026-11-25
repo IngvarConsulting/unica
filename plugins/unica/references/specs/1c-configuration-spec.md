@@ -124,7 +124,7 @@ ClassId — фиксированные идентификаторы классо
 | `UseManagedFormInOrdinaryApplication` | `xs:boolean` | Управл. формы в обычном приложении |
 | `UseOrdinaryFormInManagedApplication` | `xs:boolean` | Обычные формы в управл. приложении |
 | `Content` | list | Состав конфигурации (обычно пуст — используется при расширениях) |
-| `StandaloneConfigurationRestrictionRoles` | list | Роли ограничения автономной конфигурации |
+| `StandaloneConfigurationRestrictionRoles` | list of `xr:MDObjectRef` | Роли ограничения автономной конфигурации. Элементы `xr:Item` ссылаются на роли. |
 
 #### Хранилища настроек
 
@@ -159,7 +159,7 @@ ClassId — фиксированные идентификаторы классо
 
 | Свойство | Тип | Описание |
 |----------|-----|----------|
-| `AdditionalFullTextSearchDictionaries` | `xs:string` | Дополнительные словари |
+| `AdditionalFullTextSearchDictionaries` | list of `xr:MDObjectRef` | Дополнительные словари. Элементы `xr:Item` ссылаются на общие макеты и константы. |
 
 #### Мобильные настройки
 
@@ -167,8 +167,8 @@ ClassId — фиксированные идентификаторы классо
 |----------|-----|----------|
 | `RequiredMobileApplicationPermissions` | list | Обязательные разрешения |
 | `UsedMobileApplicationFunctionalities` | list | Используемые функциональности (см. ниже) |
-| `MobileApplicationURLs` | list | URL мобильного приложения |
-| `AllowedIncomingShareRequestTypes` | list | Разрешённые типы входящих share-запросов |
+| `MobileApplicationURLs` | list of `xs:string` | URL мобильного приложения в элементах `v8:Value`. |
+| `AllowedIncomingShareRequestTypes` | list of `app:AllowedIncomingShareRequestType` | Элементы `v8:Value` с полями `mime`, `uti`, `ext`, `processingVariant` (0 или 1) и `isCustom`. |
 
 **UsedMobileApplicationFunctionalities** — список из `app:functionality` с подэлементами `app:functionality` (имя) и `app:use` (boolean):
 

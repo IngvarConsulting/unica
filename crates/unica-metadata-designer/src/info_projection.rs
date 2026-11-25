@@ -393,6 +393,9 @@ pub fn parse_observed_metadata_type_contents_node(
                     }
                 }
                 (DATA_CORE_NAMESPACE, "ValueStorage") => ObservedMetadataTypeVariant::ValueStorage,
+                (DATA_CORE_NAMESPACE, "FixedStructure") => {
+                    ObservedMetadataTypeVariant::FixedStructure
+                }
                 (DATA_CORE_NAMESPACE, "UUID") => ObservedMetadataTypeVariant::Uuid,
                 (CURRENT_CONFIG_NAMESPACE, raw) => parse_generated_observed_type(raw)?,
                 _ => {
@@ -1048,6 +1051,39 @@ pub fn project_meta_info_declarations(
         characteristics,
         standard_tabular_sections,
     }
+}
+
+pub(crate) fn implicit_document_standard_attributes(
+    kind: MetadataKind,
+    properties: Option<roxmltree::Node<'_, '_>>,
+    source: Option<unica_source_contract::SourceSetKind>,
+) -> Option<Vec<MetaStandardAttribute>> {
+    let properties = properties?;
+    if kind != MetadataKind::Document
+        || source != Some(unica_source_contract::SourceSetKind::Configuration)
+        || properties
+            .children()
+            .filter(roxmltree::Node::is_element)
+            .any(|child| {
+                matches!(
+                    child.tag_name().name(),
+                    "StandardAttributes" | "ObjectBelonging" | "ExtendedConfigurationObject"
+                )
+            })
+    {
+        return None;
+    }
+    // Standard document fields exist even when the platform omits property
+    // overrides. The registry supplies their names, never property defaults.
+    Some(
+        crate::template_catalog::metadata_standard_attribute_names(kind.as_str())
+            .iter()
+            .map(|name| MetaStandardAttribute {
+                name: (*name).to_owned(),
+                properties: Vec::new(),
+            })
+            .collect(),
+    )
 }
 
 pub fn project_declaration<T>(

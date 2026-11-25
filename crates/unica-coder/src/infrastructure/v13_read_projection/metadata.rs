@@ -8,6 +8,8 @@ use serde_json::{Map, Value};
 use unica_address::address::{AddressSegment, NodeKind, QualifiedAddress};
 use unica_refusal::{RefusalCode, RefusalDetail};
 
+#[cfg(test)]
+pub(crate) mod address_coverage;
 mod collections;
 mod items;
 mod limits;
@@ -139,7 +141,9 @@ fn project_metadata(
                     .iter()
                     .any(|property| property.get("key").and_then(Value::as_str) == Some("Synonym"))
             });
-        if !profiled {
+        // StyleItem carries the preferred display synonym separately from
+        // the complete localized property.
+        if !profiled && payload.get("kind").and_then(Value::as_str) != Some("StyleItem") {
             if let Some(synonym) = payload.get("synonym").filter(|value| value.is_string()) {
                 place_prop(
                     &mut props,

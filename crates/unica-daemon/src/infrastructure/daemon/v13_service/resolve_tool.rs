@@ -1,6 +1,7 @@
 //! `unica.resolve`: адреса, пути и точки метаданных.
 
 use super::*;
+use crate::infrastructure::daemon::server::ActorReadSourceCapability;
 
 impl CanonicalV13ReadService {
     /// Аварийный двусторонний мост в файловую раскладку.
@@ -237,13 +238,34 @@ impl CanonicalV13ReadService {
                 format!("no admitted source set places `{path}`"),
             )));
         };
+        if entry.kind() == NodeKind::Subsystem.as_str() {
+            let address = QualifiedAddress::parse(entry.at()).map_err(|error| {
+                Box::new(error_result(None, RefusalCode::BadValue, error.to_string()))
+            })?;
+            if is_nested_subsystem(&address) {
+                let requested = entry.placed_path().expect("located path has a place");
+                let resolved = Self::resolve_nested_subsystem(
+                    invocation,
+                    &address,
+                    Some(requested),
+                    cancellation,
+                )
+                .map_err(|error| Box::new(view_error_result(Some(entry.at().to_owned()), error)))?;
+                return Ok(LocatedSource {
+                    source: resolved,
+                    external_binding: None,
+                });
+            }
+        }
         // Кандидаты на присоединённые файлы подтверждаются тем же читателем,
         // что и view: регистрацию владельца и точный ресурс нельзя вывести
         // только из правдоподобной раскладки.
-        if matches!(entry.kind(), "Module" | "Metadata" | "Definition")
-            || entry
-                .placed_path()
-                .is_some_and(|path| path.ends_with("/Ext/Form.xml"))
+        if matches!(
+            entry.kind(),
+            "Module" | "Metadata" | "Definition" | "OrdinaryInterface" | "Schedule"
+        ) || entry
+            .placed_path()
+            .is_some_and(|path| path.ends_with("/Ext/Form.xml"))
         {
             let address = QualifiedAddress::parse(entry.at()).map_err(|error| {
                 Box::new(error_result(None, RefusalCode::BadValue, error.to_string()))
@@ -340,6 +362,12 @@ impl CanonicalV13ReadService {
         address: &QualifiedAddress,
         cancellation: &CancellationToken,
     ) -> DomainResult {
+        if is_nested_subsystem(address) {
+            return match Self::resolve_nested_subsystem(invocation, address, None, cancellation) {
+                Ok(source) => resolve_result(source),
+                Err(error) => view_error_result(Some(address.to_string()), error),
+            };
+        }
         let form_owner = address.form_metadata_owner().or_else(|| {
             matches!(address.segments().last(), Some(last) if last.name().is_some() && matches!(last.kind(), NodeKind::Form | NodeKind::CommonForm))
                 .then(|| address.clone())
@@ -480,20 +508,44 @@ impl CanonicalV13ReadService {
         )))
     }
 
+    fn resolve_nested_subsystem(
+        invocation: &ActorBoundExecution,
+        address: &QualifiedAddress,
+        requested_path: Option<&str>,
+        cancellation: &CancellationToken,
+    ) -> Result<ResolvedSource, ViewError> {
+        let source = if requested_path.is_some() {
+            invocation
+                .layout_read_source(address.source_set())
+                .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?
+        } else {
+            resolve_address_source(invocation, address)?
+        };
+        let authority = source
+            .logical_view_read_authority(cancellation)
+            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
+        let path = authority.resolve_nested_subsystem_path(address)?;
+        if requested_path.is_some_and(|requested| requested != path) {
+            return Err(ViewError::new(
+                RefusalCode::InvalidSource,
+                "the registered subsystem does not occupy the requested path",
+            ));
+        }
+        Ok(ResolvedSource::new(
+            address.to_string(),
+            NodeKind::Subsystem.as_str(),
+            path,
+            ResolvedLines::NotLineBased,
+        ))
+    }
+
     pub(super) fn resolve_projected_source(
         &self,
         invocation: &ActorBoundExecution,
         address: &QualifiedAddress,
         cancellation: &CancellationToken,
     ) -> Result<ResolvedSource, ViewError> {
-        let source = invocation
-            .read_sources()
-            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?
-            .into_iter()
-            .find(|source| source.source_set_name() == address.source_set())
-            .ok_or_else(|| {
-                ViewError::new(RefusalCode::NotFound, "resolve source set was not admitted")
-            })?;
+        let source = resolve_address_source(invocation, address)?;
         let authority = source
             .logical_view_read_authority(cancellation)
             .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
@@ -523,4 +575,24 @@ impl CanonicalV13ReadService {
             lines,
         ))
     }
+}
+
+fn is_nested_subsystem(address: &QualifiedAddress) -> bool {
+    address.segments().len() > 1
+        && address
+            .segments()
+            .iter()
+            .all(|segment| segment.kind() == NodeKind::Subsystem && segment.name().is_some())
+}
+
+fn resolve_address_source(
+    invocation: &ActorBoundExecution,
+    address: &QualifiedAddress,
+) -> Result<ActorReadSourceCapability, ViewError> {
+    invocation
+        .read_sources()
+        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?
+        .into_iter()
+        .find(|source| source.source_set_name() == address.source_set())
+        .ok_or_else(|| ViewError::new(RefusalCode::NotFound, "resolve source set was not admitted"))
 }

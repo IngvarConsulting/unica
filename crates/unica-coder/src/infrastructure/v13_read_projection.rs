@@ -11,6 +11,8 @@ mod form;
 mod form_appearance;
 mod member_properties;
 mod metadata;
+#[cfg(test)]
+pub(crate) use metadata::address_coverage as metadata_address_coverage;
 mod role;
 pub mod structured_properties;
 pub use metadata::borrowing_props;
@@ -763,14 +765,20 @@ pub(super) fn project_configuration_with_counts(
             _ => {}
         }
     }
-    if let Some(roles) = props
-        .get_mut("properties")
-        .and_then(|properties| properties.get_mut("defaultRoles"))
-        .and_then(Value::as_array_mut)
-    {
-        for role in roles {
-            if let Some(reference) = role.as_str() {
-                *role = Value::String(format!("{}:{reference}", address.source_set()));
+    for key in std::iter::once("defaultRoles").chain(
+        unica_metadata::descriptor_operations::CONFIGURATION_REFERENCE_LISTS
+            .iter()
+            .map(|property| property.names()[1]),
+    ) {
+        if let Some(references) = props
+            .get_mut("properties")
+            .and_then(|properties| properties.get_mut(key))
+            .and_then(Value::as_array_mut)
+        {
+            for item in references {
+                if let Some(reference) = item.as_str() {
+                    *item = Value::String(format!("{}:{reference}", address.source_set()));
+                }
             }
         }
     }
@@ -945,6 +953,26 @@ pub(super) fn project_registered_metadata_branch(
         .filter(|item| item.get("kind").and_then(Value::as_str) == Some(kind.as_str()))
         .filter_map(|item| item.get("name").and_then(Value::as_str));
     project_registered_metadata_branch_names_inner(address, kind, names, support)
+}
+
+pub(super) fn project_ordinary_interface(
+    address: &QualifiedAddress,
+    name: &str,
+    synonym: Option<String>,
+) -> NodeViewData {
+    let key = "Synonym";
+    let kind = NodeKind::OrdinaryInterface.as_str();
+    let mut props = Map::new();
+    props.insert("Name".to_owned(), json!(name));
+    let mut limits = Vec::new();
+    if let Some(synonym) = synonym {
+        if synonym.len() <= prop_limit(key) {
+            props.insert(key.to_owned(), json!(synonym));
+        } else {
+            limits.push(compact_limit(key, address, key));
+        }
+    }
+    NodeViewData::Node(NodeView::new(address.to_string(), kind, name, props).with_limits(limits))
 }
 
 pub(super) fn project_registered_metadata_branch_names(

@@ -1,0 +1,11 @@
+format: DESIGNER
+source-set:
+  - name: line20
+    type: CONFIGURATION
+    path: src-2.20
+  - name: line21
+    type: CONFIGURATION
+    path: src-2.21
+  - name: line22
+    type: CONFIGURATION
+    path: src-2.22

@@ -1,0 +1,79 @@
+{
+  "formatVersion": "2.22",
+  "platformVersion": "8.5.4.2028",
+  "source": "Byte-identical selection from the native ibcmd export of a configuration with two direct named module files.",
+  "seed": {
+    "revision": "93df0feeea38b3303c5f237930980e0960b7461a",
+    "path": "tests/fixtures/formats/platform_xml/2.22/all_kinds/src"
+  },
+  "derivation": {
+    "platformStages": [
+      {
+        "stage": "platform-version",
+        "exit": 0
+      },
+      {
+        "stage": "both-import",
+        "exit": 0
+      },
+      {
+        "stage": "both-apply",
+        "exit": 0
+      },
+      {
+        "stage": "both-export",
+        "exit": 0
+      }
+    ],
+    "platformReceiptSha256": "5e289036a4e8815589d58546d3e350cffbccf0e3949e32d3cedc43638aba2c01",
+    "previousNativeExportsPreserved": {
+      "round1-export": "b0d9fcf0f9e6df63c13a81528c576d94799e38309f85f09aeaae8f692f28a0f7",
+      "round2-export": "ecd0cd8f2bef112065a95c58b979d0292fd3cb3140eab6d9ac837327973902b3",
+      "register-export": "2f72bfa23a5f35da0dff55663917f4558e9bc901bf23733090462473ec009d31",
+      "settings-export": "d31be778cb26bad6a2ab9e50854f6b99e4d175171c327d59b5e41accc1d59dcb"
+    },
+    "description": "Reused isolated file infobase. The source configuration XML and both object descriptors were unchanged when the two BSL files were added. Native export preserved the two owner descriptors and both BSL files byte-for-byte."
+  },
+  "mcp": {
+    "revision": "ec4aac54df2825e075a0d7c292b92dbcfec9ce45",
+    "binarySha256": "641d7dd01731d74f49d8258864e47621650bde9ca44c7274f5661e5cf32916c4",
+    "receiptSha256": "1ce654f9162fa830748391e6b2b95970636caad2f69c1618d36b739ce101d453",
+    "successfulCalls": 6
+  },
+  "samples": [
+    {
+      "owner": "main:CommonCommand.Probe",
+      "role": "Command",
+      "ownerUuid": "3b252b1d-b050-5310-aa0d-0b23ed16a402",
+      "bsl": "src/CommonCommands/Probe/Ext/CommandModule.bsl"
+    },
+    {
+      "owner": "main:IntegrationService.Probe",
+      "role": "IntegrationService",
+      "ownerUuid": "b9cb5b1d-2bb2-5bc6-8bc7-fdedbe1c47eb",
+      "bsl": "src/IntegrationServices/Probe/Ext/Module.bsl"
+    }
+  ],
+  "files": {
+    "src/CommonCommands/Probe.xml": {
+      "size": 1667,
+      "sha256": "84d8d85abdf50541b028e95ffd704c0c5c9aae5f5a06c2098dd88de04e4fc002"
+    },
+    "src/CommonCommands/Probe/Ext/CommandModule.bsl": {
+      "size": 220,
+      "sha256": "f408201bd4754c533535104a3caa0bfbf53227306147c7e7d613297e60319852"
+    },
+    "src/Configuration.xml": {
+      "size": 13703,
+      "sha256": "1bb459565bf1d66d9ba00dcece7b8e80b0213213fe8341072ca4d58cca0607a5"
+    },
+    "src/IntegrationServices/Probe.xml": {
+      "size": 1634,
+      "sha256": "846301af627d8fdec6cc844d5d7951f926f1201b207f389546c64adade878813"
+    },
+    "src/IntegrationServices/Probe/Ext/Module.bsl": {
+      "size": 137,
+      "sha256": "15a66cfd64aba3f65e4b4960243a71dbaeb0de7afa4b2c74fb49aad763b04502"
+    }
+  }
+}

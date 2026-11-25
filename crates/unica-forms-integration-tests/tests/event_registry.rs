@@ -1012,21 +1012,23 @@ mod tests {
         }
     }
 
-    /// Каждая линия покрывает матрицу «владелец × прямая роль» своим
-    /// каталогом, и считается она по видам, которые есть **в этой линии**.
-    /// Вид, который завела старшая линия, не ждут от младшего каталога
-    /// и не исключают из матрицы: `Очередь` существует с 8.5.4, там её
-    /// менеджер и покрыт.
+    const SEQUENCE_RECORD_SET: &str = "main:Sequence.Probe.Module.RecordSet";
+    const RECALCULATION_RECORD_SET: &str =
+        "main:CalculationRegister.Начисления.Recalculation.Перерасчет1.Module.RecordSet";
+
+    /// Каталог каждой линии покрывает её прямые роли и вложенный набор записей
+    /// перерасчёта. Менеджер очереди входит в матрицу с 8.5.4.
     /// rule: INV.PLATFORM.MODULE-EVENT-CATALOG
     #[test]
     fn every_line_catalog_covers_the_direct_owner_role_matrix_of_its_own_line() {
-        use unica_address::address::NodeKind;
+        use unica_address::address::QualifiedAddress;
         use unica_address::module_routes::ModuleRole;
         use unica_bsl::profile::PlatformProfile;
         use unica_source_contract::format_identity::{
             metadata_kind_exists, DESCRIBED_PLATFORM_LINES,
         };
 
+        let recalculation = QualifiedAddress::parse(RECALCULATION_RECORD_SET).unwrap();
         let direct_roles = [
             ModuleRole::Object,
             ModuleRole::Manager,
@@ -1036,13 +1038,17 @@ mod tests {
         for (line, id) in DESCRIBED_PLATFORM_LINES {
             let profile = PlatformProfile::for_line(*line)
                 .unwrap_or_else(|| panic!("described line {id} has no profile"));
-            let expected = NodeKind::metadata_kinds()
+            let mut expected = NodeKind::metadata_kinds()
                 .iter()
                 .filter(|owner| metadata_kind_exists(Some(*line), owner.as_str()))
                 .flat_map(|owner| direct_roles.iter().map(move |role| (*owner, *role)))
                 .filter(|(owner, role)| profile.supports_direct_module_role(*owner, *role))
                 .map(|(owner, role)| (owner.as_str(), role.as_str()))
                 .collect::<std::collections::BTreeSet<_>>();
+            let nested = profile
+                .module_capability(&recalculation)
+                .unwrap_or_else(|| panic!("line {id} has no capability for {recalculation}"));
+            assert!(expected.insert((nested.owner_kind().as_str(), nested.role().as_str())));
             let actual = platform_event_catalog_fixture_for_line(Some(*line))
                 .unwrap_or_else(|| panic!("described line {id} has no catalog"))
                 .module_catalogs
@@ -1055,6 +1061,67 @@ mod tests {
                 .map(|catalog| (catalog.owner_kind.as_str(), catalog.module_role.as_str()))
                 .collect::<std::collections::BTreeSet<_>>();
             assert_eq!(actual, expected, "line {id}");
+        }
+    }
+
+    /// rule: INV.PLATFORM.MODULE-EVENT-CATALOG
+    #[test]
+    fn record_set_module_addresses_select_events_of_their_owner_on_every_line() {
+        use unica_address::address::QualifiedAddress;
+        use unica_address::module_routes::{ModuleRole, ModuleRouteKind};
+        use unica_bsl::profile::PlatformProfile;
+        use unica_source_contract::format_identity::DESCRIBED_PLATFORM_LINES;
+
+        let desktop_contexts = ["server", "externalConnection", "thickClientOrdinary"];
+        let sequence_contexts = [
+            "server",
+            "externalConnection",
+            "thickClientOrdinary",
+            "mobileAppServer",
+            "mobileStandaloneServer",
+        ];
+        let cases = [
+            (
+                SEQUENCE_RECORD_SET,
+                NodeKind::Sequence,
+                ModuleRouteKind::Direct,
+                sequence_contexts.as_slice(),
+            ),
+            (
+                RECALCULATION_RECORD_SET,
+                NodeKind::Recalculation,
+                ModuleRouteKind::NestedObject,
+                desktop_contexts.as_slice(),
+            ),
+        ];
+        let expected_events = ["BeforeWrite", "FillCheckProcessing", "OnWrite"];
+        for (line, id) in DESCRIBED_PLATFORM_LINES {
+            let profile = PlatformProfile::for_line(*line).unwrap();
+            for (raw, owner, route, contexts) in cases {
+                let at = QualifiedAddress::parse(raw).unwrap();
+                let capability = profile.module_capability(&at).unwrap();
+                assert_eq!(capability.owner_kind(), owner, "line {id}, {at}");
+                assert_eq!(capability.role(), ModuleRole::RecordSet, "line {id}, {at}");
+                assert_eq!(capability.route_kind(), route, "line {id}, {at}");
+                let events = module_event_catalog(profile, capability);
+                let ids = events
+                    .iter()
+                    .map(|event| event.event_id.as_str())
+                    .collect::<Vec<_>>();
+                assert_eq!(ids, expected_events, "line {id}, {at}");
+                for event in events {
+                    let actual_contexts = event
+                        .contexts
+                        .iter()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>();
+                    assert_eq!(
+                        actual_contexts, contexts,
+                        "line {id}, {at}, {}",
+                        event.event_id
+                    );
+                }
+            }
         }
     }
 
@@ -1485,12 +1552,12 @@ mod tests {
             .collect::<String>();
         assert_eq!(
             digest,
-            "6136934c1b315bd10ce06c8ee5228cd17bd7fa705711e6ad3d05cb68f1d65871"
+            "ac59d5d547bec5df3e7f751771651fded666554806a43e0c0ac6788c6d70991c"
         );
         let fixture = catalog_of_line(8, 3, 27);
         assert_eq!(fixture.profile, "8.3.27");
         assert_eq!(fixture.source.installation_version, "8.3.27.2342");
-        assert_eq!(fixture.module_catalogs.len(), 48);
+        assert_eq!(fixture.module_catalogs.len(), 50);
         assert_eq!(fixture.form_catalogs.len(), 31);
         assert_eq!(
             fixture
@@ -1498,7 +1565,7 @@ mod tests {
                 .iter()
                 .map(|catalog| catalog.events.len())
                 .sum::<usize>(),
-            205
+            211
         );
         assert_eq!(
             fixture
@@ -1511,7 +1578,7 @@ mod tests {
         assert_eq!(fixture.excluded_structural_pages.len(), 4);
         assert_eq!(fixture.excluded_external_data_source_pages.len(), 13);
         assert_eq!(fixture.excluded_generic_template_pages.len(), 5);
-        assert_eq!(fixture.excluded_out_of_profile_pages.len(), 269);
+        assert_eq!(fixture.excluded_out_of_profile_pages.len(), 263);
         assert_eq!(fixture.source.english_container, "shcntx_root.hbk");
         assert_eq!(
             fixture.source.english_sha256,
@@ -1534,13 +1601,13 @@ mod tests {
             .collect::<String>();
         assert_eq!(
             digest,
-            "39d06af269764dec5dcbf29fc4ec2791a035a2e00e4406e4ee63cc64f5be6ce1"
+            "ebcd1219f0909e64176733d83993bc3cc1f44e890e565861dfe6e2bcf6b511c0"
         );
         let fixture = catalog_of_line(8, 5, 1);
         assert_eq!(fixture.profile, "8.5.1");
         assert_eq!(fixture.source.installation_version, "8.5.1.1529");
         assert_eq!(fixture.source.event_markup_page_count, 701);
-        assert_eq!(fixture.module_catalogs.len(), 48);
+        assert_eq!(fixture.module_catalogs.len(), 50);
         assert_eq!(fixture.form_catalogs.len(), 32);
         assert_eq!(
             fixture
@@ -1548,7 +1615,7 @@ mod tests {
                 .iter()
                 .map(|catalog| catalog.events.len())
                 .sum::<usize>(),
-            206
+            212
         );
         assert_eq!(
             fixture
@@ -1561,7 +1628,7 @@ mod tests {
         assert_eq!(fixture.excluded_structural_pages.len(), 4);
         assert_eq!(fixture.excluded_external_data_source_pages.len(), 13);
         assert_eq!(fixture.excluded_generic_template_pages.len(), 5);
-        assert_eq!(fixture.excluded_out_of_profile_pages.len(), 269);
+        assert_eq!(fixture.excluded_out_of_profile_pages.len(), 263);
     }
 
     /// Каталог линии 8.5.4 закреплён так же: его состав не меняется молча.
@@ -1577,14 +1644,14 @@ mod tests {
             .collect::<String>();
         assert_eq!(
             digest,
-            "ccbd75f26fb214764f8c73c09286c12757b7585a9b523f0d664374f2dd7afdee"
+            "7a6e88cfe1dd3b7e8512c658b95b485714a141f601c0d4509c300e419c426e7a"
         );
         let fixture = catalog_of_line(8, 5, 4);
         assert_eq!(fixture.profile, "8.5.4");
         assert_eq!(fixture.source.installation_version, "8.5.4.2028");
         assert_eq!(fixture.source.event_markup_page_count, 703);
         // На одну запись каталога модулей больше: вид «Очередь» (#2960).
-        assert_eq!(fixture.module_catalogs.len(), 49);
+        assert_eq!(fixture.module_catalogs.len(), 51);
         assert_eq!(fixture.form_catalogs.len(), 32);
         assert_eq!(
             fixture
@@ -1592,7 +1659,7 @@ mod tests {
                 .iter()
                 .map(|catalog| catalog.events.len())
                 .sum::<usize>(),
-            208
+            214
         );
         assert_eq!(
             fixture
@@ -1605,7 +1672,7 @@ mod tests {
         assert_eq!(fixture.excluded_structural_pages.len(), 4);
         assert_eq!(fixture.excluded_external_data_source_pages.len(), 13);
         assert_eq!(fixture.excluded_generic_template_pages.len(), 5);
-        assert_eq!(fixture.excluded_out_of_profile_pages.len(), 269);
+        assert_eq!(fixture.excluded_out_of_profile_pages.len(), 263);
     }
 
     /// Каталог 8.5.1 покрывает свою линию в точности: все события, которые
@@ -1815,15 +1882,15 @@ mod tests {
         assert_eq!(fixture.excluded_structural_pages.len(), 4);
         assert_eq!(fixture.excluded_external_data_source_pages.len(), 13);
         assert_eq!(fixture.excluded_generic_template_pages.len(), 5);
-        assert_eq!(fixture.excluded_out_of_profile_pages.len(), 269);
+        assert_eq!(fixture.excluded_out_of_profile_pages.len(), 263);
         assert_eq!(
             fixture.source.event_page_ids_sha256,
             "0448eaeabd75b71dd72799cc9729b8b304d93687106eb799fab1059160106ec2"
         );
-        assert_eq!(selected_records.len(), 402, "unique selected vendor pages");
+        assert_eq!(selected_records.len(), 408, "unique selected vendor pages");
         assert_eq!(
             selected_records.values().sum::<usize>(),
-            404,
+            410,
             "selected projection records"
         );
         let repeated = selected_records
@@ -1867,7 +1934,7 @@ mod tests {
                 (approved_reasons[0], 189),
                 (approved_reasons[1], 40),
                 (approved_reasons[2], 19),
-                (approved_reasons[3], 20),
+                (approved_reasons[3], 14),
                 (approved_reasons[4], 1),
             ])
         );

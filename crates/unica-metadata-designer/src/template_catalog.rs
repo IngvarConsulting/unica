@@ -46,6 +46,8 @@ pub struct MetadataTemplateOperationOverrides {
     /// passes it so a new language skips the codes an earlier operation
     /// took; without it the template reads the languages on disk.
     pub language_codes: Option<Vec<String>>,
+    pub creation_type: Option<unica_metadata::MetadataType>,
+    pub creation_namespace: Option<String>,
 }
 
 pub struct MetadataPostImage<G = ()> {
@@ -611,6 +613,22 @@ pub fn template_failure(
         .into()
 }
 
+/// The empty Package.bin emitted on supported Designer profiles.
+pub(crate) fn empty_xdto_package(namespace: &str) -> Vec<u8> {
+    let namespace = unica_xml_format::text::escape_xml(namespace);
+    let text = format!(
+        concat!(
+            "<package xmlns=\"http://v8.1c.ru/8.1/xdto\" ",
+            "xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" ",
+            "xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" ",
+            "targetNamespace=\"{namespace}\">\r\n",
+            "</package>\r\n",
+        ),
+        namespace = namespace,
+    );
+    with_utf8_bom(text.as_bytes())
+}
+
 pub fn with_utf8_bom(bytes: &[u8]) -> Vec<u8> {
     let mut output = Vec::with_capacity(3 + bytes.len());
     output.extend_from_slice(b"\xef\xbb\xbf");
@@ -739,6 +757,26 @@ pub fn minimal_metadata_xml<G>(
     context: &MinimalTemplateContext<G>,
     fresh_uuid: fn() -> String,
 ) -> Result<(String, String), String> {
+    minimal_metadata_xml_with_inputs(
+        kind,
+        obj_name,
+        format_version,
+        context,
+        None,
+        None,
+        fresh_uuid,
+    )
+}
+
+fn minimal_metadata_xml_with_inputs<G>(
+    kind: CreatableKind,
+    obj_name: &str,
+    format_version: &str,
+    context: &MinimalTemplateContext<G>,
+    creation_type: Option<&unica_metadata::MetadataType>,
+    creation_namespace: Option<&str>,
+    fresh_uuid: fn() -> String,
+) -> Result<(String, String), String> {
     let defn = MetaTemplateDefinition {
         chart_of_accounts: context.chart_of_accounts.clone(),
         chart_of_calculation_types: context.chart_of_calculation_types.clone(),
@@ -775,6 +813,17 @@ pub fn minimal_metadata_xml<G>(
                 format!("metadata kind `{object_type}` declares no creation template")
             })?;
             emit_meta_base_properties(&mut lines, "\t\t\t", &defn, obj_name, &synonym);
+            if template.requires_type {
+                let metadata_type = creation_type
+                    .ok_or_else(|| format!("metadata kind {object_type} needs a creation type"))?;
+                crate::xml_model::emit_meta_typed_value_type(&mut lines, "\t\t\t", metadata_type);
+            }
+            if kind.requires_creation_namespace() {
+                let namespace = creation_namespace.ok_or_else(|| {
+                    format!("metadata kind {object_type} needs a creation namespace")
+                })?;
+                emit_meta_optional_text(&mut lines, "			", "Namespace", Some(namespace));
+            }
             for property in template.properties {
                 lines.push(format!("\t\t\t{property}"));
             }
@@ -918,9 +967,10 @@ fn insert_format_object_properties(lines: &mut Vec<String>, kind: &str, format_v
     for (after, property) in (dialect.added_object_properties)(kind) {
         let open = format!("<{after}>");
         let empty = format!("<{after}/>");
+        let close = format!("</{after}>");
         let Some(at) = lines.iter().position(|line| {
             let line = line.trim_start();
-            line.starts_with(&open) || line == empty
+            line == empty || line == close || (line.starts_with(&open) && line.ends_with(&close))
         }) else {
             continue;
         };
@@ -3203,11 +3253,13 @@ pub fn minimal_object<G>(
             context
         }
     };
-    let (xml, _) = minimal_metadata_xml(
+    let (xml, _) = minimal_metadata_xml_with_inputs(
         kind,
         name,
         source.format_version,
         &context,
+        overrides.creation_type.as_ref(),
+        overrides.creation_namespace.as_deref(),
         source.fresh_uuid,
     )
     .map_err(|message| template_failure(&metadata_path, message))?;
@@ -3228,6 +3280,23 @@ pub fn minimal_object<G>(
             mode: MetadataTemplateFileMode::Create,
             relative_path: ext.join(module),
             bytes: with_utf8_bom(&[]),
+            preimage: None,
+            guard_handle: None,
+            edit: None,
+        });
+    }
+    if let Some(module) = kind.template().and_then(|template| template.module) {
+        let text = match unica_source_designer::language::script_variant(source.owner_preimage)
+            .map_err(|message| template_failure(&metadata_path, message))?
+        {
+            unica_source_contract::ScriptVariant::English => module.english,
+            unica_source_contract::ScriptVariant::Russian => module.russian,
+        };
+        files.push(MetadataTemplateFile {
+            role: MetadataTemplateFileRole::Module,
+            mode: MetadataTemplateFileMode::Create,
+            relative_path: ext.join(module.file),
+            bytes: with_utf8_bom(text.as_bytes()),
             preimage: None,
             guard_handle: None,
             edit: None,
@@ -3321,9 +3390,20 @@ mod typed_template_tests {
         let context = context();
         for kind in CreatableKind::all() {
             let name = format!("Typed{}", kind.as_str());
-            let (xml, uuid) =
-                minimal_metadata_xml(kind, &name, "2.20", &context, metadata_fixture_uuid)
-                    .unwrap_or_else(|error| panic!("{}: {error}", kind.as_str()));
+            let metadata_type = unica_metadata::MetadataType {
+                variants: vec![unica_metadata::MetadataTypeVariant::Boolean],
+            };
+            let (xml, uuid) = minimal_metadata_xml_with_inputs(
+                kind,
+                &name,
+                "2.20",
+                &context,
+                kind.requires_creation_type().then_some(&metadata_type),
+                kind.requires_creation_namespace()
+                    .then_some("urn:unica:test"),
+                metadata_fixture_uuid,
+            )
+            .unwrap_or_else(|error| panic!("{}: {error}", kind.as_str()));
             let document =
                 Document::parse(&xml).unwrap_or_else(|error| panic!("{}: {error}", kind.as_str()));
             let object = document
@@ -3346,6 +3426,54 @@ mod typed_template_tests {
                 !generated_types.is_empty(),
                 "{}",
                 kind.as_str()
+            );
+        }
+    }
+
+    #[test]
+    fn external_data_source_creation_has_platform_identity_and_empty_child_objects() {
+        let kind = CreatableKind::parse("ExternalDataSource").unwrap();
+        for version in ["2.20", "2.21", "2.22"] {
+            let (xml, _) = minimal_metadata_xml(
+                kind,
+                "Warehouse",
+                version,
+                &context(),
+                metadata_fixture_uuid,
+            )
+            .unwrap();
+            let document = Document::parse(&xml).unwrap();
+            let root = document.root_element();
+            assert_eq!(root.attribute("version"), Some(version));
+            let source = root.children().find(roxmltree::Node::is_element).unwrap();
+            assert_eq!(source.tag_name().name(), "ExternalDataSource");
+            let child = |name| {
+                source
+                    .children()
+                    .find(|node| node.has_tag_name(name))
+                    .unwrap()
+            };
+            assert_eq!(
+                child("ChildObjects")
+                    .children()
+                    .filter(roxmltree::Node::is_element)
+                    .count(),
+                0
+            );
+            assert!(child("Properties").children().any(|node| {
+                node.has_tag_name("DataLockControlMode") && node.text() == Some("Automatic")
+            }));
+            let generated = child("InternalInfo")
+                .children()
+                .filter_map(|node| node.attribute("name"))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                generated,
+                [
+                    "ExternalDataSourceManager.Warehouse",
+                    "ExternalDataSourceTablesManager.Warehouse",
+                    "ExternalDataSourceCubesManager.Warehouse",
+                ]
             );
         }
     }

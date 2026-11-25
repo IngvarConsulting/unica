@@ -14,11 +14,12 @@ repository = "https://github.com/IngvarConsulting/unica"
 sentry = { version = "=0.49.6", default-features = false, features = ["panic", "backtrace"] }
 base64 = "0.22.1"
 # Keep these revisions aligned with the bundled analyzer in tools.lock.json.
-bsl-parser = { package = "parser", git = "https://github.com/itrous/bsl-analyzer", rev = "0a82ed78e597dc3ffb1bbaebc66a98974a988435" }
-bsl-syntax = { package = "syntax", git = "https://github.com/itrous/bsl-analyzer", rev = "0a82ed78e597dc3ffb1bbaebc66a98974a988435" }
+bsl-parser = { package = "parser", git = "https://github.com/itrous/bsl-analyzer", rev = "c6a79df039efbcc4465ed05539ff136fae9c31db" }
+bsl-syntax = { package = "syntax", git = "https://github.com/itrous/bsl-analyzer", rev = "c6a79df039efbcc4465ed05539ff136fae9c31db" }
 diffy = "0.5.0"
 fs2 = "0.4"
 jsonschema = { version = "0.30", default-features = false }
+fluent-uri = "=0.3.2"
 flate2 = "1"
 libc = "0.2"
 # MCP transport is owned by the official Rust SDK (ADR-0013); macros stay off

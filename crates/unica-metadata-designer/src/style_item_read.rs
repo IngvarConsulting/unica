@@ -33,6 +33,7 @@ enum StyleValue {
 #[derive(Default)]
 struct StyleItem {
     synonym: Option<String>,
+    localized_synonym: Option<String>,
     item_type: Option<String>,
     value: Option<StyleValue>,
     unreadable: Vec<Value>,
@@ -133,7 +134,11 @@ impl StyleItem {
         let Some(properties) = item.child(owner, MD, "Properties", "properties") else {
             return Ok(item);
         };
-        if let Some(synonym) = item.child(properties, MD, "Synonym", "synonym") {
+        if let Some(synonym) = item.child(properties, MD, "Synonym", "properties.Synonym") {
+            match crate::info_projection::localized_node_as_nstr(synonym) {
+                Ok(localized) => item.localized_synonym = localized,
+                Err(message) => item.damaged("properties.Synonym", message),
+            }
             // Match the metadata node's existing preferred-language title convention.
             let entries = synonym
                 .children()
@@ -161,8 +166,6 @@ impl StyleItem {
                 }
             } else if !synonym.children().any(|node| node.is_element()) {
                 item.synonym = Some(String::new());
-            } else {
-                item.damaged("synonym", "invalid localized synonym");
             }
         }
         if let Some(kind) = item.child(properties, MD, "Type", "properties.Type") {
@@ -232,6 +235,7 @@ impl StyleItem {
                 properties.push(json!({"key":key,"value":value}));
             }
         };
+        add("Synonym", self.localized_synonym.map(Value::String));
         add("Type", self.item_type.map(Value::String));
         match self.value {
             Some(StyleValue::Font(font)) => {
@@ -329,6 +333,38 @@ mod tests {
         );
         assert_eq!(synonym(&(item("ru", "") + &item("en", "Title"))), "Title");
         assert_eq!(synonym(&item("ru", "")), "");
+    }
+
+    /// rule: INV.SOURCE.LOCALIZED-STRING-NSTR
+    #[test]
+    fn styleitem_reads_all_synonym_translations_separately_from_the_title() {
+        let payload = observed(&format!(
+            r#"<Synonym xmlns:v8="{CORE}"><v8:item><v8:lang>en</v8:lang><v8:content>Editor's accent</v8:content></v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>Цвет</v8:content></v8:item></Synonym><Type>Color</Type><Value xsi:type="ui:Color">#F0F0F0</Value>"#
+        ));
+        assert_eq!(payload["synonym"], "Цвет");
+        assert_eq!(
+            property(&payload, "Synonym"),
+            Some(&json!("en = 'Editor''s accent'; ru = 'Цвет'"))
+        );
+        assert_eq!(property(&payload, "Type"), Some(&json!("Color")));
+        assert_eq!(property(&payload, "Value"), Some(&json!("#F0F0F0")));
+    }
+
+    /// rule: INV.SOURCE.LOCALIZED-STRING-NSTR
+    #[test]
+    fn styleitem_synonym_distinguishes_missing_translations_from_damage() {
+        for body in ["", "<Synonym/>"] {
+            let payload = observed(&format!("{body}<Type>Color</Type>"));
+            assert_eq!(property(&payload, "Synonym"), None);
+            assert!(payload.get("unreadable").is_none(), "{payload}");
+        }
+        let damaged = observed(&format!(
+            r#"<Synonym xmlns:v8="{CORE}"><v8:item><v8:lang>ru</v8:lang></v8:item></Synonym><Type>Color</Type><Value xsi:type="ui:Color">#F0F0F0</Value>"#
+        ));
+        assert_eq!(property(&damaged, "Synonym"), None);
+        assert_eq!(damaged["unreadable"][0]["field"], "properties.Synonym");
+        assert_eq!(property(&damaged, "Type"), Some(&json!("Color")));
+        assert_eq!(property(&damaged, "Value"), Some(&json!("#F0F0F0")));
     }
 
     #[test]

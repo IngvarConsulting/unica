@@ -6,8 +6,9 @@ use unica_address::source_target::MetadataAddress;
 use unica_metadata::borrowing::MetaBorrowing;
 use unica_metadata::configuration::{CfHomePageData, CfInfoData, CfInterfaceData};
 use unica_metadata::read_codec::{
-    ExchangeContentFacts, FunctionalOptionFacts, MetaPropertySource, MetadataReadCodec,
-    NumeratorFacts, ObjectMemberNames, ReadFinding, ReadStopped, SupportStateStream,
+    ExchangeContentFacts, ExternalInlineMembers, ExternalInlineReadError, FunctionalOptionFacts,
+    MetaPropertySource, MetadataReadCodec, NumeratorFacts, ObjectMemberNames, ReadFinding,
+    ReadStopped, SupportStateStream,
 };
 use unica_metadata::request::MetaFailure;
 use unica_metadata::style_color::StyleItemPropertiesObservation;
@@ -49,6 +50,34 @@ impl MetadataReadCodec for DesignerMetadataReadCodec {
             .map_err(|error| error.to_string())?;
         let properties = crate::descriptor_comment::descriptor_properties(&document, kind)?;
         crate::info_projection::localized_property_as_nstr(properties, kind, name)
+    }
+
+    fn ordinary_interface_synonym(
+        &self,
+        descriptor: &[u8],
+        expected_name: &str,
+    ) -> Result<Option<String>, String> {
+        use unica_source_designer::layout::ORDINARY_INTERFACE_XML_TAG;
+        let text = std::str::from_utf8(descriptor).map_err(|error| error.to_string())?;
+        let document = roxmltree::Document::parse(text.trim_start_matches('\u{feff}'))
+            .map_err(|error| error.to_string())?;
+        let properties = crate::descriptor_comment::descriptor_properties(
+            &document,
+            ORDINARY_INTERFACE_XML_TAG,
+        )?;
+        let name = crate::descriptor_comment::direct(properties, "Name")?;
+        if name.children().any(|node| node.is_element())
+            || unica_xml_format::read::direct_text(name) != expected_name
+        {
+            return Err(format!(
+                "interface descriptor does not name `{expected_name}`"
+            ));
+        }
+        crate::info_projection::localized_property_as_nstr(
+            properties,
+            ORDINARY_INTERFACE_XML_TAG,
+            "Synonym",
+        )
     }
 
     fn language_code(&self, descriptor: &[u8]) -> Result<String, String> {
@@ -96,6 +125,15 @@ impl MetadataReadCodec for DesignerMetadataReadCodec {
 
     fn queue(&self, descriptor: &[u8], payload: &mut Value) -> Result<(), String> {
         crate::queue_read::enrich_queue(descriptor, payload)
+    }
+
+    fn external_inline_members(
+        &self,
+        descriptor: &[u8],
+        target: &MetadataAddress,
+        checkpoint: &mut dyn FnMut() -> Result<(), ReadStopped>,
+    ) -> Result<ExternalInlineMembers, ExternalInlineReadError> {
+        crate::external_inline_members::read(descriptor, target, checkpoint)
     }
 
     fn external_data_source_members(
@@ -395,6 +433,27 @@ mod tests {
     use super::*;
 
     const MD: &str = "http://v8.1c.ru/8.3/MDClasses";
+
+    #[test]
+    fn ordinary_interface_proves_name_and_reads_localized_synonym() {
+        let descriptor = format!(
+            r#"<MetaDataObject xmlns="{MD}" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20"><Interface><Properties><Name>Probe</Name><Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Проверка</v8:content></v8:item><v8:item><v8:lang>en</v8:lang><v8:content>Probe</v8:content></v8:item></Synonym></Properties></Interface></MetaDataObject>"#
+        );
+        let read = |source: &str, name| {
+            DesignerMetadataReadCodec.ordinary_interface_synonym(source.as_bytes(), name)
+        };
+        assert_eq!(
+            read(&descriptor, "Probe"),
+            Ok(Some("ru = 'Проверка'; en = 'Probe'".to_string()))
+        );
+        assert!(read(&descriptor, "Another").is_err());
+        assert!(read(&descriptor.replace("Interface>", "Subsystem>"), "Probe").is_err());
+        assert!(read(
+            &descriptor.replace("</Name>", "</Name><Name>Another</Name>"),
+            "Probe"
+        )
+        .is_err());
+    }
 
     #[test]
     fn functional_option_facts_keep_location_and_privileged_mode() {

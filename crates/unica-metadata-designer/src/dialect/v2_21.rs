@@ -29,6 +29,10 @@ pub(crate) fn added_child_properties(child_type: &str) -> &'static [&'static str
 /// empty by default, right after its default variant form.
 pub(crate) fn added_object_properties(kind: &str) -> &'static [(&'static str, &'static str)] {
     match kind {
+        "CommonForm" => &[(
+            "UsePurposes",
+            "<UseInInterfaceCompatibilityMode>Any</UseInInterfaceCompatibilityMode>",
+        )],
         "Report" => &[("DefaultVariantForm", "<AuxiliaryVariantForm/>")],
         _ => &[],
     }

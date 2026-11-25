@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from scripts.ci.prepared_binary import binary_path, ensure_binary
+from scripts.ci.temp_tree import temp_tree
 
 import collections
 import importlib.util
@@ -10,7 +11,6 @@ import json
 import re
 import subprocess
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 
@@ -292,7 +292,7 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
         self.assertEqual(failures, [])
         self.assertTrue(examples, "no published runtime JSON examples were checked")
 
-        with tempfile.TemporaryDirectory() as temporary:
+        with temp_tree("unica-run-dictionary-") as temporary:
             root = Path(temporary).resolve()
             workspace = root / "workspace"
             state = root / "state"
@@ -303,18 +303,18 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
                 response = server.call("unica.run", {})
             finally:
                 server.close()
-                server.reader.join(timeout=10)
-                server.process.stdout.close()
 
         self.assertIsNotNone(response)
         result = response["result"]["structuredContent"]
         self.assertTrue(result["ok"], result)
         self.assertNotIn("rev", result)
         operations = {operation["op"]: operation for operation in result["data"]["operations"]}
+        terminal_operations = {"launch", "debug-server.start", "debug-server.stop"}
+        self.assertLessEqual(terminal_operations, operations.keys())
         for name, contract in operations.items():
             with self.subTest(operation=name, contract="execution mode"):
                 self.assertIs(contract["previewRequired"], False)
-                self.assertIs(contract["dryRunRequired"], name != "launch")
+                self.assertIs(contract["dryRunRequired"], name not in terminal_operations)
                 self.assertNotIn("ifRevRequiredOnApply", contract)
         for document, arguments in examples:
             operation = arguments.get("op")
