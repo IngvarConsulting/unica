@@ -53,6 +53,21 @@ const MAX_LIMIT: usize = 50;
 // decision: закреплено правилом INV.WIRE.READ-PAGE-BUDGET
 // decision-source: arch/rules/mcp/read-page-budget.md
 pub const PREFERRED_PAGE_BYTES: usize = 64 * 1024;
+// resource-limit: view.root-object-page-bytes
+// class: step
+// unit: bytes
+// scope: request
+// value: 8192
+// resource: Размер страницы перечисления объектов одного вида в корне набора.
+// status: justified
+// origin: #548
+// problem: На полной КА 2.6.2.72 ответы с 20 строками справочников достигали 2189 токенов o200k_base.
+// on-reach: Страница завершается по размеру с курсором; неделимая строка возвращается целиком.
+// evidence: #3221, проход 1090 справочников с проверкой регистрации и полей по XML.
+// decision: Целевой размер корневой коллекции объектов выбран владельцем по замеру.
+// decision-source: arch/rules/mcp/read-page-budget.md
+const ROOT_OBJECT_PAGE_BYTES: usize = 8 * 1024;
+
 type ViewProjector<'a> = dyn Fn(&Value) -> Result<Value, ViewError> + 'a;
 type OwnedViewProjector<'a> = dyn Fn(Value) -> Result<Value, ViewError> + 'a;
 
@@ -84,6 +99,15 @@ impl ViewRequest {
 
     pub(crate) const fn limit(&self) -> usize {
         self.limit
+    }
+
+    fn preferred_page_bytes(&self) -> usize {
+        match self.at.segments() {
+            [kind] if kind.name().is_none() && kind.kind().declaration().root.is_some() => {
+                ROOT_OBJECT_PAGE_BYTES
+            }
+            _ => PREFERRED_PAGE_BYTES,
+        }
     }
 
     pub fn cursor(&self) -> Option<&str> {
@@ -352,13 +376,7 @@ impl<A: ViewReadAuthority> ViewService<A> {
                 .snapshot
                 .read_items(stored.offset, request.limit.saturating_add(1))
                 .map_err(cursor_error)?;
-            let page = prepare_page(
-                &page_node,
-                &window,
-                0,
-                request.limit,
-                &stored.snapshot.binding,
-            )?;
+            let page = prepare_page(&page_node, &window, 0, request, &stored.snapshot.binding)?;
             let next_offset = stored.offset + page.next_offset;
             let next_cursor = if next_offset < stored.snapshot.len() {
                 self.cursors
@@ -567,7 +585,7 @@ impl<A: ViewReadAuthority> ViewService<A> {
             &binding,
         )?;
         let page_node = collection_metadata(&node, start, items.len());
-        let first = prepare_page(&page_node, &items, start, request.limit, &binding)?;
+        let first = prepare_page(&page_node, &items, start, request, &binding)?;
         let cursor = if first.next_offset == items.len() {
             None
         } else {
@@ -784,7 +802,7 @@ fn prepare_page(
     node: &Value,
     items: &[Value],
     mut offset: usize,
-    limit: usize,
+    request: &ViewRequest,
     binding: &ViewCursorBinding,
 ) -> Result<PreparedViewPage, ViewError> {
     if offset > items.len() {
@@ -804,13 +822,14 @@ fn prepare_page(
     // Metadata alone may exceed the preferred page size. In that case an
     // element cap and the transport limit still apply, without forcing every
     // otherwise readable element onto its own page.
-    let prefer_page_bytes = base_bytes <= PREFERRED_PAGE_BYTES;
+    let preferred_bytes = request.preferred_page_bytes();
+    let prefer_page_bytes = base_bytes <= preferred_bytes;
     let mut page_items = Vec::new();
     let stopped_by = loop {
         if offset == items.len() {
             break "complete";
         }
-        if page_items.len() == limit {
+        if page_items.len() == request.limit {
             break "limit";
         }
         let mut candidate = page_items.clone();
@@ -832,7 +851,7 @@ fn prepare_page(
             }
             break "bytes";
         }
-        if prefer_page_bytes && bytes > PREFERRED_PAGE_BYTES && !page_items.is_empty() {
+        if prefer_page_bytes && bytes > preferred_bytes && !page_items.is_empty() {
             break "bytes";
         }
         page_items = candidate;
@@ -1335,6 +1354,44 @@ mod tests {
         }
         assert_eq!(lines, (0..2_601).collect::<Vec<_>>());
         assert_eq!(page.page.as_ref().unwrap()["stoppedBy"], "complete");
+    }
+
+    /// rule: INV.WIRE.READ-PAGE-BUDGET
+    #[test]
+    fn root_object_pages_use_the_small_budget_across_source_sets_and_keep_whole_items() {
+        use unica_navigation::result_store::ViewCursorBinding;
+        for (at, compact) in [
+            ("main:Catalog", true),
+            ("extension:Document", true),
+            ("main:InformationRegister", true),
+            ("main:CommonModule", true),
+            ("main:Catalog.Items.Form", false),
+            ("main:Catalog.Items.Attribute", false),
+            ("main:CommonModule.M.Module.Body", false),
+        ] {
+            let request = ViewRequest::new(at).unwrap().with_limit(50).unwrap();
+            let binding = ViewCursorBinding {
+                canonical_at: at.into(),
+                projection: String::new(),
+                source_set_identity: "source".into(),
+                snapshot_id: "rev".into(),
+                page_limit: 50,
+            };
+            let node = json!({"at": at});
+            let items = vec![json!("x".repeat(9_000)), json!("end")];
+            let page = super::prepare_page(&node, &items, 0, &request, &binding).unwrap();
+            if compact {
+                assert_eq!(page.items, items[..1], "{at}");
+                assert_eq!(page.stopped_by, "bytes", "{at}");
+                let next = super::prepare_page(&node, &items, page.next_offset, &request, &binding)
+                    .unwrap();
+                assert_eq!(next.items, items[1..], "{at}");
+                assert_eq!(next.stopped_by, "complete", "{at}");
+            } else {
+                assert_eq!(page.items, items, "{at}");
+                assert_eq!(page.stopped_by, "complete", "{at}");
+            }
+        }
     }
 
     /// rule: INV.WIRE.READ-PAGE-BUDGET
@@ -1893,7 +1950,8 @@ mod tests {
         let padding = MAX_CANONICAL_RESULT_BYTES - super::serialized_result_size(&probe);
         let items = vec![json!("first"), json!("X".repeat(padding)), json!("last")];
         super::preflight_collection(&node, &items, &binding).unwrap();
-        let page = super::prepare_page(&node, &items, 1, 1, &binding).unwrap();
+        let request = ViewRequest::new(at).unwrap().with_limit(1).unwrap();
+        let page = super::prepare_page(&node, &items, 1, &request, &binding).unwrap();
         let store = ViewCursorStore::default();
         let token = store
             .insert_snapshot(binding.clone(), node.clone(), items.clone(), 2)
@@ -1924,7 +1982,7 @@ mod tests {
             json!("M".repeat(MAX_CANONICAL_RESULT_BYTES - super::serialized_result_size(&base)));
         let items = vec![serde_json::Value::Null, serde_json::Value::Null];
         super::preflight_collection(&metadata, &items, &binding).unwrap();
-        let page = super::prepare_page(&metadata, &items, 0, 1, &binding).unwrap();
+        let page = super::prepare_page(&metadata, &items, 0, &request, &binding).unwrap();
         let token = store
             .insert_snapshot(binding.clone(), metadata.clone(), items.clone(), 1)
             .unwrap();

@@ -311,7 +311,7 @@ pub fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                             // No schema `default` (#1210): form clients send it, and
                             // limit without at is refused.
                             "limit": {"type": "integer", "minimum": 1, "maximum": 50,
-                                "description": "Maximum child items per addressed view page, from 1 to 50; valid only with at. Omit for 20. A preferred 64 KiB page size may stop earlier, but an indivisible item remains whole."},
+                                "description": "Maximum child items per addressed view page, from 1 to 50; valid only with at. Omit for 20. Root metadata object lists target 8 KiB per page; other collections target 64 KiB. A page may stop earlier by size. An indivisible item remains whole."},
                             "cursor": cursor("For the next page, repeat the same at and limit with the cursor from the result. Stop when the result has no cursor."),
                             "offset": {"type":"integer", "minimum":0, "description":"Start a collection page at this zero-based position, without reading prior pages. Exclusive with from and cursor. Positions beyond the end return an empty page with data.offset equal to data.total."},
                             "from": {"type":"string", "description":"Start at the first registered name beginning with this prefix, ignoring Unicode case. Exclusive with offset and cursor. No match returns an empty page with data.offset equal to data.total. Names, not synonyms, are matched."},
