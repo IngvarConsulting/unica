@@ -31,6 +31,8 @@ struct Frontend {
     initialized: Value,
     roots: Option<RootsAnswer>,
     roots_requests: usize,
+    /// Speaks 2026-07-28: no initialize; roots come as an input request.
+    modern: bool,
 }
 
 impl Frontend {
@@ -91,6 +93,7 @@ impl Frontend {
             initialized: Value::Null,
             roots,
             roots_requests: 0,
+            modern: false,
         };
         frontend.send(
             1,
@@ -163,6 +166,94 @@ impl Frontend {
         self.input.flush().unwrap();
     }
 
+    /// A 2026-07-28 client without initialize: every request names its
+    /// protocol, and roots, when declared, answer an input request.
+    fn start_modern(
+        cwd: &Path,
+        state: &Path,
+        environment: &[(&str, &str)],
+        roots: Option<RootsAnswer>,
+    ) -> Self {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_unica"));
+        command
+            .current_dir(cwd)
+            .env("UNICA_PROVIDER_STATE_DIR", state)
+            .env("UNICA_DAEMON_IDLE_GRACE_MS", "5000")
+            .env_remove("UNICA_RUNTIME_MANIFEST")
+            .env_remove("UNICA_HOST_CONTEXT_REQUIRED")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit());
+        for name in contract()["projectEnvironment"].as_array().unwrap() {
+            command.env_remove(name.as_str().unwrap());
+        }
+        command.envs(environment.iter().copied());
+        let mut process = OwnedProcess(command.spawn().unwrap());
+        let input = process.0.stdin.take().unwrap();
+        let output = process.0.stdout.take().unwrap();
+        let (sender, responses) = mpsc::channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(output).lines() {
+                let Ok(line) = line else { break };
+                let Ok(response) = serde_json::from_str(&line) else {
+                    break;
+                };
+                if sender.send(response).is_err() {
+                    break;
+                }
+            }
+        });
+        Self {
+            _process: process,
+            input,
+            responses,
+            initialized: Value::Null,
+            roots,
+            roots_requests: 0,
+            modern: true,
+        }
+    }
+
+    /// One tool call. A modern client answers the roots input request and
+    /// repeats the call, as a 2026-07-28 host does; `roots_requests` counts them.
+    fn call(&mut self, id: u64, name: &str, arguments: Value) -> Value {
+        let mut params = json!({"name": name, "arguments": arguments});
+        if self.modern {
+            let capabilities = if self.roots.is_some() {
+                json!({"roots": {"listChanged": true}})
+            } else {
+                json!({})
+            };
+            params["_meta"] = json!({
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientInfo": {"name": "host-context-integration", "version": "1"},
+                "io.modelcontextprotocol/clientCapabilities": capabilities
+            });
+        }
+        self.send(id, "tools/call", params.clone());
+        let response = self.receive(id);
+        if response["result"]["resultType"] != "input_required" {
+            return response;
+        }
+        let requests = &response["result"]["inputRequests"];
+        assert_eq!(
+            requests["unica/roots"]["method"], "roots/list",
+            "{response:#}"
+        );
+        self.roots_requests += 1;
+        let roots = match self.roots.as_ref().expect("roots were not declared") {
+            RootsAnswer::Roots(uris) => uris
+                .iter()
+                .map(|uri| json!({"uri": uri}))
+                .collect::<Vec<_>>(),
+            _ => Vec::new(),
+        };
+        params["inputResponses"] = json!({"unica/roots": {"roots": roots}});
+        let retry = id + 1_000_000;
+        self.send(retry, "tools/call", params);
+        self.receive(retry)
+    }
+
     fn view(&mut self, id: u64, location: Option<Value>) -> Value {
         self.send(id, "tools/call", view_params(location));
         self.receive(id)
@@ -215,19 +306,30 @@ fn stdio_call_uses_host_workspace_instead_of_plugin_cwd() {
     let mut frontend = Frontend::start(&plugin, &state, &[]);
     frontend.send(10, "tools/list", json!({}));
     let listed = frontend.receive(10);
+    // The model names no directory of its own (#672): no free `cwd`; a
+    // subject tool only selects inside the host's set with `workspace`.
     for tool in listed["result"]["tools"].as_array().unwrap() {
-        assert!(
-            tool["inputSchema"]["properties"].get("cwd").is_none(),
-            "the model must not choose workspace context: {tool:#}"
+        let properties = &tool["inputSchema"]["properties"];
+        assert!(properties.get("cwd").is_none(), "{tool:#}");
+        let subject = !tool["name"].as_str().unwrap().starts_with("unica.task.");
+        assert_eq!(
+            properties["workspace"]["description"].is_string(),
+            subject,
+            "{tool:#}"
         );
     }
-    let response = frontend.view(
-        2,
-        Some(json!(url::Url::from_directory_path(&project)
-            .unwrap()
-            .as_str())),
-    );
+    let location = json!(url::Url::from_directory_path(&project).unwrap().as_str());
+    let response = frontend.view(2, Some(location.clone()));
     assert_workspace(&response, &project);
+    // The plugin's own directory is outside the set the host named: the
+    // selection is refused, never served.
+    let mut params = view_params(Some(location));
+    params["arguments"] = json!({"workspace": plugin.to_str().unwrap()});
+    frontend.send(3, "tools/call", params.clone());
+    assert_refusal(&frontend.receive(3));
+    params["arguments"] = json!({"workspace": "plugin"});
+    frontend.send(4, "tools/call", params);
+    assert_refusal(&frontend.receive(4));
     let fixture = contract();
     assert_eq!(
         frontend.initialized["result"]["capabilities"]["experimental"]
@@ -849,4 +951,304 @@ fn view_names_the_channel_that_chose_the_workspace_and_hints_only_for_stale_ones
             "{fell_back:#}"
         );
     }
+}
+
+/// A copy of the acceptance workspace: one `main` configuration source set.
+fn acceptance_copy(root: &Path, name: &str) -> std::path::PathBuf {
+    fn copy(from: &Path, to: &Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for entry in std::fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let target = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy(&entry.path(), &target);
+            } else {
+                std::fs::copy(entry.path(), &target).unwrap();
+            }
+        }
+    }
+    let target = root.join(name);
+    copy(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/acceptance/workspace"),
+        &target,
+    );
+    std::fs::canonicalize(target).unwrap()
+}
+
+/// A procedure only project B has, so a hit proves which tree was read.
+fn mark_project_b(project: &Path) {
+    let module = project.join("src/CommonModules/GoogleПереводчик/Ext/Module.bsl");
+    let mut text = std::fs::read_to_string(&module).unwrap();
+    text.push_str("\r\nПроцедура МаркерПроектаБ() Экспорт\r\nКонецПроцедуры\r\n");
+    std::fs::write(module, text).unwrap();
+}
+
+fn structured(response: &Value) -> &Value {
+    &response["result"]["structuredContent"]
+}
+
+fn same(path: &Value, expected: &Path) -> bool {
+    path.as_str()
+        .and_then(|path| Path::new(path).canonicalize().ok())
+        .is_some_and(|path| path == expected.canonicalize().unwrap())
+}
+
+/// Хост открыл сессии две папки (проект и `--add-dir`): без выбора работает
+/// проект, как раньше; `unica.view {}` перечисляет обе; выбор второй папки
+/// читает её дерево, а курсор и токен плана одной папки в другой не действуют.
+/// rule: INV.WORKSPACE.HOST-CONTEXT
+/// rule: INV.APP.DEFERRED-READ
+/// rule: INV.WIRE.APPLY-REQUIRES-THE-FENCE
+#[test]
+fn a_selection_chooses_among_client_roots_and_keeps_their_state_apart() {
+    let root_dir = tempfile::tempdir().unwrap();
+    let plugin = workspace(root_dir.path(), "plugin");
+    let project_a = acceptance_copy(root_dir.path(), "проект A");
+    let project_b = acceptance_copy(root_dir.path(), "проект B");
+    mark_project_b(&project_b);
+    let foreign = workspace(root_dir.path(), "чужой C");
+    let state = workspace(root_dir.path(), "state");
+    let _daemon = spawn_owned_daemon(&state);
+    let mut frontend = Frontend::start_with_roots(
+        &plugin,
+        &state,
+        &[],
+        Some(RootsAnswer::Roots(vec![root(&project_a), root(&project_b)])),
+    );
+    let b = "проект b";
+
+    // 1, 13: no selection keeps the first root and lists the whole set.
+    let listed = frontend.call(2, "unica.view", json!({}));
+    assert_workspace(&listed, &project_a);
+    let origin = &structured(&listed)["data"]["workspaceRootOrigin"];
+    assert_eq!(origin["channel"], "clientRoots", "{origin:#}");
+    assert!(origin.get("selected").is_none(), "{origin:#}");
+    let available = origin["available"].as_array().expect("allowed set");
+    assert_eq!(available.len(), 2, "{origin:#}");
+    assert!(same(&available[0]["directory"], &project_a));
+    assert!(same(&available[1]["directory"], &project_b));
+    assert_eq!(available[1]["space"], b);
+    assert_eq!(available[1]["projectFile"], true);
+
+    // 2: the selected root, named as an explicit choice.
+    let chosen = frontend.call(3, "unica.view", json!({"workspace": b}));
+    assert_workspace(&chosen, &project_b);
+    let origin = &structured(&chosen)["data"]["workspaceRootOrigin"];
+    assert_eq!(origin["selected"], true, "{origin:#}");
+    assert!(same(&origin["root"], &project_b), "{origin:#}");
+    assert!(origin.get("available").is_none(), "{origin:#}");
+
+    // 3: the search reads the selected tree, and only with the selection.
+    let found = frontend.call(
+        4,
+        "unica.search",
+        json!({"query": "МаркерПроектаБ", "workspace": b}),
+    );
+    assert_eq!(structured(&found)["ok"], true, "{found:#}");
+    assert!(found.to_string().contains("GoogleПереводчик"), "{found:#}");
+    let unselected = frontend.call(5, "unica.search", json!({"query": "МаркерПроектаБ"}));
+    assert!(
+        !unselected.to_string().contains("GoogleПереводчик"),
+        "{unselected:#}"
+    );
+
+    // 4: a view cursor of B continues in B, never in A, and A stays A.
+    let at = "main:CommonModule.GoogleПереводчик.Method";
+    let first = frontend.call(
+        6,
+        "unica.view",
+        json!({"at": at, "limit": 1, "workspace": b}),
+    );
+    let cursor = structured(&first)["cursor"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{first:#}"))
+        .to_owned();
+    let elsewhere = frontend.call(
+        7,
+        "unica.view",
+        json!({"at": at, "limit": 1, "cursor": cursor}),
+    );
+    assert_eq!(
+        structured(&elsewhere)["diagnostics"][0]["code"],
+        "invalid_cursor",
+        "{elsewhere:#}"
+    );
+    let continued = frontend.call(
+        8,
+        "unica.view",
+        json!({"at": at, "limit": 1, "cursor": cursor, "workspace": b}),
+    );
+    assert_eq!(structured(&continued)["ok"], true, "{continued:#}");
+    assert_workspace(&frontend.call(9, "unica.view", json!({})), &project_a);
+
+    // 9: a plan saved in B does not execute in A.
+    let planned = frontend.call(
+        10,
+        "unica.apply",
+        json!({"workspace": b, "at": "main:Catalog.Валюты",
+               "ops": [{"op": "props.set", "args": {"values": {"Comment": "из B"}}}]}),
+    );
+    let token = structured(&planned)["data"]["executionToken"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{planned:#}"))
+        .to_owned();
+    let crossed = frontend.call(11, "unica.apply", json!({"executionToken": token}));
+    assert!(
+        structured(&crossed)["summary"]
+            .as_str()
+            .is_some_and(|summary| summary.contains("unavailable in this workspace actor")),
+        "{crossed:#}"
+    );
+    let catalog_a = std::fs::read_to_string(project_a.join("src/Catalogs/Валюты.xml")).unwrap();
+    assert!(!catalog_a.contains("из B"));
+
+    // 6: outside the set: refused, nothing substituted.
+    assert_refusal(&frontend.call(12, "unica.view", json!({"workspace": "чужой c"})));
+
+    // 11: the host opened another directory: the next call may select it.
+    frontend.roots = Some(RootsAnswer::Roots(vec![
+        root(&project_a),
+        root(&project_b),
+        root(&foreign),
+    ]));
+    assert_workspace(
+        &frontend.call(13, "unica.view", json!({"workspace": "чужой c"})),
+        &foreign,
+    );
+}
+
+/// Репозиторий с продуктами в подпапках: файл проекта у каждого свой, в корне
+/// его нет. Выбор подпапки по относительному пути даёт её рабочую область;
+/// файл проекта выше открытой папки выбор не подхватывает.
+/// rule: INV.WORKSPACE.HOST-CONTEXT
+#[test]
+fn a_repository_of_workspaces_selects_each_product_by_relative_path() {
+    let root_dir = tempfile::tempdir().unwrap();
+    let plugin = workspace(root_dir.path(), "plugin");
+    let repository = workspace(root_dir.path(), "репозиторий R");
+    let smb = acceptance_copy(&repository, "smb");
+    let acc = acceptance_copy(&repository, "acc");
+    workspace(&repository, "docs");
+    let state = workspace(root_dir.path(), "state");
+    let _daemon = spawn_owned_daemon(&state);
+    let mut frontend = Frontend::start_with_roots(
+        &plugin,
+        &state,
+        &[],
+        Some(RootsAnswer::Roots(vec![root(&repository)])),
+    );
+
+    let listed = frontend.call(2, "unica.view", json!({}));
+    let available = &structured(&listed)["data"]["workspaceRootOrigin"]["available"];
+    assert_eq!(available[0]["projectFile"], false, "{listed:#}");
+    assert_eq!(
+        available[0]["workspaces"],
+        json!(["acc", "smb"]),
+        "{listed:#}"
+    );
+
+    // 5: two products, two workspaces.
+    let first = frontend.call(3, "unica.view", json!({"workspace": "репозиторий r/smb"}));
+    assert_workspace(&first, &smb);
+    assert_ne!(
+        structured(&first)["data"]["config"]["state"],
+        "missing",
+        "{first:#}"
+    );
+    assert_workspace(
+        &frontend.call(4, "unica.view", json!({"workspace": "репозиторий r/acc"})),
+        &acc,
+    );
+
+    // 7: a project file above the open directory is not borrowed.
+    std::fs::write(root_dir.path().join("v8project.yaml"), "format: DESIGNER\n").unwrap();
+    let above = frontend.call(5, "unica.view", json!({"workspace": "репозиторий r/docs"}));
+    assert_refusal(&above);
+    assert!(above.to_string().contains("lies above"), "{above:#}");
+}
+
+/// Метаданные вызова называют одну папку: выбор возможен только внутри неё.
+/// rule: INV.WORKSPACE.HOST-CONTEXT
+#[test]
+fn request_metadata_allows_only_its_own_directory() {
+    let root_dir = tempfile::tempdir().unwrap();
+    let plugin = workspace(root_dir.path(), "plugin");
+    let project_a = workspace(root_dir.path(), "проект A");
+    let nested = workspace(&project_a, "вложенная");
+    let project_b = workspace(root_dir.path(), "проект B");
+    let state = workspace(root_dir.path(), "state");
+    let _daemon = spawn_owned_daemon(&state);
+    let mut frontend = Frontend::start(&plugin, &state, &[]);
+    let fixture = contract();
+    let mut call = |id: u64, selection: &str| {
+        let mut params = view_params(Some(json!(project_a.to_str().unwrap())));
+        params["arguments"] = json!({"workspace": selection});
+        frontend.send(id, "tools/call", params);
+        frontend.receive(id)
+    };
+    // 12
+    assert!(project_b.is_dir());
+    assert_refusal(&call(2, "проект b"));
+    let inner = call(3, "проект a/вложенная");
+    assert_workspace(&inner, &nested);
+    assert_eq!(
+        structured(&inner)["data"]["workspaceRootOrigin"]["capability"],
+        fixture["metadataKey"]
+    );
+}
+
+/// Клиент 2026-07-28 отдаёт roots только ответом на запрос ввода: Unica
+/// задаёт его каждому предметному вызову, как `roots/list` в прежней сессии,
+/// поэтому все вызовы сессии видят одну папку по умолчанию — первый root, а
+/// не захваченную при запуске переменную.
+/// rule: INV.WORKSPACE.HOST-CONTEXT
+#[test]
+fn a_modern_client_answers_roots_on_every_subject_call() {
+    let root_dir = tempfile::tempdir().unwrap();
+    let plugin = workspace(root_dir.path(), "plugin");
+    let project_a = acceptance_copy(root_dir.path(), "проект A");
+    let project_b = acceptance_copy(root_dir.path(), "проект B");
+    mark_project_b(&project_b);
+    let state = workspace(root_dir.path(), "state");
+    let _daemon = spawn_owned_daemon(&state);
+    let variable = contract()["projectEnvironment"][0]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut frontend = Frontend::start_modern(
+        &plugin,
+        &state,
+        &[(variable.as_str(), project_b.to_str().unwrap())],
+        Some(RootsAnswer::Roots(vec![root(&project_a), root(&project_b)])),
+    );
+
+    let listed = frontend.call(2, "unica.view", json!({}));
+    assert_workspace(&listed, &project_a);
+    assert_eq!(frontend.roots_requests, 1);
+    assert_eq!(
+        structured(&listed)["data"]["workspaceRootOrigin"]["available"]
+            .as_array()
+            .map(Vec::len),
+        Some(2),
+        "{listed:#}"
+    );
+
+    let b = "проект b";
+    let found = frontend.call(
+        3,
+        "unica.search",
+        json!({"query": "МаркерПроектаБ", "workspace": b}),
+    );
+    assert!(found.to_string().contains("GoogleПереводчик"), "{found:#}");
+    assert_eq!(frontend.roots_requests, 2);
+
+    // A call without a selection works in the first root, not in the stale
+    // startup variable, which here names project B.
+    let unselected = frontend.call(4, "unica.search", json!({"query": "МаркерПроектаБ"}));
+    assert_eq!(structured(&unselected)["ok"], true, "{unselected:#}");
+    assert!(
+        !unselected.to_string().contains("GoogleПереводчик"),
+        "{unselected:#}"
+    );
+    assert_eq!(frontend.roots_requests, 3);
 }

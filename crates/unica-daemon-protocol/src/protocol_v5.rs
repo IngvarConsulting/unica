@@ -370,7 +370,9 @@ impl V5InvocationRequest {
         // The origin names a host capability or a project variable; both are
         // short identifiers that a result quotes verbatim.
         let name = match &self.workspace_origin {
-            unica_bootstrap::WorkspaceOrigin::RequestMetadata { capability } => Some(capability),
+            unica_bootstrap::WorkspaceOrigin::RequestMetadata { capability, .. } => {
+                Some(capability)
+            }
             unica_bootstrap::WorkspaceOrigin::StartupEnvironment { variable, .. } => Some(variable),
             _ => None,
         };
@@ -1967,7 +1969,8 @@ mod medium_tests {
         };
         let digests = [
             r#"{"channel":"launchCwd"}"#,
-            r#"{"channel":"clientRoots"}"#,
+            r#"{"channel":"clientRoots","root":"workspace-a"}"#,
+            r#"{"channel":"clientRoots","root":"workspace-a","selected":true,"available":[{"space":"workspace-a","directory":"workspace-a","projectFile":true,"workspaces":["smb"]}]}"#,
             r#"{"channel":"startupEnvironment","variable":"PROJECT_DIR","roots":"timeout"}"#,
             r#"{"channel":"requestMetadata","capability":"host/meta"}"#,
         ]
