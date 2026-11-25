@@ -223,8 +223,14 @@ mod tests {
         for (element, expected) in [
             ("", Ok(None)),
             ("<DefaultInterface/>", Ok(None)),
-            ("<DefaultInterface>.Probe</DefaultInterface>", Err(ConfigurationReferenceError::Malformed)),
-            ("<DefaultInterface>Bad Tag.Probe</DefaultInterface>", Err(ConfigurationReferenceError::Malformed)),
+            (
+                "<DefaultInterface>.Probe</DefaultInterface>",
+                Err(ConfigurationReferenceError::Malformed),
+            ),
+            (
+                "<DefaultInterface>Bad Tag.Probe</DefaultInterface>",
+                Err(ConfigurationReferenceError::Malformed),
+            ),
             (
                 "<DefaultInterface>Interface.Probe</DefaultInterface>",
                 Ok(Some("OrdinaryInterface.Probe".into())),

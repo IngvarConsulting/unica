@@ -127,7 +127,10 @@ impl ProviderReadAuthority {
         use crate::infrastructure::v13_large_configuration::read_configuration_relations;
         checkpoint()?;
         if let Some(buffer) = self.open_buffer(Path::new("Configuration.xml")) {
-            return read_configuration_relations(std::io::Cursor::new(buffer.text.as_bytes()), checkpoint);
+            return read_configuration_relations(
+                std::io::Cursor::new(buffer.text.as_bytes()),
+                checkpoint,
+            );
         }
         read_configuration_relations(self.configuration_file()?, checkpoint)
     }
@@ -150,12 +153,10 @@ impl ProviderReadAuthority {
                 }));
                 Err(refusal)
             }
-            Err(error) => {
-                Err(ViewError::detailed(
-                    RefusalDetail::SourceUnreadable,
-                    error.to_string(),
-                ))
-            }
+            Err(error) => Err(ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
+                error.to_string(),
+            )),
         }
     }
 

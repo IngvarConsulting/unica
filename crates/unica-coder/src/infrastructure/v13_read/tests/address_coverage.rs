@@ -410,7 +410,10 @@ fn native_configuration_root_address_table_matches_published_branches() {
             branches.remove("main:Module"),
             "{line}: missing Module branch"
         );
-        assert!(branches.remove("main:Configuration.Relation"), "{line}: missing Relation branch");
+        assert!(
+            branches.remove("main:Configuration.Relation"),
+            "{line}: missing Relation branch"
+        );
         let relations = read(&authority, "main:Configuration.Relation");
         assert_eq!(relations["kind"], "Relation");
         for at in branches {
