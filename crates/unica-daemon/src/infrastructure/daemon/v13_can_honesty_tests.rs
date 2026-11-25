@@ -1628,6 +1628,8 @@ fn honest_can_on_form_items_and_events() {
         "attribute.add",
         "command.add",
         "event.bind",
+        "event.replace",
+        "event.unbind",
         "event.implement",
     ];
     let cases: [(String, &[&str]); 8] = [
@@ -1664,10 +1666,10 @@ fn honest_can_on_form_items_and_events() {
         "item.add" => {
             json!({"items": [{"name": "Проба", "type": "Button", "stdCommand": "Close"}]})
         }
-        "item.remove" | "form.remove" | "event.implement" => json!({"at": at}),
+        "item.remove" | "form.remove" | "event.implement" | "event.unbind" => json!({"at": at}),
         "attribute.add" => json!({"items": [{"name": "Проба", "type": "String"}]}),
         "command.add" => json!({"items": [{"name": "Проба"}]}),
-        "event.bind" => json!({"values": {"handler": "Проба"}}),
+        "event.bind" | "event.replace" => json!({"values": {"handler": "Проба"}}),
         other => panic!("{other} has no sample"),
     };
     for (at, expected) in cases {

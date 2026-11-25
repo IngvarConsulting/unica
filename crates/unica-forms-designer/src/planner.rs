@@ -6,6 +6,9 @@ use unica_forms::default_forms::FormSlotTarget;
 use unica_forms::facts::FormInfoElement;
 use unica_forms::operations::FormOperation;
 use unica_forms::FormItemRole;
+use unica_metadata::event::FormCallType;
+
+use crate::event_patch::LocalEventEdit;
 use unica_source_contract::events::{DomainEvent, DomainEventKind};
 use unica_source_contract::proposal::input::{bad, required_values};
 use unica_source_contract::proposal::{
@@ -18,6 +21,10 @@ const UTF8_BOM: &[u8] = b"\xef\xbb\xbf";
 #[derive(Debug, Clone)]
 pub enum FormEditStep {
     Definition(Value),
+    EditEvent {
+        name: String,
+        edit: LocalEventEdit,
+    },
     RemoveAttribute {
         name: String,
     },
@@ -703,7 +710,9 @@ pub fn parse_form_operation(
             FormOperation::ItemRemove | FormOperation::ItemMove => {
                 !target.items.is_empty() && target.event.is_none()
             }
-            FormOperation::EventBind => target.event.is_some(),
+            FormOperation::EventBind | FormOperation::EventReplace | FormOperation::EventUnbind => {
+                target.event.is_some()
+            }
             FormOperation::Remove
             | FormOperation::AttributeAdd
             | FormOperation::CommandAdd
@@ -722,7 +731,9 @@ pub fn parse_form_operation(
                 "the existing item `Owner.Name.Form.F.Item.A[.Item.B…]`"
             }
             FormOperation::AttributeRemove => "the existing attribute `Owner.Name.Form.F.Attribute.A`",
-            FormOperation::EventBind => "the event `Owner.Name.Form.F[.Item.A…].Event.E`",
+            FormOperation::EventBind | FormOperation::EventReplace | FormOperation::EventUnbind => {
+                "the event `Owner.Name.Form.F[.Item.A…].Event.E`"
+            }
             FormOperation::Remove
             | FormOperation::AttributeAdd
             | FormOperation::CommandAdd
@@ -1126,6 +1137,54 @@ pub fn parse_form_operation(
                 definitions: vec![FormEditStep::Definition(
                     serde_json::json!({"removeElements": [{"name": name}]}),
                 )],
+            })
+        }
+        FormOperation::EventReplace | FormOperation::EventUnbind => {
+            let form = form_of(&target)?;
+            let edit = if operation == FormOperation::EventReplace {
+                let values = required_values(args, op_index, &["handler", "callType"])?;
+                let handler = unica_source_contract::proposal::input::required_string(
+                    values, "handler", op_index, "values",
+                )?;
+                let call_type = values
+                    .get("callType")
+                    .map(|value| {
+                        value
+                            .as_str()
+                            .and_then(FormCallType::from_xml)
+                            .ok_or_else(|| {
+                                bad(
+                                    op_index,
+                                    "values.callType",
+                                    "`callType` must be Before, After, or Override",
+                                )
+                            })
+                    })
+                    .transpose()?;
+                LocalEventEdit::Replace {
+                    handler: handler.to_string(),
+                    call_type,
+                }
+            } else {
+                if let Some(key) = args.keys().find(|key| key.as_str() != "at") {
+                    return Err(bad(
+                        op_index,
+                        key,
+                        "event.unbind takes only the address of the local event binding",
+                    ));
+                }
+                LocalEventEdit::Unbind
+            };
+            Ok(FormPlan::FormEdit {
+                owner: target.owner,
+                form,
+                subject: FormEditSubject::Node(target.items),
+                definitions: vec![FormEditStep::EditEvent {
+                    name: target
+                        .event
+                        .expect("form event operation has an event target"),
+                    edit,
+                }],
             })
         }
         FormOperation::EventBind => {
@@ -1872,6 +1931,28 @@ pub fn stage_form_edit(
     for step in definitions {
         let definition = match step {
             FormEditStep::Definition(definition) => definition,
+            FormEditStep::EditEvent { name, edit } => {
+                crate::event_patch::edit_local_event(
+                    &mut xml_text,
+                    subject.items(),
+                    name,
+                    edit,
+                    owner
+                        .segments()
+                        .next()
+                        .and_then(|kind| NodeKind::parse(kind).ok()),
+                    authority.source_profile().semantic_line(),
+                )
+                .map_err(|error| {
+                    let path = if error.kind() == ApplyPlanErrorKind::BadValue {
+                        &args_path
+                    } else {
+                        &at_path
+                    };
+                    error.at_path(path.clone())
+                })?;
+                continue;
+            }
             FormEditStep::RemoveAttribute { name } => {
                 xml_text =
                     crate::codec::attribute_remove::remove(&xml_text, name).map_err(|error| {
@@ -1965,6 +2046,7 @@ pub fn stage_form_edit(
                 FormEditStep::ColumnType { .. }
                     | FormEditStep::AddColumns { .. }
                     | FormEditStep::RemoveAttribute { .. }
+                    | FormEditStep::EditEvent { .. }
             )
         });
     let postimage = if preserves_bytes && !preimage.starts_with(UTF8_BOM) {

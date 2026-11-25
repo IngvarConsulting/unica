@@ -404,6 +404,17 @@ impl CanonicalV13ReadService {
                     None
                 }
             };
+            let local_event_binding =
+                if unica_forms::applicability::form_event_parts(address.segments()).is_some() {
+                    source
+                        .logical_view_read_authority(cancellation)
+                        .map_err(|message| {
+                            ViewError::detailed(RefusalDetail::ProviderAbsent, message)
+                        })?
+                        .has_local_form_event_binding(&address)?
+                } else {
+                    false
+                };
             match operation.as_deref() {
                 Some(op) => {
                     let owner_at = data
@@ -411,20 +422,31 @@ impl CanonicalV13ReadService {
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_string();
-                    operation_node_with(&data, op, &owner_at, can_context, &color).map_err(
-                        |error| {
-                            let mut refused = ViewError::new(error.code(), error.to_string());
-                            refused.set_next(json!({
-                                "tool": "unica.view",
-                                "args": {"at": owner_at},
-                                "reason": "операции, применимые к этому узлу",
-                            }));
-                            refused
-                        },
+                    operation_node_with(
+                        &data,
+                        op,
+                        &owner_at,
+                        can_context,
+                        &color,
+                        local_event_binding,
                     )
+                    .map_err(|error| {
+                        let mut refused = ViewError::new(error.code(), error.to_string());
+                        refused.set_next(json!({
+                            "tool": "unica.view",
+                            "args": {"at": owner_at},
+                            "reason": "операции, применимые к этому узлу",
+                        }));
+                        refused
+                    })
                 }
                 None => {
-                    attach_can_with_color(&mut data, can_context, &color);
+                    attach_can_with_observations(
+                        &mut data,
+                        can_context,
+                        &color,
+                        local_event_binding,
+                    );
                     // Возможность правки узла — ответ того же гейта поддержки,
                     // что спросит `apply`, при политике проекта (#2877).
                     let policy = || {

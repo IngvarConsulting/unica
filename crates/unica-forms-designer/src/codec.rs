@@ -848,7 +848,7 @@ fn form_validate_events_inner(
     state.module_required
 }
 
-fn validate_event_owner_node(
+pub(crate) fn validate_event_owner_node(
     owner: roxmltree::Node<'_, '_>,
     target: FormEventTarget,
     binding: &FormEventBinding<'_>,

@@ -1749,6 +1749,15 @@ pub fn staged_form_observation(
     if let Some(role) = staged_form_item_role(admission, binding, at) {
         return Some(unica_forms::FormObservation::Item(role));
     }
+    if let Some((path, event)) = unica_forms::applicability::form_event_parts(at.segments()) {
+        let xml = staged_form_xml(admission, binding, &at.prefix(2))?;
+        return unica_forms_designer::event_patch::has_local_event_binding(
+            &xml,
+            path[2..].iter().filter_map(|item| item.name()),
+            event,
+        )
+        .then_some(unica_forms::FormObservation::LocalEventBinding);
+    }
     let column = unica_forms::applicability::is_form_column(at.segments());
     if !column && !unica_forms::applicability::is_form_attribute(at.segments()) {
         return None;

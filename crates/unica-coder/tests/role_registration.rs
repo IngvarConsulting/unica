@@ -234,7 +234,7 @@ fn typed_contextual_registrations_compile_and_migrated_raw_tuples_are_rejected()
             (FormOperation::Add), (FormOperation::Set), (FormOperation::Remove),
             (FormOperation::ItemAdd), (FormOperation::ItemRemove), (FormOperation::ItemMove),
             (FormOperation::AttributeAdd), (FormOperation::AttributeRemove), (FormOperation::ColumnAdd), (FormOperation::CommandAdd),
-            (FormOperation::EventBind),
+            (FormOperation::EventBind), (FormOperation::EventReplace), (FormOperation::EventUnbind),
             (MetadataOperation::ObjectCreate)"#,
     );
     assert!(
@@ -269,6 +269,8 @@ fn typed_contextual_registrations_compile_and_migrated_raw_tuples_are_rejected()
         ("Form", "column.add", "FormAttribute", "Items"),
         ("Form", "command.add", "Form", "Items"),
         ("Form", "event.bind", "FormEvent", "Values"),
+        ("Form", "event.replace", "FormEvent", "Values"),
+        ("Form", "event.unbind", "FormEvent", "Target"),
         ("Form", "future.operation", "Form", "Items"),
     ] {
         let legacy = compile_registration(&format!(
