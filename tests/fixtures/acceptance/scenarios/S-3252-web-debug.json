@@ -101,7 +101,7 @@
         },
         {
           "pointer": "/data/url",
-          "eq": "http://localhost/demo/?L=ru"
+          "eq": "http://localhost/demo/"
         }
       ]
     }

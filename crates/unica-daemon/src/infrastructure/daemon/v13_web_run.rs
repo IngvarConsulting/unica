@@ -41,11 +41,18 @@ fn debugger_endpoint(raw: &str) -> Option<String> {
 fn publication_url(value: &Value) -> Option<Url> {
     let raw = value.as_str()?;
     let url = Url::parse(raw).ok()?;
-    (matches!(url.scheme(), "http" | "https")
-        && url.has_host()
-        && url.username().is_empty()
-        && url.password().is_none())
-    .then_some(url)
+    (matches!(url.scheme(), "http" | "https") && url.has_host()).then_some(url)
+}
+
+/// The address shown to an agent identifies the publication. Credentials,
+/// launch parameters and fragments stay between the runner and the browser.
+fn public_page(mut url: Url) -> String {
+    url.set_query(None);
+    url.set_fragment(None);
+    // HTTP(S) URLs with a host always support clearing the userinfo.
+    url.set_username("").expect("HTTP authority");
+    url.set_password(None).expect("HTTP authority");
+    url.into()
 }
 
 fn failed(operation: &str, code: RefusalCode, message: &str) -> DomainResult {
@@ -58,6 +65,25 @@ fn invalid(operation: &str) -> DomainResult {
         RefusalCode::InvalidResult,
         "inconsistent v8-runner web receipt",
     )
+}
+
+fn prepare_result(envelope: &Value, ide_url: &str, dry_run: bool, succeeded: bool) -> DomainResult {
+    let data = &envelope["data"];
+    // Failure of the managed publisher also carries route_unavailable. Preserve
+    // the provider's category and recovery layer for those operational errors.
+    let code = envelope["error"]["code"].as_str();
+    if !succeeded && code != Some("environment_unavailable") {
+        let mut result = runner_envelope_refusal(runner_rejection(
+            Some(PUBLISH.into()), code.unwrap_or("provider_failed"), envelope["error"]["layer"].as_str(),
+            "Web publication preparation failed. Check the managed publisher's descriptor activation and web-server state."
+        ),envelope);
+        if data["debug"]["state"] == "route_unavailable" && data["ok"] == false {
+            let details = result.data.get_or_insert_with(|| json!({}));
+            details["state"] = json!("route_unavailable");
+        }
+        return result;
+    }
+    prepare_receipt(PUBLISH, data, ide_url, dry_run, succeeded)
 }
 
 fn prepare_receipt(
@@ -87,7 +113,7 @@ fn prepare_receipt(
     };
     if !succeeded && state == "route_unavailable" && !changed {
         let mut result = failed(operation, RefusalCode::ProviderUnavailable,
-            "Check infobase.web.url and the active publication. Configure infobase.web.debugger-url to reach the HTTP debugger from the web server, enable it in the publication descriptor and reload that publication. For standalone, enable debugging on the server.");
+            "Check infobase.web.url and the active publication. Configure infobase.web.debugger-url to reach the HTTP debugger from the web server, enable it in the publication descriptor and reload that publication. For a managed publication, verify its active descriptor and republish if the cluster address changed. For standalone, enable debugging on the server.");
         result.data = Some(
             json!({"op":operation,"state":state,"runnerCode":state,"publicationChanged":false}),
         );
@@ -100,13 +126,15 @@ fn prepare_receipt(
         _ => false,
     };
     let debugger = debug["debugger_url"].as_str().and_then(debugger_endpoint);
-    let page = publication_url(&data["url"]);
-    if !succeeded || !state_matches || page.is_none() || debugger.is_none() {
+    let Some(page) = publication_url(&data["url"]) else {
+        return invalid(operation);
+    };
+    if !succeeded || !state_matches || debugger.is_none() {
         return invalid(operation);
     }
     let mut result = DomainResult::success("web publication debug route checked");
     result.data = Some(json!({"op":operation,"state":state,"ideUrl":ide_url,
-        "debuggerUrl":debugger,"url":data["url"],"publicationChanged":changed,"providerDispatched":dispatched}));
+        "debuggerUrl":debugger,"url":public_page(page),"publicationChanged":changed,"providerDispatched":dispatched}));
     if changed {
         result.changed.push(json!({"webPublication":true}));
     }
@@ -121,7 +149,13 @@ fn launch_receipt(data: &Value, requested_debugger: Option<&str>, dry_run: bool)
         || data["mode"] != "web"
         || data["via"] != "web"
         || data["provider_dispatched"] != !dry_run
-        || (dry_run && !data["pid"].is_null())
+        || if dry_run {
+            !data["pid"].is_null()
+        } else {
+            !data["pid"]
+                .as_u64()
+                .is_some_and(|pid| (1..=u64::from(u32::MAX)).contains(&pid))
+        }
     {
         return invalid("launch");
     }
@@ -150,12 +184,12 @@ fn launch_receipt(data: &Value, requested_debugger: Option<&str>, dry_run: bool)
     } else {
         "URL dispatched to the system browser"
     });
-    result.data = Some(json!({"op":"launch","clientMode":"web","url":data["url"],
-        "providerDispatched":!dry_run,"debuggerUrl":requested_debugger}));
+    result.data = Some(
+        json!({"op":"launch","clientMode":"web","url":public_page(page),
+        "providerDispatched":!dry_run,"debuggerUrl":requested_debugger}),
+    );
     if !dry_run {
-        result
-            .changed
-            .push(json!({"clientSession":true,"mode":"web"}));
+        result.changed.push(json!({"browserDispatched":true}));
     }
     result
 }
@@ -341,7 +375,7 @@ impl PreparedWebRun {
                         if output.status_success
                             || data["debug"]["state"] == "route_unavailable" =>
                     {
-                        prepare_receipt(op, data, endpoint, self.dry_run, output.status_success)
+                        prepare_result(&envelope, endpoint, self.dry_run, output.status_success)
                     }
                     WebRequest::Launch(endpoint) if output.status_success => {
                         launch_receipt(data, endpoint.as_deref(), self.dry_run)
@@ -406,7 +440,7 @@ mod tests {
             let data = r.data.unwrap();
             assert_eq!(data["ideUrl"], IDE);
             assert_eq!(data["debuggerUrl"], PUBLISHER);
-            assert_eq!(data["url"], PAGE);
+            assert_eq!(data["url"], "https://publication.example/base/");
             assert_eq!(data["publicationChanged"], changed);
             assert_eq!(r.changed.is_empty(), !changed);
             assert!(data.get("dir").is_none());
@@ -424,6 +458,46 @@ mod tests {
         assert!(r.summary.contains("infobase.web.debugger-url"));
         assert!(!r.summary.contains("private-path"));
         assert!(r.changed.is_empty());
+    }
+
+    #[test]
+    fn both_receipts_accept_authenticated_publications_and_omit_private_url_components() {
+        let raw = "https://alice:***@host/base?Pwd=secret&access_token=bearer#private";
+        let mut preparation = publication("ready", false);
+        preparation["url"] = json!(raw);
+        let r = prepare_receipt(PUBLISH, &preparation, IDE, false, true);
+        assert!(r.ok);
+        assert_eq!(r.data.unwrap()["url"], "https://host/base");
+        for dry_run in [true, false] {
+            let mut launch = json!({"ok":true,"mode":"web","via":"web","url":raw,"provider_dispatched":!dry_run,"pid": if dry_run {None} else {Some(42)}});
+            assert_eq!(
+                launch_receipt(&launch, None, dry_run).data.unwrap()["url"],
+                "https://host/base"
+            );
+            let mut url = Url::parse(raw).unwrap();
+            url.query_pairs_mut()
+                .append_pair("Debug", "http,attach")
+                .append_pair("DebuggerURL", PUBLISHER);
+            launch["url"] = json!(url.as_str());
+            launch["debug"] = json!({"url":PUBLISHER});
+            assert_eq!(
+                launch_receipt(&launch, Some(PUBLISHER), dry_run)
+                    .data
+                    .unwrap()["url"],
+                "https://host/base"
+            );
+        }
+    }
+
+    #[test]
+    fn managed_activation_failure_preserves_provider_error_and_refuses_external_owner_advice() {
+        let data = publication("route_unavailable", false);
+        let envelope = json!({"ok":false,"data":data,"error":{"code":"runtime_failure","message":"private path"}});
+        let result = prepare_result(&envelope, IDE, false, false);
+        assert!(!result.ok);
+        assert_eq!(result.diagnostics[0]["code"], "provider_failed");
+        assert_eq!(result.data.unwrap()["state"], "route_unavailable");
+        assert!(!result.summary.contains("private path"));
     }
 
     #[test]
@@ -460,6 +534,11 @@ mod tests {
     fn web_launch_distinguishes_dispatch_from_attachment_and_preserves_ordinary_launch() {
         let mut receipt = json!({"ok":true,"mode":"web","via":"web","url":PAGE,"provider_dispatched":true,"pid":123});
         assert!(launch_receipt(&receipt, None, false).ok);
+        for pid in [Value::Null, json!(0), json!("1"), json!(u64::MAX)] {
+            let mut malformed = receipt.clone();
+            malformed["pid"] = pid;
+            assert!(!launch_receipt(&malformed, None, false).ok);
+        }
         assert!(!launch_receipt(&receipt, Some(PUBLISHER), false).ok);
         let mut url = Url::parse(PAGE).unwrap();
         url.query_pairs_mut()
