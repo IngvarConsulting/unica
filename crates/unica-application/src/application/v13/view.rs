@@ -103,7 +103,7 @@ impl ViewRequest {
 
     fn preferred_page_bytes(&self) -> usize {
         match self.at.segments() {
-            [kind] if kind.name().is_none() && kind.kind().declaration().root.is_some() => {
+            [kind] if kind.name().is_none() && kind.kind().is_metadata_kind() => {
                 ROOT_OBJECT_PAGE_BYTES
             }
             _ => PREFERRED_PAGE_BYTES,
@@ -1365,9 +1365,12 @@ mod tests {
             ("extension:Document", true),
             ("main:InformationRegister", true),
             ("main:CommonModule", true),
+            ("epf:ExternalDataProcessor", true),
+            ("erf:ExternalReport", true),
+            ("main:Configuration", false),
             ("main:Catalog.Items.Form", false),
             ("main:Catalog.Items.Attribute", false),
-            ("main:CommonModule.M.Module.Body", false),
+            ("main:CommonModule.M.Body", false),
         ] {
             let request = ViewRequest::new(at).unwrap().with_limit(50).unwrap();
             let binding = ViewCursorBinding {
