@@ -216,8 +216,8 @@ fn medium_root_comments_preview_publish_read_and_repeat_preserve_native_companio
                 6
             } else if kind == "WSReference" {
                 4
-            } else if kind == "StyleItem" || kind == "Language" {
-                // Comment, its alias and Value or LanguageCode.
+            } else if matches!(kind.as_str(), "StyleItem" | "Language" | "CommonCommand") {
+                // Comment, its alias and Value, LanguageCode or Group.
                 3
             } else if kind == "CommandGroup" {
                 // Типизированный вид (#2060): Synonym, Comment, Representation,

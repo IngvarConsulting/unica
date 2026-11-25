@@ -18,5 +18,8 @@ pub(super) const KIND: KindDeclaration = KindDeclaration {
         ..LayoutDeclaration::EMPTY
     }),
     generated_types: Some(&[("IntegrationServiceManager", "Manager")]),
+    creation: Some(CreationDeclaration::properties(&[
+        "<ExternalIntegrationServiceAddress/>",
+    ])),
     ..KindDeclaration::new("IntegrationService")
 };

@@ -4,6 +4,47 @@ use unica_address::source_target::MetadataAddress;
 use unica_refusal::{RefusalCode, RefusalDetail};
 
 impl ProviderReadAuthority {
+    /// Keep the selected lines and bounded full syntax input from one file
+    /// or editor-buffer observation; diagnostics never reread another version.
+    pub(crate) fn module_text_with_syntax_input(
+        &self,
+        target: &MetadataAddress,
+        range: Option<unica_address::address::BodyLineRange>,
+        checkpoint: impl FnMut() -> Result<(), ViewError>,
+    ) -> Result<(ModuleText, Option<ModuleText>), ViewError> {
+        let mut full = ModuleTextAccumulator::default();
+        let mut selected = range.map(ModuleTextAccumulator::with_range);
+        let exists = self.visit_module_utf8_chunks(target, checkpoint, |chunk| {
+            full.push(chunk);
+            if let Some(selected) = selected.as_mut() {
+                selected.push(chunk);
+            }
+            Ok(())
+        })?;
+        if exists.is_none() && range.is_some() {
+            return Err(ViewError::new(
+                RefusalCode::NotFound,
+                "the BSL module source file does not exist",
+            ));
+        }
+        let finish = |text: ModuleTextAccumulator| {
+            text.finish().map_err(|_| {
+                ViewError::detailed(RefusalDetail::SourceUnreadable, "BSL module is not UTF-8")
+            })
+        };
+        if range.is_some_and(|range| range.to > full.line_count()) {
+            return Err(ViewError::new(
+                RefusalCode::BadValue,
+                "Body line selector exceeds the file's last line",
+            ));
+        }
+        let full = finish(full)?;
+        match selected {
+            Some(selected) => Ok((finish(selected)?, Some(full))),
+            None => Ok((full, None)),
+        }
+    }
+
     pub(crate) fn module_source(
         &self,
         target: &MetadataAddress,
@@ -70,58 +111,6 @@ impl ProviderReadAuthority {
             return Ok(Some(0));
         }
         Ok(Some(newlines + usize::from(last != Some(b'\n'))))
-    }
-
-    /// Текст модуля для `Body`: без начальных U+FEFF и не длиннее
-    /// `MAX_SOURCE_TEXT_BYTES`. Больший файл дочитывается без накопления
-    /// ради проверки UTF-8 и полного размера. Отсутствующий файл — пустой
-    /// текст, как у прежнего `Body`.
-    pub(crate) fn module_text_within_limit(
-        &self,
-        target: &MetadataAddress,
-        checkpoint: impl FnMut() -> Result<(), ViewError>,
-    ) -> Result<ModuleText, ViewError> {
-        let mut text = ModuleTextAccumulator::default();
-        let len = self.visit_module_utf8_chunks(target, checkpoint, |chunk| {
-            text.push(chunk);
-            Ok(())
-        })?;
-        if len.is_none() {
-            return Ok(ModuleText::whole(String::new()));
-        }
-        text.finish().map_err(|_| {
-            ViewError::detailed(RefusalDetail::SourceUnreadable, "BSL module is not UTF-8")
-        })
-    }
-
-    /// Retains only the requested complete file lines, while validating the
-    /// entire stream and preserving retained-source identity/cancellation.
-    pub(crate) fn module_text_range(
-        &self,
-        target: &MetadataAddress,
-        range: unica_address::address::BodyLineRange,
-        checkpoint: impl FnMut() -> Result<(), ViewError>,
-    ) -> Result<ModuleText, ViewError> {
-        let mut text = ModuleTextAccumulator::with_range(range);
-        let exists = self.visit_module_utf8_chunks(target, checkpoint, |chunk| {
-            text.push(chunk);
-            Ok(())
-        })?;
-        if exists.is_none() {
-            return Err(ViewError::new(
-                RefusalCode::NotFound,
-                "the BSL module source file does not exist",
-            ));
-        }
-        if range.to > text.line_count() {
-            return Err(ViewError::new(
-                RefusalCode::BadValue,
-                "Body line selector exceeds the file's last line",
-            ));
-        }
-        text.finish().map_err(|_| {
-            ViewError::detailed(RefusalDetail::SourceUnreadable, "BSL module is not UTF-8")
-        })
     }
 
     /// Streams the module only after one shared UTF-8 check, so every Body

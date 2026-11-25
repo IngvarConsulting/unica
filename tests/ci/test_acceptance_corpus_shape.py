@@ -5,6 +5,7 @@ Split out of `test_acceptance_scenarios.py`, whose helpers it uses.
 
 # The helpers stay in `test_acceptance_scenarios`: tests elsewhere patch them
 # there by module path, so they keep one home.
+from tests.ci.acceptance_profiles import DBGS_PROFILE
 from tests.ci.test_acceptance_scenarios import *  # noqa: F401,F403
 # Their own tests run in their own module, not again here.
 del AcceptanceCorpusRunTests, AcceptanceCorpusScheduleTests  # noqa: F821
@@ -58,7 +59,9 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
         fault = {s["id"] for s in select_profile(self.corpus, "fault-injection")["scenarios"]}
         self.assertFalse(fault & (source | delivery | agent))
         self.assertFalse(source & delivery or source & agent or delivery & agent)
-        self.assertEqual(source | delivery | agent | fault, {s["id"] for s in self.corpus["scenarios"]})
+        native_dbgs = {s["id"] for s in select_profile(self.corpus, DBGS_PROFILE)["scenarios"]}
+        self.assertFalse(native_dbgs & (source | delivery | agent | fault))
+        self.assertEqual(source | delivery | agent | fault | native_dbgs, {s["id"] for s in self.corpus["scenarios"]})
         # The closed S### block keeps its profiles; a per-file scenario
         # declares its own and is admitted by select_profile, so two added
         # scenarios never edit these sets.

@@ -394,7 +394,8 @@ impl QualifiedAddress {
             [root, can] => {
                 root.kind == NodeKind::Configuration
                     && root.name.is_none()
-                    && can.kind == NodeKind::Can
+                    && (can.kind == NodeKind::Can
+                        || (can.kind == NodeKind::Relation && can.name.is_none()))
             }
             _ => false,
         };
@@ -429,6 +430,10 @@ impl QualifiedAddress {
             ));
         }
         Ok(address)
+    }
+
+    pub fn is_configuration_relation(&self) -> bool {
+        matches!(self.segments.as_slice(), [root, relation] if root.kind == NodeKind::Configuration && relation.kind == NodeKind::Relation && relation.name.is_none())
     }
 
     /// Владелец самостоятельного XML-описания формы, без содержимого и модуля.

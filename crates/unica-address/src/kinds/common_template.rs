@@ -18,5 +18,10 @@ pub(super) const KIND: KindDeclaration = KindDeclaration {
         ..LayoutDeclaration::EMPTY
     }),
     generated_types: Some(&[]),
+    // An empty BinaryData template round-trips as its descriptor alone.
+    creation: Some(CreationDeclaration {
+        main_configuration_only: true,
+        ..CreationDeclaration::properties(&["<TemplateType>BinaryData</TemplateType>"])
+    }),
     ..KindDeclaration::new("CommonTemplate")
 };

@@ -1,0 +1,227 @@
+{
+  "formatVersion": "2.20",
+  "platformVersion": "8.3.27.2342",
+  "source": "Byte-identical selection from the final native ibcmd configuration export.",
+  "seed": {
+    "revision": "93df0feeea38b3303c5f237930980e0960b7461a",
+    "path": "tests/fixtures/formats/platform_xml/2.20/all_kinds/src"
+  },
+  "derivation": {
+    "platformStages": [
+      {
+        "stage": "platform-version",
+        "exit": 0
+      },
+      {
+        "stage": "round1-create",
+        "exit": 0
+      },
+      {
+        "stage": "round1-import",
+        "exit": 0
+      },
+      {
+        "stage": "round1-apply",
+        "exit": 0
+      },
+      {
+        "stage": "round1-export",
+        "exit": 0
+      },
+      {
+        "stage": "round2-create",
+        "exit": 0
+      },
+      {
+        "stage": "round2-import",
+        "exit": 0
+      },
+      {
+        "stage": "round2-apply",
+        "exit": 0
+      },
+      {
+        "stage": "round2-export",
+        "exit": 0
+      }
+    ],
+    "platformReceiptSha256": "81a0c1b4a30178a58e9d713efbecbe890a226aec25b0ac0aff7b508cfbcc49b4",
+    "packageReceiptSha256": "6e7693e7bb089c05a20c94c96c538f8fc97bbfe8c46fa8e911f2f6e0a2f0c488",
+    "description": "Two isolated create/import/apply/export cycles, then a second import/apply/export in the second disposable infobase.",
+    "extensionStages": [
+      {
+        "stage": "extended-import",
+        "exit": 0
+      },
+      {
+        "stage": "extended-apply",
+        "exit": 0
+      },
+      {
+        "stage": "extended-export",
+        "exit": 0
+      }
+    ],
+    "extensionReceiptSha256": "4cac13b8d56a7e7ff6f852e6f7f14e1984aad9257f8f307fe4730ded037e51b0",
+    "nativeCoreBytesPreserved": true
+  },
+  "mcp": {
+    "revision": "ec4aac54df2825e075a0d7c292b92dbcfec9ce45",
+    "binarySha256": "641d7dd01731d74f49d8258864e47621650bde9ca44c7274f5661e5cf32916c4",
+    "receiptSha256": "06b87cde1413080928926446aa344ae655f901ae4f4172e71f8da9bfc7f45b3d",
+    "successfulCalls": 20
+  },
+  "selection": "Retains sibling registered form descriptors and associated resources needed by the logical owner reader.",
+  "samples": [
+    {
+      "owner": "main:Document.Orders.Form.AddressProbeDocumentForm",
+      "role": "Form",
+      "bsl": "src/Documents/Orders/Forms/AddressProbeDocumentForm/Ext/Form/Module.bsl"
+    },
+    {
+      "owner": "main:Catalog.Валюты.Command.AddressProbeCatalogCommand",
+      "role": "Command",
+      "bsl": "src/Catalogs/Валюты/Commands/AddressProbeCatalogCommand/Ext/CommandModule.bsl"
+    },
+    {
+      "owner": "main:DataProcessor.Обработка.Command.AddressProbeProcessorCommand",
+      "role": "Command",
+      "bsl": "src/DataProcessors/Обработка/Commands/AddressProbeProcessorCommand/Ext/CommandModule.bsl"
+    },
+    {
+      "owner": "main:Report.АнализВерсийОбъектов.Form.AddressProbeReportForm",
+      "role": "Form",
+      "bsl": "src/Reports/АнализВерсийОбъектов/Forms/AddressProbeReportForm/Ext/Form/Module.bsl"
+    }
+  ],
+  "files": {
+    "src/Catalogs/Валюты/Commands/AddressProbeCatalogCommand/Ext/CommandModule.bsl": {
+      "size": 221,
+      "sha256": "1df56f237248f2ee8dc486fc7122c4babf21eb5e90de3ac7a5c15123ccbf496b"
+    },
+    "src/Catalogs/Валюты/Ext/ManagerModule.bsl": {
+      "size": 729,
+      "sha256": "01073e0904c3e12c43806c8a444028596b4ccda4c5dd2e27339d3f2bc735005c"
+    },
+    "src/Catalogs/Валюты/Ext/ObjectModule.bsl": {
+      "size": 547,
+      "sha256": "6b4713e07927675b32e5eb84684c8a4f95f86a57b919e9db9b822ac83a2e55d9"
+    },
+    "src/Catalogs/Валюты/Forms/ФормаСписка/Ext/Form.xml": {
+      "size": 5413,
+      "sha256": "00d7435cc7b541f23f5e6f0ead4a5842f734e4aad88124a25130f65728d0cc7a"
+    },
+    "src/Catalogs/Валюты/Forms/ФормаСписка.xml": {
+      "size": 1523,
+      "sha256": "41ed0058132a230ac5b62873e38eb99f5fdcfafad48dc7a6236eb2470f8ee39a"
+    },
+    "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form/Module.bsl": {
+      "size": 492,
+      "sha256": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+    },
+    "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml": {
+      "size": 2744,
+      "sha256": "13850bbb190e2e131fdcc9f5c8303a3469f3ea012e38efd0ef997a1fe495cdf9"
+    },
+    "src/Catalogs/Валюты/Forms/ФормаЭлемента.xml": {
+      "size": 1530,
+      "sha256": "4be8a2569c4699850cd9fa3db6693d6be61a5692d8e1a440914ad84e6eef723b"
+    },
+    "src/Catalogs/Валюты.xml": {
+      "size": 32268,
+      "sha256": "b42e31b06bd19aa1f36c230a1ab0b33f5b7cdae4e5cea43031959e1e050ac412"
+    },
+    "src/Configuration.xml": {
+      "size": 12881,
+      "sha256": "2ce1483b4af352aa5f759130cbab4a8c198fa7f2f1103191ccbd4a76a551e97d"
+    },
+    "src/DataProcessors/Обработка/Commands/AddressProbeProcessorCommand/Ext/CommandModule.bsl": {
+      "size": 223,
+      "sha256": "65fe79d489ff9b5b1f1a59de2f82ed5bb76514e9a748d7f68131cef742c859d6"
+    },
+    "src/DataProcessors/Обработка/Forms/Форма/Ext/Form.xml": {
+      "size": 1388,
+      "sha256": "5b41789cb5897021d289fab07d70087696d968973b64fd2b69f9e6df9115973e"
+    },
+    "src/DataProcessors/Обработка/Forms/Форма.xml": {
+      "size": 1437,
+      "sha256": "cb148e70c3522d9a434b3da0e205b5f66ddfc99ca8d7266ae066e3e5a89cb1ba"
+    },
+    "src/DataProcessors/Обработка/Templates/Макет/Ext/Template.xml": {
+      "size": 785,
+      "sha256": "197eee7ae5f2912997f63cd9a1a4475085d139b7db68587c21c77a56e682d0df"
+    },
+    "src/DataProcessors/Обработка/Templates/Макет.xml": {
+      "size": 1260,
+      "sha256": "526b122b8e25cc2dc49942a00378258e6a35b5f800bc3d0ddcc1403d8d960cb1"
+    },
+    "src/DataProcessors/Обработка/Templates/СхемаКомпоновки/Ext/Template.xml": {
+      "size": 1367,
+      "sha256": "901b86c649e609e5350a42e1341305ecb92d4c05a78a7c0550e426259b9ab151"
+    },
+    "src/DataProcessors/Обработка/Templates/СхемаКомпоновки.xml": {
+      "size": 1302,
+      "sha256": "1263ef640985d3db32538ad6b8cf0c6b32681829ebea3fc637b0afcb085439be"
+    },
+    "src/DataProcessors/Обработка.xml": {
+      "size": 2703,
+      "sha256": "cdeb91895d42f3d985e92228f913a267b37c9606e9680ae5764bd47686ed06ff"
+    },
+    "src/Documents/Orders/Commands/Other/Ext/CommandModule.bsl": {
+      "size": 193,
+      "sha256": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+    },
+    "src/Documents/Orders/Commands/Probe/Ext/CommandModule.bsl": {
+      "size": 193,
+      "sha256": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+    },
+    "src/Documents/Orders/Forms/AddressProbeDocumentForm/Ext/Form/Module.bsl": {
+      "size": 132,
+      "sha256": "99eada74426df19bf0852e872996421218b0e784840bdf67f95e65625f938883"
+    },
+    "src/Documents/Orders/Forms/AddressProbeDocumentForm/Ext/Form.xml": {
+      "size": 1388,
+      "sha256": "5b41789cb5897021d289fab07d70087696d968973b64fd2b69f9e6df9115973e"
+    },
+    "src/Documents/Orders/Forms/AddressProbeDocumentForm.xml": {
+      "size": 1437,
+      "sha256": "5a0a7aa5cee33b8338be5a4dd0131a0aff62737abae2f2b13d80bbc30079a811"
+    },
+    "src/Documents/Orders.xml": {
+      "size": 6592,
+      "sha256": "0414e24a735e0c7c2f61c82c14d9d9679996b9278b0ad00633a3ce2a90e60f57"
+    },
+    "src/Reports/АнализВерсийОбъектов/Forms/AddressProbeReportForm/Ext/Form/Module.bsl": {
+      "size": 130,
+      "sha256": "4f7ebe0d866d8059f4c10967fa5d3d2ec40c110036655e6078d27cc6997bf21e"
+    },
+    "src/Reports/АнализВерсийОбъектов/Forms/AddressProbeReportForm/Ext/Form.xml": {
+      "size": 1388,
+      "sha256": "5b41789cb5897021d289fab07d70087696d968973b64fd2b69f9e6df9115973e"
+    },
+    "src/Reports/АнализВерсийОбъектов/Forms/AddressProbeReportForm.xml": {
+      "size": 1461,
+      "sha256": "5142ade186099b202e0e8740199f31011b00b4958cad07a26bda8a1b03db1736"
+    },
+    "src/Reports/АнализВерсийОбъектов/Templates/МакетОтчета/Ext/Template.xml": {
+      "size": 785,
+      "sha256": "197eee7ae5f2912997f63cd9a1a4475085d139b7db68587c21c77a56e682d0df"
+    },
+    "src/Reports/АнализВерсийОбъектов/Templates/МакетОтчета.xml": {
+      "size": 1285,
+      "sha256": "235924d8467b3528f990fb6c1ca44c5069984d0f8c732818af6d68fff399b10a"
+    },
+    "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml": {
+      "size": 8482,
+      "sha256": "ed8dfb08b9bdbc7b57d0a8a8ea3c68b4a8bbe1832bbe849c6682931b764ad7cf"
+    },
+    "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных.xml": {
+      "size": 1361,
+      "sha256": "5777efcd178f34b8a9c689b27a6a04ad481504d23054fae35fc88a5c42f7cec8"
+    },
+    "src/Reports/АнализВерсийОбъектов.xml": {
+      "size": 2566,
+      "sha256": "9cd6633bff4d4d58a71793cc76afa4bd3aedbe984e6437df7bc0085e02019d02"
+    }
+  }
+}

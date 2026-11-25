@@ -2097,7 +2097,7 @@ pub fn minimal_typed_form_content(_object_kind: &str, _object_name: &str, versio
             "\t<AutoCommandBar name=\"ФормаКоманднаяПанель\" id=\"-1\"/>\n",
             "</Form>"
         ),
-        crate::codec::form_root_namespaces(version),
+        unica_source_designer::layout::form_root_namespaces(version),
         unica_xml_format::text::escape_xml(version)
     )
 }

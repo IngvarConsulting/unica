@@ -1040,6 +1040,17 @@ pub enum CancelPolicy {
     Interrupt,
 }
 
+impl CancelPolicy {
+    /// Use cancellation without a console process group on Windows.
+    pub(crate) const fn without_windows_interrupt() -> Self {
+        if cfg!(windows) {
+            Self::Terminate
+        } else {
+            Self::Interrupt
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ManagedCommand {
     pub program: PathBuf,

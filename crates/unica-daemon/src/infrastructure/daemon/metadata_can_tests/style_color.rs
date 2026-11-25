@@ -17,6 +17,48 @@ fn color_fixture(value: &str) -> Fixture {
     fixture
 }
 
+/// rule: CTR.SOURCE.METADATA-COLLECTION-ROW
+#[test]
+fn style_collection_synonym_reads_all_translations_at_the_published_property_address() {
+    let fixture = color_fixture("#F0F0F0");
+    let descriptor = fixture.source.join("StyleItems/Accent.xml");
+    let english = format!("{}accent", "Editor's accent. ".repeat(150));
+    let xml = std::fs::read_to_string(&descriptor).unwrap().replacen(
+        "<Synonym/>",
+        &format!(
+            r#"<Synonym xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:item><v8:lang>en</v8:lang><v8:content>{english}</v8:content></v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>Цвет</v8:content></v8:item></Synonym>"#
+        ),
+        1,
+    );
+    std::fs::write(&descriptor, &xml).unwrap();
+    let runtime = runtime();
+
+    let collection = view(&runtime, &fixture, "main:StyleItem");
+    let row = &collection["items"][0];
+    assert_eq!(row["at"], "main:StyleItem.Accent");
+    assert!(row["props"].get("synonym").is_none(), "{row}");
+    let address = row["limits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .find_map(|limit| {
+            limit
+                .rsplit_once("read it whole at ")
+                .map(|(_, address)| address)
+        })
+        .expect("the collection row publishes a full property address");
+    assert_eq!(address, "main:StyleItem.Accent.Props.Synonym");
+
+    let property = view(&runtime, &fixture, address);
+    assert_eq!(property["at"], address);
+    assert_eq!(
+        property["props"]["Synonym"],
+        format!("en = '{}'; ru = 'Цвет'", english.replace('\'', "''"))
+    );
+    assert_eq!(std::fs::read_to_string(descriptor).unwrap(), xml);
+}
+
 #[test]
 fn canonical_style_color_is_discovered_and_published_without_other_byte_changes() {
     let fixture = color_fixture("#F0F0F0");

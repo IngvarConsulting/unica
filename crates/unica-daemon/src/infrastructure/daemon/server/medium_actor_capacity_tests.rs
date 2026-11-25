@@ -777,6 +777,87 @@ fn canonical_first_command_edit_creates_interface_of_new_subsystem() {
     assert!(!workspace.path().join("src").join(interface).exists());
 }
 
+/// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
+/// rule: INV.SOURCE.SUBSYSTEM-REGISTRATION
+#[test]
+fn canonical_apply_and_view_use_the_registered_ninth_subsystem_level() {
+    let workspace = interface_order_workspace();
+    let root = workspace.path();
+    let runtime = V5CanonicalInvocationRuntime::new(canonical_v13_service(), Arc::new(TokioClock));
+    let apply = |arguments| interface_apply_call(&runtime, root, arguments);
+    let publish = |at: &str, operation: serde_json::Value| {
+        let preview = apply(serde_json::json!({"at": at, "ops": [operation]}));
+        assert!(preview.ok, "{at}: {preview:?}");
+        let applied = apply(serde_json::json!({
+            "executionToken": preview.data.unwrap()["executionToken"]
+        }));
+        assert!(applied.ok, "{at}: {applied:?}");
+    };
+    publish(
+        "main:Configuration",
+        serde_json::json!({"op": "subsystem.create", "args": {"values": {"name": "Depth1"}}}),
+    );
+    let mut at = "main:Subsystem.Depth1".to_string();
+    for depth in 2..=9 {
+        let name = format!("Depth{depth}");
+        publish(
+            &at,
+            serde_json::json!({"op":"childSubsystem.add","args":{"items":[{"name":name}]}}),
+        );
+        at.push_str(&format!(".Subsystem.{name}"));
+    }
+    publish(
+        &at,
+        serde_json::json!({"op":"props.set","args":{"values":{"Comment":"ninth"}}}),
+    );
+    let view = |at: &str| {
+        submit_canonical(
+            &runtime,
+            root,
+            ToolIdentity::View,
+            serde_json::json!({"at":at}),
+        )
+    };
+    let branch_child = |branch: &str, expected: &str| {
+        let response = view(branch);
+        assert!(response.ok, "{branch}: {response:?}");
+        let data = response.data.unwrap();
+        assert_eq!(data["at"], branch);
+        let child = data["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["at"] == expected)
+            .unwrap_or_else(|| panic!("{branch}: missing {expected} in {data}"));
+        assert_eq!(child["kind"], "Subsystem");
+        child["at"].as_str().unwrap().to_owned()
+    };
+    let _ = branch_child("main:Subsystem", "main:Subsystem.Depth1");
+    let depth_eight_branch = at.strip_suffix(".Depth9").unwrap();
+    let leaf = branch_child(depth_eight_branch, &at);
+    let details = view(&leaf);
+    assert!(details.ok, "{at}: {details:?}");
+    let data = details.data.unwrap();
+    assert_eq!(data["at"], at);
+    assert_eq!(data["props"]["Comment"], "ninth");
+
+    let missing = at.replace(".Subsystem.Depth8.", ".Subsystem.Missing.");
+    let source = root.join("src");
+    let before = unica_workspace::test_support::tree_snapshot(&source);
+    let refused = apply(serde_json::json!({
+        "at": missing,
+        "ops":[{"op":"props.set","args":{"values":{"Comment":"refused"}}}]
+    }));
+    assert!(!refused.ok, "{refused:?}");
+    assert_eq!(
+        unica_workspace::test_support::tree_snapshot(&source),
+        before
+    );
+    let absent = view(&missing);
+    assert!(!absent.ok, "{absent:?}");
+    assert_eq!(absent.diagnostics[0]["code"], "not_found", "{absent:?}");
+}
+
 /// Пока порядок разделов не задан, корневого `CommandInterface.xml` нет.
 /// Первый порядок, как у платформы, может быть частичным: он называет
 /// разделы интерфейса — подсистемы верхнего уровня, включённые в него, —

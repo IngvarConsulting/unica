@@ -1526,7 +1526,7 @@ pub(super) mod medium_cf_read_selector_bridge_tests {
         let set = validate();
         let stdout = set.stdout.as_deref().unwrap_or_default();
         assert!(
-            stdout.contains("10. Required properties: 3 objects checked"),
+            stdout.contains("10. Required properties: 4 objects checked"),
             "{stdout}"
         );
 
@@ -1546,12 +1546,14 @@ pub(super) mod medium_cf_read_selector_bridge_tests {
         empty("FunctionalOptions/ByConstant.xml", "Location");
         empty("FunctionalOptionsParameters/Probe.xml", "Use");
         empty("Sequences/Probe.xml", "Documents");
+        empty("CommonCommands/Probe.xml", "Group");
         let unset = validate();
         assert!(!unset.ok, "{unset:?}");
         for expected in [
             "10. FunctionalOption.ByConstant: Location is not set; the platform refuses to load it: «Не установлено Хранение функциональной опции»",
             "10. FunctionalOptionsParameter.Probe: Use is not set; the platform refuses to load it: «Не установлено Использование параметра функциональной опции»",
             "10. Sequence.Probe: Documents is not set; the platform refuses to load it: «Не один документ не участвует в последовательности»",
+            "10. CommonCommand.Probe: Group is not set; the platform refuses to load it: «Не указана группа, в которую входит команда по умолчанию»",
         ] {
             assert!(
                 unset.errors.iter().any(|error| error.contains(expected)),

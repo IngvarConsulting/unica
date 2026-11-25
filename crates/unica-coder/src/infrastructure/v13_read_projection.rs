@@ -11,6 +11,8 @@ mod form;
 mod form_appearance;
 mod member_properties;
 mod metadata;
+#[cfg(test)]
+pub(crate) use metadata::address_coverage as metadata_address_coverage;
 mod role;
 pub mod structured_properties;
 pub use metadata::borrowing_props;
@@ -749,6 +751,8 @@ pub(super) fn project_configuration_with_counts(
                 // Typed, bounded structures of the root parser travel whole.
                 let mut object = object.clone();
                 if key == "properties" {
+                    object.remove("referenceTargets");
+                    object.remove("referenceLimits");
                     for (_, key) in
                         unica_metadata::descriptor_operations::CONFIGURATION_LOCALIZED_PROPERTIES
                     {

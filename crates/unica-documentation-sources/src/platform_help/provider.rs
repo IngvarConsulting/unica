@@ -1,8 +1,9 @@
 use super::locator::{LocatorScope, PlatformHelpLocator, PROVIDER_ID};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use crate::documentation_retrieval::{RetrievalFields, RetrievalIndex};
+use crate::documentation_retrieval::{RetrievalFields, RetrievalHit, RetrievalIndex};
 use unica_documentation::model::*;
 
 use super::container::ContainerError;
@@ -50,6 +51,7 @@ struct IndexedCorpus {
     /// Постинги лексического ядра: номера документов — позиции в
     /// `pages`.
     retrieval: RetrievalIndex,
+    type_names: BTreeMap<String, Vec<usize>>,
     /// Локаль, в которой корпус реально прочитан: она уходит в секцию ответа.
     language: String,
     /// Контейнеры, которые не прочитались или не разобрались. Молчаливый
@@ -85,6 +87,22 @@ fn corpus_from_pages(
             body: &page.text,
         },
     ));
+    let mut type_names: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    for (document, page) in pages.iter().enumerate() {
+        if page.header.kind != unica_bsl_types::ArticleKind::Type {
+            continue;
+        }
+        let name = &page.header.name;
+        for alias in std::iter::once(&name.ru).chain(name.en.iter()) {
+            let key = type_name_key(alias);
+            if !key.is_empty() {
+                let documents = type_names.entry(key).or_default();
+                if documents.last() != Some(&document) {
+                    documents.push(document);
+                }
+            }
+        }
+    }
     let pages = pages
         .into_iter()
         .map(|page| IndexedPage {
@@ -97,6 +115,7 @@ fn corpus_from_pages(
     IndexedCorpus {
         pages,
         retrieval,
+        type_names,
         language: language.to_string(),
         unreadable,
     }
@@ -391,6 +410,14 @@ fn signature_in(signature: &Signature, language: &str) -> Option<String> {
     preferred.clone().or_else(|| fallback.clone())
 }
 
+// В запросах к типу границы слов могут быть обозначены регистром или пробелом.
+fn type_name_key(name: &str) -> String {
+    name.split_whitespace()
+        .flat_map(str::chars)
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
 fn rank_pages(
     corpus: &IndexedCorpus,
     query: &str,
@@ -398,10 +425,25 @@ fn rank_pages(
     scope: LocatorScope<'_>,
     language: &str,
 ) -> Vec<DocumentationHit> {
-    corpus
-        .retrieval
-        .query(query, limit, &[])
-        .into_iter()
+    let lexical = corpus.retrieval.query(query, limit, &[]);
+    let exact = corpus
+        .type_names
+        .get(&type_name_key(query))
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let exact_score = lexical.first().map_or(1.0, |hit| hit.score + 1.0);
+    exact
+        .iter()
+        .map(|&document| RetrievalHit {
+            document,
+            score: exact_score,
+        })
+        .chain(
+            lexical
+                .into_iter()
+                .filter(|hit| !exact.contains(&hit.document)),
+        )
+        .take(limit)
         .enumerate()
         .map(|(index, scored)| {
             let page = &corpus.pages[scored.document];
@@ -915,6 +957,53 @@ mod tests {
             bytes <= 5 * 1024,
             "десять находок обязаны уместиться в 5 КБ, вышло {bytes} байт: {answer}"
         );
+    }
+
+    #[test]
+    fn type_lookup_recovers_both_names_before_limiting_lexical_results() {
+        let _serial = index_test_lock();
+        let dir = tempfile::tempdir().expect("каталог");
+        let root = dir.path().join("8.3.27.2074");
+        std::fs::create_dir(&root).expect("каталог версии");
+        let type_path = "objects/catalog1/XMLWriter.html";
+        let member_path = "objects/catalog1/XMLWriter/methods/Open.html";
+        let type_html = r#"<html><body><h1>ЗаписьXML</h1><p class="V8SH_title">ЗаписьXML (XMLWriter)</p></body></html>"#;
+        let member_html = article_markup("ЗаписьXML", "Открыть");
+        std::fs::write(
+            root.join("shcntx_ru.hbk"),
+            hbk_bytes(&[(member_path, &member_html), (type_path, type_html)]),
+        )
+        .unwrap();
+        let context = DocumentationContext {
+            platform_version: Some("8.3.27.2074".into()),
+            installation_root: Some(root),
+        };
+        let provider = PlatformSyntaxHelpProvider::new();
+        for query in [
+            "ЗаписьXML",
+            "Записьxml",
+            "записьxml",
+            "XMLWriter",
+            "xmlwriter",
+            "Запись xml",
+            "скопировать строки",
+        ] {
+            let mut ask = request(query);
+            ask.limit = 1;
+            let sections = provider.search(&ask, &context);
+            let hits = &syntax_section(&sections).hits;
+            assert_eq!(hits.len(), 1, "{query}");
+            let expected = if query == "скопировать строки" {
+                member_path
+            } else {
+                type_path
+            };
+            assert!(
+                hits[0].document_id.ends_with(expected),
+                "{query}: {}",
+                hits[0].document_id
+            );
+        }
     }
 
     #[test]

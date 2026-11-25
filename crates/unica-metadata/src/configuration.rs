@@ -80,8 +80,33 @@ pub struct CfPurposeProperties {
     pub standalone_configuration_restriction_roles: Option<Vec<String>>,
     #[serde(skip)]
     pub reference_list_limits: Vec<String>,
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub reference_targets: std::collections::BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub reference_limits: Vec<String>,
     pub used_mobile_application_functionalities: Option<Vec<CfMobileFunctionality>>,
     pub include_help_in_contents: Option<bool>,
+    #[serde(rename = "mobileApplicationURLs")]
+    pub mobile_application_urls: Option<Vec<String>>,
+    pub allowed_incoming_share_request_types: Option<Vec<IncomingShareRequestType>>,
+    #[serde(skip)]
+    pub mobile_list_limits: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct IncomingShareRequestType {
+    pub mime: String,
+    pub uti: String,
+    pub ext: String,
+    pub processing_variant: u8,
+    pub is_custom: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfigurationMobileList {
+    Urls(Vec<String>),
+    ShareTypes(Vec<IncomingShareRequestType>),
 }
 
 #[derive(serde::Serialize)]

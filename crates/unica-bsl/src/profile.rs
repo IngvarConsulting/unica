@@ -329,6 +329,15 @@ mod tests {
             );
             assert!(reached.insert(address.to_string()), "{}", case.case);
         }
-        assert_eq!(reached.len(), 25);
+        for address in [
+            "main:Sequence.Probe.Module.RecordSet",
+            "main:CalculationRegister.Начисления.Recalculation.Перерасчет1.Module.RecordSet",
+        ] {
+            assert!(
+                reached.contains(address),
+                "missing profile address {address}"
+            );
+        }
+        assert_eq!(reached.len(), 27);
     }
 }

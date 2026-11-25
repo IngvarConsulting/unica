@@ -15,17 +15,25 @@
       ],
       "assertions": [
         {
-          "pointer": "/data/branches/3/at",
+          "pointer": "/data/branches/1/at",
+          "eq": "main:Document.Orders.StandardAttribute"
+        },
+        {
+          "pointer": "/data/branches/1/count",
+          "eq": 5
+        },
+        {
+          "pointer": "/data/branches/4/at",
           "eq": "main:Document.Orders.Command"
         },
         {
-          "pointer": "/data/branches/3/count",
+          "pointer": "/data/branches/4/count",
           "eq": 2
         }
       ],
       "captures": {
         "collection0": {
-          "pointer": "/data/branches/3/at"
+          "pointer": "/data/branches/4/at"
         },
         "unchanged1": {
           "file": "src/Documents/Orders.xml",

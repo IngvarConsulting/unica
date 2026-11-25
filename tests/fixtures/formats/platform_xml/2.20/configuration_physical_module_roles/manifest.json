@@ -1,0 +1,328 @@
+{
+  "formatVersion": "2.20",
+  "platformVersion": "8.3.27.2342",
+  "source": "Target owner descriptors, their native configuration registration and BSL files selected byte-for-byte from one ibcmd export. This fixture is a partial source tree for module lookup.",
+  "configurationSha256": "2ce1483b4af352aa5f759130cbab4a8c198fa7f2f1103191ccbd4a76a551e97d",
+  "native": {
+    "ibcmdSha256": "38f37715535cea530e58d5ba2e7e072c184b61b12f3e903ac290b299cf39fd38",
+    "receiptSha256": "1d646570be1bde504f10e2adf5e14cb5d7fbc9001dd584f8e32553f382714908",
+    "packageSha256": "d46f5a82628e2b5042f023d540ef1ebdb1bb58175740d54716852278cc9f4719",
+    "commands": [
+      {
+        "stage": "platform-version",
+        "exit": 0
+      },
+      {
+        "stage": "physical-modules-import",
+        "exit": 0
+      },
+      {
+        "stage": "physical-modules-apply",
+        "exit": 0
+      },
+      {
+        "stage": "physical-modules-export",
+        "exit": 0
+      }
+    ]
+  },
+  "mcp": {
+    "revision": "ec4aac54df2825e075a0d7c292b92dbcfec9ce45",
+    "binarySha256": "641d7dd01731d74f49d8258864e47621650bde9ca44c7274f5661e5cf32916c4",
+    "receiptSha256": "5457e57acf35b4efc48644174175e64e1f2da8eb26d91111f156dab5e2f498cb",
+    "successfulCalls": 51
+  },
+  "samples": [
+    {
+      "kind": "AccountingRegister",
+      "name": "Бухгалтерский",
+      "role": "Manager",
+      "ownerUuid": "3ce64222-da19-549d-8361-5f7463260aa1",
+      "descriptor": "AccountingRegisters/Бухгалтерский.xml",
+      "path": "AccountingRegisters/Бухгалтерский/Ext/ManagerModule.bsl",
+      "marker": "Unica484PhysicalAccountingRegisterManager_2_20"
+    },
+    {
+      "kind": "AccumulationRegister",
+      "name": "Остатки",
+      "role": "Manager",
+      "ownerUuid": "6d168f0f-5f4b-548b-ac10-a639df7dfaa7",
+      "descriptor": "AccumulationRegisters/Остатки.xml",
+      "path": "AccumulationRegisters/Остатки/Ext/ManagerModule.bsl",
+      "marker": "Unica484PhysicalAccumulationRegisterManager_2_20"
+    },
+    {
+      "kind": "BusinessProcess",
+      "name": "Approval",
+      "role": "Manager",
+      "ownerUuid": "69af0580-714f-5ca4-9c3a-94389fdd1b56",
+      "descriptor": "BusinessProcesses/Approval.xml",
+      "path": "BusinessProcesses/Approval/Ext/ManagerModule.bsl",
+      "marker": "Unica484PhysicalBusinessProcessManager_2_20"
+    },
+    {
+      "kind": "CalculationRegister",
+      "name": "Начисления",
+      "role": "Manager",
+      "ownerUuid": "3ee32422-3780-56eb-b814-7b575df7536a",
+      "descriptor": "CalculationRegisters/Начисления.xml",
+      "path": "CalculationRegisters/Начисления/Ext/ManagerModule.bsl",
+      "marker": "Unica484PhysicalCalculationRegisterManager_2_20"
+    },
+    {
+      "kind": "ChartOfAccounts",
+      "name": "Хозрасчетный",
+      "role": "Manager",
+      "ownerUuid": "a8630772-1555-50db-9ca8-a5ca930d76cd",
+      "descriptor": "ChartsOfAccounts/Хозрасчетный.xml",
+      "path": "ChartsOfAccounts/Хозрасчетный/Ext/ManagerModule.bsl",
+      "marker": "Unica484PhysicalChartOfAccountsManager_2_20"
+    },
+    {
+      "kind": "ChartOfCalculationTypes",
+      "name": "ВидыРасчета",
+      "role": "Manager",
+      "ownerUuid": "6a48f32a-b124-57aa-b962-51cc40da3aa0",
+      "descriptor": "ChartsOfCalculationTypes/ВидыРасчета.xml",
+      "path": "ChartsOfCalculationTypes/ВидыРасчета/Ext/ManagerModule.bsl",
+      "marker": "Unica484PhysicalChartOfCalculationTypesManager_2_20"
+    },
+    {
+      "kind": "ChartOfCharacteristicTypes",
+      "name": "Codes",
+      "role": "Manager",
+      "ownerUuid": "ad61eec4-6a4e-5c38-b58c-f9b92037d1cd",
+      "descriptor": "ChartsOfCharacteristicTypes/Codes.xml",
+      "path": "ChartsOfCharacteristicTypes/Codes/Ext/ManagerModule.bsl",
+      "marker": "Unica484PhysicalChartOfCharacteristicTypesManager_2_20"
+    },
+    {
+      "kind": "Constant",
+      "name": "Enabled",
+      "role": "Manager",
+      "ownerUuid": "bc3174aa-ee24-5708-963e-5e10783bc1bb",
+      "descriptor": "Constants/Enabled.xml",
+      "path": "Constants/Enabled/Ext/ManagerModule.bsl",
+      "marker": "Unica484PhysicalConstantManager_2_20"
+    },
+    {
+      "kind": "DataProcessor",
+      "name": "Обработка",
+      "role": "Manager",
+      "ownerUuid": "af2fe870-8ab9-5cbd-90ee-c9ef61cfc71e",
+      "descriptor": "DataProcessors/Обработка.xml",
+      "path": "DataProcessors/Обработка/Ext/ManagerModule.bsl",
+      "marker": "Unica484PhysicalDataProcessorManager_2_20"
+    },
+    {
+      "kind": "DataProcessor",
+      "name": "Обработка",
+      "role": "Object",
+      "ownerUuid": "af2fe870-8ab9-5cbd-90ee-c9ef61cfc71e",
+      "descriptor": "DataProcessors/Обработка.xml",
+      "path": "DataProcessors/Обработка/Ext/ObjectModule.bsl",
+      "marker": "Unica484PhysicalDataProcessorObject_2_20"
+    },
+    {
+      "kind": "DocumentJournal",
+      "name": "Entries",
+      "role": "Manager",
+      "ownerUuid": "1c26280f-efcf-5e34-9cb2-cde5103e7c7a",
+      "descriptor": "DocumentJournals/Entries.xml",
+      "path": "DocumentJournals/Entries/Ext/ManagerModule.bsl",
+      "marker": "Unica484PhysicalDocumentJournalManager_2_20"
+    },
+    {
+      "kind": "Enum",
+      "name": "LanguageAware",
+      "role": "Manager",
+      "ownerUuid": "44444444-4444-4444-8444-444444444444",
+      "descriptor": "Enums/LanguageAware.xml",
+      "path": "Enums/LanguageAware/Ext/ManagerModule.bsl",
+      "marker": "Unica484PhysicalEnumManager_2_20"
+    },
+    {
+      "kind": "ExchangePlan",
+      "name": "Codes",
+      "role": "Manager",
+      "ownerUuid": "88836e71-134d-5216-a9d6-be45490e94c4",
+      "descriptor": "ExchangePlans/Codes.xml",
+      "path": "ExchangePlans/Codes/Ext/ManagerModule.bsl",
+      "marker": "Unica484PhysicalExchangePlanManager_2_20"
+    },
+    {
+      "kind": "FilterCriterion",
+      "name": "Probe",
+      "role": "Manager",
+      "ownerUuid": "c0c96f6a-bbc3-5cb5-87ec-5a22665be953",
+      "descriptor": "FilterCriteria/Probe.xml",
+      "path": "FilterCriteria/Probe/Ext/ManagerModule.bsl",
+      "marker": "Unica484PhysicalFilterCriterionManager_2_20"
+    },
+    {
+      "kind": "InformationRegister",
+      "name": "АдминистративнаяИерархия",
+      "role": "Manager",
+      "ownerUuid": "ab4dbaff-cee6-47b3-9d69-13ac5c906f95",
+      "descriptor": "InformationRegisters/АдминистративнаяИерархия.xml",
+      "path": "InformationRegisters/АдминистративнаяИерархия/Ext/ManagerModule.bsl",
+      "marker": "Unica484PhysicalInformationRegisterManager_2_20"
+    },
+    {
+      "kind": "SettingsStorage",
+      "name": "Probe",
+      "role": "Manager",
+      "ownerUuid": "140c0c58-fcc1-5654-95b3-fa40572738e6",
+      "descriptor": "SettingsStorages/Probe.xml",
+      "path": "SettingsStorages/Probe/Ext/ManagerModule.bsl",
+      "marker": "Unica484PhysicalSettingsStorageManager_2_20"
+    },
+    {
+      "kind": "Task",
+      "name": "Work",
+      "role": "Manager",
+      "ownerUuid": "160265e6-85f9-5308-b915-a18969251420",
+      "descriptor": "Tasks/Work.xml",
+      "path": "Tasks/Work/Ext/ManagerModule.bsl",
+      "marker": "Unica484PhysicalTaskManager_2_20"
+    }
+  ],
+  "files": {
+    "src/AccountingRegisters/Бухгалтерский.xml": {
+      "size": 12569,
+      "sha256": "512d61861c2725e0a6a35c2241c192a49f627ff64bc59ffb7b680ec388f09db0"
+    },
+    "src/AccountingRegisters/Бухгалтерский/Ext/ManagerModule.bsl": {
+      "size": 137,
+      "sha256": "a547423050226cb9a8e96a9eb21a90f72b0b47e5759407540fcc90d1c1df5f7d"
+    },
+    "src/AccumulationRegisters/Остатки.xml": {
+      "size": 12261,
+      "sha256": "700c6b40f35195315790545f280ddbd12dcf6629986d6e78847a1b68381ae4d3"
+    },
+    "src/AccumulationRegisters/Остатки/Ext/ManagerModule.bsl": {
+      "size": 139,
+      "sha256": "a603be903519be6861f391729c6a57952f98cc889a46181fbd46b76e5a265abe"
+    },
+    "src/BusinessProcesses/Approval.xml": {
+      "size": 11504,
+      "sha256": "1d2ef8929cd34dcf840a3c8cf698364fa4f1e295c65b6c48277abd1104866686"
+    },
+    "src/BusinessProcesses/Approval/Ext/ManagerModule.bsl": {
+      "size": 134,
+      "sha256": "12466fff2c941c73cf5455f397a6d33176287acf628842515bbe10e54bfce4ab"
+    },
+    "src/CalculationRegisters/Начисления.xml": {
+      "size": 17623,
+      "sha256": "4f2fd03b12c367aa533d92027453e57cdf7f80f7a158c776e255b2c25722e098"
+    },
+    "src/CalculationRegisters/Начисления/Ext/ManagerModule.bsl": {
+      "size": 138,
+      "sha256": "659576333704f22cd68ff5c976afaa83bbcaadc0d2d05cc989eefada461eb9ad"
+    },
+    "src/ChartsOfAccounts/Хозрасчетный.xml": {
+      "size": 20036,
+      "sha256": "e19088d4597e8603eb26409190c711c4046bdbcc5681c4e2aa404319fefed33d"
+    },
+    "src/ChartsOfAccounts/Хозрасчетный/Ext/ManagerModule.bsl": {
+      "size": 134,
+      "sha256": "f524278c5429c929ccdf947414345e02c2ea543d8c245fb68730ce0fc481b4d5"
+    },
+    "src/ChartsOfCalculationTypes/ВидыРасчета.xml": {
+      "size": 13330,
+      "sha256": "02b63b1bdd5178fb5716ebe31516f05fcf73b3a6de53e68c504995f94f3f4693"
+    },
+    "src/ChartsOfCalculationTypes/ВидыРасчета/Ext/ManagerModule.bsl": {
+      "size": 142,
+      "sha256": "67acfd79fb356b04904c660fe6a1a67c46fb1b7c4bbe6e964d71a25740faa83e"
+    },
+    "src/ChartsOfCharacteristicTypes/Codes.xml": {
+      "size": 14597,
+      "sha256": "9c65476fcf7058cae15c31a6117c19816ac4f95ad2bf75191203d9c7ff0648ab"
+    },
+    "src/ChartsOfCharacteristicTypes/Codes/Ext/ManagerModule.bsl": {
+      "size": 145,
+      "sha256": "b8e6e66e56d575e7bd77f1616bb8ae1201fb451740baa55e93b7a0772af3e940"
+    },
+    "src/Configuration.xml": {
+      "size": 12881,
+      "sha256": "2ce1483b4af352aa5f759130cbab4a8c198fa7f2f1103191ccbd4a76a551e97d"
+    },
+    "src/Constants/Enabled.xml": {
+      "size": 2842,
+      "sha256": "0c4e2df41da2603b8cbc5f43ace3eb08b4a653bc970278c8d0c84351b294dc86"
+    },
+    "src/Constants/Enabled/Ext/ManagerModule.bsl": {
+      "size": 127,
+      "sha256": "67770c138bf3e8410742e0578b87c6821c879d2dd3bcfb3f8e329c01464895e2"
+    },
+    "src/DataProcessors/Обработка.xml": {
+      "size": 2703,
+      "sha256": "cdeb91895d42f3d985e92228f913a267b37c9606e9680ae5764bd47686ed06ff"
+    },
+    "src/DataProcessors/Обработка/Ext/ManagerModule.bsl": {
+      "size": 132,
+      "sha256": "171de5dcf48fe7a57cc9773998d05561be6031ce24639bdc4dd9e6a6cd97a8c3"
+    },
+    "src/DataProcessors/Обработка/Ext/ObjectModule.bsl": {
+      "size": 131,
+      "sha256": "42e4f0a4398139e3cebde7d9032cbef6c1c25d7b835edf63ce7ea0ffa80001ba"
+    },
+    "src/DocumentJournals/Entries.xml": {
+      "size": 3226,
+      "sha256": "9e61b8131fdbb966cbf4bbffc1394c9891e837c644cba42f550bcd3f8d1fb59f"
+    },
+    "src/DocumentJournals/Entries/Ext/ManagerModule.bsl": {
+      "size": 134,
+      "sha256": "6221f69f95158bb2ce10872ab3ac6a225b6a7382563778b020bce309b0929076"
+    },
+    "src/Enums/LanguageAware.xml": {
+      "size": 4791,
+      "sha256": "4cc4539ecf711436cfede5923d641210bb9655e8d121f1f93b52ac1814e4f396"
+    },
+    "src/Enums/LanguageAware/Ext/ManagerModule.bsl": {
+      "size": 123,
+      "sha256": "0e2c78393f3ebebbb51e0d8d05fa4bd6e158118670dc84ee52b185ba1b72b818"
+    },
+    "src/ExchangePlans/Codes.xml": {
+      "size": 12417,
+      "sha256": "3bc34405ef37ee6edce9ed187a349db1f2826d531a532a438ad18b17ec35f597"
+    },
+    "src/ExchangePlans/Codes/Ext/ManagerModule.bsl": {
+      "size": 131,
+      "sha256": "a40631124afa9b2da75e0b2d7001069a66dc8a989fce9f07dd4b45bbe48a01dc"
+    },
+    "src/FilterCriteria/Probe.xml": {
+      "size": 2147,
+      "sha256": "be39ec909c1c3f9a53a16fcbe67153f9fb62104db3d0a01b3b7579f3abd15335"
+    },
+    "src/FilterCriteria/Probe/Ext/ManagerModule.bsl": {
+      "size": 134,
+      "sha256": "f8f0fbf727cbd7b375260543fc7489c251bac244b05445db53a0c937fd68e48a"
+    },
+    "src/InformationRegisters/АдминистративнаяИерархия.xml": {
+      "size": 15501,
+      "sha256": "02acc929168f76ac817f199ff0288a8ba249e9500ec3c8d0d93d6adf83c67e8c"
+    },
+    "src/InformationRegisters/АдминистративнаяИерархия/Ext/ManagerModule.bsl": {
+      "size": 138,
+      "sha256": "d6b6bc3613647387475fbb7fb632795cf06d1710fe2a40ae028dac0fe608baca"
+    },
+    "src/SettingsStorages/Probe.xml": {
+      "size": 1701,
+      "sha256": "c50cfda46bbb8a934a15b2bd71659d0746464fcf38480869a168c06d6865beda"
+    },
+    "src/SettingsStorages/Probe/Ext/ManagerModule.bsl": {
+      "size": 134,
+      "sha256": "1a53a947b081696ecd4b28d717f42a71c6a4f06208c993443a52990e861836f0"
+    },
+    "src/Tasks/Work.xml": {
+      "size": 12269,
+      "sha256": "6c150011af4f221b9af20be3aa40bdd0a33b43449923f3c10837384a96fcbbe2"
+    },
+    "src/Tasks/Work/Ext/ManagerModule.bsl": {
+      "size": 123,
+      "sha256": "aef3e8937a8681b0b3d3dd39a8f389f7fcb8bf12e3dd4a42cab3276897b7622d"
+    }
+  }
+}

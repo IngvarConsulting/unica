@@ -22,7 +22,7 @@
 
 Перед push выберите локальные тесты по
 [unica-testing](https://github.com/IngvarConsulting/unica/blob/main/.agents/skills/unica-testing/SKILL.md#что-запускать).
-Обязательные проверки Rust перед push и порядок слияния описаны в
+Порядок слияния описан в
 [подготовке PR](https://github.com/IngvarConsulting/unica/blob/main/.agents/skills/unica-development/references/pull-requests.md#вливание-через-очередь).
 Выполните `git diff --check`.
 

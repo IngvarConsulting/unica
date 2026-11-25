@@ -323,6 +323,23 @@ fn offer_creatable_kinds(
         .filter(|kind| !extension || kind.created_in_extension())
         .map(crate::CreatableKind::as_str)
         .partition(|kind| metadata_kind_exists(line, kind));
+    let description = [
+        (
+            "CommonTemplate",
+            "CommonTemplate creates an empty BinaryData template without a content file.",
+        ),
+        (
+            "CommonPicture",
+            "CommonPicture creates an empty picture without an image.",
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(kind, description)| offered.contains(&kind).then_some(description))
+    .collect::<Vec<_>>()
+    .join(" ");
+    if !description.is_empty() {
+        values["properties"]["kind"]["description"] = serde_json::json!(description);
+    }
     values["properties"]["kind"]["enum"] = serde_json::json!(offered);
     if later.is_empty() {
         return;
@@ -447,18 +464,25 @@ mod tests {
                 .unwrap()
                 .contains(&json!(kind))
         };
-        for line in [PlatformLine::new(8, 3, 27), PlatformLine::new(8, 5, 1)] {
+        let queue = json!({"kind":"Queue","since":"8.5.4","format":"2.22"});
+        let palette = json!({"kind":"PaletteColor","since":"8.5.1","format":"2.21"});
+        for (line, later) in [
+            (PlatformLine::new(8, 3, 27), json!([palette, queue])),
+            (PlatformLine::new(8, 5, 1), json!([queue])),
+        ] {
             let old = values(line);
             assert!(offers(&old, "Catalog"), "{line}");
             assert!(!offers(&old, "Queue"), "{line}");
             assert_eq!(
-                old["x-unica-later-lines"]["items"],
-                json!([{"kind":"Queue","since":"8.5.4","format":"2.22"}]),
+                offers(&old, "PaletteColor"),
+                line == PlatformLine::new(8, 5, 1),
                 "{line}"
             );
+            assert_eq!(old["x-unica-later-lines"]["items"], later, "{line}");
         }
         let new = values(PlatformLine::new(8, 5, 4));
         assert!(offers(&new, "Queue"));
+        assert!(offers(&new, "PaletteColor"));
         assert!(new.get("x-unica-later-lines").is_none());
     }
 

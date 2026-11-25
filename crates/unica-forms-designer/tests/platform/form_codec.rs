@@ -3555,6 +3555,7 @@ fn english_companions_preserve_existing_names_and_repeat_without_changes() {
 fn english_table_companions_match_the_platform_dump_in_both_command_bar_modes() {
     // Names are independently present in formats/platform_xml/2.20/external_artifacts/
     // epf/SyntheticProcessor/Forms/Main/Ext/Form.xml (LinesSearchString etc.).
+    let namespaces = unica_source_designer::layout::form_root_namespaces("2.20");
     for autofill in [None, Some(true), Some(false)] {
         let mut table = json!({"table": "Lines", "path": "Object.Lines"});
         if let Some(value) = autofill {
@@ -3570,7 +3571,7 @@ fn english_table_companions_match_the_platform_dump_in_both_command_bar_modes() 
             FormTextMode::Legacy(None),
         )
         .unwrap();
-        let fragment = format!("<Form {FORM_ROOT_NAMESPACES}>{}</Form>", lines.join("\n"));
+        let fragment = format!("<Form {namespaces}>{}</Form>", lines.join("\n"));
         let doc = roxmltree::Document::parse(&fragment).unwrap();
         let names = doc
             .descendants()

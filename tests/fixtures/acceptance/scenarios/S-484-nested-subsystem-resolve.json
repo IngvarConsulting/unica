@@ -1,0 +1,137 @@
+{
+  "id": "S-484-nested-subsystem-resolve",
+  "name": "translate-a-registered-nested-subsystem-address-and-file",
+  "issue": 484,
+  "area": "Навигация по исходникам",
+  "task": "Сопоставить адрес вложенной подсистемы с XML-дескриптором в обе стороны. В пакете путей отсутствующий или незарегистрированный дескриптор отклоняет только свой элемент.",
+  "workspace": "tests/fixtures/acceptance/workspace-nested-check",
+  "wire": [
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "at": "main:Subsystem.Parent.Subsystem.Child.Subsystem.Grandchild"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Subsystem.Parent.Subsystem.Child.Subsystem.Grandchild"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Subsystem"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "Subsystems/Parent/Subsystems/Child/Subsystems/Grandchild.xml"
+        },
+        {
+          "pointer": "/data/lines/state",
+          "eq": "notLineBased"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "src/Subsystems/Parent/Subsystems/Child/Subsystems/Grandchild.xml"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Subsystem.Parent.Subsystem.Child.Subsystem.Grandchild"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Subsystem"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "Subsystems/Parent/Subsystems/Child/Subsystems/Grandchild.xml"
+        },
+        {
+          "pointer": "/data/lines/state",
+          "eq": "notLineBased"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "$workspace/src/Subsystems/Parent/Subsystems/Child/Subsystems/Grandchild.xml"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Subsystem.Parent.Subsystem.Child.Subsystem.Grandchild"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Subsystem"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "Subsystems/Parent/Subsystems/Child/Subsystems/Grandchild.xml"
+        },
+        {
+          "pointer": "/data/lines/state",
+          "eq": "notLineBased"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "paths": [
+          "src/Subsystems/Parent/Subsystems/Child/Subsystems/Grandchild.xml:4",
+          "src/Subsystems/Parent/Subsystems/Ghost.xml",
+          "src/Subsystems/Parent/Subsystems/Missing.xml",
+          "Subsystems/Grandchild.xml"
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Subsystem.Parent.Subsystem.Child.Subsystem.Grandchild"
+        },
+        {
+          "pointer": "/data/items/0/line",
+          "eq": "notLineBased"
+        },
+        {
+          "pointer": "/data/items/1/code",
+          "eq": "not_found"
+        },
+        {
+          "pointer": "/data/items/2/code",
+          "eq": "not_found"
+        },
+        {
+          "pointer": "/data/items/3/code",
+          "eq": "not_found"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "at": "main:Subsystem.Parent.Subsystem.Ghost"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: subsystem `Ghost` is not registered in `Subsystems/Parent.xml`"
+    }
+  ]
+}

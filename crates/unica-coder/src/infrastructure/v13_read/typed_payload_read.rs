@@ -472,7 +472,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
             self.verify_payload_physical_children(target, &payload, admitted)?;
             return Ok(payload);
         }
-        let kind = target.as_str().split('.').next().unwrap_or_default();
+        let kind = target.as_str().rsplit('.').nth(1).unwrap_or_default();
         if kind == NodeKind::WsReference.as_str() {
             return self
                 .read

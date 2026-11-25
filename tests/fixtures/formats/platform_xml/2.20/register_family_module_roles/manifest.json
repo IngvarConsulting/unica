@@ -1,0 +1,305 @@
+{
+  "formatVersion": "2.20",
+  "platformVersion": "8.3.27.2342",
+  "source": "Byte-identical file selection from one native ibcmd configuration export.",
+  "seed": "A retained settings-export of the same native platform build.",
+  "configurationSha256": "2ce1483b4af352aa5f759130cbab4a8c198fa7f2f1103191ccbd4a76a551e97d",
+  "native": {
+    "ibcmdSha256": "38f37715535cea530e58d5ba2e7e072c184b61b12f3e903ac290b299cf39fd38",
+    "receiptSha256": "83a7f9ba49e857e1eb6c25e18d7fbff2a33abe02bcaa827dbae5e6aaa69c3171",
+    "packageSha256": "10c801383d07696838e9928370afebcce92c48babe1a697ee328722191f77b3a",
+    "commands": [
+      {
+        "stage": "platform-version",
+        "exit": 0
+      },
+      {
+        "stage": "nested-modules-import",
+        "exit": 0
+      },
+      {
+        "stage": "nested-modules-apply",
+        "exit": 0
+      },
+      {
+        "stage": "nested-modules-export",
+        "exit": 0
+      }
+    ]
+  },
+  "mcp": {
+    "revision": "ec4aac54df2825e075a0d7c292b92dbcfec9ce45",
+    "binarySha256": "641d7dd01731d74f49d8258864e47621650bde9ca44c7274f5661e5cf32916c4",
+    "receiptSha256": "2a49ccaa696938a8e043a7b538e0f70fe98bfccfe1571f296927e91dc58559c7",
+    "successfulCalls": 30,
+    "slices": [
+      {
+        "batch": "nested-modules",
+        "files": 19,
+        "sha256ByFile": {
+          "AccumulationRegisters/Остатки/Commands/AddressProbeAccumulationRegisterCommand/Ext/CommandModule.bsl": "689cc799c52e631e1d75d5ce3a161f6c40728b61f61bb7d454e46ff839f6ddd5",
+          "AccumulationRegisters/Остатки/Ext/RecordSetModule.bsl": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5",
+          "AccumulationRegisters/Остатки/Forms/AddressProbeAccumulationRegisterForm/Ext/Form/Module.bsl": "76a31cff4642c2c041187c90c0f7a4ffe35c2c97c731b16347bdc52f916199d2",
+          "AccumulationRegisters/Остатки/Forms/AddressProbeAccumulationRegisterForm/Ext/Form.xml": "5b41789cb5897021d289fab07d70087696d968973b64fd2b69f9e6df9115973e",
+          "AccumulationRegisters/Остатки/Forms/AddressProbeAccumulationRegisterForm.xml": "edeca695ef19b13db445ea3077728fc36f23c43a3f40d54b61a6586aa3440897",
+          "Configuration.xml": "2ce1483b4af352aa5f759130cbab4a8c198fa7f2f1103191ccbd4a76a551e97d",
+          "AccumulationRegisters/Остатки.xml": "c18be2de41c914c220f53d08df339f364fa5bb3edccf721dfed87e33b8d74c4c",
+          "AccountingRegisters/Бухгалтерский/Commands/AddressProbeAccountingRegisterCommand/Ext/CommandModule.bsl": "56b07aa4d3741b25e748968a5db5689278d8602a798c95392f34bc384e3ac0fb",
+          "AccountingRegisters/Бухгалтерский/Ext/RecordSetModule.bsl": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5",
+          "AccountingRegisters/Бухгалтерский/Forms/AddressProbeAccountingRegisterForm/Ext/Form/Module.bsl": "80e29922fe33c4200e4387ad1ed42967a19c1fcb20a1a8f0bf1f220009afab32",
+          "AccountingRegisters/Бухгалтерский/Forms/AddressProbeAccountingRegisterForm/Ext/Form.xml": "5b41789cb5897021d289fab07d70087696d968973b64fd2b69f9e6df9115973e",
+          "AccountingRegisters/Бухгалтерский/Forms/AddressProbeAccountingRegisterForm.xml": "7a136d5ea85a4cd9b07e5e3ae5ff61256f8814f06102a03fb645f9c9ca223a49",
+          "AccountingRegisters/Бухгалтерский.xml": "8eef9eda898c58ab1e60abf090b569f42dba205ebe894e1c438cb1e1312da0a0",
+          "CalculationRegisters/Начисления/Commands/AddressProbeCalculationRegisterCommand/Ext/CommandModule.bsl": "3cf6c6b40e8f5018989e1a1e68332300be7234f5968d6c37af34cc435fa1604e",
+          "CalculationRegisters/Начисления/Ext/RecordSetModule.bsl": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5",
+          "CalculationRegisters/Начисления/Forms/AddressProbeCalculationRegisterForm/Ext/Form/Module.bsl": "daf0dbf58cf266cdf98298c662fb07a120ab5c2630afec6d73a53ec72972df58",
+          "CalculationRegisters/Начисления/Forms/AddressProbeCalculationRegisterForm/Ext/Form.xml": "5b41789cb5897021d289fab07d70087696d968973b64fd2b69f9e6df9115973e",
+          "CalculationRegisters/Начисления/Forms/AddressProbeCalculationRegisterForm.xml": "50648d3049881c00b86091c01ab9599b51280dbeceef4aabbace8cf6f9197d03",
+          "CalculationRegisters/Начисления.xml": "fc1f40b3099ff617ffe9494178b667928a0b364bf97acb958b39b340022e707d"
+        }
+      }
+    ]
+  },
+  "samples": [
+    {
+      "owner": "main:AccumulationRegister.Остатки.Form.AddressProbeAccumulationRegisterForm",
+      "owner_uuid": "6d168f0f-5f4b-548b-ac10-a639df7dfaa7",
+      "child_kind": "Form",
+      "child_uuid": "f5601977-9a10-5ffe-abf9-5bc47c890f3a",
+      "bsl": "AccumulationRegisters/Остатки/Forms/AddressProbeAccumulationRegisterForm/Ext/Form/Module.bsl",
+      "marker": "Unica484AccumulationRegisterForm_2_20",
+      "bsl_matches_input": true,
+      "files": {
+        "Configuration.xml": {
+          "bytes": 12881,
+          "sha256": "2ce1483b4af352aa5f759130cbab4a8c198fa7f2f1103191ccbd4a76a551e97d"
+        },
+        "AccumulationRegisters/Остатки.xml": {
+          "bytes": 12857,
+          "sha256": "c18be2de41c914c220f53d08df339f364fa5bb3edccf721dfed87e33b8d74c4c"
+        },
+        "AccumulationRegisters/Остатки/Forms/AddressProbeAccumulationRegisterForm.xml": {
+          "bytes": 1461,
+          "sha256": "edeca695ef19b13db445ea3077728fc36f23c43a3f40d54b61a6586aa3440897"
+        },
+        "AccumulationRegisters/Остатки/Forms/AddressProbeAccumulationRegisterForm/Ext/Form.xml": {
+          "bytes": 1388,
+          "sha256": "5b41789cb5897021d289fab07d70087696d968973b64fd2b69f9e6df9115973e"
+        },
+        "AccumulationRegisters/Остатки/Forms/AddressProbeAccumulationRegisterForm/Ext/Form/Module.bsl": {
+          "bytes": 149,
+          "sha256": "76a31cff4642c2c041187c90c0f7a4ffe35c2c97c731b16347bdc52f916199d2"
+        }
+      }
+    },
+    {
+      "owner": "main:AccumulationRegister.Остатки.Command.AddressProbeAccumulationRegisterCommand",
+      "owner_uuid": "6d168f0f-5f4b-548b-ac10-a639df7dfaa7",
+      "child_kind": "Command",
+      "child_uuid": "feef965e-e1bb-54d4-a2c5-c65bc7402a54",
+      "bsl": "AccumulationRegisters/Остатки/Commands/AddressProbeAccumulationRegisterCommand/Ext/CommandModule.bsl",
+      "marker": "Unica484AccumulationRegisterCommand_2_20",
+      "bsl_matches_input": true,
+      "files": {
+        "Configuration.xml": {
+          "bytes": 12881,
+          "sha256": "2ce1483b4af352aa5f759130cbab4a8c198fa7f2f1103191ccbd4a76a551e97d"
+        },
+        "AccumulationRegisters/Остатки.xml": {
+          "bytes": 12857,
+          "sha256": "c18be2de41c914c220f53d08df339f364fa5bb3edccf721dfed87e33b8d74c4c"
+        },
+        "AccumulationRegisters/Остатки/Commands/AddressProbeAccumulationRegisterCommand/Ext/CommandModule.bsl": {
+          "bytes": 239,
+          "sha256": "689cc799c52e631e1d75d5ce3a161f6c40728b61f61bb7d454e46ff839f6ddd5"
+        }
+      }
+    },
+    {
+      "owner": "main:AccountingRegister.Бухгалтерский.Form.AddressProbeAccountingRegisterForm",
+      "owner_uuid": "3ce64222-da19-549d-8361-5f7463260aa1",
+      "child_kind": "Form",
+      "child_uuid": "6a4e0623-215d-56fd-b8f7-b4fecc85b011",
+      "bsl": "AccountingRegisters/Бухгалтерский/Forms/AddressProbeAccountingRegisterForm/Ext/Form/Module.bsl",
+      "marker": "Unica484AccountingRegisterForm_2_20",
+      "bsl_matches_input": true,
+      "files": {
+        "Configuration.xml": {
+          "bytes": 12881,
+          "sha256": "2ce1483b4af352aa5f759130cbab4a8c198fa7f2f1103191ccbd4a76a551e97d"
+        },
+        "AccountingRegisters/Бухгалтерский.xml": {
+          "bytes": 13161,
+          "sha256": "8eef9eda898c58ab1e60abf090b569f42dba205ebe894e1c438cb1e1312da0a0"
+        },
+        "AccountingRegisters/Бухгалтерский/Forms/AddressProbeAccountingRegisterForm.xml": {
+          "bytes": 1457,
+          "sha256": "7a136d5ea85a4cd9b07e5e3ae5ff61256f8814f06102a03fb645f9c9ca223a49"
+        },
+        "AccountingRegisters/Бухгалтерский/Forms/AddressProbeAccountingRegisterForm/Ext/Form.xml": {
+          "bytes": 1388,
+          "sha256": "5b41789cb5897021d289fab07d70087696d968973b64fd2b69f9e6df9115973e"
+        },
+        "AccountingRegisters/Бухгалтерский/Forms/AddressProbeAccountingRegisterForm/Ext/Form/Module.bsl": {
+          "bytes": 147,
+          "sha256": "80e29922fe33c4200e4387ad1ed42967a19c1fcb20a1a8f0bf1f220009afab32"
+        }
+      }
+    },
+    {
+      "owner": "main:AccountingRegister.Бухгалтерский.Command.AddressProbeAccountingRegisterCommand",
+      "owner_uuid": "3ce64222-da19-549d-8361-5f7463260aa1",
+      "child_kind": "Command",
+      "child_uuid": "59930b87-2c09-5fa2-b303-fddce0ea4022",
+      "bsl": "AccountingRegisters/Бухгалтерский/Commands/AddressProbeAccountingRegisterCommand/Ext/CommandModule.bsl",
+      "marker": "Unica484AccountingRegisterCommand_2_20",
+      "bsl_matches_input": true,
+      "files": {
+        "Configuration.xml": {
+          "bytes": 12881,
+          "sha256": "2ce1483b4af352aa5f759130cbab4a8c198fa7f2f1103191ccbd4a76a551e97d"
+        },
+        "AccountingRegisters/Бухгалтерский.xml": {
+          "bytes": 13161,
+          "sha256": "8eef9eda898c58ab1e60abf090b569f42dba205ebe894e1c438cb1e1312da0a0"
+        },
+        "AccountingRegisters/Бухгалтерский/Commands/AddressProbeAccountingRegisterCommand/Ext/CommandModule.bsl": {
+          "bytes": 237,
+          "sha256": "56b07aa4d3741b25e748968a5db5689278d8602a798c95392f34bc384e3ac0fb"
+        }
+      }
+    },
+    {
+      "owner": "main:CalculationRegister.Начисления.Form.AddressProbeCalculationRegisterForm",
+      "owner_uuid": "3ee32422-3780-56eb-b814-7b575df7536a",
+      "child_kind": "Form",
+      "child_uuid": "a11578cf-b162-5fbe-91a1-4885507f6cbc",
+      "bsl": "CalculationRegisters/Начисления/Forms/AddressProbeCalculationRegisterForm/Ext/Form/Module.bsl",
+      "marker": "Unica484CalculationRegisterForm_2_20",
+      "bsl_matches_input": true,
+      "files": {
+        "Configuration.xml": {
+          "bytes": 12881,
+          "sha256": "2ce1483b4af352aa5f759130cbab4a8c198fa7f2f1103191ccbd4a76a551e97d"
+        },
+        "CalculationRegisters/Начисления.xml": {
+          "bytes": 18217,
+          "sha256": "fc1f40b3099ff617ffe9494178b667928a0b364bf97acb958b39b340022e707d"
+        },
+        "CalculationRegisters/Начисления/Forms/AddressProbeCalculationRegisterForm.xml": {
+          "bytes": 1459,
+          "sha256": "50648d3049881c00b86091c01ab9599b51280dbeceef4aabbace8cf6f9197d03"
+        },
+        "CalculationRegisters/Начисления/Forms/AddressProbeCalculationRegisterForm/Ext/Form.xml": {
+          "bytes": 1388,
+          "sha256": "5b41789cb5897021d289fab07d70087696d968973b64fd2b69f9e6df9115973e"
+        },
+        "CalculationRegisters/Начисления/Forms/AddressProbeCalculationRegisterForm/Ext/Form/Module.bsl": {
+          "bytes": 148,
+          "sha256": "daf0dbf58cf266cdf98298c662fb07a120ab5c2630afec6d73a53ec72972df58"
+        }
+      }
+    },
+    {
+      "owner": "main:CalculationRegister.Начисления.Command.AddressProbeCalculationRegisterCommand",
+      "owner_uuid": "3ee32422-3780-56eb-b814-7b575df7536a",
+      "child_kind": "Command",
+      "child_uuid": "458cde88-25d6-581b-a878-02241989c779",
+      "bsl": "CalculationRegisters/Начисления/Commands/AddressProbeCalculationRegisterCommand/Ext/CommandModule.bsl",
+      "marker": "Unica484CalculationRegisterCommand_2_20",
+      "bsl_matches_input": true,
+      "files": {
+        "Configuration.xml": {
+          "bytes": 12881,
+          "sha256": "2ce1483b4af352aa5f759130cbab4a8c198fa7f2f1103191ccbd4a76a551e97d"
+        },
+        "CalculationRegisters/Начисления.xml": {
+          "bytes": 18217,
+          "sha256": "fc1f40b3099ff617ffe9494178b667928a0b364bf97acb958b39b340022e707d"
+        },
+        "CalculationRegisters/Начисления/Commands/AddressProbeCalculationRegisterCommand/Ext/CommandModule.bsl": {
+          "bytes": 238,
+          "sha256": "3cf6c6b40e8f5018989e1a1e68332300be7234f5968d6c37af34cc435fa1604e"
+        }
+      }
+    }
+  ],
+  "files": {
+    "src/AccountingRegisters/Бухгалтерский.xml": {
+      "size": 13161,
+      "sha256": "8eef9eda898c58ab1e60abf090b569f42dba205ebe894e1c438cb1e1312da0a0"
+    },
+    "src/AccountingRegisters/Бухгалтерский/Commands/AddressProbeAccountingRegisterCommand/Ext/CommandModule.bsl": {
+      "size": 237,
+      "sha256": "56b07aa4d3741b25e748968a5db5689278d8602a798c95392f34bc384e3ac0fb"
+    },
+    "src/AccountingRegisters/Бухгалтерский/Ext/RecordSetModule.bsl": {
+      "size": 3,
+      "sha256": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+    },
+    "src/AccountingRegisters/Бухгалтерский/Forms/AddressProbeAccountingRegisterForm.xml": {
+      "size": 1457,
+      "sha256": "7a136d5ea85a4cd9b07e5e3ae5ff61256f8814f06102a03fb645f9c9ca223a49"
+    },
+    "src/AccountingRegisters/Бухгалтерский/Forms/AddressProbeAccountingRegisterForm/Ext/Form.xml": {
+      "size": 1388,
+      "sha256": "5b41789cb5897021d289fab07d70087696d968973b64fd2b69f9e6df9115973e"
+    },
+    "src/AccountingRegisters/Бухгалтерский/Forms/AddressProbeAccountingRegisterForm/Ext/Form/Module.bsl": {
+      "size": 147,
+      "sha256": "80e29922fe33c4200e4387ad1ed42967a19c1fcb20a1a8f0bf1f220009afab32"
+    },
+    "src/AccumulationRegisters/Остатки.xml": {
+      "size": 12857,
+      "sha256": "c18be2de41c914c220f53d08df339f364fa5bb3edccf721dfed87e33b8d74c4c"
+    },
+    "src/AccumulationRegisters/Остатки/Commands/AddressProbeAccumulationRegisterCommand/Ext/CommandModule.bsl": {
+      "size": 239,
+      "sha256": "689cc799c52e631e1d75d5ce3a161f6c40728b61f61bb7d454e46ff839f6ddd5"
+    },
+    "src/AccumulationRegisters/Остатки/Ext/RecordSetModule.bsl": {
+      "size": 3,
+      "sha256": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+    },
+    "src/AccumulationRegisters/Остатки/Forms/AddressProbeAccumulationRegisterForm.xml": {
+      "size": 1461,
+      "sha256": "edeca695ef19b13db445ea3077728fc36f23c43a3f40d54b61a6586aa3440897"
+    },
+    "src/AccumulationRegisters/Остатки/Forms/AddressProbeAccumulationRegisterForm/Ext/Form.xml": {
+      "size": 1388,
+      "sha256": "5b41789cb5897021d289fab07d70087696d968973b64fd2b69f9e6df9115973e"
+    },
+    "src/AccumulationRegisters/Остатки/Forms/AddressProbeAccumulationRegisterForm/Ext/Form/Module.bsl": {
+      "size": 149,
+      "sha256": "76a31cff4642c2c041187c90c0f7a4ffe35c2c97c731b16347bdc52f916199d2"
+    },
+    "src/CalculationRegisters/Начисления.xml": {
+      "size": 18217,
+      "sha256": "fc1f40b3099ff617ffe9494178b667928a0b364bf97acb958b39b340022e707d"
+    },
+    "src/CalculationRegisters/Начисления/Commands/AddressProbeCalculationRegisterCommand/Ext/CommandModule.bsl": {
+      "size": 238,
+      "sha256": "3cf6c6b40e8f5018989e1a1e68332300be7234f5968d6c37af34cc435fa1604e"
+    },
+    "src/CalculationRegisters/Начисления/Ext/RecordSetModule.bsl": {
+      "size": 3,
+      "sha256": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+    },
+    "src/CalculationRegisters/Начисления/Forms/AddressProbeCalculationRegisterForm.xml": {
+      "size": 1459,
+      "sha256": "50648d3049881c00b86091c01ab9599b51280dbeceef4aabbace8cf6f9197d03"
+    },
+    "src/CalculationRegisters/Начисления/Forms/AddressProbeCalculationRegisterForm/Ext/Form.xml": {
+      "size": 1388,
+      "sha256": "5b41789cb5897021d289fab07d70087696d968973b64fd2b69f9e6df9115973e"
+    },
+    "src/CalculationRegisters/Начисления/Forms/AddressProbeCalculationRegisterForm/Ext/Form/Module.bsl": {
+      "size": 148,
+      "sha256": "daf0dbf58cf266cdf98298c662fb07a120ab5c2630afec6d73a53ec72972df58"
+    },
+    "src/Configuration.xml": {
+      "size": 12881,
+      "sha256": "2ce1483b4af352aa5f759130cbab4a8c198fa7f2f1103191ccbd4a76a551e97d"
+    }
+  }
+}

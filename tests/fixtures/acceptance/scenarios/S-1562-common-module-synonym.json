@@ -110,7 +110,7 @@
       ],
       "assertions": [
         {
-          "pointer": "/data/items/0/props",
+          "pointer": "/data/items/0/props/synonym",
           "absent": true
         },
         {

@@ -10,6 +10,7 @@ default = []
 test-support = []
 
 [dependencies]
+fluent-uri.workspace = true
 unica-execution-contract = { path = "../unica-execution-contract" }
 unica-operation-contract = { path = "../unica-operation-contract" }
 unica-operations = { path = "../unica-operations" }

@@ -784,12 +784,21 @@ pub fn parse_typed_meta_local_info_inner(
         target,
         &mut diagnostics,
     );
-    let declarations = crate::info_projection::project_meta_info_declarations(
+    let mut declarations = crate::info_projection::project_meta_info_declarations(
         kind,
         properties,
         target,
         &mut diagnostics,
     );
+    if declarations.standard_attributes == Some(None) {
+        declarations.standard_attributes = Some(
+            crate::info_projection::implicit_document_standard_attributes(
+                kind,
+                properties,
+                source_kind,
+            ),
+        );
+    }
     let format = unica_source_designer::roots::root_version_literal(xml, doc.root_element());
     let member_read_profile = source_kind.and_then(|source| {
         unica_metadata::MetaMemberReadProfile::for_source(
