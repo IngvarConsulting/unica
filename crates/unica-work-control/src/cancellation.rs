@@ -20,6 +20,7 @@ pub enum FactualOutcomeAuthority {
     AnsweredInterrupt,
     StartedExternalProcess,
     CommittedWorkspaceApply,
+    PublishedWorkspaceSnapshot,
 }
 
 /// How many times a token was cancelled: the first cancel interrupts work, a
@@ -211,6 +212,30 @@ impl CancellationToken {
         Ok(())
     }
 
+    /// Publish a complete snapshot and record the factual result before a
+    /// concurrent cancellation can replace its receipt. None means the
+    /// caller cancelled before the commit and still owns the stage.
+    pub fn publish_snapshot_with_gate<E>(
+        &self,
+        publish: impl FnOnce() -> Result<(), E>,
+    ) -> Option<Result<(), E>> {
+        let _gate = self
+            .dispatch_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.is_cancelled() {
+            return None;
+        }
+        let result = publish();
+        if result.is_ok() {
+            self.factual_outcome.store(
+                FactualOutcomeAuthority::PublishedWorkspaceSnapshot as u8,
+                Ordering::Release,
+            );
+        }
+        Some(result)
+    }
+
     /// Records an already confirmed actor publication. This is unconditional:
     /// cancellation cannot erase an effect that has actually committed.
     pub fn record_committed_apply(&self) {
@@ -224,6 +249,8 @@ impl CancellationToken {
         let recorded = self.factual_outcome.load(Ordering::Acquire);
         if recorded == FactualOutcomeAuthority::CommittedWorkspaceApply as u8 {
             FactualOutcomeAuthority::CommittedWorkspaceApply
+        } else if recorded == FactualOutcomeAuthority::PublishedWorkspaceSnapshot as u8 {
+            FactualOutcomeAuthority::PublishedWorkspaceSnapshot
         } else if self.protected_process_started() {
             FactualOutcomeAuthority::StartedExternalProcess
         } else if recorded == FactualOutcomeAuthority::AnsweredInterrupt as u8 {

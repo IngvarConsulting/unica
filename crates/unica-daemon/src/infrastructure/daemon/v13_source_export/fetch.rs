@@ -447,9 +447,11 @@ pub(super) fn execute_with_tool(
         Ok(fingerprint) => fingerprint,
         Err(result) => return result,
     };
-    let mut warnings = match prune_snapshots(&root, &storage, SNAPSHOTS_KEPT - 1) {
+    let mut warnings = match prune_snapshots(&root, &storage, SNAPSHOTS_KEPT - 1, |snapshot| {
+        storage.remove(snapshot)
+    }) {
         Ok(warnings) => warnings,
-        Err(error) => return storage_refusal(FETCH, error),
+        Err(result) => return result,
     };
     let id = uuid::Uuid::new_v4().simple().to_string();
     let stage = match storage.create_stage(&id) {
@@ -487,7 +489,16 @@ pub(super) fn execute_with_tool(
             return finish_failed_fetch(result, &storage, &id, &stage, None, warnings, &root);
         }
     };
-    match storage.remember(&id, &stage, &preparing) {
+    let Some(remembered) =
+        cancellation.publish_snapshot_with_gate(|| storage.remember(&id, &stage, &preparing))
+    else {
+        let result = reject_fetch(
+            RefusalCode::Cancelled,
+            "fetch was cancelled before snapshot publication",
+        );
+        return finish_failed_fetch(result, &storage, &id, &stage, None, warnings, &root);
+    };
+    match remembered {
         Ok(()) => {}
         Err(RememberFailure::Rejected(error, owner)) => {
             let result = storage_refusal(FETCH, error);
@@ -914,9 +925,11 @@ fn prune_snapshots(
     root: &Path,
     storage: &SnapshotStorage,
     keep: usize,
-) -> std::io::Result<Vec<Value>> {
+    remove: impl Fn(&storage::OwnedSnapshot) -> Result<bool, CleanupFailure>,
+) -> Result<Vec<Value>, DomainResult> {
     let mut existing: Vec<_> = storage
-        .owned_snapshots()?
+        .owned_snapshots()
+        .map_err(|error| storage_refusal(FETCH, error))?
         .into_iter()
         .map(|snapshot| (snapshot.modified(), snapshot))
         .collect();
@@ -926,11 +939,11 @@ fn prune_snapshots(
             .cmp(&left.0)
             .then_with(|| left.1.id.cmp(&right.1.id))
     });
-    Ok(existing
+    let warnings: Vec<_> = existing
         .into_iter()
         .skip(keep)
         .filter_map(|(_, snapshot)| {
-            storage.remove(&snapshot).err().map(|error| {
+            remove(&snapshot).err().map(|error| {
                 snapshot_cleanup_warning(
                     root,
                     &snapshot.id,
@@ -939,7 +952,23 @@ fn prune_snapshots(
                 )
             })
         })
-        .collect())
+        .collect();
+    if !warnings.is_empty() {
+        // Retirement can fail before revoking the old ready record. If it
+        // succeeded, a residual tree remains removable by fetch.drop and no
+        // longer occupies a ready slot.
+        let refusal = match storage.owned_snapshots() {
+            Ok(ready) if ready.len() <= keep => None,
+            Ok(_) => Some(reject_fetch(RefusalCode::InvalidState,
+                "fetch could not retire an older ready snapshot; close the preview and retry fetch.drop")),
+            Err(error) => Some(storage_refusal(FETCH,error)),
+        };
+        if let Some(mut refusal) = refusal {
+            refusal.warnings.extend(warnings);
+            return Err(refusal);
+        }
+    }
+    Ok(warnings)
 }
 
 fn cleanup_refusal_code(error: &CleanupFailure) -> RefusalCode {

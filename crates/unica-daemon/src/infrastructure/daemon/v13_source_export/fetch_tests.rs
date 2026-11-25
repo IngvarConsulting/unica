@@ -12,6 +12,7 @@ enum Script {
     DumpInfoIsDirectory,
     OnlyDumpInfo,
     CancelsAfterReady,
+    CancelsAfterTerminal,
     ChecksSnapshotLock,
     /// Раннер отказал до выгрузки.
     RefusesBeforeReady,
@@ -189,12 +190,16 @@ impl ProcessRunner for ProtocolRunner {
         if self.script == Script::LateOwnerPublicationFailure {
             unica_workspace::test_support::inject_post_rename_sync_failure_for_test();
         }
+        let cancelled = command.cancellation.is_cancelled();
+        if self.script == Script::CancelsAfterTerminal {
+            command.cancellation.cancel();
+        }
         Ok(ProcessStreamOutput {
             status_success: false,
             status: "exit status: 2".into(),
             stderr: String::new(),
             timed_out: false,
-            cancelled: command.cancellation.is_cancelled(),
+            cancelled,
             stopped_by_consumer: false,
             line_error: None,
         })
@@ -351,6 +356,21 @@ fn cancellation_after_ready_removes_the_snapshot_and_preserves_sources() {
     assert!(result.changed.is_empty(), "{result:?}");
     assert!(snapshots(root).is_empty(), "{:?}", snapshots(root));
     assert_eq!(tree(&root.join("main")), before);
+}
+
+/// rule: INV.RUNTIME.FETCH-LEAVES-THE-WORKING-COPY
+#[test]
+fn cancellation_after_the_final_runner_receipt_reclaims_the_unpublished_snapshot() {
+    let workspace = workspace();
+    let root = workspace.path();
+    let runner = ProtocolRunner::new(Script::CancelsAfterTerminal);
+    let result = run(root, &prepared(root, false), &runner);
+    assert_eq!(result.diagnostics[0]["code"], "cancelled", "{result:?}");
+    assert!(snapshots(root).is_empty());
+    assert_eq!(
+        fs::read(root.join("main/Local.bsl")).unwrap(),
+        b"uncommitted"
+    );
 }
 
 /// rule: INV.RUNTIME.FETCH-LEAVES-THE-WORKING-COPY
@@ -1067,6 +1087,35 @@ fn a_rejected_fetch_keeps_the_earlier_cleanup_warning() {
         })
         .expect("the refusal preserves the earlier cleanup warning");
     assert!(root.join(warning["path"].as_str().unwrap()).exists());
+}
+
+/// rule: INV.RUNTIME.FETCH-LEAVES-THE-WORKING-COPY
+#[test]
+fn retention_failure_before_retirement_refuses_to_reserve_a_fifth_snapshot() {
+    let workspace = workspace();
+    let root = workspace.path();
+    let storage = SnapshotStorage::open(root, true).unwrap().unwrap();
+    for digit in ["1", "2", "3", "4"] {
+        store_snapshot_fixture(&storage, &digit.repeat(32));
+    }
+    let result = prune_snapshots(root, &storage, SNAPSHOTS_KEPT - 1, |_| {
+        Err(CleanupFailure::Ownership(
+            std::io::Error::other("cannot write retirement record"),
+            None,
+        ))
+    })
+    .unwrap_err();
+    assert!(result.summary.contains("could not retire"), "{result:?}");
+    assert_eq!(result.warnings.len(), 1);
+    assert_eq!(result.warnings[0]["code"], SNAPSHOT_KEPT_WARNING);
+    assert_eq!(storage.owned_snapshots().unwrap().len(), SNAPSHOTS_KEPT);
+    assert!(
+        prune_snapshots(root, &storage, SNAPSHOTS_KEPT - 1, |snapshot| storage
+            .remove(snapshot))
+        .unwrap()
+        .is_empty()
+    );
+    assert_eq!(storage.owned_snapshots().unwrap().len(), SNAPSHOTS_KEPT - 1);
 }
 
 fn make_directory_link(target: &Path, link: &Path) {
