@@ -1,0 +1,131 @@
+{
+  "id": "S-3264-common-template-cell",
+  "issue": 3264,
+  "area": "Макеты",
+  "task": "Найти mxl.set у области строк общего макета, изменить одну ячейку и сверить соседние ячейки и разметку после применения.",
+  "workspace": "tests/fixtures/acceptance/workspace-common-template",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {"at": "main:CommonTemplate.Print.Area"},
+      "expect": ["ok"],
+      "assertions": [
+        {"pointer": "/data/items/1/title", "eq": "Header"},
+        {"pointer": "/data/items/1/props/kind", "eq": "Rows"}
+      ],
+      "captures": {
+        "header": {"pointer": "/data/items/1/at"},
+        "before": {"kind": "sha256", "file": "src/CommonTemplates/Print/Ext/Template.xml"},
+        "descriptor": {"kind": "sha256", "file": "src/CommonTemplates/Print.xml"}
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {"at": "$capture.header"},
+      "expect": ["ok"],
+      "assertions": [
+        {"pointer": "/data/can", "contains": {"op": "mxl.set", "args": "values"}}
+      ],
+      "captures": {"body": {"pointer": "/data/branches/1/at"}}
+    },
+    {
+      "tool": "unica.view",
+      "args": {"at": "main:CommonTemplate.Print.Area.Header.Can.mxl.set"},
+      "expect": ["ok"],
+      "assertions": [
+        {"pointer": "/data/props/contract/argsSchema/properties/values/required", "eq": ["cells"]}
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {"at": "$capture.body"},
+      "expect": ["ok"],
+      "assertions": [
+        {"pointer": "/data/items/0/text", "eq": "Changed"}
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.header",
+        "ops": [{"op": "mxl.set", "args": {"values": {"cells": {"R1C1": "Новый заголовок"}}}}]
+      },
+      "expect": ["ok"],
+      "assertions": [
+        {"pointer": "/data/mode", "eq": "preview"},
+        {"pointer": "/data/effects", "eq": 1}
+      ],
+      "captures": {"token": {"pointer": "/data/executionToken"}},
+      "fileAssertions": [
+        {"kind": "sha256", "path": "src/CommonTemplates/Print/Ext/Template.xml", "eq": "$capture.before"}
+      ]
+    },
+    {
+      "tool": "unica.diff",
+      "args": {"executionToken": "$capture.token"},
+      "expect": ["ok"],
+      "assertions": [
+        {"pointer": "/page/stoppedBy", "eq": "complete"},
+        {"pointer": "/data/chunks/0/path", "eq": "CommonTemplates/Print/Ext/Template.xml"},
+        {"pointer": "/data/chunks/0/side", "eq": "before"},
+        {"pointer": "/data/chunks/0/content", "contains": "<v8:content>Changed</v8:content>"},
+        {"pointer": "/data/chunks/1/path", "eq": "CommonTemplates/Print/Ext/Template.xml"},
+        {"pointer": "/data/chunks/1/side", "eq": "after"},
+        {"pointer": "/data/chunks/1/content", "contains": "<v8:content>Новый заголовок</v8:content>"},
+        {"pointer": "/data/chunks/2", "absent": true}
+      ],
+      "fileAssertions": [
+        {"kind": "sha256", "path": "src/CommonTemplates/Print/Ext/Template.xml", "eq": "$capture.before"}
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {"executionToken": "$capture.token"},
+      "expect": ["ok"],
+      "assertions": [
+        {"pointer": "/data/mode", "eq": "published"},
+        {"pointer": "/data/effects", "eq": 1}
+      ],
+      "captures": {
+        "published": {"kind": "sha256", "file": "src/CommonTemplates/Print/Ext/Template.xml"}
+      },
+      "fileAssertions": [
+        {"kind": "sha256", "path": "src/CommonTemplates/Print.xml", "eq": "$capture.descriptor"},
+        {"kind": "xml", "path": "src/CommonTemplates/Print/Ext/Template.xml",
+          "select": ".//{http://v8.1c.ru/8.1/data/core}content",
+          "eq": ["Новый заголовок", "[Label]", "Shared", "Shared", "Last"]},
+        {"kind": "xml", "path": "src/CommonTemplates/Print/Ext/Template.xml",
+          "select": ".//{http://v8.1c.ru/8.2/data/spreadsheet}parameter", "eq": ["Probe"]},
+        {"kind": "xml", "path": "src/CommonTemplates/Print/Ext/Template.xml",
+          "select": "./*/{http://v8.1c.ru/8.2/data/spreadsheet}size", "eq": ["3"]},
+        {"kind": "xml", "path": "src/CommonTemplates/Print/Ext/Template.xml",
+          "select": "./{http://v8.1c.ru/8.2/data/spreadsheet}namedItem/{http://v8.1c.ru/8.2/data/spreadsheet}name",
+          "eq": ["A", "B", "Header"]}
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {"at": "$capture.body"},
+      "expect": ["ok"],
+      "assertions": [
+        {"pointer": "/data/items", "eq": [
+          {"index": 1, "template": false, "text": "Новый заголовок"},
+          {"index": 2, "template": true, "text": "[Label]"}
+        ]}
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonTemplate.Print.Area.Missing",
+        "ops": [{"op": "mxl.set", "args": {"values": {"cells": {"R1C1": "Missing"}}}}]
+      },
+      "expect": ["refused"],
+      "refusal": "not_found: the template has no area `Missing`",
+      "assertions": [{"pointer": "/next", "absent": true}],
+      "fileAssertions": [
+        {"kind": "sha256", "path": "src/CommonTemplates/Print/Ext/Template.xml", "eq": "$capture.published"}
+      ]
+    }
+  ]
+}

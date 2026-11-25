@@ -134,6 +134,68 @@ fn cache_root(fixture: &ApplySeamFixture) -> PathBuf {
     fixture.source_dir().parent().unwrap().join(".build/unica")
 }
 
+/// rule: INV.SOURCE.WRITABLE-PROFILE
+#[test]
+fn common_mxl_edit_checks_its_owner_and_preserves_other_bytes() {
+    let fixture = ApplySeamFixture::new();
+    let source = fixture.source_dir();
+    let image = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/acceptance/workspace-common-template/src");
+    let template = Path::new("CommonTemplates/Print/Ext/Template.xml");
+    std::fs::create_dir_all(source.join(template.parent().unwrap())).unwrap();
+    for relative in [Path::new("CommonTemplates/Print.xml"), template] {
+        std::fs::copy(image.join(relative), source.join(relative)).unwrap();
+    }
+    let before = snapshot(&source);
+    let request = preview_request(
+        "main:CommonTemplate.Print.Area.Header",
+        json!([{"op":"mxl.set","args":{"values":{"cells":{"R1C1":"New"}}}}]),
+    );
+    let error = plan_hidden_v13_apply(&request, &fixture.binding, &fixture.admission())
+        .expect_err("a descriptor and body cannot stand in for registration");
+
+    assert_eq!(error.kind(), ApplyPlanErrorKind::NotFound);
+    assert_eq!(error.path(), Some("ops[0].args.at"));
+    assert_eq!(snapshot(&source), before);
+
+    let configuration = source.join("Configuration.xml");
+    let owner = std::fs::read_to_string(&configuration).unwrap();
+    std::fs::write(
+        configuration,
+        owner.replace(
+            "</ChildObjects>",
+            "<CommonTemplate>Print</CommonTemplate></ChildObjects>",
+        ),
+    )
+    .unwrap();
+    let mut expected = snapshot(&source);
+    let body = std::str::from_utf8(&expected[template]).unwrap();
+    let with_version = body.replacen("<document ", "<document version=\"2.20\" ", 1);
+    assert_ne!(with_version, body);
+    std::fs::write(source.join(template), with_version.as_bytes()).unwrap();
+    let error = plan_hidden_v13_apply(&request, &fixture.binding, &fixture.admission())
+        .expect_err("an MXL root cannot declare a version");
+    assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidSource);
+    assert_eq!(
+        std::fs::read(source.join(template)).unwrap(),
+        with_version.as_bytes()
+    );
+    std::fs::write(source.join(template), body.as_bytes()).unwrap();
+
+    assert_eq!(body.matches("<v8:content>Changed</v8:content>").count(), 1);
+    let postimage = body.replacen(
+        "<v8:content>Changed</v8:content>",
+        "<v8:content>New</v8:content>",
+        1,
+    );
+    expected.insert(template.to_path_buf(), postimage.into_bytes());
+
+    let prepared = prepare_publication(&fixture, &request);
+    let published = fixture.actor().publish_prepared_apply(prepared).unwrap();
+    assert_eq!(published.commit_count_for_test(), 1);
+    assert_eq!(snapshot(&source), expected);
+}
+
 #[test]
 fn canonical_dcs_preview_and_publication_preserve_bom_mixed_newlines_and_unowned_bytes() {
     let original = exact_bytes();

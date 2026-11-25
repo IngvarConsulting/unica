@@ -89,7 +89,7 @@ fn common_template_exposes_mxl_areas_body_and_parameters_through_public_view() {
     assert!(data["branches"]
         .as_array()
         .unwrap()
-        .contains(&json!({"at":format!("{at}.Area"),"count":2})));
+        .contains(&json!({"at":format!("{at}.Area"),"count":3})));
     let area = service.view(ViewRequest::new(&format!("{at}.Area.A")).unwrap());
     assert!(area.ok, "the call failed");
     let body = service.view(ViewRequest::new(&format!("{at}.Area.A.Body")).unwrap());

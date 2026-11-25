@@ -2733,10 +2733,17 @@ pub(super) fn with_missing_target_parent(
     if !(matches!(tail, ".at" | ".args.at") || address_only) {
         return result;
     }
+    let segments = operation.at().segments();
+    // В общем макете есть правка ячеек, но нет операции создания области.
+    if operation.name() == unica_templates::operations::MxlOperation::Set.name()
+        && matches!(segments, [template, area]
+            if template.kind() == NodeKind::CommonTemplate && area.kind() == NodeKind::Area)
+    {
+        return result;
+    }
     if node_exists(operation.at()) != Some(false) {
         return result;
     }
-    let segments = operation.at().segments();
     let parent = if segments.len() > 1 {
         QualifiedAddress {
             line_range: None,

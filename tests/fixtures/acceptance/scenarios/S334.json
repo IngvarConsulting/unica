@@ -214,7 +214,7 @@
       "expect": [
         "refused"
       ],
-      "refusal": "bad_value: apply operation `mxl.set` does not apply to Template `cf:Report.F06Report.Template.F06Template`; it addresses `Kind.Name.Template.T.Area.A` of a spreadsheet",
+      "refusal": "bad_value: apply operation `mxl.set` does not apply to Template `cf:Report.F06Report.Template.F06Template`; it addresses `Kind.Name.Template.T.Area.A` or `CommonTemplate.T",
       "fileAssertions": [
         {
           "kind": "sha256",

@@ -2,6 +2,7 @@ use super::validate_platform_xml_binding;
 use crate::domain::apply::OperationDescriptorExt;
 use serde_json::{Map, Value};
 use unica_address::address::{member_address, NodeKind, QualifiedAddress};
+use unica_address::source_target::MetadataAddress;
 
 use unica_operations::OperationDescriptor;
 
@@ -175,8 +176,8 @@ fn mxl_cells(area: &Map<String, Value>) -> Vec<CellText> {
     cells
 }
 
-/// `mxl.set` пишет ячейки существующей области `Template.T.Area.A`;
-/// `area.add` на самом макете создаёт новые области с начальными ячейками.
+/// `mxl.set` пишет ячейки существующей области вложенного или общего макета.
+/// `area.add` создаёт новые области с начальными ячейками во вложенном макете.
 /// Узел создаёт операция родителя: опечатка в имени области не заводит
 /// новую (#1354).
 fn parse_mxl_operation(
@@ -203,29 +204,32 @@ fn parse_mxl_operation(
     let at_path = format!("ops[{op_index}].args.at");
     let segments = address.segments();
     let shape = match operation {
-        MxlOperation::Set => "mxl.set addresses an existing area of a spreadsheet template: `Owner.Name.Template.T.Area.A`",
+        MxlOperation::Set => "mxl.set addresses an existing area of a spreadsheet template: `Owner.Name.Template.T.Area.A` or `CommonTemplate.T.Area.A`",
         MxlOperation::AreaAdd => "area.add addresses the spreadsheet template itself: `Owner.Name.Template.T`",
     };
-    let (template_segments, area) = match (operation, segments) {
-        (MxlOperation::Set, [owner, template, area])
+    let (template_address, area) = match (operation, segments) {
+        (MxlOperation::Set, [_, _, area] | [_, area])
             if area.kind() == NodeKind::Area && area.name().is_some() =>
         {
-            (vec![owner.clone(), template.clone()], area.name())
+            (address.prefix(segments.len() - 1), area.name())
         }
-        (MxlOperation::AreaAdd, [owner, template]) => (vec![owner.clone(), template.clone()], None),
+        (MxlOperation::AreaAdd, [_, _]) => (address.prefix(2), None),
         _ => return Err(ApplyPlanError::new(ApplyPlanErrorKind::BadValue, shape).at_path(at_path)),
     };
-    let template_address = QualifiedAddress {
-        line_range: None,
-        source_set: address.source_set().to_string(),
-        segments: template_segments,
+    let template = if matches!(template_address.segments(), [template] if template.kind() == NodeKind::CommonTemplate)
+    {
+        MetadataAddress::parse_logical(&template_address.logical_path()).map_err(|error| {
+            ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.to_string()).at_path(at_path)
+        })?
+    } else {
+        unica_templates::address::template_owner(
+            &template_address,
+            op_index,
+            shape,
+            "MXL operations address a `Template` node of a report or object",
+        )?
+        .0
     };
-    let (template, _) = unica_templates::address::template_owner(
-        &template_address,
-        op_index,
-        shape,
-        "MXL operations address a `Template` node of a report or object",
-    )?;
     let edits = match operation {
         MxlOperation::Set => {
             let area = area.expect("mxl.set retained the addressed area");
@@ -325,6 +329,19 @@ fn require_template_format(
     .map_err(|message| {
         ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(at_path.clone())
     })?;
+    let common = template.segments().next() == Some(NodeKind::CommonTemplate.as_str());
+    if common {
+        let owner_plan = unica_source_designer::owner::owner_evidence_plan(
+            authority.source_kind(),
+            template,
+            std::slice::from_ref(&relative),
+        )
+        .map_err(|message| {
+            ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message).at_path(&at_path)
+        })?;
+        unica_source_designer::event_owner::prove_owner_plan(staged, &owner_plan)
+            .map_err(|error| error.at_path(&at_path))?;
+    }
     let Some(bytes) = staged
         .read(&relative)
         .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
@@ -333,8 +350,19 @@ fn require_template_format(
         // корень само и отвечает «не найден» или «не тот документ».
         return Ok(());
     };
-    let format = unica_templates_designer::descriptor::template_type_of(&bytes)
-        .map(|raw| unica_templates::TemplateFormat::parse(&raw));
+    let format = if common {
+        let facts = crate::infrastructure::family_codecs::metadata_read_codec()
+            .common_template(&bytes, template)
+            .map_err(|message| {
+                ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message).at_path(&at_path)
+            })?;
+        Some(unica_templates::TemplateFormat::parse(
+            facts.template_type.descriptor_value(),
+        ))
+    } else {
+        unica_templates_designer::descriptor::template_type_of(&bytes)
+            .map(|raw| unica_templates::TemplateFormat::parse(&raw))
+    };
     if descriptor.admits_template_format(format) {
         return Ok(());
     }

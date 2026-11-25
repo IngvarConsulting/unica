@@ -79,7 +79,7 @@ pub fn mxl(operation: MxlOperation) -> OperationContract {
     let (schema, target, effect, example_args) = match operation {
         MxlOperation::Set => (
             object(&[("at",text(true)),("values",object(&[("cells",cells),("columns",columns)], &["cells"]))], &["values"]),
-            "An existing named area of a SpreadsheetDocument Template: <source-set>:<Owner>.<name>.Template.<name>.Area.<area>. The address names the area; a missing area is refused, create it with area.add on the template.",
+            "An existing named Rows area of a SpreadsheetDocument: <source-set>:<Owner>.<name>.Template.<name>.Area.<area> or <source-set>:CommonTemplate.<name>.Area.<area>. A missing area is refused. On an owned template, area.add creates an area.",
             "Update cells of the existing named Rows area. Addressed parameter/template cells become ordinary text. Unaddressed cells and areas remain. A row below the area grows the area only when nothing follows it. Width grows to max(existing width, written column, columns); it never shrinks.",
             json!({"values":{"columns":4,"cells":{"R1C1":"Item","R1C2":"Amount","R2C1":true,"R2C2":null}}}),
         ),
