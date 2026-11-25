@@ -75,6 +75,24 @@ fn configuration_references_can_assign_and_clear_only_their_platform_spans() {
     assigned.insert(PathBuf::from("Configuration.xml"), edited.into_bytes());
     assert_eq!(source_snapshot(&fixture), assigned);
 
+    let relation_at = "main:Configuration.Relation";
+    let node = view(&runtime, &fixture, ROOT);
+    assert!(node["branches"].as_array().unwrap().iter().any(|branch|
+        branch["at"] == relation_at && branch["count"] == 3), "{node}");
+    let relations = view(&runtime, &fixture, relation_at);
+    let items = relations["items"].as_array().unwrap();
+    assert_eq!(items.len(), 3);
+    for (relation, target, kind) in [
+        ("defaultStyle", "main:Style.Probe", "Style"),
+        ("defaultInterface", INTERFACE, "OrdinaryInterface"),
+        ("defaultReportAppearanceTemplate", "main:CommonTemplate.Probe", "CommonTemplate"),
+    ] {
+        let row = items.iter().find(|row| row["relation"] == relation).unwrap();
+        assert_eq!(row["at"], target);
+        assert_eq!(row["kind"], kind);
+        assert_eq!(view(&runtime, &fixture, target)["at"], target);
+    }
+
     let refused = call(
         &runtime,
         &fixture,
@@ -98,6 +116,7 @@ fn configuration_references_can_assign_and_clear_only_their_platform_spans() {
         })),
     );
     assert_eq!(source_snapshot(&fixture), before);
+    assert_eq!(view(&runtime, &fixture, relation_at)["items"], json!([]));
 }
 
 #[test]
@@ -191,4 +210,22 @@ fn configuration_reference_publication_restores_the_root_after_a_late_failure() 
 
 fn source_snapshot(fixture: &Fixture) -> SourceImage {
     unica_workspace::test_support::tree_snapshot(&fixture.source)
+}
+
+/// rule: INV.SOURCE.RELATIONS-ANSWER-IN-ONE-BRANCH
+#[test]
+fn configuration_relation_reports_broken_unsupported_and_missing_targets() {
+    let fixture = root_reference_fixture();
+    let path = fixture.source.join("Configuration.xml");
+    let xml = std::fs::read_to_string(&path).unwrap()
+        .replace("<DefaultStyle/>", "<DefaultStyle><Broken/></DefaultStyle>")
+        .replace("<DefaultInterface/>", "<DefaultInterface>Role.Bad</DefaultInterface>")
+        .replace("<DefaultReportAppearanceTemplate/>", "<DefaultReportAppearanceTemplate>CommonTemplate.Absent</DefaultReportAppearanceTemplate>");
+    std::fs::write(path, xml).unwrap();
+    let node = view(&runtime(), &fixture, "main:Configuration.Relation");
+    assert_eq!(node["items"], json!([]));
+    let limits=node["limits"].as_array().unwrap();
+    for diagnostic in ["malformed DefaultStyle", "unsupported reference kind in DefaultInterface", "main:CommonTemplate.Absent"] {
+        assert!(limits.iter().any(|limit| limit.as_str().is_some_and(|text| text.contains(diagnostic))), "{node}");
+    }
 }

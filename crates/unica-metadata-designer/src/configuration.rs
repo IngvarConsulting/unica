@@ -548,7 +548,22 @@ fn read_cf_purpose_properties(
         read_reference_list(DescriptorProperty::AdditionalFullTextSearchDictionaries);
     let standalone_configuration_restriction_roles =
         read_reference_list(DescriptorProperty::StandaloneConfigurationRestrictionRoles);
+    let mut reference_targets = std::collections::BTreeMap::new();
+    let mut reference_limits = Vec::new();
+    for &property in unica_metadata::descriptor_operations::CONFIGURATION_REFERENCES {
+        let [tag, key] = property.names() else { unreachable!() };
+        match crate::configuration_references::read(props, property) {
+            Ok(Some(target)) => { reference_targets.insert((*key).to_owned(), target); }
+            Ok(None) => {}
+            Err(crate::configuration_references::ConfigurationReferenceError::Malformed) =>
+                reference_limits.push(format!("source_unreadable: malformed {tag}")),
+            Err(crate::configuration_references::ConfigurationReferenceError::UnsupportedKind) =>
+                reference_limits.push(format!("unsupported reference kind in {tag}")),
+        }
+    }
     Ok(CfPurposeProperties {
+        reference_targets,
+        reference_limits,
         use_purposes,
         default_roles,
         additional_full_text_search_dictionaries,

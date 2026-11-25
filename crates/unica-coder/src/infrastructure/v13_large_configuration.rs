@@ -1141,6 +1141,12 @@ pub(super) fn read_configuration_root(
         "interface": interface,
         "panels": panels,
     });
+    if !purpose.reference_targets.is_empty() {
+        payload["properties"]["referenceTargets"] = json!(purpose.reference_targets);
+    }
+    if !purpose.reference_limits.is_empty() {
+        payload["properties"]["referenceLimits"] = json!(purpose.reference_limits);
+    }
     payload["properties"]["mobileApplicationURLs"] = json!(purpose.mobile_application_urls);
     payload["properties"]["allowedIncomingShareRequestTypes"] =
         json!(purpose.allowed_incoming_share_request_types);
@@ -1305,10 +1311,11 @@ fn parse_configuration_owner(
             && matches!(&event, XmlEvent::StartElement { name, .. }
             if state.ignored_depth == 0
                 && matches!(state.stack.last().map(|frame| &frame.role), Some(FrameRole::Properties))
-                && name.namespace.as_deref() == Some(MD_NS)
+                && (unica_metadata::descriptor_operations::CONFIGURATION_REFERENCES.iter().any(|field| field.names()[0] == name.local_name)
+                    || name.namespace.as_deref() == Some(MD_NS)
                 && matches!(name.local_name.as_str(), "UsePurposes" | "DefaultRoles" | "UsedMobileApplicationFunctionalities" | "IncludeHelpInContents"
                     | "MobileApplicationURLs" | "AllowedIncomingShareRequestTypes"
-                    | "AdditionalFullTextSearchDictionaries" | "StandaloneConfigurationRestrictionRoles"));
+                    | "AdditionalFullTextSearchDictionaries" | "StandaloneConfigurationRestrictionRoles")));
         if purpose_depth != 0 || starts_purpose {
             if let Some(writer_event) = event.as_writer_event() {
                 purpose_xml

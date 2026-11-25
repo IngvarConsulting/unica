@@ -32,8 +32,9 @@ id: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
 `main:Catalog.Валюты.Attribute`. У `Configuration`, командного `Interface`, `Metadata` и `Schedule` имени
 не бывает: следующий сегмент разбирается как вид. Выдуманное имя
 отклоняется с объяснением этой причины. `Configuration` разрешён только
-как самостоятельный корень `main:Configuration` и перед вопросом к его
-словарю `main:Configuration.Can.<op>`.
+как самостоятельный корень `main:Configuration`, перед вопросом к его
+словарю `main:Configuration.Can.<op>` и перед ветвью ссылок
+`main:Configuration.Relation`, которую читает `unica.view`.
 
 У программного интерфейса BSL-модуля имя после `Interface` обозначает срез:
 `Public`, `Library` или `Override`. Например,

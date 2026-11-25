@@ -277,7 +277,9 @@ fn operation_address_outside_view(request: &InvocationRequest) -> Option<DomainR
     let address = candidates.into_iter().find_map(|(location, raw)| {
         let raw = raw?;
         let parsed = unica_address::address::QualifiedAddress::parse(&raw).ok()?;
-        let what = if parsed.operation_query().is_some() {
+        let what = if parsed.is_configuration_relation() {
+            "a configuration-relation"
+        } else if parsed.operation_query().is_some() {
             "an operation-dictionary"
         } else if parsed.property_query().is_some() {
             // Свойство узла (#2088) — не узел исходников: проверять, менять
@@ -297,7 +299,9 @@ fn operation_address_outside_view(request: &InvocationRequest) -> Option<DomainR
     result.next.push(serde_json::json!({
         "tool": "unica.view",
         "args": {"at": address},
-        "reason": if what == "a node-property" {
+        "reason": if what == "a configuration-relation" {
+            "ссылки конфигурации читает view"
+        } else if what == "a node-property" {
             "свойство узла читает view"
         } else {
             "контракт операции читает view"

@@ -37,7 +37,8 @@ pub fn classify_route(address: &QualifiedAddress, profile: PlatformProfile) -> O
     if any(NodeKind::Module) {
         return None;
     }
-    if matches!(segments, [root] if root.kind() == NodeKind::Configuration && root.name().is_none())
+    if address.is_configuration_relation()
+        || matches!(segments, [root] if root.kind() == NodeKind::Configuration && root.name().is_none())
     {
         return Some(RouteClass::Configuration);
     }

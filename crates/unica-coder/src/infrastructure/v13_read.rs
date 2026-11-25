@@ -168,6 +168,7 @@ mod diagnostic_scope;
 mod editability_view;
 mod exchange_membership;
 pub(crate) use exchange_membership::ExchangeMembership;
+mod configuration_relations;
 mod form_payload;
 mod http_service_handler;
 mod method_doc;
@@ -663,6 +664,14 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                 return Ok(view);
             }
         }
+        if at.is_configuration_relation()
+            && self.read.source_set_kind() != SourceSetKind::Configuration
+        {
+            return Err(ViewError::new(
+                RefusalCode::NotFound,
+                "these references belong to a configuration",
+            ));
+        }
         let inherited = self.inherited_route_part(&route, admitted)?;
         let projected = if let Some((borrowing, resource)) = &inherited {
             project_inherited_part(&route, borrowing, resource)?
@@ -681,7 +690,7 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
             crate::infrastructure::v13_read_projection::project_configuration_with_counts(
                 route.at(),
                 &streamed.payload,
-                &[],
+                &at.segments()[1..],
                 streamed.counts,
             )?
         } else if route.reader() == LogicalReader::Metadata
@@ -810,6 +819,9 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         // подчинённых из `ChildObjects` дескриптора: по ней агент выбирает
         // объект, не открывая каждый (#548).
         let projected = match projected {
+            NodeViewData::Collection(collection) if at.is_configuration_relation() => {
+                self.checked_configuration_relations(collection, admitted)?
+            }
             NodeViewData::Collection(collection)
                 if route.reader() == LogicalReader::Metadata
                     && route.reader_metadata_path().is_none()
