@@ -155,6 +155,15 @@ allowed-tools:
 Чтение отражает исходники: оно не запускает задание и не показывает эффективные
 настройки информационной базы.
 
+Для иконки подсистемы квалифицируй её ссылку `props.Picture` вида
+`CommonPicture.<Имя>` именем того же набора. Прочитай карточку и передай
+в `unica.view` адрес ветви `Picture` из `branches[].at`. Например,
+`main:CommonPicture.Probe.Picture` возвращает `data.kind = "Picture"`.
+При `data.props.state = "available"` декодируй `data.props.data` как Base64
+и передай результат декодеру `image/png`. При `missing`, `damaged` или
+`unsupported` используй стандартную иконку. Формат полей описан в
+[контракте CommonPicture](../../references/specs/1c-configuration-spec.md#61-commonpicture--общая-картинка).
+
 ### Корень
 
 ```json

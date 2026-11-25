@@ -221,6 +221,12 @@ fn project_metadata(
         if matches!(address.segments(), [owner] if owner.kind() == NodeKind::ScheduledJob) {
             branches.push(BranchRef::new(format!("{address}.Schedule"), 1));
         }
+        if matches!(address.segments(), [owner] if owner.kind() == NodeKind::CommonPicture) {
+            branches.push(BranchRef::new(
+                format!("{address}.{}", NodeKind::Picture.as_str()),
+                1,
+            ));
+        }
         if !relations.is_empty() {
             branches.push(BranchRef::new(
                 format!("{}.{}", address, NodeKind::Relation.as_str()),

@@ -307,7 +307,7 @@ pub fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                     description: "Inspect the workspace with no arguments, or read one logical 1C node by address. Collection pages report data.offset and data.total. Root metadata collections keep Configuration.xml registration order. offset and from start a fresh question; cursor continues its immutable snapshot.",
                     input_schema: schema(
                         json!({
-                            "at": logical_address_with("Qualified logical address: <sourceSet>:<Kind>[.<Name>...]. A node answer lists its operations in can; append .Can.<op> for one operation's argument contract. Omit for the workspace."),
+                            "at": logical_address_with("Qualified logical address: <sourceSet>:<Kind>[.<Name>...]. A node answer lists its operations in can; append .Can.<op> for one operation's argument contract. Follow a CommonPicture card's Picture branch for the display resource. In props, state=available carries mediaType=image/png, encoding=base64 and data; missing, damaged or unsupported call for the default icon. Omit for the workspace."),
                             // No schema `default` (#1210): form clients send it, and
                             // limit without at is refused.
                             "limit": {"type": "integer", "minimum": 1, "maximum": 50,

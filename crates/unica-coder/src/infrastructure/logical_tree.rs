@@ -48,6 +48,10 @@ impl LogicalTreeRoute {
         self.reader_metadata_path.as_ref()
     }
 
+    pub(crate) fn is_common_picture_resource(&self) -> bool {
+        is_common_picture_resource(self.at.segments())
+    }
+
     pub(crate) fn nested_subsystems(&self) -> &[String] {
         &self.nested_subsystems
     }
@@ -57,12 +61,23 @@ impl LogicalTreeRoute {
     }
 }
 
+fn is_common_picture_resource(segments: &[unica_address::address::AddressSegment]) -> bool {
+    matches!(segments, [owner, picture]
+        if owner.kind() == NodeKind::CommonPicture && owner.name().is_some()
+            && picture.kind() == NodeKind::Picture && picture.name().is_none())
+}
+
 pub fn route_logical_address(
     address: &QualifiedAddress,
     profile: PlatformProfile,
 ) -> Result<LogicalTreeRoute, LogicalTreeError> {
     let class = classify_route(address, profile).ok_or_else(|| not_found(address))?;
     let segments = address.segments();
+    if segments.iter().any(|part| part.kind() == NodeKind::Picture)
+        && !is_common_picture_resource(segments)
+    {
+        return Err(not_found(address));
+    }
     if segments
         .iter()
         .any(|part| part.kind() == NodeKind::Definition)

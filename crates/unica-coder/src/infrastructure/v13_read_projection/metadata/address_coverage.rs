@@ -67,9 +67,14 @@ pub(crate) fn owner_facts<'a>(
             });
         }
     }
-    if kind == NodeKind::ScheduledJob {
+    let companion = match kind {
+        NodeKind::ScheduledJob => Some(NodeKind::Schedule),
+        NodeKind::CommonPicture => Some(NodeKind::Picture),
+        _ => None,
+    };
+    if let Some(kind) = companion {
         facts.push(BranchFact {
-            kind: NodeKind::Schedule,
+            kind,
             count: 1,
             members: &[],
         });
