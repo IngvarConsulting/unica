@@ -435,7 +435,7 @@ impl PreparedSourceExport {
                 result.at = Some(operation.to_string());
                 return result;
             }
-            return super::runner::with_bundled_runner(
+            return super::runner::with_bundled_snapshot_runner(
                 &self.context.workspace_root,
                 &self.context.cwd,
                 operation,
@@ -753,7 +753,7 @@ fn execute_with_resolved_runner(
             &prepared.call,
         )
     {
-        if let Ok(preview) = invoke_runner(prepared, tool, runner, &cancellation, true) {
+        if let Ok(preview) = invoke_runner(prepared, tool, runner, &cancellation, true, &[]) {
             if let Some(refusal) =
                 super::v13_infobase_another_copy::refusal_for(OPERATION, &preview, &prepared.call)
             {
@@ -772,7 +772,8 @@ fn execute_with_resolved_runner(
         .flatten();
     // Исполнение вызывает раннер один раз; цель пишет сам раннер, а правки
     // набора через Unica на это время исключены блокировкой рабочей области.
-    let envelope = match invoke_runner(prepared, tool, runner, &cancellation, prepared.dry_run) {
+    let envelope = match invoke_runner(prepared, tool, runner, &cancellation, prepared.dry_run, &[])
+    {
         Ok(envelope) => envelope,
         Err(result) => return result,
     };
@@ -831,6 +832,7 @@ fn invoke_runner(
     runner: &dyn ProcessRunner,
     cancellation: &CancellationToken,
     dry_run: bool,
+    extra: &[&str],
 ) -> Result<Value, DomainResult> {
     if cancellation.is_cancelled() {
         return Err(reject(
@@ -862,6 +864,7 @@ fn invoke_runner(
     if dry_run {
         args.push("--dry-run".to_string());
     }
+    args.extend(extra.iter().map(ToString::to_string));
     let output = runner
         .run_staged(&ProcessCommand {
             program: tool.program.clone(),

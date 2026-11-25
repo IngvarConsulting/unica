@@ -5,6 +5,36 @@ use serde::Serialize;
 use std::io;
 
 const PREPARE: &str = "--prepare-merge-baseline";
+const SNAPSHOT_ONLY: &str = "--snapshot-only";
+const EPHEMERAL_PLATFORM: &str = "--snapshot-platform-from-sources";
+const EPHEMERAL_SNAPSHOT_FLAGS: [&str; 2] = [SNAPSHOT_ONLY, EPHEMERAL_PLATFORM];
+
+#[derive(Clone, Copy, Default)]
+pub(super) struct Capabilities {
+    prepare_merge: bool,
+    pub(super) ephemeral_platform: bool,
+}
+
+impl Capabilities {
+    pub(super) fn preview_flags(self) -> &'static [&'static str] {
+        if self.ephemeral_platform {
+            &EPHEMERAL_SNAPSHOT_FLAGS
+        } else {
+            &[]
+        }
+    }
+
+    pub(super) fn stage_flags(self) -> Vec<String> {
+        let mut flags = Vec::new();
+        if self.prepare_merge {
+            flags.extend([SNAPSHOT_ONLY.to_string(), PREPARE.to_string()]);
+        }
+        if self.ephemeral_platform {
+            flags.push(EPHEMERAL_PLATFORM.to_string());
+        }
+        flags
+    }
+}
 const CHECK: &str = "--check-merge-baseline";
 const ACCEPT: &str = "--accept-merge-baseline";
 
@@ -79,25 +109,25 @@ pub(super) struct MergeSnapshot {
     pub(super) runner: RunnerBaseline,
 }
 
-pub(super) fn supports_preparation(
+pub(super) fn capabilities(
     root: &Path,
     runner: &dyn ProcessRunner,
     cancellation: &CancellationToken,
     tool: &BundledTool,
-) -> bool {
+) -> Capabilities {
     use crate::infrastructure::daemon::runner::{origin_kind, OriginKind};
     if origin_kind(root).ok() != Some(OriginKind::File) {
-        return false;
+        return Capabilities::default();
     }
     use crate::infrastructure::daemon::v13_workspace_bootstrap::read_yaml_config;
     let Ok(Some(config)) = read_yaml_config(root, CONFIG_NAME) else {
-        return false;
+        return Capabilities::default();
     };
     if config["format"]
         .as_str()
         .is_some_and(|format| format != "DESIGNER")
     {
-        return false;
+        return Capabilities::default();
     }
     let help = ProcessCommand {
         program: tool.program.clone(),
@@ -114,19 +144,23 @@ pub(super) fn supports_preparation(
         timeout: Some(std::time::Duration::from_secs(5)),
         cancellation: cancellation.clone(),
     };
-    runner.run_staged(&help).is_ok_and(|output| {
-        output.status_success
-            && !output.stdout_truncated
-            && !output.stdout_had_invalid_utf8
-            && output
-                .stdout
-                .split_ascii_whitespace()
-                .any(|word| word == PREPARE)
-    })
-}
-
-pub(super) fn preparation_flags() -> [String; 2] {
-    ["--snapshot-only".into(), PREPARE.into()]
+    let Ok(output) = runner.run_staged(&help) else {
+        return Capabilities::default();
+    };
+    if !output.status_success || output.stdout_truncated || output.stdout_had_invalid_utf8 {
+        return Capabilities::default();
+    }
+    let contains = |flag| {
+        output
+            .stdout
+            .split_ascii_whitespace()
+            .any(|word| word == flag)
+    };
+    let prepare_merge = contains(PREPARE);
+    Capabilities {
+        prepare_merge,
+        ephemeral_platform: prepare_merge && contains(EPHEMERAL_PLATFORM),
+    }
 }
 
 /// Hash all regular files relative to the retained snapshot directory.
@@ -187,8 +221,9 @@ pub(super) fn execute_with_tool(
     runner: &dyn ProcessRunner,
     cancellation: &CancellationToken,
     tool: &BundledTool,
+    capabilities: Capabilities,
 ) -> DomainResult {
-    match execute_bound(prepared, id, runner, cancellation, tool) {
+    match execute_bound(prepared, id, runner, cancellation, tool, capabilities) {
         Ok(result) | Err(result) => result,
     }
 }
@@ -207,6 +242,7 @@ fn execute_bound(
     runner: &dyn ProcessRunner,
     cancellation: &CancellationToken,
     tool: &BundledTool,
+    capabilities: Capabilities,
 ) -> Result<DomainResult, DomainResult> {
     let root = normalize_path_identity(&prepared.context.workspace_root).map_err(|_| {
         reject(
@@ -265,6 +301,7 @@ fn execute_bound(
         runner,
         cancellation,
         tool,
+        capabilities,
     )?;
     let data = &envelope["data"];
     let accepted = data["baseline"] == "accepted";
@@ -311,6 +348,7 @@ fn invoke(
     runner: &dyn ProcessRunner,
     cancellation: &CancellationToken,
     tool: &BundledTool,
+    capabilities: Capabilities,
 ) -> Result<Value, DomainResult> {
     let mut args = vec![
         "--config".to_string(),
@@ -323,6 +361,9 @@ fn invoke(
     ];
     if let Some(extension) = &snapshot.binding.extension {
         args.extend(["--extension".to_string(), extension.clone()]);
+    }
+    if capabilities.ephemeral_platform {
+        args.push(EPHEMERAL_PLATFORM.to_string());
     }
     let output = runner
         .run_staged(&ProcessCommand {

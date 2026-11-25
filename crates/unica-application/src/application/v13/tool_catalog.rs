@@ -1358,7 +1358,7 @@ mod tests {
                 .iter()
                 .filter(|operation| operation.implemented)
                 .count()
-                == 15,
+                == 16,
             "the implemented dictionary includes snapshot and debug-server operations"
         );
     }

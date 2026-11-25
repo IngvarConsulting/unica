@@ -254,15 +254,61 @@ pub(super) fn with_bundled_runner(
     cancellation: CancellationToken,
     run: impl FnOnce(&PinnedRunner, CancellationToken) -> DomainResult,
 ) -> DomainResult {
+    with_bundled_runner_mode(
+        root,
+        cwd,
+        at,
+        cancellation,
+        RunnerPreparation::Persistent,
+        run,
+    )
+}
+
+/// Snapshot operations decide how to select a platform after probing the bundled runner.
+pub(super) fn with_bundled_snapshot_runner(
+    root: &Path,
+    cwd: &Path,
+    at: &str,
+    cancellation: CancellationToken,
+    run: impl FnOnce(&PinnedRunner, CancellationToken) -> DomainResult,
+) -> DomainResult {
+    with_bundled_runner_mode(
+        root,
+        cwd,
+        at,
+        cancellation,
+        RunnerPreparation::Snapshot,
+        run,
+    )
+}
+
+enum RunnerPreparation {
+    Persistent,
+    Snapshot,
+}
+
+fn with_bundled_runner_mode(
+    root: &Path,
+    cwd: &Path,
+    at: &str,
+    cancellation: CancellationToken,
+    preparation: RunnerPreparation,
+    run: impl FnOnce(&PinnedRunner, CancellationToken) -> DomainResult,
+) -> DomainResult {
     let runner = PinnedRunner::default();
     let Ok(resolved) = super::v13_infobase_exports::resolve_bundled_runner(cwd) else {
         return run(&runner, cancellation);
     };
     let agents = super::live_agent::live_agents();
     agents.touch(root, std::time::Instant::now());
-    let mut result = with_prepared_working_copy(root, at, cancellation, |cancellation| {
-        run(&runner, cancellation)
-    });
+    let mut result = match preparation {
+        RunnerPreparation::Persistent => {
+            with_prepared_working_copy(root, at, cancellation, |cancellation| {
+                run(&runner, cancellation)
+            })
+        }
+        RunnerPreparation::Snapshot => run(&runner, cancellation),
+    };
     result.warnings.extend(abandoned_warning(root, &runner));
     let Some(mut agent) = runner.agent() else {
         return result;

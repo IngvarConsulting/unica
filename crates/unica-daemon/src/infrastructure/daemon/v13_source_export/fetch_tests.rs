@@ -73,12 +73,16 @@ fn refused(message: &str) -> Value {
 
 impl ProcessRunner for ProtocolRunner {
     fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
-        *self.args.lock().unwrap() = command.args.clone();
-        let stdout = if command.args.iter().any(|arg| arg == "--help") {
+        let help = command.args.iter().any(|arg| arg == "--help");
+        // Keep the arguments of an operation, separately from CLI capability discovery.
+        if !help {
+            *self.args.lock().unwrap() = command.args.clone();
+        }
+        let stdout = if help {
             if self.script != Script::PreparesMerge {
                 return Err("runner has no merge support".into());
             }
-            "    --prepare-merge-baseline  Prepare a candidate".to_string()
+            "    --prepare-merge-baseline  Prepare a candidate\n    --snapshot-platform-from-sources  Select the source platform".to_string()
         } else if command
             .args
             .iter()
@@ -1430,4 +1434,68 @@ fn fetch_accept_rejects_unowned_modified_or_unconfirmed_snapshots() {
     let modified = accept(root, id, false, &runner);
     assert!(!modified.ok, "{modified:?}");
     assert_eq!(runner.merges.lock().unwrap().len(), 1);
+}
+
+/// rule: INV.RUNTIME.FETCH-LEAVES-THE-WORKING-COPY
+#[test]
+fn a_snapshot_does_not_pin_platform_in_the_project_local_recipe() {
+    let workspace = workspace();
+    let root = workspace.path();
+    let tool = BundledTool {
+        program: root.join("v8-runner"),
+        warnings: Vec::new(),
+        missing: None,
+    };
+    let mut runner = ProtocolRunner::new(Script::PreparesMerge);
+    runner.preview = Some(json!({
+        "command": "pull", "ok": true,
+        "data": {
+            "provider_dispatched": false, "requested_mode": "FULL", "mode": "FULL",
+            "extension": null, "source_set": "main",
+            "target_path": normalize_path_identity(root).unwrap().join("main"),
+        },
+    }));
+    let run = |prepared: &PreparedSourceExport| {
+        execute_with_recipe_policy(prepared, &runner, CancellationToken::new(), &tool)
+    };
+
+    let preview = run(&prepared_with_args(root, json!({}), true));
+    assert!(preview.ok, "{preview:?}");
+    assert!(runner
+        .args
+        .lock()
+        .unwrap()
+        .join(" ")
+        .ends_with("pull main --force --dry-run --snapshot-only --snapshot-platform-from-sources"));
+    assert!(!root.join(".build/unica/fetch").exists());
+
+    let fetched = run(&prepared(root, false));
+    assert!(fetched.ok, "{fetched:?}");
+    assert!(runner
+        .args
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|arg| arg == "--snapshot-platform-from-sources"));
+    let data = fetched.data.unwrap();
+    let id = data["snapshotId"].as_str().unwrap();
+    let check = PreparedSourceExport::parse_fetch_accept(&accept_request(root, id, true)).unwrap();
+    runner
+        .merges
+        .lock()
+        .unwrap()
+        .push(runner_merge_reply("ready", "sha256:g1"));
+    let checked = run(&check);
+    assert!(checked.ok, "{checked:?}");
+    assert!(runner
+        .args
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|arg| arg == "--snapshot-platform-from-sources"));
+
+    assert!(
+        !root.join(LOCAL_CONFIG_NAME).exists(),
+        "fetch wrote a local project recipe"
+    );
 }

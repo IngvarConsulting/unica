@@ -424,17 +424,53 @@ pub(super) fn execute(
             return missing_runner_rejection(Some(prepared.operation().to_string()), absence)
         }
     };
-    execute_with_tool(prepared, runner, cancellation, &tool)
+    execute_with_recipe_policy(prepared, runner, cancellation, &tool)
 }
 
-pub(super) fn execute_with_tool(
+fn execute_with_recipe_policy(
     prepared: &PreparedSourceExport,
     runner: &dyn ProcessRunner,
     cancellation: CancellationToken,
     tool: &BundledTool,
 ) -> DomainResult {
+    let root = &prepared.context.workspace_root;
+    let capabilities = merge::capabilities(root, runner, &cancellation, tool);
+    let run = |cancellation| {
+        execute_with_capabilities(prepared, runner, cancellation, tool, capabilities)
+    };
+    if capabilities.ephemeral_platform {
+        run(cancellation)
+    } else {
+        super::super::runner::with_prepared_working_copy(
+            root,
+            prepared.operation(),
+            cancellation,
+            run,
+        )
+    }
+}
+
+#[cfg(test)]
+fn execute_with_tool(
+    prepared: &PreparedSourceExport,
+    runner: &dyn ProcessRunner,
+    cancellation: CancellationToken,
+    tool: &BundledTool,
+) -> DomainResult {
+    let root = &prepared.context.workspace_root;
+    let capabilities = merge::capabilities(root, runner, &cancellation, tool);
+    execute_with_capabilities(prepared, runner, cancellation, tool, capabilities)
+}
+
+fn execute_with_capabilities(
+    prepared: &PreparedSourceExport,
+    runner: &dyn ProcessRunner,
+    cancellation: CancellationToken,
+    tool: &BundledTool,
+    capabilities: merge::Capabilities,
+) -> DomainResult {
     if let Some(id) = &prepared.accept {
-        return merge::execute_with_tool(prepared, id, runner, &cancellation, tool);
+        return merge::execute_with_tool(prepared, id, runner, &cancellation, tool, capabilities);
     }
     if cancellation.is_cancelled() {
         return reject_fetch(RefusalCode::Cancelled, "fetch cancelled before preparation");
@@ -465,7 +501,21 @@ pub(super) fn execute_with_tool(
         }
     };
     if prepared.dry_run {
-        return preview(prepared, &inputs, &root, runner, &cancellation, tool);
+        let mut request = prepared.clone();
+        let flags = capabilities.preview_flags();
+        if !flags.is_empty() {
+            request.arguments.source_set = Some(source_set);
+        }
+        return preview(
+            prepared,
+            &request,
+            &inputs,
+            &root,
+            runner,
+            &cancellation,
+            tool,
+            flags,
+        );
     }
     let storage = match open_storage(&root, true, FETCH) {
         Ok(Some(storage)) => storage,
@@ -523,6 +573,7 @@ pub(super) fn execute_with_tool(
         runner,
         &cancellation,
         tool,
+        capabilities,
     ) {
         Ok(envelope) => envelope,
         Err(result) => {
@@ -673,15 +724,18 @@ fn finish_failed_fetch(
 
 /// Превью: план полной выгрузки у раннера (`pull --force --dry-run`), без
 /// каталога снимка и без записи.
+#[allow(clippy::too_many_arguments)]
 fn preview(
     prepared: &PreparedSourceExport,
+    request: &PreparedSourceExport,
     inputs: &StableInputs,
     root: &Path,
     runner: &dyn ProcessRunner,
     cancellation: &CancellationToken,
     tool: &BundledTool,
+    flags: &[&str],
 ) -> DomainResult {
-    let envelope = match invoke_runner(prepared, tool, runner, cancellation, true) {
+    let envelope = match invoke_runner(request, tool, runner, cancellation, true, flags) {
         Ok(envelope) => envelope,
         Err(result) => return retag(result),
     };
@@ -729,6 +783,7 @@ fn exchange(
     runner: &dyn ProcessRunner,
     cancellation: &CancellationToken,
     tool: &BundledTool,
+    capabilities: merge::Capabilities,
 ) -> Result<(Value, Option<merge::RunnerBaseline>), DomainResult> {
     stage
         .validate_named_identity()
@@ -745,9 +800,7 @@ fn exchange(
     if let Some(extension) = &prepared.arguments.extension {
         args.extend(["--extension".to_string(), extension.clone()]);
     }
-    if merge::supports_preparation(root, runner, cancellation, tool) {
-        args.extend(merge::preparation_flags());
-    }
+    args.extend(capabilities.stage_flags());
     let command = ProcessCommand {
         program: tool.program.clone(),
         args,
