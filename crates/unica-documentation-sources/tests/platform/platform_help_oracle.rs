@@ -464,8 +464,10 @@ const APPROVED_EVENT_OWNERS: &[&str] = &[
     // очереди обрабатывает сообщения и ошибки обработки.
     "QueueManager.&lt;Queue name&gt;",
     "RadioButton",
+    "RecalculationRecordSet.&lt;Recalculation name&gt;",
     "ReportManager.&lt;Report name&gt;",
     "ReportObject.&lt;Report name&gt;",
+    "SequenceRecordSet.&lt;Sequence name&gt;",
     "SettingsStorageManager.&lt;Storage name&gt;",
     "TaskManager.&lt;Task name&gt;",
     "TaskObject.&lt;Task name&gt;",
@@ -602,11 +604,8 @@ const EXTERNAL_DATA_SOURCE_MODULE_OWNERS: &[&str] = &[
     "ExternalDataSourceTableRecordSet.&lt;External source name&gt;.&lt;External data source table name&gt;",
 ];
 
-const NON_MODULE_EVENT_OWNERS: &[&str] = &[
-    "BusinessProcessRoutePointRef.&lt;Business process name&gt;",
-    "RecalculationRecordSet.&lt;Recalculation name&gt;",
-    "SequenceRecordSet.&lt;Sequence name&gt;",
-];
+const NON_MODULE_EVENT_OWNERS: &[&str] =
+    &["BusinessProcessRoutePointRef.&lt;Business process name&gt;"];
 
 fn reviewed_out_of_profile_reason(page: &CorpusPage) -> Option<&'static str> {
     let owner = event_owner(page)?;
@@ -896,7 +895,15 @@ fn derive(root: &Path, pinning: Pinning) -> Result<PlatformEventCatalogFixture, 
         ));
     }
     fixture.source.sha256 = digest;
-    let pages = read_corpus(&bytes).map_err(|error| format!("{error:?}"))?;
+    let mut pages = read_corpus(&bytes).map_err(|error| format!("{error:?}"))?;
+    // В закреплённом каталоге имена владельцев и заголовки хранят угловые
+    // скобки в разметке справки. Чтение статей уже раскрывает эти сущности.
+    for page in pages
+        .iter_mut()
+        .filter(|page| page.path.contains("/events/"))
+    {
+        page.title = page.title.replace('<', "&lt;").replace('>', "&gt;");
+    }
     let english_container = container_path(root, "root", &fixture.source.english_container)?;
     let english_bytes = std::fs::read(&english_container).map_err(|error| error.to_string())?;
     let english_digest = Sha256::digest(&english_bytes)

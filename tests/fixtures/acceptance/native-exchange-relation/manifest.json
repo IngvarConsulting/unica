@@ -1,0 +1,122 @@
+{
+  "source": "Native ibcmd exports of isolated configurations with a registered Codes plan and Allow/Deny members. Unchanged descriptors and language have identical native export bytes and are reused from the listed fixtures.",
+  "mcpBinarySha256": "6e4d9abe7d143d60c209cd1fcdbc65fda9ce6d78994dc605911e69123b98ad7d",
+  "files": {
+    "2.20/Configuration.xml": {
+      "size": 10412,
+      "sha256": "2c3292ff82ca8160b87c36ceb92bf980b8180c64a8e9eb138b1771b68f9ee5db"
+    },
+    "2.20/Constants/Disabled.xml": {
+      "size": 2846,
+      "sha256": "5b436cf43a8db32c16e454dae216afd64e12d6e353bf972bdd60ef000c9d1ca2"
+    },
+    "2.20/ExchangePlans/Codes/Ext/Content.xml": {
+      "size": 476,
+      "sha256": "bec0de07be00b8d250caff7c8ea439d572417796c506d7e047e12e5bd43b15b7"
+    },
+    "2.21/Configuration.xml": {
+      "size": 11169,
+      "sha256": "0b7d305cffc7e4889140c9e8551c02795ca7c54feca6da73a9fa3de04f46f566"
+    },
+    "2.21/Constants/Disabled.xml": {
+      "size": 2901,
+      "sha256": "de364a8e73c114f0b043957a2105458fe7983993faea0bf2c48a6b0c48d0884c"
+    },
+    "2.21/ExchangePlans/Codes/Ext/Content.xml": {
+      "size": 476,
+      "sha256": "d337e0308606887568b90b9773858485774979792b6ce8261588aa2585438d7a"
+    },
+    "2.22/Configuration.xml": {
+      "size": 11244,
+      "sha256": "589754919c43c8674a34b69913fdbd078fcad789900c2bd413a56c0aa2ab2a67"
+    },
+    "2.22/Constants/Disabled.xml": {
+      "size": 2901,
+      "sha256": "18b4be4a3bc247a0de5d0daa05c637778c4f06536a6f002e44988639fd0adbe7"
+    },
+    "2.22/ExchangePlans/Codes/Ext/Content.xml": {
+      "size": 476,
+      "sha256": "1cc938e144073ccf891faaba41839ec2a2b8f9b855f80f10074e0d680ec8d989"
+    }
+  },
+  "platforms": {
+    "2.20": {
+      "platformVersion": "8.3.27.2342",
+      "ibcmdSha256": "38f37715535cea530e58d5ba2e7e072c184b61b12f3e903ac290b299cf39fd38",
+      "stageExits": {
+        "create": 0,
+        "import": 0,
+        "apply": 0,
+        "export": 0
+      },
+      "reusedNativeFiles": {
+        "tests/fixtures/acceptance/workspace-native-form-parameter/src-2.20/Languages/Русский.xml": {
+          "size": 1251,
+          "sha256": "99c0ebe1ab0b911ea97ce759fb97e6d78e50404f989052b4e99e4bb654a6197b"
+        },
+        "tests/fixtures/formats/platform_xml/2.20/all_kinds/src/ExchangePlans/Codes.xml": {
+          "size": 12417,
+          "sha256": "3bc34405ef37ee6edce9ed187a349db1f2826d531a532a438ad18b17ec35f597"
+        },
+        "tests/fixtures/formats/platform_xml/2.20/all_kinds/src/Constants/Enabled.xml": {
+          "size": 2842,
+          "sha256": "0c4e2df41da2603b8cbc5f43ace3eb08b4a653bc970278c8d0c84351b294dc86"
+        }
+      },
+      "populatedMcpReceiptSha256": "cb3363ba156ada8114702c975f6523ed72fe997c3fba73ad73da2b8b2d026e9c",
+      "emptyMcpReceiptSha256": "5ff543d37688ab81e6d6d730963a92b951c117f543d94a82d271f06de6a662d6"
+    },
+    "2.21": {
+      "platformVersion": "8.5.1.1529",
+      "ibcmdSha256": "4dde71c1d061cc14c619255ec524b4ca8aca1f9bc38a92d1d766eb7d57721d20",
+      "stageExits": {
+        "create": 0,
+        "import": 0,
+        "apply": 0,
+        "export": 0
+      },
+      "reusedNativeFiles": {
+        "tests/fixtures/acceptance/workspace-native-form-parameter/src-2.21/Languages/Русский.xml": {
+          "size": 1306,
+          "sha256": "5e7c4e7b677543a209c571470266fdb7a4e7e22834d823539a1ab9bcc2a04bec"
+        },
+        "tests/fixtures/formats/platform_xml/2.21/all_kinds/src/ExchangePlans/Codes.xml": {
+          "size": 12472,
+          "sha256": "cfc9781ed1225ef292601ab7852c2856440503535eb85f3ea70048dca101ea5b"
+        },
+        "tests/fixtures/formats/platform_xml/2.21/all_kinds/src/Constants/Enabled.xml": {
+          "size": 2897,
+          "sha256": "ba54724172ff689219bcff601aebe43859be2637512db519412fd5cba3caf44e"
+        }
+      },
+      "populatedMcpReceiptSha256": "70ebb3bab94845f4520e5f50dfec12ee5ed45c7805997194e6c5725bdcef4cb1",
+      "emptyMcpReceiptSha256": "5ff543d37688ab81e6d6d730963a92b951c117f543d94a82d271f06de6a662d6"
+    },
+    "2.22": {
+      "platformVersion": "8.5.4.2028",
+      "ibcmdSha256": "d17ba65155a3eec47f8be3d558d2a12e704281f6b9f33fa5350a3eb2dd585181",
+      "stageExits": {
+        "create": 0,
+        "import": 0,
+        "apply": 0,
+        "export": 0
+      },
+      "reusedNativeFiles": {
+        "tests/fixtures/acceptance/workspace-native-form-parameter/src-2.22/Languages/Русский.xml": {
+          "size": 1306,
+          "sha256": "f695d5995479ed9b9790f1f2f2e9d98ed52a78c1b12b112028b75b28d0234dd2"
+        },
+        "tests/fixtures/formats/platform_xml/2.22/all_kinds/src/ExchangePlans/Codes.xml": {
+          "size": 12472,
+          "sha256": "d5a7b3f5f5e1ec25add07e53887f75c79bb14b5b52f50a88e7711a3b610af3ba"
+        },
+        "tests/fixtures/formats/platform_xml/2.22/all_kinds/src/Constants/Enabled.xml": {
+          "size": 2897,
+          "sha256": "6b064ec079d4ba12a3090bac56f7c739e9067ab49bb29a08c247b4512c20f563"
+        }
+      },
+      "populatedMcpReceiptSha256": "cb3363ba156ada8114702c975f6523ed72fe997c3fba73ad73da2b8b2d026e9c",
+      "emptyMcpReceiptSha256": "5ff543d37688ab81e6d6d730963a92b951c117f543d94a82d271f06de6a662d6"
+    }
+  }
+}

@@ -22,6 +22,23 @@ pub struct RuntimeHandoff<'a> {
     pub startup_notice: Option<&'a str>,
 }
 
+pub fn launch_plugin_runtime(
+    _plugin_root: &Path,
+    entrypoint: &Path,
+    handoff: &RuntimeHandoff<'_>,
+) -> Result<i32> {
+    #[cfg(windows)]
+    if super::daemon_owner::daemon_owner_enabled()? {
+        return super::daemon_owner::launch_runtime_with_daemon_owner(
+            _plugin_root,
+            &unica_artifact_delivery::RuntimeManifest::load(handoff.runtime_manifest)?,
+            entrypoint,
+            handoff,
+        );
+    }
+    launch_runtime(entrypoint, &[], handoff)
+}
+
 #[cfg(unix)]
 pub fn launch_runtime(
     entrypoint: &Path,
@@ -43,9 +60,15 @@ pub fn launch_runtime(
     args: &[String],
     handoff: &RuntimeHandoff<'_>,
 ) -> Result<i32> {
+    let command = runtime_command(entrypoint, args, handoff);
+    wait_for_runtime(entrypoint, command)
+}
+
+#[cfg(windows)]
+pub(super) fn wait_for_runtime(entrypoint: &Path, command: Command) -> Result<i32> {
     use super::job_object::{assign_to_job, spawn_supervised};
 
-    let mut runtime = spawn_supervised(runtime_command(entrypoint, args, handoff), assign_to_job)
+    let mut runtime = spawn_supervised(command, assign_to_job)
         .map_err(|failure| start_failure(entrypoint, failure))?;
     let status = runtime.wait().map_err(|error| {
         BootstrapError::new(format!("failed to wait for Unica runtime: {error}"))
@@ -108,7 +131,45 @@ pub(crate) fn runtime_command(
     } else {
         command.env_remove("UNICA_STARTUP_NOTICE");
     }
+    #[cfg(windows)]
     command
+        .env_remove(super::daemon_owner::PIPE_ENV)
+        .env_remove(super::daemon_owner::IMAGE_ENV)
+        .env_remove(super::daemon_gate::GATE_ENV);
+    command
+}
+
+#[cfg(windows)]
+pub(super) fn daemon_arguments(
+    state_root: &Path,
+    identity: &str,
+    idle_grace_ms: u128,
+) -> [std::ffi::OsString; 7] {
+    [
+        "--daemon".into(),
+        "--state-root".into(),
+        state_root.as_os_str().into(),
+        "--core-identity".into(),
+        identity.into(),
+        "--idle-grace-ms".into(),
+        idle_grace_ms.to_string().into(),
+    ]
+}
+
+#[cfg(windows)]
+pub(super) fn daemon_environment(
+    command: &Command,
+) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    let mut environment: Vec<_> = std::env::vars_os().collect();
+    for (key, value) in command.get_envs() {
+        environment.retain(|(current, _)| !current.eq_ignore_ascii_case(key));
+        if let Some(value) = value {
+            environment.push((key.to_owned(), value.to_owned()));
+        }
+    }
+    let stripped = crate::host_workspace_environment_keys();
+    environment.retain(|(key, _)| !stripped.iter().any(|name| key.eq_ignore_ascii_case(name)));
+    environment
 }
 
 #[cfg(test)]

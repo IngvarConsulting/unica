@@ -255,15 +255,18 @@ pub struct RegistrationCache {
     configuration: Mutex<Option<(ConfigurationStamps, Arc<Value>)>>,
     support: Mutex<Option<RetainedSupportState>>,
     subsystems: Mutex<Option<RetainedSubsystemTopology>>,
+    /// Объединённый состав планов обмена со стампами файлов, из которых он
+    /// собран; отсутствующий файл записан `None`.
+    exchange_membership: Mutex<Option<RetainedExchangeMembership>>,
     settle_window: std::time::Duration,
     /// Proven owner descriptors by source-root-relative path, each under the
     /// stamp it had before it was read.
     owner_evidence: Mutex<
         RetainedByDescriptor<unica_source_designer::owner::PlatformXmlSourceSetOwnerEvidence>,
     >,
-    /// Common module synonyms (with the limits of a damaged one) by
+    /// Top-level object synonyms (with the limits of a damaged one) by
     /// descriptor path, each under the stamp it had before it was read.
-    common_module_synonyms: Mutex<RetainedByDescriptor<CommonModuleSynonym>>,
+    object_synonyms: Mutex<RetainedByDescriptor<ObjectSynonym>>,
     /// Child resource diagnostics of an object by its descriptor path, under
     /// the revision of its form, template and command directories. Unlike
     /// the other records, the revision walks those directories: their files
@@ -293,9 +296,9 @@ type RetainedChildResources = std::collections::HashMap<
 /// descriptor had before it was read.
 type RetainedByDescriptor<T> = std::collections::HashMap<std::path::PathBuf, (FileStamp, Arc<T>)>;
 
-/// The synonym of a common module as its descriptor states it: absent or
+/// The synonym of a top-level object as its descriptor states it: absent or
 /// empty is `Ok(None)`, an unreadable property is `Err` with its reason.
-pub(crate) type CommonModuleSynonym = Result<Option<String>, String>;
+pub(crate) type ObjectSynonym = Result<Option<String>, String>;
 
 /// Timestamp granularity window: a stamp younger than this is never cached.
 // resource-limit: view.registration-settle-window-ms
@@ -318,9 +321,10 @@ impl Default for RegistrationCache {
             configuration: Mutex::new(None),
             support: Mutex::new(None),
             subsystems: Mutex::new(None),
+            exchange_membership: Mutex::new(None),
             settle_window: SETTLE_WINDOW,
             owner_evidence: Mutex::new(std::collections::HashMap::new()),
-            common_module_synonyms: Mutex::new(std::collections::HashMap::new()),
+            object_synonyms: Mutex::new(std::collections::HashMap::new()),
             child_resources: Mutex::new(std::collections::HashMap::new()),
             owner_warmup: std::sync::atomic::AtomicBool::new(cfg!(any(
                 test,
@@ -337,6 +341,28 @@ impl Default for RegistrationCache {
 /// The registered subsystem topology with the stamp of every file it was
 /// built from: `Configuration.xml` and each subsystem descriptor.
 type RetainedSubsystemTopology = (Vec<(std::path::PathBuf, FileStamp)>, Arc<SubsystemTopology>);
+
+/// Стамп регистраций в `Configuration.xml`, затем стампы описаний и составов планов.
+pub(crate) struct ExchangeMembershipStamps {
+    pub(crate) configuration: FileStamp,
+    pub(crate) plans: Vec<(std::path::PathBuf, Option<FileStamp>)>,
+}
+
+impl ExchangeMembershipStamps {
+    fn still_matches(&self, root: &SourceDirectory) -> bool {
+        root.relative_file_stamp(std::path::Path::new("Configuration.xml"))
+            .is_ok_and(|current| current == Some(self.configuration))
+            && self.plans.iter().all(|(path, stamp)| {
+                root.relative_file_stamp(path)
+                    .is_ok_and(|current| current == *stamp)
+            })
+    }
+}
+
+type RetainedExchangeMembership = (
+    ExchangeMembershipStamps,
+    Arc<crate::infrastructure::v13_read::ExchangeMembership>,
+);
 
 /// Reads descriptors for the topology builder and keeps the stamp each file
 /// had when its bytes were read.
@@ -430,26 +456,26 @@ impl RegistrationCache {
         &self.names
     }
 
-    pub(crate) fn retained_common_module_synonym(
+    pub(crate) fn retained_object_synonym(
         &self,
         relative: &std::path::Path,
         stamp: &FileStamp,
-    ) -> Option<Arc<CommonModuleSynonym>> {
-        let synonyms = self.common_module_synonyms.lock().ok()?;
+    ) -> Option<Arc<ObjectSynonym>> {
+        let synonyms = self.object_synonyms.lock().ok()?;
         synonyms
             .get(relative)
             .filter(|(cached, _)| cached == stamp)
             .map(|(_, fact)| Arc::clone(fact))
     }
 
-    pub(crate) fn retain_common_module_synonym(
+    pub(crate) fn retain_object_synonym(
         &self,
         relative: std::path::PathBuf,
         stamp: FileStamp,
-        fact: Arc<CommonModuleSynonym>,
+        fact: Arc<ObjectSynonym>,
     ) {
         if self.retains(&stamp) {
-            if let Ok(mut synonyms) = self.common_module_synonyms.lock() {
+            if let Ok(mut synonyms) = self.object_synonyms.lock() {
                 synonyms.insert(relative, (stamp, fact));
             }
         }
@@ -575,6 +601,28 @@ impl RegistrationCache {
         Ok(built)
     }
 
+    /// Стамп прочитанных регистраций, подтверждённый тем же удержанным разбором.
+    pub(crate) fn configuration_stamp_for_payload(
+        &self,
+        payload: &Arc<Value>,
+    ) -> Option<FileStamp> {
+        let retained = slot(&self.configuration);
+        let (stamps, cached) = retained.as_ref()?;
+        if !Arc::ptr_eq(cached, payload) {
+            return None;
+        }
+        stamps[0]
+    }
+
+    pub(crate) fn configuration_stamp_for_index(
+        &self,
+        index: &Arc<RegistrationIndex>,
+    ) -> Option<FileStamp> {
+        let retained = slot(&self.registrations);
+        let (stamp, cached) = retained.as_ref()?;
+        Arc::ptr_eq(cached, index).then_some(*stamp)
+    }
+
     /// The parsed support state of `Ext/ParentConfigurations.bin` (`None`
     /// when absent) with the stamp it was read under.
     pub(crate) fn support_state(
@@ -664,6 +712,38 @@ impl RegistrationCache {
         *slot(&self.subsystems) = settled.then(|| (stamps, Arc::clone(&topology)));
         checkpoint()?;
         Ok(topology)
+    }
+
+    /// Сохранённый состав планов обмена, если ни один файл, из которых он
+    /// собран, не изменился и не появился.
+    pub(crate) fn retained_exchange_membership(
+        &self,
+        root: &SourceDirectory,
+        configuration: FileStamp,
+    ) -> Option<Arc<crate::infrastructure::v13_read::ExchangeMembership>> {
+        let retained = slot(&self.exchange_membership);
+        let (stamps, membership) = retained.as_ref()?;
+        (stamps.configuration == configuration && stamps.still_matches(root))
+            .then(|| Arc::clone(membership))
+    }
+
+    /// Сохраняет состав, если стампы всех его файлов устоялись: файл моложе
+    /// окна мог измениться, не изменив стампа.
+    pub(crate) fn retain_exchange_membership(
+        &self,
+        root: &SourceDirectory,
+        stamps: ExchangeMembershipStamps,
+        membership: Arc<crate::infrastructure::v13_read::ExchangeMembership>,
+    ) {
+        if self.retains(&stamps.configuration)
+            && stamps
+                .plans
+                .iter()
+                .all(|(_, stamp)| stamp.as_ref().is_none_or(|stamp| self.retains(stamp)))
+            && stamps.still_matches(root)
+        {
+            *slot(&self.exchange_membership) = Some((stamps, membership));
+        }
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -966,6 +1046,7 @@ pub(super) fn read_configuration_root(
         mut property_limits,
         ..
     } = state;
+    property_limits.extend(purpose.mobile_list_limits);
     property_limits.extend(purpose.reference_list_limits);
     let mut counts = BTreeMap::<String, usize>::new();
     registrations.for_each_unique(checkpoint, |kind, _name| {
@@ -1025,7 +1106,6 @@ pub(super) fn read_configuration_root(
             "defaultRoles": purpose.default_roles,
             "additionalFullTextSearchDictionaries": purpose.additional_full_text_search_dictionaries,
             "standaloneConfigurationRestrictionRoles": purpose.standalone_configuration_restriction_roles,
-            "usedMobileApplicationFunctionalities": purpose.used_mobile_application_functionalities,
             "includeHelpInContents": purpose.include_help_in_contents,
             "compatibilityMode": optional("CompatibilityMode"),
             "defaultRunMode": optional("DefaultRunMode"),
@@ -1061,6 +1141,11 @@ pub(super) fn read_configuration_root(
         "interface": interface,
         "panels": panels,
     });
+    payload["properties"]["mobileApplicationURLs"] = json!(purpose.mobile_application_urls);
+    payload["properties"]["allowedIncomingShareRequestTypes"] =
+        json!(purpose.allowed_incoming_share_request_types);
+    payload["properties"]["usedMobileApplicationFunctionalities"] =
+        json!(purpose.used_mobile_application_functionalities);
     if !property_limits.is_empty() {
         payload["propertyLimits"] = json!(property_limits);
     }
@@ -1222,6 +1307,7 @@ fn parse_configuration_owner(
                 && matches!(state.stack.last().map(|frame| &frame.role), Some(FrameRole::Properties))
                 && name.namespace.as_deref() == Some(MD_NS)
                 && matches!(name.local_name.as_str(), "UsePurposes" | "DefaultRoles" | "UsedMobileApplicationFunctionalities" | "IncludeHelpInContents"
+                    | "MobileApplicationURLs" | "AllowedIncomingShareRequestTypes"
                     | "AdditionalFullTextSearchDictionaries" | "StandaloneConfigurationRestrictionRoles"));
         if purpose_depth != 0 || starts_purpose {
             if let Some(writer_event) = event.as_writer_event() {
@@ -1830,6 +1916,41 @@ mod tests {
         source.push(0xff);
         source.extend_from_slice(b"</Ignored><ChildObjects/></Configuration></MetaDataObject>");
         assert!(parsed(&source, &|| Ok(())).is_err());
+    }
+
+    #[test]
+    fn streamed_mobile_lists_preserve_urls_when_a_share_type_is_incomplete() {
+        let source = format!(
+            r#"<MetaDataObject xmlns="{MD_NS}" xmlns:d="http://v8.1c.ru/8.1/data/core"
+                      xmlns:s="http://www.w3.org/2001/XMLSchema-instance"
+                      xmlns:t="http://www.w3.org/2001/XMLSchema"
+                      xmlns:m="http://v8.1c.ru/8.2/managed-application/core" version="2.20">
+                <Configuration>
+                    <Properties>
+                        <Name>Demo</Name>
+                        <MobileApplicationURLs>
+                            <d:Value s:type="t:string">https://one.example</d:Value>
+                            <d:Value s:type="t:string">https://two.example</d:Value>
+                        </MobileApplicationURLs>
+                        <AllowedIncomingShareRequestTypes>
+                            <d:Value s:type="m:AllowedIncomingShareRequestType"><m:mime>text/plain</m:mime></d:Value>
+                        </AllowedIncomingShareRequestTypes>
+                    </Properties>
+                    <ChildObjects/>
+                </Configuration>
+            </MetaDataObject>"#
+        );
+        let result = parsed(source.as_bytes(), &|| Ok(())).unwrap();
+        assert_eq!(result.payload["name"], "Demo");
+        assert_eq!(
+            result.payload["properties"]["mobileApplicationURLs"],
+            json!(["https://one.example", "https://two.example"])
+        );
+        assert!(result.payload["properties"]["allowedIncomingShareRequestTypes"].is_null());
+        assert!(result.payload["propertyLimits"][0]
+            .as_str()
+            .unwrap()
+            .contains("AllowedIncomingShareRequestTypes"));
     }
 
     #[test]

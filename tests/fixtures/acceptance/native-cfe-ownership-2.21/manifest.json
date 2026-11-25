@@ -1,0 +1,119 @@
+{
+  "formatVersion": "2.21",
+  "platformVersion": "8.5.1.1529",
+  "source": "Native ibcmd import, check, apply and export in separate temporary file infobases, using the captured XML 2.20 fixture as input. The CFG sources are byte-identical between adopted and own cases. Both extensions retain adopted Language.",
+  "platformSha256": {
+    "ibcmd.exe": "4dde71c1d061cc14c619255ec524b4ca8aca1f9bc38a92d1d766eb7d57721d20"
+  },
+  "captureReceiptSha256": {
+    "adopted": "ed49a45583e503b1236b8d1e628049d20bf56d3c124404612831aa85f11b9d8b",
+    "own": "bfc6a94f485b895efaca6e912d3a9f7421c8f2015e354880bad062bbfe0617ef"
+  },
+  "excludedPlatformServiceSidecars": {
+    "adopted/cf/ConfigDumpInfo.xml": {
+      "size": 1287,
+      "sha256": "d4c8748ea2b7f287e40dd693e5689925d336455ac8c509310c22e4b541759ab6"
+    },
+    "adopted/cfe/ConfigDumpInfo.xml": {
+      "size": 1099,
+      "sha256": "5bd5f9b03c271a136dc4898aa4edd75a1a005b4b00264a96aa8e70026bb3e787"
+    },
+    "own/cf/ConfigDumpInfo.xml": {
+      "size": 1287,
+      "sha256": "cb715e88fc4bd22e0ad3618ae158caad9094da6c4d71afbd1934b2ed0aae753e"
+    },
+    "own/cfe/ConfigDumpInfo.xml": {
+      "size": 958,
+      "sha256": "118071acbeb4a859e104cafcfff4a712d528d5f21d17860e2020c69f39d392c6"
+    }
+  },
+  "files": {
+    "adopted/Catalogs/CorpusCatalog.xml": {
+      "size": 2540,
+      "sha256": "74f9365bfbeac3fa8271a3ff62d8e11bd8ec799bec38b156740c80e5efb126e6"
+    },
+    "adopted/Catalogs/CorpusCatalog/Forms/CorpusForm.xml": {
+      "size": 1460,
+      "sha256": "ca02180c416c715bd58574409ca6202f17c79641f4a56a0440bf2c54f11d8c64"
+    },
+    "adopted/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form.xml": {
+      "size": 1172,
+      "sha256": "2910ee2dcc0401dccbbc44e63f62b59ff6ebf1de112f3131f04176b82c72b8ac"
+    },
+    "adopted/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form/Module.bsl": {
+      "size": 292,
+      "sha256": "95271a2ebccd22c4c4f6667cdd2c35820bf69e170242a2541f6a6496f3b5befe"
+    },
+    "adopted/Configuration.xml": {
+      "size": 3710,
+      "sha256": "fcd4512885c5cdc4cd9c5cf151e9c4247c4ea3b09e82060fdd135c8bb83c7696"
+    },
+    "adopted/Languages/\u0420\u0443\u0441\u0441\u043a\u0438\u0439.xml": {
+      "size": 1338,
+      "sha256": "84f01792f3019a28f90e1af238536b36f2d4e337108e28abab163272fea0262e"
+    },
+    "cf/Catalogs/CorpusCatalog.xml": {
+      "size": 15087,
+      "sha256": "b59734ef934f42829fbaba74922681e2de6a326ec865b3dae05acf2df84521a3"
+    },
+    "cf/Catalogs/CorpusCatalog/Forms/CorpusForm.xml": {
+      "size": 1513,
+      "sha256": "ad0257c31cf6756cbe6a6abd19a38897c3d8b8c2c491448acd8912bae3f07578"
+    },
+    "cf/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form.xml": {
+      "size": 2566,
+      "sha256": "bcf0ad3720be3a88172514c6406bfefd214d4f35913e0349c36376ca616dfb62"
+    },
+    "cf/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form/Module.bsl": {
+      "size": 497,
+      "sha256": "356b4673e18b5c3dda27058f3ed5ce9f889b8c5c396010f3e0d2c1b334fd3755"
+    },
+    "cf/Configuration.xml": {
+      "size": 11236,
+      "sha256": "c86efd32c90c7a9e8085856d5452cd542e7575cde1eea5189698a3f66a67ec32"
+    },
+    "cf/Ext/ClientApplicationInterface.xml": {
+      "size": 836,
+      "sha256": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+    },
+    "cf/Languages/\u0420\u0443\u0441\u0441\u043a\u0438\u0439.xml": {
+      "size": 1306,
+      "sha256": "57c30856c0f6893b25bef065015689424ba9901ef89d173b31d10073a0248d06"
+    },
+    "own/CommonModules/CorpusExtension_OwnProbe.xml": {
+      "size": 1652,
+      "sha256": "b18e5b7aff2bc9b5aa02e31040f9510e3366e74ca7e6f1df4c1e22b3435c09cd"
+    },
+    "own/CommonModules/CorpusExtension_OwnProbe/Ext/Module.bsl": {
+      "size": 392,
+      "sha256": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
+    },
+    "own/Configuration.xml": {
+      "size": 3732,
+      "sha256": "afded2c1e7fccfcf9fb63a9d177d942358c619505df7015f29333323a0b3ffae"
+    },
+    "own/Languages/\u0420\u0443\u0441\u0441\u043a\u0438\u0439.xml": {
+      "size": 1338,
+      "sha256": "84f01792f3019a28f90e1af238536b36f2d4e337108e28abab163272fea0262e"
+    },
+    "inherited/Catalogs/CorpusCatalog/Forms/CorpusForm.xml": {
+      "size": 1427,
+      "sha256": "caf8859ed942e3755d027cbdba40b7b76a582027f7e4e5f0616d1eabc91c6d5d"
+    }
+  },
+  "inheritedCapture": {
+    "receiptSha256": "dc68710ac67eca729785e75cd047003890dbe77df1fd4a53b2d6e6aff4494318",
+    "platformSha256": {
+      "ibcmd.exe": "4dde71c1d061cc14c619255ec524b4ca8aca1f9bc38a92d1d766eb7d57721d20"
+    },
+    "reusedFromAdopted": {
+      "Catalogs/CorpusCatalog.xml": "adopted/Catalogs/CorpusCatalog.xml",
+      "Configuration.xml": "adopted/Configuration.xml",
+      "Languages/\u0420\u0443\u0441\u0441\u043a\u0438\u0439.xml": "adopted/Languages/\u0420\u0443\u0441\u0441\u043a\u0438\u0439.xml"
+    },
+    "excludedPlatformServiceSidecar": {
+      "size": 933,
+      "sha256": "6bd9584979a1719ae70ac5026c1b7c434ddba97271889461ec736aca66ea2f5c"
+    }
+  }
+}

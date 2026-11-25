@@ -1,0 +1,63 @@
+{
+  "id": "S-3217-exchange-plan-branch",
+  "issue": 3217,
+  "area": "Метаданные",
+  "task": "Прочитать признак состава плана обмена на страницах ветви справочников",
+  "workspace": "tests/fixtures/acceptance/workspace-exchange-content",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog",
+        "limit": 1
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Catalog.Прежний"
+        },
+        {
+          "pointer": "/data/items/0/props/inExchangePlan",
+          "eq": true
+        },
+        {
+          "pointer": "/data/items/1",
+          "absent": true
+        }
+      ],
+      "captures": {
+        "catalogCursor": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog",
+        "limit": 1,
+        "cursor": "$capture.catalogCursor"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Catalog.Пример"
+        },
+        {
+          "pointer": "/data/items/0/props/inExchangePlan",
+          "eq": false
+        },
+        {
+          "pointer": "/data/items/1",
+          "absent": true
+        }
+      ]
+    }
+  ]
+}

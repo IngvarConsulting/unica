@@ -12,7 +12,7 @@ on:
     # Черновик не занимает раннер. Перевод в готовые запускает прогон:
     # без `ready_for_review` на его head осталась бы пропущенная проверка.
     # `milestoned` запускает тесты, когда владелец вычитал PR.
-    types: [opened, synchronize, reopened, ready_for_review, milestoned]
+    types: [opened, synchronize, reopened, ready_for_review, milestoned, edited]
   merge_group:
     types: [checks_requested]
 
@@ -73,6 +73,7 @@ jobs:
                 id
                 pullRequest(number: $number) {
                   isDraft
+                  body
                   milestone { id title }
                   assignees { totalCount }
                   timelineItems(itemTypes: [MILESTONED_EVENT], last: 1) { nodes { ... on MilestonedEvent { actor { login } } } }
@@ -88,7 +89,29 @@ jobs:
                 }
               }
             }')"
-          problems="$(jq -r --arg owner "$MILESTONE_OWNER" --arg working "${WORKING_MILESTONE:-}" --arg strict "$STRICT" '
+          # Первая строка промежуточного PR указывает, из какой задачи скопирована веха.
+          parent_number="$(jq -r --arg owner "$MILESTONE_OWNER" '
+            .data.repository as $repo | $repo.pullRequest
+            | select(.timelineItems.nodes[-1].actor.login != $owner)
+            | select(all(.closingIssuesReferences.nodes[]; .repository.id != $repo.id))
+            | (.body | split("\n")[0] // "") | capture("^Refs #(?<number>[1-9][0-9]*)[ \t]*\r?$").number' <<<"$json")"
+          parent=null
+          if [ -n "$parent_number" ]; then
+            if found="$(gh api graphql -F owner="${GITHUB_REPOSITORY%/*}" -F name="${GITHUB_REPOSITORY#*/}" -F parentNumber="$parent_number" -f query='
+              query($owner: String!, $name: String!, $parentNumber: Int!) {
+                repository(owner: $owner, name: $name) {
+                  issue(number: $parentNumber) {
+                    number
+                    repository { id }
+                    milestone { id title }
+                    timelineItems(itemTypes: [MILESTONED_EVENT], last: 1) { nodes { ... on MilestonedEvent { actor { login } } } }
+                  }
+                }
+              }')"; then
+              parent="$(jq -c '.data.repository.issue' <<<"$found")"
+            fi
+          fi
+          problems="$(jq -r --arg parent_number "$parent_number" --argjson parent "$parent" --arg owner "$MILESTONE_OWNER" --arg working "${WORKING_MILESTONE:-}" --arg strict "$STRICT" '
             def milestone_actor: .timelineItems.nodes[-1].actor.login // "неизвестно";
             def version:
               if test("^v[0-9]+[.][0-9]+$") then ltrimstr("v") | split(".") | map(tonumber)
@@ -99,17 +122,19 @@ jobs:
                 elif $number > $limit then "Веха \($label) \($title) выше рабочей \($working)"
                 else empty end;
             .data.repository as $repo | $repo.pullRequest as $pr
-            | $pr.closingIssuesReferences.nodes as $issues
+            | ($pr.closingIssuesReferences.nodes + [$parent | select(. != null and .repository.id == $repo.id)]) as $issues
             | [$issues[] | select(.repository.id == $repo.id)] as $local
             | ($pr | milestone_actor) as $actor
             | (if $pr.closingIssuesReferences.pageInfo.hasNextPage then
                  "Не удалось проверить все закрываемые issue"
                else empty end),
-              (if $pr.milestone == null then
+              (if $parent_number != "" and ($parent == null or $parent.repository.id != $repo.id) then
+                 "Не удалось прочитать родительскую задачу Refs #\($parent_number) в этом репозитории"
+               elif $pr.milestone == null then
                  (if ($local | length) > 0 then "Поставьте веху: скопируйте её с issue" else "Поставьте веху: на PR без issue её ставит \($owner)" end)
                elif ($local | length) == 0 and $actor != $owner then "Веху на PR поставил \($actor), нужна от \($owner)"
                elif ($local | length) > 0 and (any($local[]; .milestone.id == $pr.milestone.id) | not) then
-                 "Веха PR должна совпадать с вехой одной из закрываемых задач этого репозитория"
+                 "Веха PR должна совпадать с вехой связанной задачи этого репозитория"
                else empty end),
               ($issues[] | select(.milestone == null) | "Issue #\(.number) без вехи, PR не рассматривается"),
               ($local[] | select(.milestone != null and milestone_actor != $owner) | "Веху issue #\(.number) должен подтвердить \($owner)"),

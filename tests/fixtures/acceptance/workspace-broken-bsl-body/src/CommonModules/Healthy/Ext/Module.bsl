@@ -1,0 +1,2 @@
+Procedure Good() Export
+EndProcedure

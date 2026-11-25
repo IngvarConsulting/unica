@@ -1,0 +1,83 @@
+{
+  "id": "S-3250-debug-server",
+  "issue": 3250,
+  "area": "Отладка",
+  "task": "Запустить принадлежащий временной файловой ИБ сервер отладки и получить понятный отказ на занятый порт",
+  "workspace": "tests/fixtures/acceptance/workspace-xdto-rename",
+  "profile": "research-dbgs",
+  "driver": "native-windows-dbgs",
+  "wire": [
+    {
+      "tool": "unica.run",
+      "args": {},
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.run",
+      "args": {
+        "op": "debug-server.start",
+        "args": {
+          "ownerPid": "$dbgsOwnerPid",
+          "port": "$dbgsOccupiedPort"
+        }
+      },
+      "expect": [
+        "provider"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "provider_unavailable"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "debug server port $dbgsOccupiedPort is occupied; choose a different port or omit port"
+        },
+        {
+          "pointer": "/data/session",
+          "absent": true
+        },
+        {
+          "pointer": "/changed",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.run",
+      "args": {
+        "op": "debug-server.start",
+        "args": {
+          "ownerPid": "$dbgsOwnerPid"
+        }
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/action",
+          "eq": "started"
+        },
+        {
+          "pointer": "/data/owner",
+          "eq": "runner"
+        },
+        {
+          "pointer": "/data/ownerPid",
+          "eq": "$dbgsOwnerPid"
+        },
+        {
+          "pointer": "/data/infoBaseAlias",
+          "eq": "DefAlias"
+        },
+        {
+          "pointer": "/data/providerDispatched",
+          "eq": true
+        }
+      ]
+    }
+  ]
+}

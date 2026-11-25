@@ -40,6 +40,7 @@ pub enum DescriptorPropertyValue {
     Parts(Vec<(&'static str, String)>),
     /// Distinct values of a closed enumeration, in the order given.
     List(Vec<String>),
+    Mobile(crate::configuration::ConfigurationMobileList),
     References(Vec<String>),
     Reference(Option<String>),
 }
@@ -463,6 +464,68 @@ impl<'a> PropertyArgumentReader<'a> {
         )))
     }
 
+    fn mobile_list(
+        &mut self,
+        field: DescriptorProperty,
+    ) -> DecodeResult<Option<crate::configuration::ConfigurationMobileList>> {
+        use crate::configuration::{ConfigurationMobileList, IncomingShareRequestType};
+        let Some((value, path)) = self.alias(field)? else {
+            return Ok(None);
+        };
+        let items = value
+            .as_array()
+            .ok_or_else(|| invalid(&path, "property value must be an array"))?;
+        if field == DescriptorProperty::MobileApplicationUrls {
+            let items = items
+                .iter()
+                .enumerate()
+                .map(|(index, item)| {
+                    let item_path = format!("{path}[{index}]");
+                    let item = item
+                        .as_str()
+                        .ok_or_else(|| invalid(&item_path, "a URL must be a string"))?;
+                    if !item.chars().all(crate::properties::is_xml_text_character) {
+                        return Err(invalid(
+                            &item_path,
+                            "text contains a character not allowed in XML 1.0",
+                        ));
+                    }
+                    Ok(item.to_string())
+                })
+                .collect::<DecodeResult<Vec<_>>>()?;
+            return Ok(Some(ConfigurationMobileList::Urls(items)));
+        }
+        let items = items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| {
+                let item_path = format!("{path}[{index}]");
+                let entry: IncomingShareRequestType = serde_json::from_value(item.clone())
+                    .map_err(|error| invalid(&item_path, error.to_string()))?;
+                for (key, text) in [
+                    ("mime", &entry.mime),
+                    ("uti", &entry.uti),
+                    ("ext", &entry.ext),
+                ] {
+                    if !text.chars().all(crate::properties::is_xml_text_character) {
+                        return Err(invalid(
+                            format!("{item_path}.{key}"),
+                            "text contains a character not allowed in XML 1.0",
+                        ));
+                    }
+                }
+                if entry.processing_variant > 1 {
+                    return Err(invalid(
+                        format!("{item_path}.processingVariant"),
+                        "expected 0 or 1",
+                    ));
+                }
+                Ok(entry)
+            })
+            .collect::<DecodeResult<Vec<_>>>()?;
+        Ok(Some(ConfigurationMobileList::ShareTypes(items)))
+    }
+
     fn reference_list(&mut self, field: DescriptorProperty) -> DecodeResult<Option<Vec<String>>> {
         let Some((value, path)) = self.alias(field)? else {
             return Ok(None);
@@ -862,6 +925,9 @@ fn decode_with_contract(
                                 .list(field, &field.allowed_values_in(line))?
                                 .map(DescriptorPropertyValue::List),
                             DescriptorPropertyKind::Reference => values_reader.reference(field)?,
+                            DescriptorPropertyKind::MobileList => values_reader
+                                .mobile_list(field)?
+                                .map(DescriptorPropertyValue::Mobile),
                             DescriptorPropertyKind::ReferenceList => values_reader
                                 .reference_list(field)?
                                 .map(DescriptorPropertyValue::References),
@@ -889,6 +955,7 @@ fn decode_with_contract(
                                 .list(field, field.allowed_values())?
                                 .map(DescriptorPropertyValue::List),
                             DescriptorPropertyKind::Parts
+                            | DescriptorPropertyKind::MobileList
                             | DescriptorPropertyKind::ReferenceList
                             | DescriptorPropertyKind::Reference => {
                                 return Err(invalid(
@@ -1290,7 +1357,8 @@ mod tests {
                             json!({field.parts()[0][0]: field.allowed_values()[0]})
                         }
                         DescriptorPropertyKind::List => json!([field.allowed_values()[0]]),
-                        DescriptorPropertyKind::ReferenceList => json!([]),
+                        DescriptorPropertyKind::MobileList
+                        | DescriptorPropertyKind::ReferenceList => json!([]),
                         DescriptorPropertyKind::Reference => json!(""),
                     };
                     assert!(
@@ -1344,7 +1412,8 @@ mod tests {
                             json!({field.parts()[0][0]: field.allowed_values()[0]})
                         }
                         DescriptorPropertyKind::List => json!([field.allowed_values()[0]]),
-                        DescriptorPropertyKind::ReferenceList => json!([]),
+                        DescriptorPropertyKind::MobileList
+                        | DescriptorPropertyKind::ReferenceList => json!([]),
                         DescriptorPropertyKind::Reference => json!(""),
                     };
                     let other = if equal { value.clone() } else { json!(false) };
@@ -1360,6 +1429,7 @@ mod tests {
                         DescriptorPropertyKind::Enum => json!("NotAPlatformValue"),
                         DescriptorPropertyKind::Parts => json!("Error"),
                         DescriptorPropertyKind::List => json!("PlatformApplication"),
+                        DescriptorPropertyKind::MobileList => json!("value"),
                         DescriptorPropertyKind::ReferenceList => json!("main:Role.Reader"),
                         DescriptorPropertyKind::Reference => json!(null),
                     };

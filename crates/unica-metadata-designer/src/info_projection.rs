@@ -1053,6 +1053,39 @@ pub fn project_meta_info_declarations(
     }
 }
 
+pub(crate) fn implicit_document_standard_attributes(
+    kind: MetadataKind,
+    properties: Option<roxmltree::Node<'_, '_>>,
+    source: Option<unica_source_contract::SourceSetKind>,
+) -> Option<Vec<MetaStandardAttribute>> {
+    let properties = properties?;
+    if kind != MetadataKind::Document
+        || source != Some(unica_source_contract::SourceSetKind::Configuration)
+        || properties
+            .children()
+            .filter(roxmltree::Node::is_element)
+            .any(|child| {
+                matches!(
+                    child.tag_name().name(),
+                    "StandardAttributes" | "ObjectBelonging" | "ExtendedConfigurationObject"
+                )
+            })
+    {
+        return None;
+    }
+    // Standard document fields exist even when the platform omits property
+    // overrides. The registry supplies their names, never property defaults.
+    Some(
+        crate::template_catalog::metadata_standard_attribute_names(kind.as_str())
+            .iter()
+            .map(|name| MetaStandardAttribute {
+                name: (*name).to_owned(),
+                properties: Vec::new(),
+            })
+            .collect(),
+    )
+}
+
 pub fn project_declaration<T>(
     properties: roxmltree::Node<'_, '_>,
     name: &str,

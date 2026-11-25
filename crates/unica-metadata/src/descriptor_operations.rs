@@ -173,6 +173,7 @@ pub enum DescriptorPropertyKind {
     Parts,
     /// A set of distinct values of the property's closed enumeration.
     List,
+    MobileList,
     /// Ordered references to registered objects of the property's target kinds.
     ReferenceList,
     /// A single reference to a registered configuration object.
@@ -288,6 +289,8 @@ descriptor_properties!(
     DefaultStyle => ("DefaultStyle", "defaultStyle", Reference, false, false, true, false),
     DefaultInterface => ("DefaultInterface", "defaultInterface", Reference, false, false, true, false),
     DefaultReportAppearanceTemplate => ("DefaultReportAppearanceTemplate", "defaultReportAppearanceTemplate", Reference, false, false, true, false),
+    MobileApplicationUrls => ("MobileApplicationURLs", "mobileApplicationURLs", MobileList, false, false, true, false),
+    AllowedIncomingShareRequestTypes => ("AllowedIncomingShareRequestTypes", "allowedIncomingShareRequestTypes", MobileList, false, false, true, false),
     AdditionalFullTextSearchDictionaries => ("AdditionalFullTextSearchDictionaries", "additionalFullTextSearchDictionaries", ReferenceList, false, false, true, false),
     StandaloneConfigurationRestrictionRoles => ("StandaloneConfigurationRestrictionRoles", "standaloneConfigurationRestrictionRoles", ReferenceList, false, false, true, false),
     // Form descriptor properties (`PropertiesSite::FormDescriptor`).
@@ -733,6 +736,26 @@ impl PropertiesSite {
                                 field.reference_kinds()[0].as_str()
                             ),
                         }),
+                        DescriptorPropertyKind::MobileList => {
+                            let item = match field {
+                                DescriptorProperty::MobileApplicationUrls => {
+                                    json!({"type":"string"})
+                                }
+                                _ => json!({
+                                    "type": "object",
+                                    "properties": {
+                                        "mime": {"type":"string"},
+                                        "uti": {"type":"string"},
+                                        "ext": {"type":"string"},
+                                        "processingVariant": {"type":"integer", "enum":[0, 1]},
+                                        "isCustom": {"type":"boolean"},
+                                    },
+                                    "required": ["mime", "uti", "ext", "processingVariant", "isCustom"],
+                                    "additionalProperties": false,
+                                }),
+                            };
+                            json!({"type":"array", "items":item, "description":"Ordered list. An empty array clears the property."})
+                        }
                         DescriptorPropertyKind::ReferenceList => {
                             let kinds = field
                                 .reference_kinds()

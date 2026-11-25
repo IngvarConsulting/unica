@@ -209,6 +209,8 @@
     {"case": "object-module", "at": "main:Document.Заказ.Module.Object", "exists": true, "role": "Object"},
     {"case": "manager-module", "at": "main:Document.Заказ.Module.Manager", "exists": true, "role": "Manager"},
     {"case": "record-set-module", "at": "main:InformationRegister.Цены.Module.RecordSet", "exists": true, "role": "RecordSet"},
+    {"case": "sequence-record-set-module", "at": "main:Sequence.Probe.Module.RecordSet", "exists": true, "role": "RecordSet"},
+    {"case": "recalculation-record-set-module", "at": "main:CalculationRegister.Начисления.Recalculation.Перерасчет1.Module.RecordSet", "exists": true, "role": "RecordSet"},
     {"case": "value-manager-module", "at": "main:Constant.ОсновнаяВалюта.Module.ValueManager", "exists": true, "role": "ValueManager"},
     {"case": "common-module", "at": "main:CommonModule.ЗаказыСервер", "exists": true, "role": "Common"},
     {"case": "nested-form-module", "at": "main:Document.Заказ.Form.ФормаДокумента.Module.Form", "exists": true, "role": "Form"},

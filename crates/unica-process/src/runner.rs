@@ -100,6 +100,15 @@ pub trait ProcessRunner {
         self.run(command).map_err(ProcessStreamFailure::Run)
     }
 
+    /// Run a protected start without a Windows console interrupt group.
+    /// Adapters that create such a group must override this route.
+    fn run_staged_without_windows_interrupt(
+        &self,
+        command: &ProcessCommand,
+    ) -> Result<ProcessOutput, ProcessStreamFailure> {
+        self.run_staged(command)
+    }
+
     /// [`ProcessRunner::run_streaming`] that keeps whether the process was
     /// ever started. A runner that cannot tell reports a failure after start.
     fn run_streaming_staged(
@@ -309,6 +318,17 @@ impl ProcessRunner for BreakawayProcessRunner {
 
     fn run_staged(&self, command: &ProcessCommand) -> Result<ProcessOutput, ProcessStreamFailure> {
         run_staged_in(command, JobPolicy::AllowsBreakaway, CancelPolicy::Interrupt)
+    }
+
+    fn run_staged_without_windows_interrupt(
+        &self,
+        command: &ProcessCommand,
+    ) -> Result<ProcessOutput, ProcessStreamFailure> {
+        run_staged_in(
+            command,
+            JobPolicy::AllowsBreakaway,
+            CancelPolicy::without_windows_interrupt(),
+        )
     }
 
     fn run_pending_handoff(

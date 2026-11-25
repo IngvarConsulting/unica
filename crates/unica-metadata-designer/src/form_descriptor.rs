@@ -260,6 +260,7 @@ fn verify(
             }),
             DescriptorPropertyValue::Parts(_)
             | DescriptorPropertyValue::Languages(_)
+            | DescriptorPropertyValue::Mobile(_)
             | DescriptorPropertyValue::References(_)
             | DescriptorPropertyValue::Reference(_) => false,
         };

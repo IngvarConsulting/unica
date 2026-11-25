@@ -21,17 +21,29 @@
             {
               "at": "main:StyleItem.AbsoluteFont",
               "kind": "StyleItem",
-              "title": "AbsoluteFont"
+              "title": "AbsoluteFont",
+              "props": {
+                "synonym": "ru = 'Шрифт команд сборка и доставка'",
+                "children": 0
+              }
             },
             {
               "at": "main:StyleItem.SingleBorder",
               "kind": "StyleItem",
-              "title": "SingleBorder"
+              "title": "SingleBorder",
+              "props": {
+                "synonym": "ru = 'Рамка одинарная ЭПД'",
+                "children": 0
+              }
             },
             {
               "at": "main:StyleItem.StyleFont",
               "kind": "StyleItem",
-              "title": "StyleFont"
+              "title": "StyleFont",
+              "props": {
+                "synonym": "ru = 'Важная надпись шрифт'",
+                "children": 0
+              }
             }
           ]
         }

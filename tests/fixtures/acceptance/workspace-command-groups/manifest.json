@@ -1,0 +1,101 @@
+{
+  "formatVersion": "2.20",
+  "platformVersion": "8.3.27.2342",
+  "source": "Byte-preserved selection from native ibcmd exports. SubsystemsOrder and its registered parent and child were added together.",
+  "native": {
+    "ibcmdSha256": "38f37715535cea530e58d5ba2e7e072c184b61b12f3e903ac290b299cf39fd38",
+    "receiptSha256": "823da904c34733483c7d7543325eec2889d6d1a95f0a50dd93772e052132b68a",
+    "packageSha256": "d34c36016761b15faa0a1ab770a1195e3b55c0dd85fe4cc79474697b0c6ac238",
+    "stageExits": {
+      "create": 0,
+      "import": 0,
+      "apply": 0,
+      "export": 0
+    }
+  },
+  "mcp": {
+    "release": "0.17.0-alpha.2",
+    "binarySha256": "27b3bc0be4088c11c51af88da9963a52959b317837e54a2bcaa7a9f31c3a928d",
+    "receiptSha256": "438bdcb9ddfe54a48000ce04d9a8cea11d6c8846b37d0d5b59c2d8e984261bc9",
+    "branch": "main:Subsystem.Подсистема1.Interface.Subsystem",
+    "registeredMember": "main:Subsystem.Подсистема1.Subsystem.Подсистема2"
+  },
+  "files": {
+    "src/Catalogs/Справочник1/Commands/Команда1/Ext/CommandModule.bsl": {
+      "size": 193,
+      "sha256": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+    },
+    "src/Catalogs/Справочник1/Forms/ФормаСписка/Ext/Form.xml": {
+      "size": 6014,
+      "sha256": "7a904ad3dbb85ed11929d0715c536b0e06dc0dde1b86d6189de93de98db1957d"
+    },
+    "src/Catalogs/Справочник1/Forms/ФормаСписка.xml": {
+      "size": 1523,
+      "sha256": "3de1886284b447bdfe56ebef6339203f9d4f8c1b53a5f88413c16eab2aa42061"
+    },
+    "src/Catalogs/Справочник1.xml": {
+      "size": 15663,
+      "sha256": "126463c599da4d1cdabd1f8da929554a91b78836b309082c305538f30f2fe41c"
+    },
+    "src/CommandGroups/ГруппаА.xml": {
+      "size": 1336,
+      "sha256": "9232d5ded5bcd168a6247341f7e27346821b5e58ef4146749078ef504e95554b"
+    },
+    "src/CommandGroups/ГруппаБ.xml": {
+      "size": 1333,
+      "sha256": "1e78271a27983e1e3ccd2649604f49307dc3c59e51459644ea931b705d614c1c"
+    },
+    "src/CommandGroups/ГруппаВ.xml": {
+      "size": 1335,
+      "sha256": "d5fd6d66f877cd74e4c02dae53b8c7614ac8e610cbcb90c49f4e8f2b3900ee9f"
+    },
+    "src/CommandGroups/ГруппаГ.xml": {
+      "size": 1335,
+      "sha256": "6ee4fffd3df53f3391bf48939111c7b55e8532bb6027136070c75a2bc92f5011"
+    },
+    "src/CommonCommands/КомандаА/Ext/CommandModule.bsl": {
+      "size": 193,
+      "sha256": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+    },
+    "src/CommonCommands/КомандаА.xml": {
+      "size": 1610,
+      "sha256": "a4c3d93fdc31f003f36146edc4602379b9e7931143cb00280783f03e5fa21f1f"
+    },
+    "src/CommonCommands/КомандаБ/Ext/CommandModule.bsl": {
+      "size": 193,
+      "sha256": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+    },
+    "src/CommonCommands/КомандаБ.xml": {
+      "size": 1601,
+      "sha256": "9e70b5d9dff37cdaa407e109e4d4a6543d05bfeade0527f0a529b2a532e50628"
+    },
+    "src/Configuration.xml": {
+      "size": 10724,
+      "sha256": "a76730f3c8140610173a9d7e8e77c82677c379d1876ed643ea4383d44e7b0a02"
+    },
+    "src/Ext/MainSectionCommandInterface.xml": {
+      "size": 764,
+      "sha256": "5cfba8cecafcc80369f9d352db31c0bbffda47fe5847a5fd1a307de7b592925a"
+    },
+    "src/Languages/English.xml": {
+      "size": 1125,
+      "sha256": "9cbd6735655f3cf0d003a960978f3103be90d8034d04f0117f6e13125407598b"
+    },
+    "src/Languages/Русский.xml": {
+      "size": 1132,
+      "sha256": "9099d64a5d034a8271b74b44eaf1bc5a4c57bc08a0167cfd952f9ca46adf1308"
+    },
+    "src/Subsystems/Подсистема1/Ext/CommandInterface.xml": {
+      "size": 1117,
+      "sha256": "f4b977757a68c308af10a52e193e386321913fdf0ff8fdf38349280b45e73e5d"
+    },
+    "src/Subsystems/Подсистема1/Subsystems/Подсистема2.xml": {
+      "size": 1591,
+      "sha256": "72bf3546731c4bb9dfce4f6691d5b6c6dd40778e7485c63538d3d255ae580250"
+    },
+    "src/Subsystems/Подсистема1.xml": {
+      "size": 1658,
+      "sha256": "780e6bb6e17176bef558d8e63e0661007196cbfe343a227550bf96644def8cc8"
+    }
+  }
+}

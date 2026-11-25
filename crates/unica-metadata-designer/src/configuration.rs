@@ -201,6 +201,7 @@ pub fn parse_cf_info_xml(
             .filter_map(|(tag, key)| localized(tag).map(|value| (key.to_string(), value.into())))
             .collect();
     let purpose = read_cf_purpose_properties(props)?;
+    property_limits.extend(purpose.mobile_list_limits.iter().cloned());
     property_limits.extend(purpose.reference_list_limits.iter().cloned());
     let data = CfInfoData {
         format: version.to_string(),
@@ -310,7 +311,7 @@ pub fn read_cf_purpose_properties_xml(xml: &str) -> Result<CfPurposeProperties, 
 fn read_cf_purpose_properties(
     props: roxmltree::Node<'_, '_>,
 ) -> Result<CfPurposeProperties, String> {
-    fn scalar(node: roxmltree::Node<'_, '_>) -> Result<String, String> {
+    fn raw_scalar(node: roxmltree::Node<'_, '_>) -> Result<String, String> {
         if node.children().any(|child| child.is_element()) {
             return Err(format!(
                 "{} must contain scalar text",
@@ -321,9 +322,10 @@ fn read_cf_purpose_properties(
             .children()
             .filter(|child| child.is_text())
             .filter_map(|child| child.text())
-            .collect::<String>()
-            .trim()
-            .to_string())
+            .collect())
+    }
+    fn scalar(node: roxmltree::Node<'_, '_>) -> Result<String, String> {
+        Ok(raw_scalar(node)?.trim().to_string())
     }
     fn boolean(node: roxmltree::Node<'_, '_>) -> Result<bool, String> {
         match scalar(node)?.as_str() {
@@ -337,7 +339,7 @@ fn read_cf_purpose_properties(
     }
     fn children<'a, 'input>(
         node: roxmltree::Node<'a, 'input>,
-        name: &str,
+        names: &[&str],
         namespace: &str,
     ) -> Result<Vec<roxmltree::Node<'a, 'input>>, String> {
         if node
@@ -352,7 +354,7 @@ fn read_cf_purpose_properties(
         node.children()
             .filter(|child| child.is_element())
             .map(|child| {
-                if child.tag_name().name() == name
+                if names.contains(&child.tag_name().name())
                     && child.tag_name().namespace() == Some(namespace)
                 {
                     Ok(child)
@@ -365,6 +367,64 @@ fn read_cf_purpose_properties(
                 }
             })
             .collect()
+    }
+    fn pair<'a, 'input>(
+        node: roxmltree::Node<'a, 'input>,
+        names: [&str; 2],
+        namespace: &str,
+    ) -> Result<[roxmltree::Node<'a, 'input>; 2], String> {
+        let elements = children(node, &names, namespace)?;
+        match elements.as_slice() {
+            [first, second] if [first.tag_name().name(), second.tag_name().name()] == names => {
+                Ok([*first, *second])
+            }
+            _ => Err(format!(
+                "{} must contain {} and {}",
+                node.tag_name().name(),
+                names[0],
+                names[1]
+            )),
+        }
+    }
+    fn validate_permission_message(item: roxmltree::Node<'_, '_>) -> Result<(), String> {
+        let [permission, description] = pair(item, ["permission", "description"], CF_CAI_NS)?;
+        // RequiredMobileApplicationPermissionMessages in the supported XDTO profiles.
+        if !matches!(
+            raw_scalar(permission)?.as_str(),
+            "Biometrics"
+                | "Location"
+                | "BackgroundLocation"
+                | "BluetoothPrinters"
+                | "Contacts"
+                | "Calendars"
+                | "NumberDialing"
+                | "CallProcessing"
+                | "CallLog"
+                | "AutoSendSMS"
+                | "ReceiveSMS"
+                | "SMSLog"
+                | "Camera"
+                | "Microphone"
+                | "MusicLibrary"
+                | "PictureAndVideoLibraries"
+                | "AudioPlaybackAndVibration"
+                | "PermissionGroupPhone"
+                | "PermissionGroupCallLog"
+                | "PermissionGroupSMS"
+                | "PostNotifications"
+        ) {
+            return Err("mobile permission message has an invalid permission".into());
+        }
+        for translation in children(description, &["item"], CF_V8_NS)? {
+            let [lang, content] = pair(translation, ["lang", "content"], CF_V8_NS)?;
+            if !unica_xml_format::names::xml_nmtoken_is_valid(
+                raw_scalar(lang)?.trim_matches([' ', '\t', '\r', '\n']),
+            ) {
+                return Err("mobile permission message has an invalid language".into());
+            }
+            raw_scalar(content)?;
+        }
+        Ok(())
     }
     let section = |name: &str| -> Result<Option<roxmltree::Node<'_, '_>>, String> {
         let mut matches = props.children().filter(|node| {
@@ -380,7 +440,7 @@ fn read_cf_purpose_properties(
     };
     let use_purposes = section("UsePurposes")?
         .map(|node| {
-            children(node, "Value", CF_V8_NS)?
+            children(node, &["Value"], CF_V8_NS)?
                 .into_iter()
                 .map(|child| {
                     let value = scalar(child)?;
@@ -394,7 +454,7 @@ fn read_cf_purpose_properties(
         .transpose()?;
     let default_roles = section("DefaultRoles")?
         .map(|node| {
-            children(node, "Item", CF_XR_NS)?
+            children(node, &["Item"], CF_XR_NS)?
                 .into_iter()
                 .map(|child| {
                     let value = scalar(child)?;
@@ -411,63 +471,92 @@ fn read_cf_purpose_properties(
         .transpose()?;
     let used_mobile_application_functionalities = section("UsedMobileApplicationFunctionalities")?
         .map(|node| {
-            children(node, "functionality", CF_CAI_NS)?
-                .into_iter()
-                .map(|item| {
-                    if item.children().any(|child| {
-                        child.is_text() && !child.text().unwrap_or_default().trim().is_empty()
-                    }) {
-                        return Err("mobile functionality has unexpected scalar text".to_string());
+            let mut flags = Vec::new();
+            let mut reading_messages = false;
+            for item in children(node, &["functionality", "permissionMessage"], CF_CAI_NS)? {
+                if item.tag_name().name() == "permissionMessage" {
+                    validate_permission_message(item)?;
+                    reading_messages = true;
+                    continue;
+                }
+                if reading_messages {
+                    return Err("mobile functionality follows a permission message".into());
+                }
+                if item.children().any(|child| {
+                    child.is_text() && !child.text().unwrap_or_default().trim().is_empty()
+                }) {
+                    return Err("mobile functionality has unexpected scalar text".to_string());
+                }
+                let mut functionality = None;
+                let mut use_flag = None;
+                for child in item.children().filter(|child| child.is_element()) {
+                    if child.tag_name().namespace() != Some(CF_CAI_NS) {
+                        return Err("mobile functionality has a foreign member".to_string());
                     }
-                    let mut functionality = None;
-                    let mut use_flag = None;
-                    for child in item.children().filter(|child| child.is_element()) {
-                        if child.tag_name().namespace() != Some(CF_CAI_NS) {
-                            return Err("mobile functionality has a foreign member".to_string());
+                    match child.tag_name().name() {
+                        "functionality" if functionality.is_none() => {
+                            functionality = Some(scalar(child)?)
                         }
-                        match child.tag_name().name() {
-                            "functionality" if functionality.is_none() => {
-                                functionality = Some(scalar(child)?)
-                            }
-                            "use" if use_flag.is_none() => use_flag = Some(boolean(child)?),
-                            _ => {
-                                return Err(
-                                    "mobile functionality has an unexpected or duplicate member"
-                                        .to_string(),
-                                )
-                            }
+                        "use" if use_flag.is_none() => use_flag = Some(boolean(child)?),
+                        _ => {
+                            return Err(
+                                "mobile functionality has an unexpected or duplicate member"
+                                    .to_string(),
+                            );
                         }
                     }
-                    Ok(CfMobileFunctionality {
-                        functionality: functionality
-                            .filter(|value| !value.is_empty())
-                            .ok_or("mobile functionality has no name")?,
-                        r#use: use_flag.ok_or("mobile functionality has no use flag")?,
-                    })
-                })
-                .collect::<Result<Vec<_>, String>>()
+                }
+                flags.push(CfMobileFunctionality {
+                    functionality: functionality
+                        .filter(|value| !value.is_empty())
+                        .ok_or("mobile functionality has no name")?,
+                    r#use: use_flag.ok_or("mobile functionality has no use flag")?,
+                });
+            }
+            Ok::<_, String>(flags)
         })
         .transpose()?;
+    use unica_metadata::configuration::ConfigurationMobileList;
     use unica_metadata::descriptor_operations::DescriptorProperty;
-    let mut reference_list_limits = Vec::new();
-    let mut read_list = |property| match crate::configuration_reference_lists::read(props, property)
-    {
+    let mut mobile_list_limits = Vec::new();
+    let mut read_list = |property| match crate::configuration_mobile_lists::read(props, property) {
         Ok(value) => value,
         Err(error) => {
-            reference_list_limits.push(format!("source_unreadable: {error}"));
+            mobile_list_limits.push(format!("source_unreadable: {error}"));
             None
         }
     };
+    let mobile_application_urls = match read_list(DescriptorProperty::MobileApplicationUrls) {
+        Some(ConfigurationMobileList::Urls(items)) => Some(items),
+        _ => None,
+    };
+    let allowed_incoming_share_request_types =
+        match read_list(DescriptorProperty::AllowedIncomingShareRequestTypes) {
+            Some(ConfigurationMobileList::ShareTypes(items)) => Some(items),
+            _ => None,
+        };
+    let mut reference_list_limits = Vec::new();
+    let mut read_reference_list =
+        |property| match crate::configuration_reference_lists::read(props, property) {
+            Ok(value) => value,
+            Err(error) => {
+                reference_list_limits.push(format!("source_unreadable: {error}"));
+                None
+            }
+        };
     let additional_full_text_search_dictionaries =
-        read_list(DescriptorProperty::AdditionalFullTextSearchDictionaries);
+        read_reference_list(DescriptorProperty::AdditionalFullTextSearchDictionaries);
     let standalone_configuration_restriction_roles =
-        read_list(DescriptorProperty::StandaloneConfigurationRestrictionRoles);
+        read_reference_list(DescriptorProperty::StandaloneConfigurationRestrictionRoles);
     Ok(CfPurposeProperties {
         use_purposes,
         default_roles,
         additional_full_text_search_dictionaries,
         standalone_configuration_restriction_roles,
         reference_list_limits,
+        mobile_application_urls,
+        allowed_incoming_share_request_types,
+        mobile_list_limits,
         used_mobile_application_functionalities,
         include_help_in_contents: section("IncludeHelpInContents")?.map(boolean).transpose()?,
     })

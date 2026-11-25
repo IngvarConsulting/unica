@@ -17,14 +17,17 @@ use std::mem::{size_of, zeroed};
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::os::windows::process::CommandExt;
 use std::process::{Child, Command, ExitStatus};
+use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
 };
 use windows_sys::Win32::System::JobObjects::{
-    AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-    SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_BREAKAWAY_OK,
+    AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicAccountingInformation,
+    JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
+    TerminateJobObject, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_BREAKAWAY_OK,
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 use windows_sys::Win32::System::Threading::{
@@ -39,6 +42,14 @@ pub(super) struct RuntimeJob(OwnedHandle);
 
 impl RuntimeJob {
     fn create() -> io::Result<Self> {
+        Self::create_with_limits(JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK)
+    }
+
+    pub(super) fn create_pending() -> io::Result<Self> {
+        Self::create_with_limits(JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE)
+    }
+
+    fn create_with_limits(flags: u32) -> io::Result<Self> {
         // SAFETY: пустые атрибуты и имя дают безымянную группу по умолчанию;
         // дескриптор не наследуется.
         let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
@@ -48,14 +59,22 @@ impl RuntimeJob {
         // SAFETY: дескриптор только что создан и больше никем не владеется.
         let job = Self(unsafe { OwnedHandle::from_raw_handle(job) });
 
+        job.set_limits(flags)?;
+        Ok(job)
+    }
+
+    pub(super) fn release_pending(&self) -> io::Result<()> {
+        self.set_limits(JOB_OBJECT_LIMIT_BREAKAWAY_OK)
+    }
+
+    fn set_limits(&self, flags: u32) -> io::Result<()> {
         // SAFETY: нулевая инициализация допустима для этой POD-структуры Windows.
         let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };
-        limits.BasicLimitInformation.LimitFlags =
-            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK;
+        limits.BasicLimitInformation.LimitFlags = flags;
         // SAFETY: указатель и размер соответствуют классу информации.
         let configured = unsafe {
             SetInformationJobObject(
-                job.raw(),
+                self.raw(),
                 JobObjectExtendedLimitInformation,
                 &limits as *const _ as *const _,
                 size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
@@ -64,7 +83,41 @@ impl RuntimeJob {
         if configured == 0 {
             return Err(io::Error::last_os_error());
         }
-        Ok(job)
+        Ok(())
+    }
+
+    pub(super) fn terminate_until(&self, deadline: Instant) -> io::Result<()> {
+        // SAFETY: the handle belongs to this startup Job.
+        if unsafe { TerminateJobObject(self.raw(), 1) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        loop {
+            // SAFETY: this POD buffer matches the queried information class.
+            let mut accounting: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { zeroed() };
+            if unsafe {
+                QueryInformationJobObject(
+                    self.raw(),
+                    JobObjectBasicAccountingInformation,
+                    (&mut accounting as *mut JOBOBJECT_BASIC_ACCOUNTING_INFORMATION).cast(),
+                    size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
+                    std::ptr::null_mut(),
+                )
+            } == 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            if accounting.ActiveProcesses == 0 {
+                return Ok(());
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "startup Job still contains processes",
+                ));
+            }
+            std::thread::sleep(remaining.min(Duration::from_millis(5)));
+        }
     }
 
     pub(super) fn raw(&self) -> HANDLE {

@@ -18,6 +18,7 @@ mod v13_call_graph;
 #[cfg(test)]
 mod v13_can_honesty_tests;
 mod v13_client_run;
+mod v13_debug_server;
 mod v13_documentation;
 mod v13_extensions;
 mod v13_infobase_another_copy;

@@ -51,6 +51,8 @@ pub enum RunIntent {
     InfobaseExport,
     InfobaseImport,
     ClientRun,
+    DebugServerStart,
+    DebugServerStop,
     ExtensionList,
     ExtensionActivate,
     ConfigurationApply,
@@ -82,6 +84,8 @@ impl RunOperation {
             RunIntent::InfobaseExport => "infobase.dump",
             RunIntent::InfobaseImport => "infobase.restore",
             RunIntent::ClientRun => "launch",
+            RunIntent::DebugServerStart => "debug-server.start",
+            RunIntent::DebugServerStop => "debug-server.stop",
             RunIntent::ExtensionList => "extensions.list",
             RunIntent::ExtensionActivate => "extensions.set",
             RunIntent::ConfigurationApply => "apply",
@@ -123,6 +127,8 @@ impl RunOperation {
             RunIntent::ConfigurationApply => "Apply the working configuration to the database configuration; unlike unica.apply this changes the infobase.",
             RunIntent::ConfigurationReset => "Discard pending configuration changes in the infobase, restoring its database configuration.",
             RunIntent::ClientRun => "Launch an interactive 1C client session.",
+            RunIntent::DebugServerStart => "Start an owned ready local debug server for the project file infobase.",
+            RunIntent::DebugServerStop => "Release the owned debug server of this working copy by session identifier.",
         }
     }
 
@@ -140,7 +146,9 @@ impl RunOperation {
 
     pub const fn execution(&self) -> &'static str {
         match self.intent {
-            RunIntent::ClientRun => "terminal",
+            RunIntent::ClientRun | RunIntent::DebugServerStart | RunIntent::DebugServerStop => {
+                "terminal"
+            }
             _ => "previewApply",
         }
     }
@@ -157,6 +165,7 @@ impl RunOperation {
             | RunIntent::CfImport
             | RunIntent::InfobaseImport => &["infobase"],
             RunIntent::ClientRun => &["clientSession"],
+            RunIntent::DebugServerStart | RunIntent::DebugServerStop => &["debugServerSession"],
             RunIntent::ExtensionList => &["infobaseRead"],
             RunIntent::ExtensionActivate
             | RunIntent::ConfigurationApply
@@ -244,11 +253,21 @@ impl RunOperation {
                 },
                 "required": ["input", "mode"]
             })),
+            RunIntent::DebugServerStart => Some(json!({
+                "type":"object","additionalProperties":false,"required":["ownerPid"],
+                "properties":{"ownerPid":{"type":"integer","minimum":1,"maximum":u32::MAX},
+                    "port":{"type":"integer","minimum":1,"maximum":u16::MAX}}
+            })),
+            RunIntent::DebugServerStop => Some(json!({
+                "type":"object","additionalProperties":false,"required":["session"],
+                "properties":{"session":{"type":"string","pattern":"^[0-9a-f]{32}$"}}
+            })),
             RunIntent::ClientRun => Some(json!({
                 "type": "object",
                 "additionalProperties": false,
                 "properties": {
                     "clientMode": {"type": "string", "enum": ["designer", "thin", "thick", "ordinary"], "description": "1C client to launch."},
+                    "debugUrl": {"type": "string", "pattern": "^http://127[.]0[.]0[.]1:(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])(?![\\s\\S])", "description": "Ready loopback dbgs URL; thin client only. Launch receipts confirm the request and process, while DAP confirms attachment."},
                     "execute": {"type": "string", "description": "Workspace-relative .epf or .erf external processor to run with /Execute; enterprise clients only."},
                     "applicationParameter": {"type": "string", "description": "Exact /C value for an enterprise client; empty is distinct from omitted, NUL and designer are rejected. May accompany execute."},
                     "waitForExit": {"type": "boolean", "default": false, "description": "Wait for thin-client completion; requires execute (.epf) or applicationParameter, and waitTimeoutMs."},
@@ -258,6 +277,9 @@ impl RunOperation {
                 "allOf": [{
                     "if": {"required": ["applicationParameter"]},
                     "then": {"properties": {"clientMode": {"enum": ["thin", "thick", "ordinary"]}}}
+                }, {
+                    "if": {"required": ["debugUrl"]},
+                    "then": {"properties": {"clientMode": {"const": "thin"}}}
                 }]
             })),
         }
@@ -282,15 +304,15 @@ pub fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
             tools: vec![
                 V13ToolContract {
                     name: "view",
-                    description: "Inspect the workspace with no arguments, or read one logical 1C node by address. Collection pages report data.offset and data.total. Root metadata collections keep Configuration.xml registration order. offset and from start a fresh question; cursor continues its immutable snapshot.",
+                    description: "Inspect the workspace with no arguments, or read one logical 1C node by address. Collection pages report data.offset and data.total. Root metadata collections keep Configuration.xml registration order. For example, main:Catalog lists catalogs. Each row gives its address (at), kind and name (title). props.synonym is the optional localized name; props.children counts explicitly declared children of all kinds. Zero means none declared; a missing count is unknown. Open the row's at, then the Form branch's returned at to list its forms. For a clipped synonym, follow the address in limits. offset and from start a fresh question; cursor continues its immutable snapshot.",
                     input_schema: schema(
                         json!({
                             "at": logical_address_with("Qualified logical address: <sourceSet>:<Kind>[.<Name>...]. A node answer lists its operations in can; append .Can.<op> for one operation's argument contract. Omit for the workspace."),
                             // No schema `default` (#1210): form clients send it, and
                             // limit without at is refused.
                             "limit": {"type": "integer", "minimum": 1, "maximum": 50,
-                                "description": "Maximum child items per addressed view page, from 1 to 50; valid only with at. Omit for 20. A preferred 64 KiB page size may stop earlier, but an indivisible item remains whole."},
-                            "cursor": cursor("Continuation cursor from an earlier addressed view."),
+                                "description": "Maximum child items per addressed view page, from 1 to 50; valid only with at. Omit for 20. Root metadata object lists target 8 KiB per page; other collections target 64 KiB. A page may stop earlier by size. An indivisible item remains whole."},
+                            "cursor": cursor("For the next page, repeat the same at and limit with the cursor from the result. Stop when the result has no cursor."),
                             "offset": {"type":"integer", "minimum":0, "description":"Start a collection page at this zero-based position, without reading prior pages. Exclusive with from and cursor. Positions beyond the end return an empty page with data.offset equal to data.total."},
                             "from": {"type":"string", "description":"Start at the first registered name beginning with this prefix, ignoring Unicode case. Exclusive with offset and cursor. No match returns an empty page with data.offset equal to data.total. Names, not synonyms, are matched."},
                         }),
@@ -518,6 +540,8 @@ fn run_dictionary() -> Vec<RunOperation> {
         RunIntent::InfobaseExport,
         RunIntent::InfobaseImport,
         RunIntent::ClientRun,
+        RunIntent::DebugServerStart,
+        RunIntent::DebugServerStop,
         RunIntent::ExtensionList,
         RunIntent::ExtensionActivate,
         RunIntent::ConfigurationApply,
@@ -526,8 +550,14 @@ fn run_dictionary() -> Vec<RunOperation> {
     .into_iter()
     .map(|intent| RunOperation {
         intent,
-        terminal: intent == RunIntent::ClientRun,
-        rejects_sessions: intent == RunIntent::ClientRun,
+        terminal: matches!(
+            intent,
+            RunIntent::ClientRun | RunIntent::DebugServerStart | RunIntent::DebugServerStop
+        ),
+        rejects_sessions: matches!(
+            intent,
+            RunIntent::ClientRun | RunIntent::DebugServerStart | RunIntent::DebugServerStop
+        ),
         // The pinned runner has push --no-apply, apply and reset, but its upload still applies
         // the database configuration and the adapter does not run apply or reset yet
         // (#1246): these are not listed, and their call is refused with that reason.
@@ -624,6 +654,8 @@ mod tests {
                 "infobase.dump",
                 "infobase.restore",
                 "launch",
+                "debug-server.start",
+                "debug-server.stop",
                 "extensions.list",
                 "extensions.set",
                 "apply",
@@ -1054,6 +1086,8 @@ mod tests {
                 RunIntent::InfobaseExport,
                 RunIntent::InfobaseImport,
                 RunIntent::ClientRun,
+                RunIntent::DebugServerStart,
+                RunIntent::DebugServerStop,
                 RunIntent::ExtensionList,
                 RunIntent::ExtensionActivate,
                 RunIntent::ConfigurationApply,
@@ -1088,6 +1122,8 @@ mod tests {
                 "infobase.dump",
                 "infobase.restore",
                 "launch",
+                "debug-server.start",
+                "debug-server.stop",
                 "extensions.list",
                 "extensions.set",
             ],
@@ -1209,6 +1245,8 @@ mod tests {
                 "infobase.dump",
                 "infobase.restore",
                 "launch",
+                "debug-server.start",
+                "debug-server.stop",
                 "extensions.list",
                             "extensions.set",
                 "apply",
@@ -1247,6 +1285,8 @@ mod tests {
                 "infobase.dump",
                 "infobase.restore",
                 "launch",
+                "debug-server.start",
+                "debug-server.stop",
                 "extensions.list",
                 "extensions.set",
             ],
@@ -1275,8 +1315,8 @@ mod tests {
                 .iter()
                 .filter(|operation| operation.implemented)
                 .count()
-                == 11,
-            "only the proven runner 0.14 subset is implemented"
+                == 13,
+            "the implemented runtime dictionary includes both debug-server operations"
         );
     }
 
@@ -1472,6 +1512,7 @@ mod tests {
             [
                 "applicationParameter",
                 "clientMode",
+                "debugUrl",
                 "execute",
                 "waitForExit",
                 "waitTimeoutMs"
@@ -1484,6 +1525,15 @@ mod tests {
             json!(["designer", "thin", "thick", "ordinary"])
         );
         let validator = jsonschema::validator_for(&schema).expect("valid launch args schema");
+        for url in ["http://127.0.0.1:1", "http://127.0.0.1:65535"] {
+            assert!(validator.is_valid(&json!({"clientMode": "thin", "debugUrl": url})));
+        }
+        for url in ["http://127.0.0.1:65536", "http://127.0.0.1:1\n"] {
+            assert!(
+                !validator.is_valid(&json!({"clientMode": "thin", "debugUrl": url})),
+                "{url:?}"
+            );
+        }
         for mode in ["designer", "thin", "thick", "ordinary"] {
             assert!(validator.is_valid(&json!({"clientMode": mode})));
         }

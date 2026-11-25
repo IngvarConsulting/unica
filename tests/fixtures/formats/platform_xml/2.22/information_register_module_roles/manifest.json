@@ -1,0 +1,88 @@
+{
+  "formatVersion": "2.22",
+  "platformVersion": "8.5.4.2028",
+  "source": "Byte-identical selection from a native ibcmd configuration export of two registered InformationRegister children.",
+  "seed": {
+    "revision": "93df0feeea38b3303c5f237930980e0960b7461a",
+    "path": "tests/fixtures/formats/platform_xml/2.22/all_kinds/src"
+  },
+  "derivation": {
+    "platformStages": [
+      {
+        "stage": "register-version",
+        "exit": 0
+      },
+      {
+        "stage": "register-import",
+        "exit": 0
+      },
+      {
+        "stage": "register-apply",
+        "exit": 0
+      },
+      {
+        "stage": "register-export",
+        "exit": 0
+      }
+    ],
+    "platformReceiptSha256": "453a931d99fa08ba265f52c8cc638b453c65cc8221a02aa4289d5ed4cc4bd23b",
+    "previousNativeExportsPreserved": {
+      "round1-export": {
+        "files": 125,
+        "tree_manifest_sha256": "b0d9fcf0f9e6df63c13a81528c576d94799e38309f85f09aeaae8f692f28a0f7"
+      },
+      "round2-export": {
+        "files": 125,
+        "tree_manifest_sha256": "ecd0cd8f2bef112065a95c58b979d0292fd3cb3140eab6d9ac837327973902b3"
+      }
+    },
+    "description": "Import, apply, and export in the previously isolated file infobase. Both BSL files equal the prepared input bytes."
+  },
+  "mcp": {
+    "revision": "ec4aac54df2825e075a0d7c292b92dbcfec9ce45",
+    "binarySha256": "641d7dd01731d74f49d8258864e47621650bde9ca44c7274f5661e5cf32916c4",
+    "receiptSha256": "78d502a63a92c8ce2fbdce1dab1ff81a389ab9dab318b003d34499956cda05b0",
+    "successfulCalls": 10
+  },
+  "selection": "Preserves the configuration registration, complete register descriptor, form descriptor and body, and both native BSL files.",
+  "samples": [
+    {
+      "owner": "main:InformationRegister.АдминистративнаяИерархия.Form.AddressProbeRegisterForm",
+      "role": "Form",
+      "childUuid": "ca67da7c-94f0-5cb4-9e0c-8b1d0ef59de8",
+      "bsl": "src/InformationRegisters/АдминистративнаяИерархия/Forms/AddressProbeRegisterForm/Ext/Form/Module.bsl"
+    },
+    {
+      "owner": "main:InformationRegister.АдминистративнаяИерархия.Command.AddressProbeRegisterCommand",
+      "role": "Command",
+      "childUuid": "e063818a-2305-5a5d-8e96-b7a403e6476a",
+      "bsl": "src/InformationRegisters/АдминистративнаяИерархия/Commands/AddressProbeRegisterCommand/Ext/CommandModule.bsl"
+    }
+  ],
+  "files": {
+    "src/Configuration.xml": {
+      "size": 13703,
+      "sha256": "1bb459565bf1d66d9ba00dcece7b8e80b0213213fe8341072ca4d58cca0607a5"
+    },
+    "src/InformationRegisters/АдминистративнаяИерархия.xml": {
+      "size": 15556,
+      "sha256": "9ae8df4be5a780298cbfa16d01e5b46b26094b04b5ade6f380c10ed7f591af8d"
+    },
+    "src/InformationRegisters/АдминистративнаяИерархия/Commands/AddressProbeRegisterCommand/Ext/CommandModule.bsl": {
+      "size": 233,
+      "sha256": "cf529954c69bcbe2b15d119e679a3d7ab80bc5f30a6797c2dfb172ccdefea1c3"
+    },
+    "src/InformationRegisters/АдминистративнаяИерархия/Forms/AddressProbeRegisterForm.xml": {
+      "size": 1567,
+      "sha256": "4484f24f2e4cf6ccf74da5bd55f03d8679c0b42a9c649bbfd4aec8d0625cbfd2"
+    },
+    "src/InformationRegisters/АдминистративнаяИерархия/Forms/AddressProbeRegisterForm/Ext/Form.xml": {
+      "size": 1443,
+      "sha256": "51c84dd3b2936841f494d1e5549f8dee8cef67184193f5b04b8665b806ab0673"
+    },
+    "src/InformationRegisters/АдминистративнаяИерархия/Forms/AddressProbeRegisterForm/Ext/Form/Module.bsl": {
+      "size": 143,
+      "sha256": "a28dc3990087518006270803c8f757fff56bee562f08933d87327a5e63ab2243"
+    }
+  }
+}

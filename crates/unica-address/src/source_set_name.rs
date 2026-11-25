@@ -9,7 +9,7 @@ use unica_xml_format::names::xml_ncname_is_valid;
 // unit: bytes
 // scope: record
 // value: 64
-// resource: Длина имени набора исходников в байтах UTF-8 для pull, push и make.
+// resource: Длина имени набора исходников в байтах UTF-8 для make и source.reexport.
 // status: unproven
 // origin: 4ca23b37d (#1098)
 // problem: Сохраняет прежнюю границу адаптера совместимости и уже принятые ASCII-имена (комментарий в source_set_name.rs).
@@ -20,8 +20,13 @@ pub const MAX_SOURCE_SET_NAME_BYTES: usize = 64;
 /// `_`, `-` and `.` without a leading `.`), up to
 /// [`MAX_SOURCE_SET_NAME_BYTES`] UTF-8 bytes.
 pub fn valid_source_set_name(value: &str) -> bool {
+    value.len() <= MAX_SOURCE_SET_NAME_BYTES && valid_source_set_name_spelling(value)
+}
+
+/// The spelling accepted by source exchange. The declared workspace sets
+/// and the runner determine whether that exact name is available.
+pub fn valid_source_set_name_spelling(value: &str) -> bool {
     !value.is_empty()
-        && value.len() <= MAX_SOURCE_SET_NAME_BYTES
         && (xml_ncname_is_valid(value)
             || (value.is_ascii()
                 && !value.starts_with('.')

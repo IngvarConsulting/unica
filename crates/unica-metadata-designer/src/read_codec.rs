@@ -6,8 +6,9 @@ use unica_address::source_target::MetadataAddress;
 use unica_metadata::borrowing::MetaBorrowing;
 use unica_metadata::configuration::{CfHomePageData, CfInfoData, CfInterfaceData};
 use unica_metadata::read_codec::{
-    ExchangeContentFacts, FunctionalOptionFacts, MetaPropertySource, MetadataReadCodec,
-    NumeratorFacts, ObjectMemberNames, ReadFinding, ReadStopped, SupportStateStream,
+    ExchangeContentFacts, ExternalInlineMembers, ExternalInlineReadError, FunctionalOptionFacts,
+    MetaPropertySource, MetadataReadCodec, NumeratorFacts, ObjectMemberNames, ReadFinding,
+    ReadStopped, SupportStateStream,
 };
 use unica_metadata::request::MetaFailure;
 use unica_metadata::style_color::StyleItemPropertiesObservation;
@@ -124,6 +125,15 @@ impl MetadataReadCodec for DesignerMetadataReadCodec {
 
     fn queue(&self, descriptor: &[u8], payload: &mut Value) -> Result<(), String> {
         crate::queue_read::enrich_queue(descriptor, payload)
+    }
+
+    fn external_inline_members(
+        &self,
+        descriptor: &[u8],
+        target: &MetadataAddress,
+        checkpoint: &mut dyn FnMut() -> Result<(), ReadStopped>,
+    ) -> Result<ExternalInlineMembers, ExternalInlineReadError> {
+        crate::external_inline_members::read(descriptor, target, checkpoint)
     }
 
     fn external_data_source_members(
