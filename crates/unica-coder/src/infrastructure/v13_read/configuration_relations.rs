@@ -8,13 +8,26 @@ impl LogicalViewReadAuthority<'_> {
         admitted: &ViewSourceSnapshot,
     ) -> Result<NodeViewData, ViewError> {
         let at = route.at();
-        let (payload, counts) = if self.read.configuration_xml_requires_streaming() {
-            let streamed = self
-                .read
-                .streamed_configuration_root(&|| self.read_checkpoint())?;
-            (Arc::new(streamed.payload), Some(streamed.counts))
+        let streamed = if at.is_configuration_relation() {
+            Some(
+                self.read
+                    .configuration_relations(&|| self.read_checkpoint())?,
+            )
+        } else if self.read.configuration_xml_requires_streaming() {
+            Some(
+                self.read
+                    .streamed_configuration_root(&|| self.read_checkpoint())?,
+            )
         } else {
-            (self.configuration_payload(admitted)?, None)
+            None
+        };
+        let (payload, counts, registrations) = match streamed {
+            Some(root) => (
+                Arc::new(root.payload),
+                Some(root.counts),
+                Some(root.registered_reference_targets),
+            ),
+            None => (self.configuration_payload(admitted)?, None, None),
         };
         let mut limits = payload
             .pointer("/properties/referenceLimits")
@@ -42,14 +55,49 @@ impl LogicalViewReadAuthority<'_> {
                     ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
                 })?;
             let segment = &target.segments()[0];
-            let proof = if segment.kind() == NodeKind::OrdinaryInterface {
-                self.ordinary_interface_view(&target, segment.name(), admitted)
+            let kind = segment.kind();
+            let name = segment.name().ok_or_else(|| {
+                ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
+                    "configuration reference has no target name",
+                )
+            })?;
+            let registered = match &registrations {
+                Some(registered) => registered.contains(logical),
+                None => payload["registeredObjects"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .any(|row| {
+                        row["kind"].as_str() == Some(kind.as_str())
+                            && row["name"].as_str() == Some(name)
+                    }),
+            };
+            if !registered {
+                limits.push(format!("{relation}: {target} is not registered"));
+                continue;
+            }
+            let proof = if kind == NodeKind::OrdinaryInterface {
+                self.read
+                    .ordinary_interface_synonym(name, &mut || self.read_checkpoint())
                     .map(|_| ())
             } else {
                 let owner = MetadataAddress::parse_logical(logical).map_err(|error| {
                     ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
                 })?;
-                self.verify_registered_owner(&owner, admitted)
+                self.owner_evidence(&owner, admitted)
+                    .and_then(|descriptor| {
+                        if descriptor.artifact_kind() == kind.as_str()
+                            && descriptor.artifact_name() == Some(name)
+                        {
+                            Ok(())
+                        } else {
+                            Err(ViewError::detailed(
+                                RefusalDetail::SourceUnreadable,
+                                format!("metadata descriptor identity does not match {target}"),
+                            ))
+                        }
+                    })
             };
             match proof {
                 Ok(()) => rows.push(json!({"relation":relation,"at":target.to_string(),"kind":segment.kind().as_str()})),

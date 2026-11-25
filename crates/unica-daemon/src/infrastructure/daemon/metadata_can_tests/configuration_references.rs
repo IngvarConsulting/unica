@@ -262,3 +262,16 @@ fn medium_configuration_relation_count_matches_verified_rows_for_both_readers() 
         }
     }
 }
+
+#[test]
+fn configuration_relation_ignores_unrelated_command_interface() {
+    let fixture = root_reference_fixture();
+    let descriptor = fixture.source.join("Configuration.xml");
+    let xml = std::fs::read_to_string(&descriptor).unwrap();
+    std::fs::write(descriptor, xml.replace("<DefaultStyle/>", "<DefaultStyle>Style.Probe</DefaultStyle>")).unwrap();
+    let ext = fixture.source.join("Ext");
+    std::fs::create_dir_all(&ext).unwrap();
+    std::fs::write(ext.join("CommandInterface.xml"), b"<broken").unwrap();
+    let node = view(&runtime(), &fixture, "main:Configuration.Relation");
+    assert!(node["items"].as_array().unwrap().iter().any(|row| row["at"]=="main:Style.Probe"), "{node}");
+}
