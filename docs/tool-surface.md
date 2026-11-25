@@ -240,12 +240,12 @@ Wait for a Task result for a bounded interval; returns the canonical result or a
 
 ### `unica.view`
 
-Inspect the workspace with no arguments, or read one logical 1C node by address. Collection pages report data.offset and data.total. Root metadata collections keep Configuration.xml registration order. offset and from start a fresh question; cursor continues its immutable snapshot.
+Inspect the workspace with no arguments, or read one logical 1C node by address. Collection pages report data.offset and data.total. Root metadata collections keep Configuration.xml registration order. For example, main:Catalog lists catalogs. Each row gives its address (at), kind and name (title). props.synonym is the optional localized name; props.children counts explicitly declared children of all kinds. Zero means none declared; a missing count is unknown. Open the row's at, then the Form branch's returned at to list its forms. For a clipped synonym, follow the address in limits. offset and from start a fresh question; cursor continues its immutable snapshot.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
 | `at` | string | нет | Qualified logical address: <sourceSet>:<Kind>[.<Name>...]. A node answer lists its operations in can; append .Can.<op> for one operation's argument contract. Omit for the workspace. |
-| `cursor` | string | нет | Continuation cursor from an earlier addressed view. |
+| `cursor` | string | нет | For the next page, repeat the same at and limit with the cursor from the result. Stop when the result has no cursor. |
 | `from` | string | нет | Start at the first registered name beginning with this prefix, ignoring Unicode case. Exclusive with offset and cursor. No match returns an empty page with data.offset equal to data.total. Names, not synonyms, are matched. |
 | `limit` | integer | нет | Maximum child items per addressed view page, from 1 to 50; valid only with at. Omit for 20. A preferred 64 KiB page size may stop earlier, but an indivisible item remains whole. |
 | `offset` | integer | нет | Start a collection page at this zero-based position, without reading prior pages. Exclusive with from and cursor. Positions beyond the end return an empty page with data.offset equal to data.total. |
