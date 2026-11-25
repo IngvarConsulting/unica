@@ -35,7 +35,7 @@ impl ProviderReadAuthority {
         if range.is_some_and(|range| range.to > full.line_count()) {
             return Err(ViewError::new(
                 RefusalCode::BadValue,
-                "Body line range extends beyond the module source",
+                "Body line selector exceeds the file's last line",
             ));
         }
         let full = finish(full)?;
