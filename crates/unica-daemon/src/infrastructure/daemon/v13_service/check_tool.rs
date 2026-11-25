@@ -248,15 +248,21 @@ impl CanonicalV13ReadService {
         };
         // Контракт операции вычисляется из реестра, а не читается из
         // исходников: сравнение его никогда не увидело бы изменения.
-        if let Some(computed) = [left, right].into_iter().find(|side| {
-            QualifiedAddress::parse(side)
-                .ok()
-                .is_some_and(|address| address.operation_query().is_some())
-        }) {
+        for side in [left, right] {
+            let Ok(address) = QualifiedAddress::parse(side) else {
+                continue;
+            };
+            let reason = if address.is_configuration_relation() {
+                "diff compares source-backed nodes; read configuration references with view"
+            } else if address.operation_query().is_some() {
+                "diff compares source-backed nodes; an operation contract at `.Can.<op>` is computed from the registry, read it with view"
+            } else {
+                continue;
+            };
             return error_result(
-                Some(computed.to_string()),
+                Some(side.to_string()),
                 RefusalCode::TargetKindUnsupported,
-                "diff compares source-backed nodes; an operation contract at `.Can.<op>` is computed from the registry, read it with view",
+                reason,
             );
         }
         let limit = match arguments.get("limit") {

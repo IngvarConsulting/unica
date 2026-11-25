@@ -687,33 +687,6 @@ pub(super) fn project_configuration_with_counts(
     suffix: &[AddressSegment],
     counts: std::collections::BTreeMap<String, usize>,
 ) -> Result<NodeViewData, ViewError> {
-    let reference_limits = payload
-        .pointer("/properties/referenceLimits")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
-    let targets = payload
-        .pointer("/properties/referenceTargets")
-        .and_then(Value::as_object);
-    if address.is_configuration_relation() {
-        let rows = targets.into_iter().flatten().map(|(relation, target)| {
-            let logical = target.as_str().ok_or_else(|| ViewError::detailed(RefusalDetail::SourceUnreadable, "invalid configuration reference"))?;
-            let target = QualifiedAddress::parse(&format!("{}:{logical}", address.source_set()))
-                .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()))?;
-            Ok(json!({"relation":relation, "at":target.to_string(), "kind":target.segments()[0].kind().as_str()}))
-        }).collect::<Result<Vec<_>, ViewError>>()?;
-        let node = NodeView::new(
-            address.to_string(),
-            NodeKind::Relation.as_str(),
-            "Relations",
-            Map::new(),
-        )
-        .with_limits(reference_limits);
-        return Ok(NodeViewData::Collection(CollectionView::new(node, rows)));
-    }
     if !suffix.is_empty() {
         return Err(ViewError::new(
             RefusalCode::NotFound,
@@ -836,15 +809,7 @@ pub(super) fn project_configuration_with_counts(
         .get("format")
         .and_then(Value::as_str)
         .and_then(unica_source_contract::format_identity::export_format_line);
-    let mut branches = root_branches(address, counts, line);
-    let reference_count = targets.map_or(0, Map::len);
-    if reference_count > 0 || !reference_limits.is_empty() {
-        branches.insert(
-            0,
-            BranchRef::new(format!("{address}.Relation"), reference_count),
-        );
-        limits.extend(reference_limits);
-    }
+    let branches = root_branches(address, counts, line);
     Ok(NodeViewData::Node(
         NodeView::new(
             address.to_string(),

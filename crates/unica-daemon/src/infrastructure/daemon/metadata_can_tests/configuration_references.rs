@@ -229,3 +229,36 @@ fn configuration_relation_reports_broken_unsupported_and_missing_targets() {
         assert!(limits.iter().any(|limit| limit.as_str().is_some_and(|text| text.contains(diagnostic))), "{node}");
     }
 }
+
+/// rule: INV.SOURCE.LARGE-CONFIGURATION-ROOT-VIEW
+/// rule: INV.SOURCE.RELATIONS-ANSWER-IN-ONE-BRANCH
+#[test]
+fn medium_configuration_relation_count_matches_verified_rows_for_both_readers() {
+    for large in [false, true] {
+        let fixture = root_reference_fixture();
+        let path = fixture.source.join("Configuration.xml");
+        let mut xml = std::fs::read_to_string(&path).unwrap();
+        if large {
+            xml = xml.replace("</MetaDataObject>", &format!("<!--{}--></MetaDataObject>", "x".repeat(8 * 1024 * 1024)));
+        }
+        for assigned in [false, true] {
+            if assigned {
+                xml = xml.replace("<DefaultStyle/>", "<DefaultStyle>Style.Probe</DefaultStyle>")
+                    .replace("<DefaultInterface/>", "<DefaultInterface>Interface.Absent</DefaultInterface>");
+            }
+            std::fs::write(&path, &xml).unwrap();
+            let runtime = runtime();
+            let root = view(&runtime, &fixture, ROOT);
+            let branch = root["branches"].as_array().unwrap().iter()
+                .find(|row| row["at"] == "main:Configuration.Relation").unwrap();
+            let relations = view(&runtime, &fixture, branch["at"].as_str().unwrap());
+            let items = relations["items"].as_array().unwrap();
+            assert_eq!(items.len(), usize::from(assigned));
+            assert_eq!(branch["count"], items.len());
+            if assigned {
+                assert_eq!(items[0]["at"], "main:Style.Probe");
+                assert!(limits(&relations).iter().any(|text| text.contains("OrdinaryInterface.Absent")));
+            }
+        }
+    }
+}

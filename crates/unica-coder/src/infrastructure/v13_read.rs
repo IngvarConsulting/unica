@@ -678,6 +678,10 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         } else if route.reader() == LogicalReader::Module {
             self.module_view(&route, admitted)?
         } else if route.reader() == LogicalReader::Configuration
+            && self.read.source_set_kind() == SourceSetKind::Configuration
+        {
+            self.configuration_with_relations(&route, admitted)?
+        } else if route.reader() == LogicalReader::Configuration
             && matches!(
                 self.read.source_set_kind(),
                 SourceSetKind::Configuration | SourceSetKind::Extension
@@ -819,9 +823,6 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         // подчинённых из `ChildObjects` дескриптора: по ней агент выбирает
         // объект, не открывая каждый (#548).
         let projected = match projected {
-            NodeViewData::Collection(collection) if at.is_configuration_relation() => {
-                self.checked_configuration_relations(collection, admitted)?
-            }
             NodeViewData::Collection(collection)
                 if route.reader() == LogicalReader::Metadata
                     && route.reader_metadata_path().is_none()

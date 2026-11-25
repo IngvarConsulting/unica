@@ -51,6 +51,9 @@ fn decode_node(
     let (tag, name) = text
         .split_once('.')
         .ok_or(ConfigurationReferenceError::Malformed)?;
+    if !unica_xml_format::names::xml_ncname_is_valid(tag) {
+        return Err(ConfigurationReferenceError::Malformed);
+    }
     let kind = property.reference_kinds()[0];
     let logical = format!("{}.{name}", kind.as_str());
     let address = QualifiedAddress::parse(&format!("source:{logical}"))
@@ -220,6 +223,8 @@ mod tests {
         for (element, expected) in [
             ("", Ok(None)),
             ("<DefaultInterface/>", Ok(None)),
+            ("<DefaultInterface>.Probe</DefaultInterface>", Err(ConfigurationReferenceError::Malformed)),
+            ("<DefaultInterface>Bad Tag.Probe</DefaultInterface>", Err(ConfigurationReferenceError::Malformed)),
             (
                 "<DefaultInterface>Interface.Probe</DefaultInterface>",
                 Ok(Some("OrdinaryInterface.Probe".into())),
