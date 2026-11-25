@@ -168,6 +168,7 @@ mod diagnostic_scope;
 mod editability_view;
 mod exchange_membership;
 pub(crate) use exchange_membership::ExchangeMembership;
+mod configuration_relations;
 mod form_payload;
 mod http_service_handler;
 mod method_doc;
@@ -663,11 +664,23 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                 return Ok(view);
             }
         }
+        if at.is_configuration_relation()
+            && self.read.source_set_kind() != SourceSetKind::Configuration
+        {
+            return Err(ViewError::new(
+                RefusalCode::NotFound,
+                "these references belong to a configuration",
+            ));
+        }
         let inherited = self.inherited_route_part(&route, admitted)?;
         let projected = if let Some((borrowing, resource)) = &inherited {
             project_inherited_part(&route, borrowing, resource)?
         } else if route.reader() == LogicalReader::Module {
             self.module_view(&route, admitted)?
+        } else if route.reader() == LogicalReader::Configuration
+            && self.read.source_set_kind() == SourceSetKind::Configuration
+        {
+            self.configuration_with_relations(&route, admitted)?
         } else if route.reader() == LogicalReader::Configuration
             && matches!(
                 self.read.source_set_kind(),
@@ -681,7 +694,7 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
             crate::infrastructure::v13_read_projection::project_configuration_with_counts(
                 route.at(),
                 &streamed.payload,
-                &[],
+                &at.segments()[1..],
                 streamed.counts,
             )?
         } else if route.reader() == LogicalReader::Metadata

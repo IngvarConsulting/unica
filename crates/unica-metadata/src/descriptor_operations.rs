@@ -176,6 +176,8 @@ pub enum DescriptorPropertyKind {
     MobileList,
     /// Ordered references to registered objects of the property's target kinds.
     ReferenceList,
+    /// A single reference to a registered configuration object.
+    Reference,
 }
 
 macro_rules! descriptor_properties {
@@ -284,6 +286,9 @@ descriptor_properties!(
     DefaultExtensionPropertyCheckAction => ("DefaultExtensionPropertyCheckAction", "defaultExtensionPropertyCheckAction", Enum, false, false, false, true),
     TypeReductionByConfigurationExtensionMode => ("TypeReductionByConfigurationExtensionMode", "typeReductionByConfigurationExtensionMode", Enum, false, false, false, true),
     ActionOnExtendedConfigurationObjectsMissing => ("ActionOnExtendedConfigurationObjectsMissing", "actionOnExtendedConfigurationObjectsMissing", Parts, false, false, false, true),
+    DefaultStyle => ("DefaultStyle", "defaultStyle", Reference, false, false, true, false),
+    DefaultInterface => ("DefaultInterface", "defaultInterface", Reference, false, false, true, false),
+    DefaultReportAppearanceTemplate => ("DefaultReportAppearanceTemplate", "defaultReportAppearanceTemplate", Reference, false, false, true, false),
     MobileApplicationUrls => ("MobileApplicationURLs", "mobileApplicationURLs", MobileList, false, false, true, false),
     AllowedIncomingShareRequestTypes => ("AllowedIncomingShareRequestTypes", "allowedIncomingShareRequestTypes", MobileList, false, false, true, false),
     AdditionalFullTextSearchDictionaries => ("AdditionalFullTextSearchDictionaries", "additionalFullTextSearchDictionaries", ReferenceList, false, false, true, false),
@@ -292,6 +297,12 @@ descriptor_properties!(
     UsePurposes => ("UsePurposes", "usePurposes", List, false, false, false, false),
     UseInInterfaceCompatibilityMode => ("UseInInterfaceCompatibilityMode", "useInInterfaceCompatibilityMode", Enum, false, false, false, false),
 );
+
+pub const CONFIGURATION_REFERENCES: &[DescriptorProperty] = &[
+    DescriptorProperty::DefaultStyle,
+    DescriptorProperty::DefaultInterface,
+    DescriptorProperty::DefaultReportAppearanceTemplate,
+];
 
 pub const CONFIGURATION_REFERENCE_LISTS: &[DescriptorProperty] = &[
     DescriptorProperty::AdditionalFullTextSearchDictionaries,
@@ -329,6 +340,9 @@ impl DescriptorProperty {
                 &[NodeKind::CommonTemplate, NodeKind::Constant]
             }
             Self::StandaloneConfigurationRestrictionRoles => &[NodeKind::Role],
+            Self::DefaultStyle => &[NodeKind::Style],
+            Self::DefaultInterface => &[NodeKind::OrdinaryInterface],
+            Self::DefaultReportAppearanceTemplate => &[NodeKind::CommonTemplate],
             _ => &[],
         }
     }
@@ -715,6 +729,13 @@ impl PropertiesSite {
                         }
                         DescriptorPropertyKind::List => json!({"type":"array", "uniqueItems":true,
                             "items":{"type":"string", "enum":self.enum_values(field)}}),
+                        DescriptorPropertyKind::Reference => json!({
+                            "type":"string",
+                            "description": format!(
+                                "Address of a named {} in this source set. An empty string clears the reference.",
+                                field.reference_kinds()[0].as_str()
+                            ),
+                        }),
                         DescriptorPropertyKind::MobileList => {
                             let item = match field {
                                 DescriptorProperty::MobileApplicationUrls => {

@@ -42,6 +42,7 @@ pub enum DescriptorPropertyValue {
     List(Vec<String>),
     Mobile(crate::configuration::ConfigurationMobileList),
     References(Vec<String>),
+    Reference(Option<String>),
 }
 
 /// Form descriptor property changes in profile order; each property appears
@@ -446,6 +447,21 @@ impl<'a> PropertyArgumentReader<'a> {
             values.push(item.to_string());
         }
         Ok(Some(values))
+    }
+
+    fn reference(
+        &mut self,
+        field: DescriptorProperty,
+    ) -> DecodeResult<Option<DescriptorPropertyValue>> {
+        let Some((value, path)) = self.alias(field)? else {
+            return Ok(None);
+        };
+        let value = value
+            .as_str()
+            .ok_or_else(|| invalid(&path, "property value must be an address string"))?;
+        Ok(Some(DescriptorPropertyValue::Reference(
+            (!value.is_empty()).then(|| value.to_string()),
+        )))
     }
 
     fn mobile_list(
@@ -908,6 +924,7 @@ fn decode_with_contract(
                             DescriptorPropertyKind::List => values_reader
                                 .list(field, &field.allowed_values_in(line))?
                                 .map(DescriptorPropertyValue::List),
+                            DescriptorPropertyKind::Reference => values_reader.reference(field)?,
                             DescriptorPropertyKind::MobileList => values_reader
                                 .mobile_list(field)?
                                 .map(DescriptorPropertyValue::Mobile),
@@ -939,7 +956,8 @@ fn decode_with_contract(
                                 .map(DescriptorPropertyValue::List),
                             DescriptorPropertyKind::Parts
                             | DescriptorPropertyKind::MobileList
-                            | DescriptorPropertyKind::ReferenceList => {
+                            | DescriptorPropertyKind::ReferenceList
+                            | DescriptorPropertyKind::Reference => {
                                 return Err(invalid(
                                     &values_path,
                                     "form descriptor has no composite property",
@@ -969,6 +987,36 @@ mod tests {
 
     fn decode(site: PropertiesSite, args: Value) -> DecodeResult<PropertiesIntent> {
         decode_properties(PropertiesOperation::Set, site, &args, "ops[7].args")
+    }
+
+    #[test]
+    fn configuration_single_references_distinguish_omission_from_clear() {
+        let site = PropertiesSite::Configuration {
+            extension: false,
+            line: None,
+        };
+        let PropertiesIntent::Configuration(changes) = decode(
+            site,
+            json!({"values": {
+                "defaultStyle": "main:Style.Probe",
+                "DefaultInterface": "",
+            }}),
+        )
+        .unwrap() else {
+            panic!("expected configuration properties");
+        };
+        assert!(changes.changes.contains(&(
+            DescriptorProperty::DefaultStyle,
+            DescriptorPropertyValue::Reference(Some("main:Style.Probe".into())),
+        )));
+        assert!(changes.changes.contains(&(
+            DescriptorProperty::DefaultInterface,
+            DescriptorPropertyValue::Reference(None),
+        )));
+        assert!(!changes
+            .changes
+            .iter()
+            .any(|(field, _)| *field == DescriptorProperty::DefaultReportAppearanceTemplate));
     }
 
     #[test]
@@ -1311,6 +1359,7 @@ mod tests {
                         DescriptorPropertyKind::List => json!([field.allowed_values()[0]]),
                         DescriptorPropertyKind::MobileList
                         | DescriptorPropertyKind::ReferenceList => json!([]),
+                        DescriptorPropertyKind::Reference => json!(""),
                     };
                     assert!(
                         decode(site, json!({"values":{*spelling:value}})).is_ok(),
@@ -1365,6 +1414,7 @@ mod tests {
                         DescriptorPropertyKind::List => json!([field.allowed_values()[0]]),
                         DescriptorPropertyKind::MobileList
                         | DescriptorPropertyKind::ReferenceList => json!([]),
+                        DescriptorPropertyKind::Reference => json!(""),
                     };
                     let other = if equal { value.clone() } else { json!(false) };
                     let error = decode(site, json!({"values":{names[0]:value,names[1]:other}}))
@@ -1381,6 +1431,7 @@ mod tests {
                         DescriptorPropertyKind::List => json!("PlatformApplication"),
                         DescriptorPropertyKind::MobileList => json!("value"),
                         DescriptorPropertyKind::ReferenceList => json!("main:Role.Reader"),
+                        DescriptorPropertyKind::Reference => json!(null),
                     };
                     assert_eq!(
                         decode(site, json!({"values":{*spelling:invalid}}))

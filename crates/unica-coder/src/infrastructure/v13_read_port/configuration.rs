@@ -120,16 +120,27 @@ impl ProviderReadAuthority {
         )
     }
 
-    pub(crate) fn streamed_configuration_root(
+    pub(crate) fn configuration_relations(
         &self,
         checkpoint: &dyn Fn() -> Result<(), ViewError>,
     ) -> Result<StreamedConfigurationRoot, ViewError> {
+        use crate::infrastructure::v13_large_configuration::read_configuration_relations;
         checkpoint()?;
-        let file = match self
+        if let Some(buffer) = self.open_buffer(Path::new("Configuration.xml")) {
+            return read_configuration_relations(
+                std::io::Cursor::new(buffer.text.as_bytes()),
+                checkpoint,
+            );
+        }
+        read_configuration_relations(self.configuration_file()?, checkpoint)
+    }
+
+    fn configuration_file(&self) -> Result<unica_source_contract::read::ReadFile, ViewError> {
+        match self
             .root
             .open_relative_regular_nofollow(Path::new("Configuration.xml"))
         {
-            Ok(file) => file,
+            Ok(file) => Ok(file),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 let mut refusal = ViewError::new(
                     RefusalCode::InvalidState,
@@ -140,15 +151,21 @@ impl ProviderReadAuthority {
                     "args": {},
                     "reason": "вердикт по набору и совет, чем его наполнить",
                 }));
-                return Err(refusal);
+                Err(refusal)
             }
-            Err(error) => {
-                return Err(ViewError::detailed(
-                    RefusalDetail::SourceUnreadable,
-                    error.to_string(),
-                ));
-            }
-        };
+            Err(error) => Err(ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
+                error.to_string(),
+            )),
+        }
+    }
+
+    pub(crate) fn streamed_configuration_root(
+        &self,
+        checkpoint: &dyn Fn() -> Result<(), ViewError>,
+    ) -> Result<StreamedConfigurationRoot, ViewError> {
+        checkpoint()?;
+        let file = self.configuration_file()?;
         let support = serde_json::to_value(self.configuration_support(&mut || checkpoint())?)
             .map_err(|error| {
                 ViewError::detailed(RefusalDetail::BackendBroken, error.to_string())

@@ -1010,6 +1010,7 @@ fn read_field(reader: &mut impl Read, encoded_length: [u8; 8]) -> io::Result<Str
 }
 
 pub(crate) struct StreamedConfigurationRoot {
+    pub(crate) registered_reference_targets: std::collections::BTreeSet<String>,
     pub(crate) payload: Value,
     pub(crate) counts: BTreeMap<String, usize>,
 }
@@ -1036,7 +1037,33 @@ pub(super) fn read_configuration_root(
     panels: Value,
     checkpoint: &dyn Fn() -> Result<(), ViewError>,
 ) -> Result<StreamedConfigurationRoot, ViewError> {
-    let state = parse_configuration_owner(file, checkpoint, true)?;
+    let state = parse_configuration_owner(file, checkpoint, RootCapture::Properties)?;
+    project_configuration_state(state, support, home_page, interface, panels, checkpoint)
+}
+
+pub(super) fn read_configuration_relations(
+    file: impl Read + Seek,
+    checkpoint: &dyn Fn() -> Result<(), ViewError>,
+) -> Result<StreamedConfigurationRoot, ViewError> {
+    let state = parse_configuration_owner(file, checkpoint, RootCapture::References)?;
+    project_configuration_state(
+        state,
+        Value::Null,
+        Value::Null,
+        Value::Null,
+        Value::Null,
+        checkpoint,
+    )
+}
+
+fn project_configuration_state(
+    state: RootState,
+    support: Value,
+    home_page: Value,
+    interface: Value,
+    panels: Value,
+    checkpoint: &dyn Fn() -> Result<(), ViewError>,
+) -> Result<StreamedConfigurationRoot, ViewError> {
     let RootState {
         properties,
         purpose,
@@ -1049,11 +1076,17 @@ pub(super) fn read_configuration_root(
     property_limits.extend(purpose.mobile_list_limits);
     property_limits.extend(purpose.reference_list_limits);
     let mut counts = BTreeMap::<String, usize>::new();
-    registrations.for_each_unique(checkpoint, |kind, _name| {
+    let mut registered_reference_targets = std::collections::BTreeSet::new();
+    registrations.for_each_unique(checkpoint, |kind, name| {
         let Some(kind) = configuration_registration_kind(kind) else {
             return Ok(());
         };
         checkpoint()?;
+        for logical in purpose.reference_targets.values() {
+            if logical.split_once('.') == Some((kind.as_str(), name)) {
+                registered_reference_targets.insert(logical.clone());
+            }
+        }
         let count = counts.entry(kind.as_str().to_string()).or_default();
         *count = count.checked_add(1).ok_or_else(|| {
             ViewError::detailed(
@@ -1141,6 +1174,12 @@ pub(super) fn read_configuration_root(
         "interface": interface,
         "panels": panels,
     });
+    if !purpose.reference_targets.is_empty() {
+        payload["properties"]["referenceTargets"] = json!(purpose.reference_targets);
+    }
+    if !purpose.reference_limits.is_empty() {
+        payload["properties"]["referenceLimits"] = json!(purpose.reference_limits);
+    }
     payload["properties"]["mobileApplicationURLs"] = json!(purpose.mobile_application_urls);
     payload["properties"]["allowedIncomingShareRequestTypes"] =
         json!(purpose.allowed_incoming_share_request_types);
@@ -1156,14 +1195,18 @@ pub(super) fn read_configuration_root(
             }
         }
     }
-    Ok(StreamedConfigurationRoot { payload, counts })
+    Ok(StreamedConfigurationRoot {
+        payload,
+        counts,
+        registered_reference_targets,
+    })
 }
 
 pub(crate) fn read_configuration_registration_index(
     file: impl Read + Seek,
     checkpoint: &dyn Fn() -> Result<(), ViewError>,
 ) -> Result<RegistrationIndex, ViewError> {
-    let state = parse_configuration_owner(file, checkpoint, false)?;
+    let state = parse_configuration_owner(file, checkpoint, RootCapture::Registrations)?;
     RegistrationIndex::from_sorter(state.registrations, checkpoint)
 }
 
@@ -1264,10 +1307,17 @@ impl<R: Read> Read for RootHeaderRead<R> {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RootCapture {
+    Registrations,
+    References,
+    Properties,
+}
+
 fn parse_configuration_owner(
     mut file: impl Read + Seek,
     checkpoint: &dyn Fn() -> Result<(), ViewError>,
-    read_purpose: bool,
+    capture: RootCapture,
 ) -> Result<RootState, ViewError> {
     skip_leading_boms(&mut file, checkpoint)?;
     let checkpoint_failure = Rc::new(RefCell::new(None));
@@ -1301,14 +1351,15 @@ fn parse_configuration_owner(
                 ));
             }
         };
-        let starts_purpose = read_purpose
+        let starts_purpose = capture != RootCapture::Registrations
             && matches!(&event, XmlEvent::StartElement { name, .. }
             if state.ignored_depth == 0
                 && matches!(state.stack.last().map(|frame| &frame.role), Some(FrameRole::Properties))
-                && name.namespace.as_deref() == Some(MD_NS)
+                && (unica_metadata::descriptor_operations::CONFIGURATION_REFERENCES.iter().any(|field| field.names()[0] == name.local_name)
+                    || capture == RootCapture::Properties && name.namespace.as_deref() == Some(MD_NS)
                 && matches!(name.local_name.as_str(), "UsePurposes" | "DefaultRoles" | "UsedMobileApplicationFunctionalities" | "IncludeHelpInContents"
                     | "MobileApplicationURLs" | "AllowedIncomingShareRequestTypes"
-                    | "AdditionalFullTextSearchDictionaries" | "StandaloneConfigurationRestrictionRoles"));
+                    | "AdditionalFullTextSearchDictionaries" | "StandaloneConfigurationRestrictionRoles")));
         if purpose_depth != 0 || starts_purpose {
             if let Some(writer_event) = event.as_writer_event() {
                 purpose_xml
@@ -1357,7 +1408,7 @@ fn parse_configuration_owner(
         .map_err(|error| source_unreadable(&error.to_string()))?;
     let purpose_xml = String::from_utf8(purpose_xml.into_inner())
         .map_err(|error| source_unreadable(&error.to_string()))?;
-    if read_purpose {
+    if capture != RootCapture::Registrations {
         state.purpose =
             unica_metadata_designer::configuration::read_cf_purpose_properties_xml(&purpose_xml)
                 .map_err(|error| source_unreadable(&error))?;

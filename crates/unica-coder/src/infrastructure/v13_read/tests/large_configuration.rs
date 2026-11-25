@@ -1,4 +1,5 @@
 use super::*;
+use crate::domain::node_view::BranchRef;
 
 #[test]
 fn ordinary_xml_read_over_eight_mib_keeps_complete_configuration_facts() {
@@ -65,7 +66,18 @@ fn large_configuration_root_keeps_legacy_duplicate_and_namespace_semantics() {
         SourceSetKind::Configuration,
     )
     .expect("Configuration has a profile module branch");
-    let expected = serde_json::to_value(legacy.with_branch(module_branch)).unwrap();
+    // The bounded projection supplies the owner facts. The authority also
+    // publishes the relation and module branches; this fixture has no assigned references.
+    let expected = serde_json::to_value(
+        legacy
+            .with_branch(BranchRef::new("main:Configuration.Relation", 0))
+            .with_branch(module_branch),
+    )
+    .unwrap();
+    let bounded = fixture
+        .view_service()
+        .view(ViewRequest::new("main:Configuration").unwrap());
+    assert_eq!(bounded.data.as_ref(), Some(&expected));
     assert_eq!(
         expected["props"]["properties"]["forms"]["defaultSearchForm"],
         "main:CommonForm.Поиск"

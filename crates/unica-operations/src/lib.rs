@@ -242,6 +242,7 @@ impl OperationDescriptor {
 
     pub fn applies_at(self, site: &OperationSite<'_>) -> bool {
         site.at().line_range().is_none()
+            && !site.at().is_configuration_relation()
             && site.source().is_writable()
             && self.binding.matches(site)
     }

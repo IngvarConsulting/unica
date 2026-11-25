@@ -751,6 +751,8 @@ pub(super) fn project_configuration_with_counts(
                 // Typed, bounded structures of the root parser travel whole.
                 let mut object = object.clone();
                 if key == "properties" {
+                    object.remove("referenceTargets");
+                    object.remove("referenceLimits");
                     for (_, key) in
                         unica_metadata::descriptor_operations::CONFIGURATION_LOCALIZED_PROPERTIES
                     {
