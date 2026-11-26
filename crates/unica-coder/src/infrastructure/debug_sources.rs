@@ -648,7 +648,8 @@ mod tests {
             duplicate.replace(&id.object.to_string(), &other.to_string()),
         )
         .unwrap();
-        let root = open_source_directory(&src).unwrap();
+        // Workspace admission canonicalizes the host's temporary root (e.g. /var on macOS).
+        let root = open_source_directory(&src.canonicalize().unwrap()).unwrap();
         let relative = Path::new("CommonModules/Duplicate.xml");
         let prior = HashMap::from([(
             root.path().join(relative),
