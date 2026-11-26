@@ -16,7 +16,7 @@ use unica_address::{
 use unica_source_contract::{
     debug_source::{DebugModuleId, DebugModuleQuery, DebugModuleSource, ResolveDebugModules},
     read::{FileStamp, ReadFile, SourceDirectory},
-    SourceFormat, SourceSetKind, SourceSetState,
+    ProjectSourceSet, SourceFormat, SourceSetKind, SourceSetState,
 };
 use unica_source_designer::{
     layout::metadata_descriptor_relative,
@@ -98,8 +98,7 @@ fn resolve_modules(
         }
         read_modules(
             &root,
-            &set.name,
-            set.kind,
+            set,
             query,
             address.as_ref(),
             &mut modules,
@@ -116,8 +115,7 @@ fn resolve_modules(
 
 fn read_modules(
     root: &SourceDirectory,
-    set: &str,
-    kind: SourceSetKind,
+    source_set: &ProjectSourceSet,
     query: DebugModuleQuery<'_>,
     address: Option<&QualifiedAddress>,
     modules: &mut Vec<DebugModuleSource>,
@@ -127,7 +125,7 @@ fn read_modules(
     let configuration = descriptor(root, Path::new("Configuration.xml"))?;
     let document = Document::parse(&configuration)?;
     let owner = metadata_owner(&document, "Configuration")?;
-    let extension = if kind == SourceSetKind::Extension {
+    let extension = if source_set.kind == SourceSetKind::Extension {
         Some(
             property(owner, "Name")
                 .ok_or("missing extension name")?
@@ -144,7 +142,7 @@ fn read_modules(
     let owner_filter = address.and_then(|at| at.segments().first());
     let mut index = SourceSetModules {
         root,
-        set,
+        set: &source_set.name,
         query,
         address,
         extension: extension.as_deref(),
@@ -348,14 +346,19 @@ impl SourceSetModules<'_> {
         let mut file = self.open_descriptor(&path)?;
         let key = self.root.path().join(&path);
         let stamp = if let DebugModuleQuery::Runtime(ids) = self.query {
-            let stamp = file.stamp()?;
-            if let Some((_, object)) = self.previous.get(&key).filter(|(old, _)| *old == stamp) {
-                if !ids.iter().any(|id| id.object == *object) {
-                    self.observed.insert(key, (stamp, *object));
+            let stamp = file.stamp().ok();
+            if let Some((stamp, object)) = stamp.and_then(|stamp| {
+                self.previous
+                    .get(&key)
+                    .filter(|(old, _)| *old == stamp)
+                    .copied()
+            }) {
+                if !ids.iter().any(|id| id.object == object) {
+                    self.observed.insert(key, (stamp, object));
                     return Ok(());
                 }
             }
-            Some(stamp)
+            stamp
         } else {
             None
         };
@@ -373,7 +376,7 @@ impl SourceSetModules<'_> {
                     super::v13_large_configuration::SETTLE_WINDOW,
                 )
             }) {
-                if file.stamp()? == stamp {
+                if file.stamp().ok() == Some(stamp) {
                     self.observed.insert(key, (stamp, object));
                 }
             }
