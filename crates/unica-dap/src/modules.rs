@@ -1,38 +1,49 @@
 use std::collections::HashMap;
 
-use unica_source_contract::debug_source::{DebugModuleId, DebugModuleSource};
+use unica_source_contract::debug_source::{
+    DebugModuleId, DebugModuleQuery, DebugModuleSource, ResolveDebugModules,
+};
 
 use crate::Result;
 
-#[derive(Default)]
 pub(crate) struct Modules {
-    by_address: HashMap<String, DebugModuleId>,
-    by_id: HashMap<DebugModuleId, String>,
+    resolve: ResolveDebugModules,
 }
 
 impl Modules {
-    pub fn new(sources: Vec<DebugModuleSource>) -> Result<Self> {
-        let mut index = Self::default();
-        for source in sources {
-            let address = source.address.to_string();
-            let id = source.runtime_id;
-            if index.by_id.insert(id.clone(), address.clone()).is_some()
-                || index.by_address.insert(address.clone(), id).is_some()
-            {
-                return Err(format!("ambiguous debug module {address}").into());
+    pub fn new(resolve: ResolveDebugModules) -> Self {
+        Self { resolve }
+    }
+
+    fn lookup(&mut self, query: DebugModuleQuery<'_>) -> Result<Option<DebugModuleSource>> {
+        let mut matches = (self.resolve)(query)?.into_iter();
+        let first = matches.next();
+        if let Some(other) = matches.next() {
+            return Err(format!("ambiguous debug module {}", other.address).into());
+        }
+        Ok(first)
+    }
+
+    pub fn saved_id(&mut self, address: &str) -> Result<Option<DebugModuleId>> {
+        Ok(self
+            .lookup(DebugModuleQuery::Address(address))?
+            .map(|source| source.runtime_id))
+    }
+
+    /// A runtime identity with multiple saved owners cannot name a source file.
+    pub fn addresses(
+        &mut self,
+        ids: &[DebugModuleId],
+    ) -> Result<HashMap<DebugModuleId, Option<String>>> {
+        let mut addresses = HashMap::new();
+        if !ids.is_empty() {
+            for source in (self.resolve)(DebugModuleQuery::Runtime(ids))? {
+                addresses
+                    .entry(source.runtime_id)
+                    .and_modify(|value| *value = None)
+                    .or_insert_with(|| Some(source.address.to_string()));
             }
         }
-        Ok(index)
-    }
-
-    pub fn id(&self, address: &str) -> Result<DebugModuleId> {
-        self.by_address
-            .get(address)
-            .cloned()
-            .ok_or_else(|| format!("unknown debug module {address}").into())
-    }
-
-    pub fn address(&self, id: &DebugModuleId) -> Option<&str> {
-        self.by_id.get(id).map(String::as_str)
+        Ok(addresses)
     }
 }

@@ -20,12 +20,12 @@ use modules::Modules;
 use rdbg::{child, field, Rdbg, TargetAttachment};
 use roxmltree::{Document, Node};
 use serde_json::{json, Value};
-use unica_source_contract::debug_source::{DebugModuleId, DebugModuleSource};
+use unica_source_contract::debug_source::{DebugModuleId, ResolveDebugModules};
 use uuid::Uuid;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
-type ResolveModules = fn(&Path) -> Result<Vec<DebugModuleSource>>;
+type NewResolver = fn(&Path, Option<&str>) -> Result<ResolveDebugModules>;
 
 const DEFAULT_AUTO_ATTACH_TYPES: [&str; 3] = ["Client", "ManagedClient", "ServerEmulation"];
 const DEBUG_TARGET_TYPES: &[&str] = &[
@@ -47,7 +47,7 @@ const DEBUG_TARGET_TYPES: &[&str] = &[
     "MobileManagedServer",
 ];
 
-pub fn run_stdio(resolve_modules: ResolveModules) -> i32 {
+pub fn run_stdio(resolve_modules: NewResolver) -> i32 {
     let (tx, rx) = bounded(8);
     std::thread::spawn(move || {
         let mut input = io::stdin().lock();
@@ -115,7 +115,7 @@ fn read_frame(input: &mut impl BufRead) -> Result<Option<Value>> {
 
 struct Adapter<W> {
     output: W,
-    resolve_modules: ResolveModules,
+    resolve_modules: NewResolver,
     seq: u64,
     initialized: bool,
     session: Option<Session>,
@@ -265,6 +265,7 @@ struct AvailableTarget {
 struct Frame {
     id: u64,
     level: usize,
+    module: Option<DebugModuleId>,
     body: Value,
     variable_paths: HashMap<u64, Vec<String>>,
     evaluated_children: HashMap<u64, Vec<ContextVariable>>,
@@ -283,7 +284,7 @@ struct SnapshotNode {
 struct Session {
     rdbg: Arc<Rdbg>,
     modules: Modules,
-    breakpoints: HashMap<DebugModuleId, Vec<Breakpoint>>,
+    breakpoints: HashMap<String, (DebugModuleId, Vec<Breakpoint>)>,
     targets: HashMap<u64, Target>,
     next_id: u64,
     event_reader: Option<Receiver<Result<String>>>,
@@ -292,7 +293,7 @@ struct Session {
 }
 
 impl Session {
-    fn attach(args: &Value, resolve_modules: ResolveModules) -> Result<Self> {
+    fn attach(args: &Value, resolve_modules: NewResolver) -> Result<Self> {
         let root = Path::new(string(args, "rootProject")?);
         if args["debugServerHost"]
             .as_str()
@@ -302,20 +303,12 @@ impl Session {
         }
         let port = args["debugServerPort"].as_u64().unwrap_or(1550);
         let alias = args["infoBaseAlias"].as_str().unwrap_or("DefAlias");
-        let sources = resolve_modules(root)?;
-        if !args["sourceSet"].is_null() {
-            let set = string(args, "sourceSet")?;
-            if !sources
-                .iter()
-                .any(|source| source.address.source_set() == set)
-            {
-                return Err(format!(
-                    "debug source set {set} is not available; use the names resolved by workspace"
-                )
-                .into());
-            }
-        }
-        let modules = Modules::new(sources)?;
+        let source_set = if args["sourceSet"].is_null() {
+            None
+        } else {
+            Some(string(args, "sourceSet")?)
+        };
+        let modules = Modules::new(resolve_modules(root, source_set)?);
         let rdbg = Arc::new(Rdbg::attach(port.try_into()?, alias)?);
         let session = Self {
             modules,
@@ -458,7 +451,6 @@ impl Session {
     fn set_breakpoints(&mut self, args: &Value) -> Result<Value> {
         let source = &args["source"];
         let address = string(source, "path")?;
-        let module = self.modules.id(address)?;
         let requested = args["breakpoints"]
             .as_array()
             .ok_or("expected breakpoints array")?;
@@ -485,8 +477,29 @@ impl Session {
             })
             .collect::<Result<Vec<_>>>()?;
         let mut updated = self.breakpoints.clone();
-        updated.insert(module, breakpoints.clone());
-        self.rdbg.breakpoints(updated.iter())?;
+        let installed = updated.remove(address);
+        // A previously installed breakpoint can be cleared even after its file was deleted.
+        if !breakpoints.is_empty() || installed.is_none() {
+            let id = self
+                .modules
+                .saved_id(address)?
+                .ok_or_else(|| format!("unknown debug module {address}"))?;
+            if !breakpoints.is_empty() {
+                updated.insert(address.to_owned(), (id, breakpoints.clone()));
+            }
+        }
+        let ids = updated
+            .values()
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
+        let addresses = self.modules.addresses(&ids)?;
+        // A different source at an existing address cannot inherit the installed lines or conditions.
+        updated.retain(|at, (id, _)| addresses.get(id).and_then(Option::as_ref) == Some(at));
+        if !breakpoints.is_empty() && !updated.contains_key(address) {
+            return Err(format!("ambiguous or changed debug module {address}").into());
+        }
+        self.rdbg
+            .breakpoints(updated.values().map(|(id, points)| (id, points)))?;
         self.breakpoints = updated;
         Ok(json!({"breakpoints":breakpoints.iter().map(|bp| {
             json!({"verified":true,"line":bp.line,"source":source})
@@ -1159,16 +1172,12 @@ impl Session {
                     // 1C also marks a normal step as stopByBP. Prefer a step
                     // reason unless the new location has a user breakpoint.
                     let user_breakpoint = frames.first().is_some_and(|frame| {
-                        let address = frame.body["source"]["path"].as_str().unwrap_or_default();
-                        self.modules
-                            .id(address)
-                            .ok()
-                            .and_then(|module| self.breakpoints.get(&module))
-                            .is_some_and(|lines| {
-                                lines.iter().any(|bp| {
+                        self.breakpoints.values().any(|(module, lines)| {
+                            frame.module.as_ref() == Some(module)
+                                && lines.iter().any(|bp| {
                                     bp.condition.is_none() && frame.body["line"] == bp.line
                                 })
-                            })
+                        })
                     });
                     let reason = if target.stepping && !user_breakpoint {
                         "step"
@@ -1227,28 +1236,54 @@ impl Session {
     }
 
     fn read_frames(&mut self, result: Node<'_, '_>) -> Result<Vec<Frame>> {
-        let stack: Vec<_> = result
+        let mut ids = HashSet::new();
+        let mut stack = Vec::new();
+        for entry in result
             .children()
             .filter(|node| node.has_tag_name("callStack"))
-            .collect();
-        stack.into_iter().rev().enumerate().map(|(level, entry)| {
+        {
+            let id = child(entry, "moduleID")
+                .map(|module| -> Result<_> {
+                    Ok(DebugModuleId {
+                        extension: field(module, "extensionName")
+                            .filter(|name| !name.is_empty())
+                            .map(str::to_owned),
+                        object: field(module, "objectID")
+                            .ok_or("missing rdbg object ID")?
+                            .parse()?,
+                        property: field(module, "propertyID")
+                            .ok_or("missing rdbg property ID")?
+                            .parse()?,
+                    })
+                })
+                .transpose()?;
+            ids.extend(id.iter().cloned());
+            stack.push((entry, id));
+        }
+        let ids: Vec<_> = ids.into_iter().collect();
+        let sources = self.modules.addresses(&ids).unwrap_or_else(|error| {
+            eprintln!("unica dap: cannot resolve stack frame sources: {error}");
+            let mut available = HashMap::new();
+            if ids.len() > 1 {
+                for id in ids {
+                    if let Ok(matches) = self.modules.addresses(std::slice::from_ref(&id)) {
+                        available.extend(matches);
+                    }
+                }
+            }
+            available
+        });
+        stack.into_iter().rev().enumerate().map(|(level, (entry, frame_module))| {
             self.next_id += 1;
             let id = self.next_id;
             let mut body = json!({
                 "id":id,"name":decode(field(entry,"presentation"))?,
                 "line":field(entry,"lineNo").ok_or("missing rdbg stack line")?.parse::<u32>()?,"column":1
             });
-            if let Some(module) = child(entry, "moduleID") {
-                let runtime_id = DebugModuleId {
-                    extension: field(module, "extensionName").filter(|name| !name.is_empty()).map(str::to_owned),
-                    object: field(module, "objectID").ok_or("missing rdbg object ID")?.parse()?,
-                    property: field(module, "propertyID").ok_or("missing rdbg property ID")?.parse()?,
-                };
-                if let Some(address) = self.modules.address(&runtime_id) {
-                    body["source"] = json!({"name":address,"path":address});
-                }
+            if let Some(address) = frame_module.as_ref().and_then(|id| sources.get(id)).and_then(Option::as_deref) {
+                body["source"] = json!({"name":address,"path":address});
             }
-            Ok(Frame { id, level, body, variable_paths: HashMap::new(), evaluated_children: HashMap::new(), collection_paths: HashSet::new(), snapshots: HashMap::new() })
+            Ok(Frame { id, level, module: frame_module, body, variable_paths: HashMap::new(), evaluated_children: HashMap::new(), collection_paths: HashSet::new(), snapshots: HashMap::new() })
         }).collect()
     }
 }
