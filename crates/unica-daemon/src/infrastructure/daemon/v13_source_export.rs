@@ -1802,7 +1802,7 @@ mod medium_tests {
                 &runner,
                 CancellationToken::new(),
                 &tool(root),
-                "0.18.1",
+                "0.19.0",
             )
         };
         let result = pull();
