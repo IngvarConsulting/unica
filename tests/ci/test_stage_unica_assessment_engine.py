@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import stat
 import subprocess
 import sys
@@ -9,6 +10,11 @@ import tarfile
 import tempfile
 import unittest
 from pathlib import Path
+
+if __package__:
+    from .assessment_engine_fixture import run_windows_engine, windows_engine_bytes
+else:
+    from assessment_engine_fixture import run_windows_engine, windows_engine_bytes
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -30,28 +36,30 @@ def runtime_file(bundle: Path, path: Path, *, artifact: str, executable: bool) -
     }
 
 
-def make_bundle(root: Path) -> Path:
+def make_bundle(root: Path, *, windows: bool = False) -> Path:
     bundle = root / "bundle"
-    target = bundle / "bin" / "linux-x64"
-    library = target / "lib" / "libpython3.12.so.1.0"
+    target = bundle / "bin" / ("win-x64" if windows else "linux-x64")
+    extension = ".exe" if windows else ""
+    library = target / "lib" / ("python312.dll" if windows else "libpython3.12.so.1.0")
     library.parent.mkdir(parents=True)
 
     files = {
-        "unica": (target / "unica", "unica", True),
-        "bsl-analyzer": (target / "bsl-analyzer", "bsl-analyzer", True),
-        "tool-index": (target / "tool-index", "tools-archive", True),
-        "tool-server": (target / "tool-server", "tools-archive", True),
+        "unica": (target / f"unica{extension}", "unica", True),
+        "bsl-analyzer": (target / f"bsl-analyzer{extension}", "bsl-analyzer", True),
+        "tool-index": (target / f"tool-index{extension}", "tools-archive", True),
+        "tool-server": (target / f"tool-server{extension}", "tools-archive", True),
         "archive-library": (library, "tools-archive", False),
-        "v8-runner": (target / "v8-runner", "v8-runner", True),
+        "v8-runner": (target / f"v8-runner{extension}", "v8-runner", True),
     }
     for name, (path, _artifact, executable) in files.items():
-        path.write_bytes(name.encode("utf-8"))
+        payload = windows_engine_bytes() if windows and name == "tool-server" else name.encode("utf-8")
+        path.write_bytes(payload)
         path.chmod(0o755 if executable else 0o644)
 
     manifest = {
         "schemaVersion": 2,
-        "target": "linux-x64",
-        "targetTriple": "x86_64-unknown-linux-gnu",
+        "target": target.name,
+        "targetTriple": "x86_64-pc-windows-msvc" if windows else "x86_64-unknown-linux-gnu",
         "runtimeFiles": [
             runtime_file(bundle, path, artifact=artifact, executable=executable)
             for path, artifact, executable in files.values()
@@ -98,26 +106,25 @@ class StageUnicaAssessmentEngineTests(unittest.TestCase):
             )
 
             with tarfile.open(archive, "r:gz") as packaged:
-                members = {member.name: member for member in packaged.getmembers()}
-            self.assertEqual(
-                sorted(members),
-                [
-                    "bin/linux-x64/bsl-analyzer",
-                    "bin/linux-x64/lib/libpython3.12.so.1.0",
-                    "bin/linux-x64/tool-index",
-                    "bin/linux-x64/tool-server",
-                ],
-            )
-            self.assertEqual(members["bin/linux-x64/tool-server"].mode, 0o755)
-            self.assertEqual(
-                members["bin/linux-x64/lib/libpython3.12.so.1.0"].mode,
-                0o644,
-            )
+                self.assertEqual(
+                    {member.name: member.mode for member in packaged},
+                    {
+                        "bin/linux-x64/bsl-analyzer": 0o755,
+                        "bin/linux-x64/lib/libpython3.12.so.1.0": 0o644,
+                        "bin/linux-x64/tool-index": 0o755,
+                        "bin/linux-x64/tool-server": 0o755,
+                    },
+                )
 
     def test_stages_complete_selected_artifacts_and_excludes_other_tools(self) -> None:
+        windows = os.name == "nt"
+        target = "bin/win-x64" if windows else "bin/linux-x64"
+        extension = ".exe" if windows else ""
+        library = f"{target}/lib/" + ("python312.dll" if windows else "libpython3.12.so.1.0")
+        entrypoint = f"{target}/tool-server{extension}"
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            bundle = make_bundle(root)
+            bundle = make_bundle(root, windows=windows)
             out_dir = root / "assessment-engine"
 
             subprocess.run(
@@ -145,22 +152,18 @@ class StageUnicaAssessmentEngineTests(unittest.TestCase):
                     if path.is_file()
                 ),
                 [
-                    "bin/linux-x64/bsl-analyzer",
-                    "bin/linux-x64/lib/libpython3.12.so.1.0",
-                    "bin/linux-x64/tool-index",
-                    "bin/linux-x64/tool-server",
+                    f"{target}/bsl-analyzer{extension}",
+                    library,
+                    f"{target}/tool-index{extension}",
+                    entrypoint,
                 ],
             )
-            self.assertEqual(
-                stat.S_IMODE((out_dir / "bin/linux-x64/tool-server").stat().st_mode),
-                0o755,
-            )
-            self.assertEqual(
-                stat.S_IMODE(
-                    (out_dir / "bin/linux-x64/lib/libpython3.12.so.1.0").stat().st_mode
-                ),
-                0o644,
-            )
+            self.assertEqual((out_dir / library).read_bytes(), b"archive-library")
+            if windows:
+                self.assertEqual(run_windows_engine(out_dir / entrypoint), "assessment-engine")
+            else:
+                self.assertEqual(stat.S_IMODE((out_dir / entrypoint).stat().st_mode), 0o755)
+                self.assertEqual(stat.S_IMODE((out_dir / library).stat().st_mode), 0o644)
 
     def test_rejects_a_tampered_selected_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

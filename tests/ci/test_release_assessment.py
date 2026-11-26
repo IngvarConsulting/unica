@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import io
 import json
 import os
 import stat
@@ -9,6 +10,11 @@ import tarfile
 import tempfile
 import unittest
 from pathlib import Path
+
+if __package__:
+    from .assessment_engine_fixture import run_windows_engine, windows_engine_bytes
+else:
+    from assessment_engine_fixture import run_windows_engine, windows_engine_bytes
 
 
 # Предохранитель call_mcp против зависшего фейка, а не проверяемый срок:
@@ -1792,6 +1798,10 @@ for raw in sys.stdin:
 
     def test_runtime_assessment_overlay_adds_only_regular_engine_files(self) -> None:
         module = load_assessment_module()
+        entrypoint = (
+            "bin/win-x64/bsl-analyzer.exe" if os.name == "nt" else "bin/linux-x64/bsl-analyzer"
+        )
+        payload = windows_engine_bytes() if os.name == "nt" else b"analyzer"
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1804,29 +1814,29 @@ for raw in sys.stdin:
                             {
                                 "name": "bsl-analyzer",
                                 "artifact": "bsl-analyzer",
-                                "deliveredPath": "bin/linux-x64/bsl-analyzer",
+                                "deliveredPath": entrypoint,
                             }
                         ]
                     }
                 ),
                 encoding="utf-8",
             )
-            run_unica = runtime / "bin/linux-x64/unica"
+            run_unica = runtime / Path(entrypoint).parent / ("unica.exe" if os.name == "nt" else "unica")
             run_unica.parent.mkdir(parents=True)
             run_unica.write_bytes(b"unica")
             overlay = root / "overlay"
-            engine = overlay / "bin/linux-x64/bsl-analyzer"
+            engine = overlay / entrypoint
             engine.parent.mkdir(parents=True)
-            engine.write_bytes(b"analyzer")
+            engine.write_bytes(payload)
             engine.chmod(0o755)
 
             copied = module.overlay_runtime_files(run_unica, overlay)
 
-            self.assertEqual(copied, ["bin/linux-x64/bsl-analyzer"])
-            self.assertEqual(
-                (runtime / "bin/linux-x64/bsl-analyzer").read_bytes(),
-                b"analyzer",
-            )
+            self.assertEqual(copied, [entrypoint])
+            copied_engine = runtime / entrypoint
+            self.assertEqual(copied_engine.read_bytes(), payload)
+            if os.name == "nt":
+                self.assertEqual(run_windows_engine(copied_engine), "assessment-engine")
 
     def test_directory_overlay_rejects_a_non_executable_engine_entrypoint(self) -> None:
         module = load_assessment_module()
@@ -1892,24 +1902,31 @@ for raw in sys.stdin:
 
     def test_runtime_assessment_extracts_an_overlay_archive_with_executable_modes(self) -> None:
         module = load_assessment_module()
+        entrypoint = (
+            "bin/win-x64/engine-mcp.exe" if os.name == "nt" else "bin/linux-x64/engine-mcp"
+        )
+        payload = windows_engine_bytes() if os.name == "nt" else b"engine"
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            source = root / "engine-mcp"
-            source.write_bytes(b"engine")
-            source.chmod(0o755)
             archive = root / "engine.tar.gz"
             with tarfile.open(archive, "w:gz") as packaged:
-                packaged.add(source, arcname="bin/linux-x64/engine-mcp")
+                member = tarfile.TarInfo(entrypoint)
+                member.mode = 0o755
+                member.size = len(payload)
+                packaged.addfile(member, io.BytesIO(payload))
 
             overlay = module.prepare_runtime_overlay(
                 archive,
                 root / "extracted-overlay",
             )
 
-            engine = overlay / "bin/linux-x64/engine-mcp"
-            self.assertEqual(engine.read_bytes(), b"engine")
-            self.assertEqual(stat.S_IMODE(engine.stat().st_mode), 0o755)
+            engine = overlay / entrypoint
+            self.assertEqual(engine.read_bytes(), payload)
+            if os.name == "nt":
+                self.assertEqual(run_windows_engine(engine), "assessment-engine")
+            else:
+                self.assertEqual(stat.S_IMODE(engine.stat().st_mode), 0o755)
 
 
 if __name__ == "__main__":
