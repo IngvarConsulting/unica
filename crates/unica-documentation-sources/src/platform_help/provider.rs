@@ -1,9 +1,10 @@
 use super::locator::{LocatorScope, PlatformHelpLocator, PROVIDER_ID};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::documentation_retrieval::{RetrievalFields, RetrievalHit, RetrievalIndex};
+use unica_bsl_types::ArticleKind;
 use unica_documentation::model::*;
 
 use super::container::ContainerError;
@@ -51,7 +52,7 @@ struct IndexedCorpus {
     /// Постинги лексического ядра: номера документов — позиции в
     /// `pages`.
     retrieval: RetrievalIndex,
-    type_names: BTreeMap<String, Vec<usize>>,
+    exact_names: BTreeMap<String, Vec<usize>>,
     /// Локаль, в которой корпус реально прочитан: она уходит в секцию ответа.
     language: String,
     /// Контейнеры, которые не прочитались или не разобрались. Молчаливый
@@ -63,10 +64,16 @@ struct IndexedCorpus {
 /// выдачи строятся из одного списка, поэтому номер документа ядра и позиция
 /// страницы не могут разойтись.
 fn corpus_from_pages(
-    pages: Vec<CorpusPage>,
+    mut pages: Vec<CorpusPage>,
     language: &str,
     unreadable: Vec<String>,
 ) -> IndexedCorpus {
+    // Открытие локатора выбирает первую читаемую страницу в порядке контейнеров.
+    {
+        let mut paths = HashSet::new();
+        pages.retain(|page| paths.insert(page.path.clone()));
+    }
+
     // Обе локали сигнатуры индексируются: сигнатура — то самое поле, где
     // английское имя встречается даже у русской страницы.
     let signature_texts: Vec<String> = pages
@@ -87,18 +94,29 @@ fn corpus_from_pages(
             body: &page.text,
         },
     ));
-    let mut type_names: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    let mut exact_names: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (document, page) in pages.iter().enumerate() {
-        if page.header.kind != unica_bsl_types::ArticleKind::Type {
-            continue;
-        }
-        let name = &page.header.name;
-        for alias in std::iter::once(&name.ru).chain(name.en.iter()) {
-            let key = type_name_key(alias);
+        let mut add = |key: String| {
             if !key.is_empty() {
-                let documents = type_names.entry(key).or_default();
+                let documents = exact_names.entry(key).or_default();
                 if documents.last() != Some(&document) {
                     documents.push(document);
+                }
+            }
+        };
+        let name = &page.header.name;
+        if page.header.kind == ArticleKind::Type {
+            for alias in std::iter::once(&name.ru).chain(name.en.iter()) {
+                add(help_name_key(alias));
+            }
+        } else if let Some(owner) = &page.header.owner {
+            let ru = Some((owner.ru.as_str(), name.ru.as_str()));
+            let en = owner.en.as_deref().zip(name.en.as_deref());
+            for (owner, name) in [ru, en].into_iter().flatten() {
+                let owner = help_name_key(owner);
+                let name = help_name_key(name);
+                if !owner.is_empty() && !name.is_empty() {
+                    add(format!("{owner}.{name}"));
                 }
             }
         }
@@ -115,7 +133,7 @@ fn corpus_from_pages(
     IndexedCorpus {
         pages,
         retrieval,
-        type_names,
+        exact_names,
         language: language.to_string(),
         unreadable,
     }
@@ -410,8 +428,8 @@ fn signature_in(signature: &Signature, language: &str) -> Option<String> {
     preferred.clone().or_else(|| fallback.clone())
 }
 
-// В запросах к типу границы слов могут быть обозначены регистром или пробелом.
-fn type_name_key(name: &str) -> String {
+// В именах тип или член могут быть записаны с пробелами и другим регистром.
+fn help_name_key(name: &str) -> String {
     name.split_whitespace()
         .flat_map(str::chars)
         .flat_map(char::to_lowercase)
@@ -427,8 +445,8 @@ fn rank_pages(
 ) -> Vec<DocumentationHit> {
     let lexical = corpus.retrieval.query(query, limit, &[]);
     let exact = corpus
-        .type_names
-        .get(&type_name_key(query))
+        .exact_names
+        .get(&help_name_key(query))
         .map(Vec::as_slice)
         .unwrap_or_default();
     let exact_score = lexical.first().map_or(1.0, |hit| hit.score + 1.0);
@@ -957,6 +975,75 @@ mod tests {
             bytes <= 5 * 1024,
             "десять находок обязаны уместиться в 5 КБ, вышло {bytes} байт: {answer}"
         );
+    }
+
+    #[test]
+    fn duplicate_locators_keep_the_page_that_opens_and_fill_the_window() {
+        let _serial = index_test_lock();
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("8.3.27.2074");
+        std::fs::create_dir(&root).unwrap();
+        let path = "objects/LookupJournal/methods/Lookup.html";
+        let first = article_markup("ЖурналОбразца", "Проверить");
+        let shadowed = article_markup("ДругойЖурнал", "Проверить");
+        let entries = [
+            path,
+            "guide/01.html",
+            "guide/02.html",
+            "guide/03.html",
+            "guide/04.html",
+            "guide/05.html",
+        ];
+        let similar = r#"<html><body><h1 class="V8SH_pagetitle">Как проверить журнал образца</h1></body></html>"#;
+        let pages = entries
+            .into_iter()
+            .enumerate()
+            .map(|(index, entry)| (entry, if index == 0 { first.as_str() } else { similar }))
+            .collect::<Vec<_>>();
+        for (container, pages) in [
+            ("shcntx_ru.hbk", &pages[..1]),
+            ("a_ru.hbk", pages.as_slice()),
+            ("b_ru.hbk", &[(path, shadowed.as_str())]),
+        ] {
+            std::fs::write(root.join(container), hbk_bytes(pages)).unwrap();
+        }
+
+        let provider = PlatformSyntaxHelpProvider::new();
+        let context = DocumentationContext {
+            platform_version: Some("8.3.27.2074".into()),
+            installation_root: Some(root),
+        };
+        let lookup = |query, limit| {
+            let mut ask = request(query);
+            ask.limit = limit;
+            provider
+                .search(&ask, &context)
+                .into_iter()
+                .find(|section| section.corpus == "platform-guides")
+                .unwrap()
+                .hits
+        };
+
+        let hits = lookup("ЖурналОбразца.Проверить", 5);
+        assert_eq!(hits.len(), 5);
+        assert_eq!(hits[0].title, "ЖурналОбразца.Проверить");
+        for (index, hit) in hits.iter().enumerate() {
+            assert_eq!(hit.rank, (index + 1) as u32);
+            assert!(hits[..index]
+                .iter()
+                .all(|prior| prior.document_id != hit.document_id));
+        }
+        let first = &hits[0];
+        let opened = provider
+            .get(&first.document_id, "ru", &context)
+            .unwrap()
+            .unwrap();
+        assert_eq!(opened.title, first.title);
+
+        let hits = lookup("Проверить", 20);
+        assert_eq!(hits.len(), 6);
+        assert!(!hits.iter().any(|hit| hit.title.contains("ДругойЖурнал")));
+        assert!(lookup("ЖурналОбразца.Проверить", 0).is_empty());
     }
 
     #[test]
