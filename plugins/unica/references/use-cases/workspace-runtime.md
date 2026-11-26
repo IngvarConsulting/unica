@@ -153,6 +153,7 @@ source-set path itself has no stronger structural evidence.
 
 | Intent | `unica.run` operation |
 | --- | --- |
+| Check access to the selected infobase | `infobase.check` with empty args. Set `dryRun: false` for a read-only login to `origin`. Success returns the exact version of the Designer client in `data.platformVersion`. Use `dryRun: true` to preview without logging in. |
 | Create an absent infobase | `infobase.create`, empty args; a file infobase is created with the main configuration of the `CONFIGURATION` source set (`initializesSources: true`), and the first `push` loads that set only if it changed and the other sets in full; a cluster infobase is created empty, and the first `push` loads every set in full |
 | Send sources / delete an extension | `push`, optional `sourceSet`, `full` and `force`; applies the database configuration after the generation check, `force:true` overwrites the infobase. Deletion uses only `delete: "InstalledName"` |
 | Export one source set from the working configuration | `pull`, optional `sourceSet`, `extension` and `force`; without `force` the runner chooses a partial or full export, `force:true` replaces the whole set; no copy of the previous sources is kept |
@@ -166,6 +167,24 @@ source-set path itself has no stronger structural evidence.
 | Inspect installed extensions | `extensions.list`, empty args; preview/apply opens a platform session |
 | Change installed extension activity | `extensions.set`, `name`, boolean `active`; other properties are unavailable |
 | Apply or discard pending configuration changes | `apply` and `reset` — unavailable until the runner supports them ([#1246](https://github.com/IngvarConsulting/unica/issues/1246)) |
+
+To check a connection before creating a project, use a temporary workspace
+whose private profile declares the candidate as `infobases.origin`. Use the
+same call as for a saved project. Keep connection strings and credentials in
+the private profile. The MCP arguments are empty.
+
+```json
+{"op":"infobase.check","args":{},"dryRun":false}
+```
+
+The runner selects Designer from the current platform settings, including an
+explicit `tools.platform.version: sources`. The successful login reports the
+exact build of the client that connected. A missing version setting stays
+absent from the project files. The operation does not export sources. For a classified refusal, read `data.runnerCode`:
+`credentials_rejected` identifies a rejected login, `infobase_not_found`
+identifies a confirmed missing base, and `infobase_designer_busy` identifies
+a conflicting Designer session. A generic failure is insufficient to diagnose
+a bad password or a missing base.
 
 For `launch`, `applicationParameter` passes one exact `/C` string to an enterprise
 client. Empty is distinct from omitted; NUL and `designer` are rejected. It may
