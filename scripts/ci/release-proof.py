@@ -275,6 +275,7 @@ def _validate_package(
         plugin_dir / ".codex-plugin" / "plugin.json",
         plugin_dir / ".claude-plugin" / "plugin.json",
         plugin_dir / ".zcode-plugin" / "plugin.json",
+        plugin_dir / "package.json",
     ]
     versions: list[str] = []
     for manifest_path in manifest_paths:

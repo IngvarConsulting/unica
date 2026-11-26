@@ -38,6 +38,11 @@ def read_version_contract(repo_root: Path) -> dict[str, str]:
             encoding="utf-8"
         )
     )
+    # Корневой манифест плагина — это бандл DeepSeek Harness: DSH читает из
+    # него версию для карточки плагина, и она не должна отставать от выпуска.
+    dsh_bundle = json.loads(
+        (repo_root / "plugins" / "unica" / "package.json").read_text(encoding="utf-8")
+    )
     unica_tools = [tool for tool in tools_lock.get("tools", []) if tool.get("name") == "unica"]
     if len(unica_tools) != 1:
         raise ValueError(f"tools lock must contain exactly one unica entry, found {len(unica_tools)}")
@@ -47,6 +52,7 @@ def read_version_contract(repo_root: Path) -> dict[str, str]:
         "plugin": plugin["version"],
         "claude-plugin": claude_plugin["version"],
         "zcode-plugin": zcode_plugin["version"],
+        "dsh-bundle": dsh_bundle["version"],
         "tools-lock-unica": unica_tools[0]["version"],
     }
 

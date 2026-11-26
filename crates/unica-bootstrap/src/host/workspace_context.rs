@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use super::descriptor::KNOWN;
+use super::descriptor::{KNOWN, WORKSPACE_METADATA};
 
 /// Captured launch context. Request metadata can override it without changing
 /// the context of other calls sharing the same frontend.
@@ -33,9 +33,8 @@ impl From<String> for LaunchFailure {
 impl LaunchFailure {
     fn describe(&self, request: &HostRequest) -> String {
         let variables = host_workspace_environment_keys().join(", ");
-        let metadata = KNOWN
+        let metadata = WORKSPACE_METADATA
             .iter()
-            .filter_map(|host| host.workspace_metadata)
             .map(|channel| format!("{} ({})", channel.capability, channel.directory_field))
             .collect::<Vec<_>>()
             .join(", ");
@@ -178,9 +177,8 @@ impl HostRequest {
 /// Whether a call with this metadata still needs the client's roots: a
 /// per-call host channel outranks roots, so they are not asked for then.
 pub fn request_needs_client_roots(metadata: &Map<String, Value>) -> bool {
-    !KNOWN
+    !WORKSPACE_METADATA
         .iter()
-        .filter_map(|host| host.workspace_metadata)
         .any(|channel| metadata.contains_key(channel.capability))
 }
 
@@ -195,9 +193,8 @@ pub fn capture_host_workspace_context() -> HostWorkspaceContext {
 
 /// Capabilities that ask the host to attach workspace context to tool calls.
 pub fn host_workspace_capabilities() -> BTreeMap<String, Map<String, Value>> {
-    KNOWN
+    WORKSPACE_METADATA
         .iter()
-        .filter_map(|host| host.workspace_metadata)
         .map(|channel| (channel.capability.to_owned(), Map::new()))
         .collect()
 }
@@ -235,7 +232,7 @@ impl HostWorkspaceContext {
     pub fn resolve_request(&self, request: &HostRequest) -> Result<ResolvedWorkspace, String> {
         let metadata = &request.metadata;
         let mut request_directory: Option<(PathBuf, &'static str)> = None;
-        for channel in KNOWN.iter().filter_map(|host| host.workspace_metadata) {
+        for channel in WORKSPACE_METADATA.iter() {
             if let Some(context) = metadata.get(channel.capability) {
                 let directory = context
                     .get(channel.directory_field)
@@ -487,8 +484,36 @@ mod tests {
         );
         assert_eq!(
             host_workspace_capabilities(),
-            BTreeMap::from([("codex/sandbox-state-meta".to_owned(), Map::new())])
+            BTreeMap::from([
+                ("codex/sandbox-state-meta".to_owned(), Map::new()),
+                ("pro.ingvar/unica-dsh-workspace".to_owned(), Map::new())
+            ])
         );
+    }
+
+    /// rule: INV.WORKSPACE.HOST-CONTEXT
+    #[test]
+    fn dsh_calls_on_one_connection_use_their_own_workspace() {
+        let fixture = Fixture::new();
+        let context = HostWorkspaceContext::from_directory(fixture.0.clone());
+        let channel = "pro.ingvar/unica-dsh-workspace";
+        for directory in [fixture.project(), fixture.0.clone(), fixture.project()] {
+            let metadata =
+                Map::from_iter([(channel.into(), serde_json::json!({"cwd": directory}))]);
+            assert!(!request_needs_client_roots(&metadata));
+            let resolved = context
+                .resolve_request(&HostRequest::from_metadata(metadata))
+                .unwrap();
+            assert!(same_directory(Path::new(&resolved.directory), &directory));
+            assert_eq!(
+                resolved.origin,
+                WorkspaceOrigin::RequestMetadata {
+                    capability: channel.into()
+                }
+            );
+        }
+        let malformed = Map::from_iter([(channel.into(), serde_json::json!({}))]);
+        assert!(context.resolve(&malformed).is_err());
     }
 
     #[test]

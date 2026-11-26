@@ -314,6 +314,12 @@ jobs:
         run: python scripts/ci/nightly-path-probe.py --base "$BASE_SHA" --head "$HEAD_SHA"
       # Неразрешимый выбор — полный набор и здесь. Иначе Python medium идёт ночью,
       # кроме смоука продукта и снимков контрактов.
+      - name: Node.js для проверок моста DeepSeek Harness
+        if: ${{ !cancelled() && github.event_name == 'merge_group' && env.KEPT != 'true' }}
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
       - id: python
         name: Тесты Python
         if: ${{ !cancelled() && github.event_name == 'merge_group' && env.KEPT != 'true' }}

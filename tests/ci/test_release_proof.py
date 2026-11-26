@@ -118,6 +118,9 @@ class ReleaseProofTests(unittest.TestCase):
                 json.dumps({"name": "unica", "version": version}),
                 encoding="utf-8",
             )
+        (self.package_dir / "plugins/unica/package.json").write_text(
+            json.dumps({"name": "@ingvarconsulting/unica", "version": version}), encoding="utf-8"
+        )
         package = {
             "schemaVersion": 1,
             "packageHashFormat": "sha256-u64be-path-mode-content-v2",

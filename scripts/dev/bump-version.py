@@ -68,6 +68,7 @@ def bump(repo_root: Path, version: str) -> list[str]:
         (plugin / ".codex-plugin" / "plugin.json", render_json_version),
         (plugin / ".claude-plugin" / "plugin.json", render_json_version),
         (plugin / ".zcode-plugin" / "plugin.json", render_json_version),
+        (plugin / "package.json", render_json_version),
         (plugin / "third-party" / "tools.lock.json", render_tools_lock_version),
     ]
 

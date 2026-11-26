@@ -1,0 +1,14 @@
+# The tools provider resolves the current agent workspace for each MCP call.
+- insert:
+    - id: unica-mcp
+      name: '@ingvarconsulting/unica/dsh-tools'
+    - id: unica-skills
+      name: '@deepseek-ai/dsh-skill-filesystem'
+      config:
+        providerName: unica
+        # Only Unica's own skills: the project, custom and user roots stay with
+        # the provider the shipped presets mount.
+        includeDefaultRoots: false
+        watch: false
+        customSkillDirs:
+          - !!js process.getBuiltinModule('node:path').join(process.getBuiltinModule('node:path').dirname(process.getBuiltinModule('node:module').createRequire(baseUrl).resolve('@ingvarconsulting/unica/package.json')), 'skills')

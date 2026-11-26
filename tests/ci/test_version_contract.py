@@ -61,7 +61,14 @@ class VersionContractTests(unittest.TestCase):
         # Independent locations catch a host omitted by the production reader.
         self.assertEqual(
             sorted(values),
-            ["claude-plugin", "plugin", "tools-lock-unica", "workspace", "zcode-plugin"],
+            [
+                "claude-plugin",
+                "dsh-bundle",
+                "plugin",
+                "tools-lock-unica",
+                "workspace",
+                "zcode-plugin",
+            ],
         )
         self.assertEqual(len(set(values.values())), 1, values)
         self.assertRegex(next(iter(values.values())), load_module().RELEASE_VERSION)
@@ -74,6 +81,7 @@ class VersionContractTests(unittest.TestCase):
                 "Cargo.toml",
                 "plugins/unica/.codex-plugin/plugin.json",
                 "plugins/unica/.claude-plugin/plugin.json",
+                "plugins/unica/package.json",
                 "plugins/unica/third-party/tools.lock.json",
             ):
                 target = root / relative
