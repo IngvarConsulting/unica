@@ -501,7 +501,7 @@ fn localized_properties(
 
 pub(super) fn node_props(kind: NodeKind, value: &Value) -> Map<String, Value> {
     let keys: &[&str] = match kind {
-        NodeKind::Item => &["tag", "visible", "enabled", "readOnly"],
+        NodeKind::Item => &["tag", "visible", "enabled", "readOnly", "verticalStretch"],
         NodeKind::Event => &["handler", "callType"],
         NodeKind::Attribute => &["type", "isMain", "mainTable"],
         NodeKind::Column => &["type", "parentType"],

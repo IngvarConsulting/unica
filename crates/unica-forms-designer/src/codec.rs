@@ -1379,6 +1379,11 @@ fn form_info_element(child: roxmltree::Node<'_, '_>) -> FormInfoElement {
     let mut binding_limits = Vec::new();
     let data_path = form_info_binding_property(child, "DataPath", &mut binding_limits);
     let command_name = form_info_binding_property(child, "CommandName", &mut binding_limits);
+    let vertical_stretch = if child.has_tag_name((FORM_LOGFORM_NS, "InputField")) {
+        form_validation_child_text(child, "VerticalStretch").and_then(|value| value.parse().ok())
+    } else {
+        None
+    };
     FormInfoElement {
         tag: form_element_tag(child),
         event_kind: FormElementKind::from_xml_tag(child.tag_name().name()),
@@ -1399,6 +1404,7 @@ fn form_info_element(child: roxmltree::Node<'_, '_>) -> FormInfoElement {
         visible: form_child_text(child, "Visible").as_deref() != Some("false"),
         enabled: form_child_text(child, "Enabled").as_deref() != Some("false"),
         read_only: form_child_text(child, "ReadOnly").as_deref() == Some("true"),
+        vertical_stretch,
         events: form_child(child, "Events")
             .map(form_info_events_section)
             .unwrap_or_default(),
@@ -8476,13 +8482,13 @@ pub fn emit_form_input(
     ] {
         emit_form_binding_path_property(lines, element, json_key, xml_tag, &inner);
     }
-    for (key, tag) in [
-        ("horizontalStretch", "HorizontalStretch"),
-        ("verticalStretch", "VerticalStretch"),
-    ] {
-        if element.get(key).and_then(Value::as_bool) == Some(true) {
-            lines.push(format!("{inner}<{tag}>true</{tag}>"));
-        }
+    if element.get("horizontalStretch").and_then(Value::as_bool) == Some(true) {
+        lines.push(format!(
+            "{inner}<HorizontalStretch>true</HorizontalStretch>"
+        ));
+    }
+    if let Some(value) = element.get("verticalStretch").and_then(Value::as_bool) {
+        lines.push(format!("{inner}<VerticalStretch>{value}</VerticalStretch>"));
     }
     if let Some(value) = element.get("horizontalAlign").and_then(Value::as_str) {
         lines.push(format!(

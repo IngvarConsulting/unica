@@ -478,7 +478,6 @@ fn only_true_is_written(kind: &str, key: &str) -> bool {
                 | "markIncomplete"
                 | "skipOnInput"
                 | "horizontalStretch"
-                | "verticalStretch"
         ),
         "CommandBar" => key == "autofill",
         _ => false,
