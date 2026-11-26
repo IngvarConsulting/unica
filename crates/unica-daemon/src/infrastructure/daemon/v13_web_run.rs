@@ -17,7 +17,7 @@ use unica_work_control::cancellation::CancellationToken;
 
 use serde_json::{json, Value};
 use unica_execution_contract::invocation::DomainResult;
-use unica_refusal::RefusalCode;
+use unica_refusal::{RefusalCode, RefusalDetail};
 use url::Url;
 
 fn debugger_endpoint(raw: &str) -> Option<String> {
@@ -112,7 +112,7 @@ fn prepare_receipt(
         return invalid(operation);
     };
     if !succeeded && state == "route_unavailable" && !changed {
-        let mut result = failed(operation, RefusalCode::ProviderUnavailable,
+        let mut result = DomainResult::canonical_rejection_detailed(Some(operation.into()), RefusalDetail::ProviderAbsent,
             "Check infobase.web.url and the active publication. Configure infobase.web.debugger-url to reach the HTTP debugger from the web server, enable it in the publication descriptor and reload that publication. For a managed publication, verify its active descriptor and republish if the cluster address changed. For standalone, enable debugging on the server.");
         result.data = Some(
             json!({"op":operation,"state":state,"runnerCode":state,"publicationChanged":false}),
@@ -261,9 +261,9 @@ impl PreparedWebRun {
         };
         let context = discover_workspace(Some(PathBuf::from(invocation.workspace_hint())))
             .map_err(|_| {
-                failed(
-                    operation,
-                    RefusalCode::ProviderUnavailable,
+                DomainResult::canonical_rejection_detailed(
+                    Some(operation.into()),
+                    RefusalDetail::ProviderAbsent,
                     "cannot discover the web publication workspace",
                 )
             })?;
@@ -454,6 +454,7 @@ mod tests {
         receipt["debug"]["debugger_url"] = Value::Null;
         let r = prepare_receipt(PUBLISH, &receipt, IDE, false, false);
         assert!(!r.ok);
+        assert_eq!(r.diagnostics[0]["detailCode"], "provider_absent");
         assert_eq!(r.data.unwrap()["runnerCode"], "route_unavailable");
         assert!(r.summary.contains("infobase.web.debugger-url"));
         assert!(!r.summary.contains("private-path"));
