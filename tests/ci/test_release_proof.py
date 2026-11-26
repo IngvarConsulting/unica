@@ -55,10 +55,10 @@ class ReleaseProofTests(unittest.TestCase):
             "unica.diff",
             "unica.run",
             "unica.docs",
-            "unica.task.result",
         }
         self.compatibility_names = self.native_names | {
             "unica.task.get",
+            "unica.task.result",
             "unica.task.cancel",
         }
 
@@ -67,11 +67,11 @@ class ReleaseProofTests(unittest.TestCase):
             "schemaVersion": 1,
             "profile": profile,
             "target": target,
-            "protocolVersion": "2026-07-28" if profile == "native" else "2025-06-18",
-            "serverProtocolVersion": "2026-07-28" if profile == "native" else "2025-06-18",
+            "protocolVersion": "2026-07-28" if profile != "compatibility" else "2025-06-18",
+            "serverProtocolVersion": "2026-07-28" if profile != "compatibility" else "2025-06-18",
             "serverInfo": (
                 None
-                if profile == "native"
+                if profile != "compatibility"
                 else {"name": "unica", "version": "0.12.0"}
             ),
             "tasksCapability": "on" if profile == "native" else "off",
@@ -166,6 +166,9 @@ class ReleaseProofTests(unittest.TestCase):
             self.asset_reports(version=package["pluginVersion"])
         values = {
             "native_wires": native_wires,
+            "direct_wires": {
+                t: self.wire("direct", t, self.compatibility_names) for t in self.module.TARGETS
+            },
             "compatibility_wires": compatibility_wires,
             "baseline": self.baseline,
             "assessment": self.assessment(),
@@ -183,7 +186,8 @@ class ReleaseProofTests(unittest.TestCase):
         report = self.evaluate()
 
         self.assertEqual(report["status"], "passed")
-        self.assertEqual(report["surfaces"]["native"]["toolCount"], 9)
+        self.assertEqual(report["surfaces"]["native"]["toolCount"], 8)
+        self.assertEqual(report["surfaces"]["direct"]["toolCount"], 11)
         self.assertEqual(report["surfaces"]["compatibility"]["toolCount"], 11)
         self.assertEqual(report["legacyBaseline"]["overlap"], [])
         self.assertEqual(
@@ -202,6 +206,17 @@ class ReleaseProofTests(unittest.TestCase):
         # test_unica_workflow, а не литералом в JSON.
         self.assertNotIn("guards", report)
         self.assertNotIn("guards", self.module.render_summary(report))
+
+    def test_direct_profile_requires_modern_without_tasks_and_all_observers(self) -> None:
+        for change, error in [
+            ({"tasksCapability": "on"}, "with Tasks off"),
+            ({"protocolVersion": "2025-06-18", "serverProtocolVersion": "2025-06-18"}, "2026-07-28"),
+            ({"toolNames": sorted(self.native_names), "toolCount": len(self.native_names)}, "missing"),
+        ]:
+            wires = {t: self.wire("direct", t, self.compatibility_names) for t in self.module.TARGETS}
+            wires["win-x64"].update(change)
+            with self.subTest(change=change), self.assertRaisesRegex(self.module.ProofError, error):
+                self.evaluate(direct_wires=wires)
 
     def test_proof_holds_no_copy_of_the_surface(self) -> None:
         # Поверхность нормирует arch/rules/mcp/mcp-tool-profiles.md, а показывает

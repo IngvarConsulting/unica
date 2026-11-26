@@ -776,69 +776,159 @@ async fn a_modern_client_answers_questions_in_turn_by_retrying() {
     }
 }
 
-/// A `2026-07-28` call without Tasks waits for the Task it became (#3220);
-/// a Task that ended in a refusal with a question asks it the way a direct
-/// refusal asks: an `input_required` result, never a Task receipt.
+/// The first accepted call may still be working when its receipt arrives.
 #[tokio::test]
-async fn an_awaited_task_asks_its_question_as_input_required() {
+async fn a_receipt_stops_the_chosen_chain_until_its_predecessor_finishes() {
     use unica_execution_contract::invocation::{InvocationStatus, TaskId};
-
-    let task_id = TaskId::new();
-    let call: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _, _| {
+    let id = TaskId::new();
+    let (server, calls) = scripted_server(move |arguments| {
+        if arguments == &push_call(false) {
+            return Ok(CanonicalCallOutcome::Choice {
+                refusal: refusal_result(unica_refusal::RefusalCode::InvalidState, REFUSAL),
+                choice: Box::new(chain_choice()),
+            });
+        }
+        assert_eq!(
+            arguments,
+            &push_call(true),
+            "the dependent pull must not run"
+        );
         Ok(CanonicalCallOutcome::Task(canonical_snapshot(
-            task_id,
+            id,
             InvocationStatus::Working,
             None,
         )))
     });
-    let get: Arc<CanonicalTaskHandler> = Arc::new(move |_, _| {
+    let (mut client, _) = spawn_unica_server(server);
+    initialize_with(&mut client, json!({"elicitation":{}})).await;
+    let answer = ask_and_answer(
+        &mut client,
+        json!({"action":"accept","content":{"choice":"both"}}),
+    )
+    .await;
+    assert_eq!(
+        answer["result"]["structuredContent"]["data"]["task"]["taskId"],
+        id.to_string()
+    );
+    assert!(texts(&answer).contains("1/2 pending"), "{answer}");
+    assert_eq!(calls.lock().unwrap().len(), 2);
+    client.shutdown().await;
+}
+
+/// A new frontend uses only the daemon receipt and the consuming request's
+/// workspace, including when the reader answers a question after reconnect.
+#[tokio::test]
+async fn a_receipt_question_requires_the_same_workspace_and_exact_task_on_reconnect() {
+    use unica_execution::receipt_ledger::{
+        receipt_key_digest, request_scope_hash, CoreIdentityDigest, ReceiptKey, RequestIdentity,
+    };
+    use unica_execution_contract::invocation::{InvocationStatus, TaskId};
+    let origin = tempfile::tempdir().unwrap();
+    let other = tempfile::tempdir().unwrap();
+    let origin_path = origin.path().to_str().unwrap();
+    let core: CoreIdentityDigest = "15".repeat(32).parse().unwrap();
+    let make_task = |id| {
         let mut refusal = DomainResult::canonical_rejection(
             None,
             unica_refusal::RefusalCode::InvalidState,
             REFUSAL,
         );
         refusal.human_choice = Some(Box::new(choice()));
-        Ok(canonical_snapshot(
-            task_id,
-            InvocationStatus::Completed,
-            Some(refusal),
-        ))
-    });
-    let server = UnicaServer::with_canonical_v13_tasks(call, Arc::clone(&get), get);
-    let (mut client, _) = spawn_unica_server(server);
-    client
-        .send(json!({
-            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-            "params": {
-                "name": "unica.run",
-                "arguments": push_call(false),
-                "_meta": modern_elicitation_meta()
-            }
-        }))
+        let mut snapshot = canonical_snapshot(id, InvocationStatus::Completed, Some(refusal));
+        let arguments = unica_execution::invocation::normalized_arguments_hash(&push_call(false));
+        let key = ReceiptKey::new(
+            snapshot.invocation_id(),
+            id,
+            RequestIdentity::new(
+                core.clone(),
+                V5ToolIdentity::Run,
+                arguments.clone(),
+                request_scope_hash(origin_path).unwrap(),
+            ),
+        );
+        if let V5DaemonTaskSnapshot::Completed {
+            choice_request,
+            receipt_key_digest: digest,
+            ..
+        } = &mut snapshot
+        {
+            *choice_request = Some((V5ToolIdentity::Run, arguments));
+            *digest = receipt_key_digest(&key);
+        }
+        snapshot
+    };
+    let first = TaskId::new();
+    let second = TaskId::new();
+    let tasks = [make_task(first), make_task(second)];
+    let choices = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let connect = |workspace: &str| {
+        let choices = Arc::clone(&choices);
+        let saved = tasks.clone();
+        let get: Arc<CanonicalTaskHandler> = Arc::new(move |id, _| {
+            Ok(saved
+                .iter()
+                .find(|item| item.task_id() == id)
+                .unwrap()
+                .clone())
+        });
+        let call: Arc<CanonicalCallHandler> = Arc::new(move |tool, args, _, _, _| {
+            assert_eq!(tool, V5ToolIdentity::Run);
+            assert_eq!(args["op"], "pull");
+            choices.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            loaded()
+        });
+        let mut server = UnicaServer::with_canonical_v13_tasks(call, Arc::clone(&get), get);
+        let SurfaceToolRouter::CanonicalV13(router) = &mut server.router else {
+            unreachable!()
+        };
+        router.choice_scope =
+            crate::daemon_router::choice_scope_verifier(workspace.to_owned().into(), core.clone());
+        spawn_unica_server(server).0
+    };
+    let read = |id| json!({"name":"unica.task.result","arguments":{"taskId":id,"waitMs":0},"_meta":modern_elicitation_meta()});
+    let mut origin_reader = connect(origin_path);
+    origin_reader
+        .send(json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":read(first)}))
         .await;
-    let asked = client.receive().await;
+    let asked = origin_reader.receive().await;
     assert_eq!(asked["result"]["resultType"], "input_required", "{asked}");
-    let request = &asked["result"]["inputRequests"][human_choice::CHOICE_INPUT_KEY];
-    assert_eq!(
-        request["params"]["message"],
-        human_choice::question_text(&choice())
-    );
-
-    // The later observation has no verified origin workspace for the saved
-    // choice. It returns the refusal without offering a mutation there.
-    client
-        .send(json!({
-            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
-            "params": {
-                "name": "unica.task.result",
-                "arguments": {"taskId": task_id.to_string(), "waitMs": 0},
-                "_meta": modern_elicitation_meta()
-            }
-        }))
+    origin_reader.shutdown().await;
+    let reply_to = |id| {
+        let mut params = read(id);
+        params["requestState"] = asked["result"]["requestState"].clone();
+        params["inputResponses"] =
+            json!({human_choice::CHOICE_INPUT_KEY:{"action":"accept","content":{"choice":"pull"}}});
+        params
+    };
+    let mut foreign = connect(other.path().to_str().unwrap());
+    foreign
+        .send(json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":reply_to(first)}))
         .await;
-    let observed = client.receive().await;
-    assert_eq!(observed["result"]["resultType"], "complete", "{observed}");
-    assert_eq!(observed["result"]["structuredContent"]["summary"], REFUSAL);
-    assert_eq!(observed["result"]["isError"], true);
-    client.shutdown().await;
+    let refused = foreign.receive().await;
+    assert_eq!(
+        refused["result"]["structuredContent"]["summary"], REFUSAL,
+        "{refused}"
+    );
+    foreign.shutdown().await;
+    let mut reconnected = connect(origin_path);
+    reconnected
+        .send(json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":reply_to(second)}))
+        .await;
+    let fresh = reconnected.receive().await;
+    assert_eq!(fresh["result"]["resultType"], "input_required", "{fresh}");
+    assert_ne!(
+        fresh["result"]["requestState"],
+        asked["result"]["requestState"]
+    );
+    assert_eq!(choices.load(std::sync::atomic::Ordering::SeqCst), 0);
+    reconnected
+        .send(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":reply_to(first)}))
+        .await;
+    let answer = reconnected.receive().await;
+    assert_eq!(
+        answer["result"]["structuredContent"]["summary"], LOADED,
+        "{answer}"
+    );
+    assert_eq!(choices.load(std::sync::atomic::Ordering::SeqCst), 1);
+    reconnected.shutdown().await;
 }

@@ -26,8 +26,10 @@ const EXPECTED_COMPATIBILITY_TOOLS: [&str; 11] = [
     "unica.task.cancel",
 ];
 
-/// Task state and cancellation tools available only in legacy sessions.
-const LEGACY_ONLY_TASK_TOOLS: [&str; 2] = ["unica.task.get", "unica.task.cancel"];
+/// The task compatibility tools a pre-2026-07-28 session adds to the canonical
+/// eight. A 2026-07-28 client never sees them (CTR.WIRE.CANONICAL-TOOL-PROFILES).
+const COMPATIBILITY_TASK_TOOLS: [&str; 3] =
+    ["unica.task.get", "unica.task.result", "unica.task.cancel"];
 
 /// #490: every launch verifies both guaranteed lifecycles on fresh processes —
 /// a legacy `initialize` session (the 2025-06-18 offer real hosts still send)
@@ -200,14 +202,22 @@ fn verify_modern_direct(probe_launch: &ProbeLaunch<'_>, timeout: Duration) -> Re
         }),
     )?;
     let tools_response = receive_response(&probe.receiver, 2, timeout)?;
-    check_modern_direct_surface(&tools_response)
+    check_compatibility_surface(&tools_response)?;
+    let mut native_meta = meta;
+    native_meta["io.modelcontextprotocol/clientCapabilities"] =
+        json!({"extensions": {"io.modelcontextprotocol/tasks": {}}});
+    send_json(
+        &mut probe.stdin,
+        &json!({"jsonrpc":"2.0", "id":3, "method":"tools/list", "params":{"_meta":native_meta}}),
+    )?;
+    check_modern_direct_surface(&receive_response(&probe.receiver, 3, timeout)?)
 }
 
 fn check_modern_direct_surface(tools_response: &Value) -> Result<()> {
     let expected = EXPECTED_COMPATIBILITY_TOOLS
         .iter()
         .copied()
-        .filter(|name| !LEGACY_ONLY_TASK_TOOLS.contains(name))
+        .filter(|name| !COMPATIBILITY_TASK_TOOLS.contains(name))
         .collect::<BTreeSet<_>>();
     check_surface(tools_response, &expected, "2026-07-28 surface")
 }
@@ -362,8 +372,8 @@ mod tests {
 
     /// rule: CTR.WIRE.CANONICAL-TOOL-PROFILES
     #[test]
-    fn modern_direct_verification_expects_the_main_tools_and_the_result_reader() {
-        let modern = [
+    fn modern_direct_verification_expects_the_eight_tools_without_task_compatibility() {
+        let eight = [
             "unica.view",
             "unica.apply",
             "unica.resolve",
@@ -372,21 +382,13 @@ mod tests {
             "unica.diff",
             "unica.run",
             "unica.docs",
-            "unica.task.result",
         ];
-        check_modern_direct_surface(&tools_list(&modern)).unwrap();
-        let missing_result = check_modern_direct_surface(&tools_list(&modern[..8]))
-            .unwrap_err()
-            .to_string();
-        assert!(
-            missing_result.contains("unica.task.result"),
-            "{missing_result}"
-        );
+        check_modern_direct_surface(&tools_list(&eight)).unwrap();
 
         let error = check_modern_direct_surface(&tools_list(&EXPECTED_COMPATIBILITY_TOOLS))
             .unwrap_err()
             .to_string();
-        for task_tool in ["unica.task.get", "unica.task.cancel"] {
+        for task_tool in ["unica.task.get", "unica.task.result", "unica.task.cancel"] {
             assert!(error.contains(task_tool), "{error}");
         }
         assert!(error.contains("2026-07-28"), "{error}");

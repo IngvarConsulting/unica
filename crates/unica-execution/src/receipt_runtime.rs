@@ -6512,6 +6512,7 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
             }
             Ok(ReceiptState::DirectTerminalUnacked(receipt)) => Ok(terminal_task_snapshot(
                 TerminalSnapshotIdentity {
+                    choice_request: Some((key.tool(), key.normalized_arguments_hash().clone())),
                     task_id,
                     invocation_id: key.invocation_id(),
                     receipt_key_digest: digest.clone(),
@@ -6633,6 +6634,12 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
                     cancel_requested: common.8,
                     terminal_epoch_ms: receipt.terminal_epoch_ms(),
                     terminal_digest: receipt.terminal().digest().clone(),
+                    choice_request: result.human_choice.as_ref().map(|_| {
+                        (
+                            receipt.key().tool(),
+                            receipt.key().normalized_arguments_hash().clone(),
+                        )
+                    }),
                     result: result.clone(),
                 }
             }
@@ -7306,6 +7313,12 @@ fn receipt_state_task_snapshot(
             cancel_requested: common.8,
             terminal_epoch_ms: receipt.terminal_epoch_ms(),
             terminal_digest: receipt.terminal().digest().clone(),
+            choice_request: result.human_choice.as_ref().map(|_| {
+                (
+                    receipt.key().tool(),
+                    receipt.key().normalized_arguments_hash().clone(),
+                )
+            }),
             result: result.clone(),
         },
         ReceiptTerminalOutcome::Failed { reason } => response::V5DaemonTaskSnapshot::Failed {
@@ -7390,6 +7403,10 @@ fn task_store_snapshot(record: &V5StoredInvocationRecord) -> response::V5DaemonT
             cancel_requested: common.8,
             terminal_epoch_ms: *terminal_epoch_ms,
             terminal_digest: terminal_digest.clone(),
+            choice_request: result
+                .human_choice
+                .as_ref()
+                .map(|_| (record.tool, record.normalized_arguments_hash.clone())),
             result: result.clone(),
         },
         V5StoredTask::Failed {
@@ -7471,6 +7488,10 @@ fn pending_reserved_response(receipt: &crate::receipt_ledger::ReservedReceipt) -
 
 /// Identity and times of a Task snapshot built from a terminal.
 struct TerminalSnapshotIdentity {
+    choice_request: Option<(
+        crate::receipt_ledger::V5ToolIdentity,
+        unica_execution_contract::invocation::NormalizedArgumentsHash,
+    )>,
     task_id: unica_execution_contract::invocation::TaskId,
     invocation_id: unica_execution_contract::invocation::InvocationId,
     receipt_key_digest: ReceiptKeyDigest,
@@ -7488,6 +7509,7 @@ fn terminal_task_snapshot(
     terminal: &crate::receipt_ledger::V5CanonicalTerminal,
 ) -> response::V5DaemonTaskSnapshot {
     let TerminalSnapshotIdentity {
+        choice_request,
         task_id,
         invocation_id,
         receipt_key_digest,
@@ -7513,6 +7535,7 @@ fn terminal_task_snapshot(
             cancel_requested,
             terminal_epoch_ms,
             terminal_digest,
+            choice_request: result.human_choice.as_ref().and(choice_request),
             result: result.clone(),
         },
         ReceiptTerminalOutcome::Failed { reason } => response::V5DaemonTaskSnapshot::Failed {
@@ -7558,6 +7581,7 @@ fn joined_task_snapshot(
             .expect("the canonical cancelled terminal has a fixed encoding");
         return terminal_task_snapshot(
             TerminalSnapshotIdentity {
+                choice_request: None,
                 task_id: holder.task_id,
                 invocation_id: holder.invocation_id,
                 receipt_key_digest: holder.receipt_key_digest.clone(),

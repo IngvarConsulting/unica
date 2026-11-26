@@ -372,17 +372,17 @@ class SurfaceCopiesAgreeTests(unittest.TestCase):
             f"{BOOTSTRAP_VERIFICATION} расходится с {LEDGER}",
         )
 
-    def test_bootstrap_direct_check_drops_exactly_the_task_compatibility_tools(self) -> None:
-        # Из каталога 2026-07-28 исключены только чтение состояния и отмена.
-        # Чтение результата остаётся (CTR.WIRE.CANONICAL-TOOL-PROFILES).
+    def test_bootstrap_task_helpers_match_the_catalog_without_native_tasks(self) -> None:
+        # rule: CTR.WIRE.CANONICAL-TOOL-PROFILES
+        # Именно эти имена отличают каталог без Tasks от восьми основных.
         source = BOOTSTRAP_VERIFICATION.read_text(encoding="utf-8")
         block = re.search(
-            r"LEGACY_ONLY_TASK_TOOLS: \[&str; (\d+)\] =\s*\[(.*?)\];", source, re.S
+            r"COMPATIBILITY_TASK_TOOLS: \[&str; (\d+)\] =\s*\[(.*?)\];", source, re.S
         )
-        self.assertIsNotNone(block, f"нет LEGACY_ONLY_TASK_TOOLS в {BOOTSTRAP_VERIFICATION}")
+        self.assertIsNotNone(block, f"нет COMPATIBILITY_TASK_TOOLS в {BOOTSTRAP_VERIFICATION}")
         names = re.findall(r'"(unica\.[a-z0-9.]+)"', block.group(2))
         self.assertEqual(int(block.group(1)), len(names))
-        self.assertEqual(set(names), set(TASK_COMPATIBILITY) - {"unica.task.result"})
+        self.assertEqual(sorted(names), sorted(TASK_COMPATIBILITY), str(BOOTSTRAP_VERIFICATION))
 
 
 # Имя инструмента в тексте: `unica.view`, `unica.task.get`. Перед ним не стоит

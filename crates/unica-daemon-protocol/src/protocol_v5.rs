@@ -1257,6 +1257,7 @@ pub mod task_frame_fixtures {
 
     pub fn completed_task_response(task_id: TaskId) -> serde_json::Value {
         let snapshot = V5DaemonTaskSnapshot::Completed {
+            choice_request: None,
             task_id,
             invocation_id: InvocationId::new(),
             receipt_key_digest: "07".repeat(32).parse().unwrap(),

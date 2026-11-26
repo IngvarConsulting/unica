@@ -37,10 +37,13 @@ LIFECYCLE_SCENARIOS = (
     "rollback",
 )
 # The public surface is normed by arch/rules/mcp/mcp-tool-profiles.md and shown by the
-# ledger its producer renders from the built binary's `tools/list`. The
-# compatibility profile uses the full ledger. Modern clients also read
-# receipts, while Task state and cancellation stay in the legacy profile.
-LEGACY_ONLY_TASK_TOOLS = frozenset({"unica.task.get", "unica.task.cancel"})
+# ledger its producer renders from the built binary's `tools/list`. The proof
+# reads that ledger instead of keeping a copy of the names: a copy here would
+# be a second, unregistered enforcement point that a surface change could not
+# see coming (#699). The compatibility profile is the whole ledger; the native
+# Tasks profile is the ledger without the `unica.task.*` bridge — that split is
+# the contract's own prose, not a list of this script's.
+TASK_TOOL_PREFIX = "unica.task."
 LEDGER_TOOL_HEADING = re.compile(r"^### `(unica\.[a-z0-9.]+)`$", re.M)
 HEX_40 = re.compile(r"^[0-9a-f]{40}$")
 HEX_64 = re.compile(r"^[0-9a-f]{64}$")
@@ -118,12 +121,13 @@ def read_surface_ledger(path: Path) -> list[str]:
 
 
 def surface_profiles(names: list[str]) -> dict[str, frozenset[str]]:
-    published = frozenset(names)
-    if not (LEGACY_ONLY_TASK_TOOLS | {"unica.task.result"}) <= published:
-        raise ProofError("surface ledger omits a Task observer")
+    task_tools = frozenset(name for name in names if name.startswith(TASK_TOOL_PREFIX))
+    if not task_tools:
+        raise ProofError("surface ledger describes no unica.task.* compatibility bridge")
     return {
-        "native": published - LEGACY_ONLY_TASK_TOOLS,
-        "compatibility": published,
+        "native": frozenset(names) - task_tools,
+        "direct": frozenset(names),
+        "compatibility": frozenset(names),
     }
 
 
@@ -183,6 +187,8 @@ def _validate_wire(
     tasks = evidence.get("tasksCapability")
     if profile == "native" and (protocol != "2026-07-28" or tasks != "on"):
         raise ProofError("native profile must use protocol 2026-07-28 with Tasks on")
+    if profile == "direct" and (protocol != "2026-07-28" or tasks != "off"):
+        raise ProofError("direct profile must use protocol 2026-07-28 with Tasks off")
     if profile == "compatibility" and (protocol != "2025-06-18" or tasks != "off"):
         raise ProofError("compatibility profile must use protocol 2025-06-18 with Tasks off")
     return {
@@ -389,6 +395,7 @@ def _validate_lifecycle(
 def evaluate_proof(
     *,
     native_wires: Mapping[str, dict[str, Any]],
+    direct_wires: Mapping[str, dict[str, Any]],
     compatibility_wires: Mapping[str, dict[str, Any]],
     baseline: dict[str, Any],
     assessment: dict[str, Any],
@@ -404,6 +411,7 @@ def evaluate_proof(
     native = _validate_wire_profiles(
         "native", native_wires, profiles["native"], surface_ledger
     )
+    direct = _validate_wire_profiles("direct", direct_wires, profiles["direct"], surface_ledger)
     compatibility = _validate_wire_profiles(
         "compatibility", compatibility_wires, profiles["compatibility"], surface_ledger
     )
@@ -416,7 +424,7 @@ def evaluate_proof(
     )
     all_rc_names = {
         name
-        for surface in (native, compatibility)
+        for surface in (native, direct, compatibility)
         for target in surface["targets"].values()
         for name in target["toolNames"]
     }
@@ -434,7 +442,7 @@ def evaluate_proof(
         "status": "passed",
         "releaseTag": release_tag,
         "package": package_summary,
-        "surfaces": {"native": native, "compatibility": compatibility},
+        "surfaces": {"native": native, "direct": direct, "compatibility": compatibility},
         "legacyBaseline": {
             "tag": baseline_tag,
             "toolCount": len(legacy_names),
@@ -457,6 +465,7 @@ def render_summary(report: dict[str, Any]) -> str:
         f"- Status: `{report['status']}`",
         f"- Release tag input: `{report['releaseTag']}`",
         f"- Native surface: `{report['surfaces']['native']['toolCount']}` tools",
+        f"- Modern surface without Tasks: `{report['surfaces']['direct']['toolCount']}` tools",
         f"- Compatibility surface: `{report['surfaces']['compatibility']['toolCount']}` tools",
         f"- Legacy overlap: `{len(report['legacyBaseline']['overlap'])}`",
         "",
@@ -504,12 +513,16 @@ def main() -> None:
         native_wires = {
             target: read_json(args.wire_dir / f"native-{target}.json") for target in TARGETS
         }
+        direct_wires = {
+            target: read_json(args.wire_dir / f"direct-{target}.json") for target in TARGETS
+        }
         compatibility_wires = {
             target: read_json(args.wire_dir / f"compatibility-{target}.json")
             for target in TARGETS
         }
         report = evaluate_proof(
             native_wires=native_wires,
+            direct_wires=direct_wires,
             compatibility_wires=compatibility_wires,
             baseline=read_json(args.baseline),
             assessment=read_json(args.assessment),
