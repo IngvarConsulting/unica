@@ -478,12 +478,6 @@ impl Session {
             .collect::<Result<Vec<_>>>()?;
         let mut updated = self.breakpoints.clone();
         let installed = updated.remove(address);
-        let mut refreshed = HashMap::new();
-        for (at, (_, points)) in updated {
-            if let Some(id) = self.modules.saved_id(&at)? {
-                refreshed.insert(at, (id, points));
-            }
-        }
         // A previously installed breakpoint can be cleared even after its file was deleted.
         if !breakpoints.is_empty() || installed.is_none() {
             let id = self
@@ -491,22 +485,22 @@ impl Session {
                 .saved_id(address)?
                 .ok_or_else(|| format!("unknown debug module {address}"))?;
             if !breakpoints.is_empty() {
-                refreshed.insert(address.to_owned(), (id, breakpoints.clone()));
+                updated.insert(address.to_owned(), (id, breakpoints.clone()));
             }
         }
-        let ids = refreshed
+        let ids = updated
             .values()
             .map(|(id, _)| id.clone())
             .collect::<Vec<_>>();
         let addresses = self.modules.addresses(&ids)?;
-        for (at, (id, _)) in &refreshed {
-            if addresses.get(id).and_then(Option::as_ref) != Some(at) {
-                return Err(format!("ambiguous or changed debug module {at}").into());
-            }
+        // A different source at an existing address cannot inherit the installed lines or conditions.
+        updated.retain(|at, (id, _)| addresses.get(id).and_then(Option::as_ref) == Some(at));
+        if !breakpoints.is_empty() && !updated.contains_key(address) {
+            return Err(format!("ambiguous or changed debug module {address}").into());
         }
         self.rdbg
-            .breakpoints(refreshed.values().map(|(id, points)| (id, points)))?;
-        self.breakpoints = refreshed;
+            .breakpoints(updated.values().map(|(id, points)| (id, points)))?;
+        self.breakpoints = updated;
         Ok(json!({"breakpoints":breakpoints.iter().map(|bp| {
             json!({"verified":true,"line":bp.line,"source":source})
         }).collect::<Vec<_>>()}))
