@@ -113,12 +113,47 @@ impl CanonicalV13ReadService {
         }
         let (binding, mut admission) = match invocation.admit_apply(&request, cancellation) {
             Ok(admitted) => admitted,
-            Err(ApplyAdmissionError::Other(error)) => {
+            Err(error) => {
+                let message = match error {
+                    ApplyAdmissionError::Other(message) => message,
+                    ApplyAdmissionError::OverlappingSourceRoots {
+                        destination,
+                        destination_path,
+                        dependency,
+                        dependency_path,
+                    } => {
+                        // Redact each value before quoting it so a secret in one path
+                        // cannot erase the other path or the recovery instructions.
+                        let location = |name: &str, path: Option<&str>| {
+                            let name = unica_redaction::redactor(name);
+                            match path {
+                                Some(path) => {
+                                    format!("{name:?} ({:?})", unica_redaction::redactor(path))
+                                }
+                                None => format!("{name:?} (see its configured path)"),
+                            }
+                        };
+                        let destination = location(&destination, destination_path.as_deref());
+                        let dependency = location(&dependency, dependency_path.as_deref());
+                        format!(
+                            concat!(
+                                "The source-set roots for {destination} and {dependency} overlap. ",
+                                "Use distinct parent and extension source sets. ",
+                                "Move the extension to a directory that neither contains nor is inside the parent root ",
+                                "and update its source-set path in v8project.yaml. ",
+                                "When the parent uses the workspace root, first place its sources ",
+                                "in a separate directory inside the workspace."
+                            ),
+                            destination = destination,
+                            dependency = dependency,
+                        )
+                    }
+                };
                 return error_result(
                     Some(request.at().to_string()),
                     RefusalCode::ProviderUnavailable,
-                    error,
-                )
+                    message,
+                );
             }
         };
         let traits = crate::domain::apply::source_set_traits_of_source(

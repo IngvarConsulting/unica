@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+  <Configuration uuid="31040000-0000-4000-8000-000000000002">
+    <Properties>
+      <ObjectBelonging>Adopted</ObjectBelonging>
+      <Name>NestedExtension</Name>
+      <ConfigurationExtensionPurpose>Customization</ConfigurationExtensionPurpose>
+      <NamePrefix>Nested_</NamePrefix>
+      <ConfigurationExtensionCompatibilityMode>Version8_3_27</ConfigurationExtensionCompatibilityMode>
+    </Properties>
+    <ChildObjects/>
+  </Configuration>
+</MetaDataObject>
