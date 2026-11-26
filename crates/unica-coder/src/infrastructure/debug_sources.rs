@@ -14,8 +14,10 @@ use unica_address::{
     source_target::MetadataAddress,
 };
 use unica_source_contract::{
-    debug_source::{DebugModuleId, DebugModuleQuery, DebugModuleSource, ResolveDebugModules},
-    read::{FileStamp, ReadFile, SourceDirectory, SourceSelectionReadPass},
+    debug_source::{
+        DebugModuleId, DebugModuleMatches, DebugModuleQuery, DebugModuleSource, ResolveDebugModules,
+    },
+    read::{FileIdentity, FileStamp, ReadFile, SourceDirectory, SourceSelectionReadPass},
     ProjectSourceSet, SourceFormat, SourceSetKind, SourceSetState,
 };
 use unica_source_designer::{
@@ -35,6 +37,14 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>
 // Only a negative UUID match can avoid reading XML. A candidate source still proves its
 // current descriptor, registration and BSL file. Retain at most one reverse query's observations.
 type OwnerIds = HashMap<PathBuf, (FileStamp, uuid::Uuid)>;
+
+#[derive(PartialEq, Eq)]
+struct DebugSourceRoot {
+    name: String,
+    kind: SourceSetKind,
+    path: PathBuf,
+    identity: Option<FileIdentity>,
+}
 
 pub fn workspace_debug_resolver(
     workspace: &Path,
@@ -59,13 +69,24 @@ pub fn workspace_debug_resolver(
         .into());
     }
     let mut previous = OwnerIds::new();
+    let mut source_sets = Vec::new();
+    let mut revision = 0u64;
     Ok(Box::new(move |query| {
         let mut observed = OwnerIds::new();
-        let found = resolve_modules(&workspace, query, &previous, &mut observed)?;
+        let (modules, roots) = resolve_modules(&workspace, query, &previous, &mut observed)?;
+        if source_sets != roots {
+            revision = revision
+                .checked_add(1)
+                .ok_or("source set revision overflow")?;
+            source_sets = roots;
+        }
         if matches!(query, DebugModuleQuery::Runtime(_)) {
             previous = observed;
         }
-        Ok(found)
+        Ok(DebugModuleMatches {
+            modules,
+            source_sets_revision: revision,
+        })
     }))
 }
 
@@ -74,7 +95,7 @@ fn workspace_debug_modules(
     workspace: &Path,
     query: DebugModuleQuery<'_>,
 ) -> Result<Vec<DebugModuleSource>> {
-    workspace_debug_resolver(workspace, None)?(query)
+    Ok(workspace_debug_resolver(workspace, None)?(query)?.modules)
 }
 
 fn resolve_modules(
@@ -82,7 +103,7 @@ fn resolve_modules(
     query: DebugModuleQuery<'_>,
     previous: &OwnerIds,
     observed: &mut OwnerIds,
-) -> Result<Vec<DebugModuleSource>> {
+) -> Result<(Vec<DebugModuleSource>, Vec<DebugSourceRoot>)> {
     let address = match query {
         DebugModuleQuery::Address(text) => Some(QualifiedAddress::parse(text)?),
         DebugModuleQuery::Runtime(_) => None,
@@ -93,9 +114,9 @@ fn resolve_modules(
     let map = admission.map();
     let canonical = Path::new(&map.workspace_root);
     let mut modules = Vec::new();
+    let mut roots = Vec::new();
     for set in &map.source_sets {
-        if requested_set.is_some_and(|name| name != set.name)
-            || set.source_format != SourceFormat::PlatformXml
+        if set.source_format != SourceFormat::PlatformXml
             || set.source_state != SourceSetState::Supported
             || !matches!(
                 set.kind,
@@ -105,10 +126,19 @@ fn resolve_modules(
             continue;
         }
         let path = lexical_contained_source_root(canonical, &set.path)?;
+        let identity = admission.source_root_identity(path.strip_prefix(canonical)?);
+        roots.push(DebugSourceRoot {
+            name: set.name.clone(),
+            kind: set.kind,
+            path: path.clone(),
+            identity,
+        });
+        if requested_set.is_some_and(|name| name != set.name) {
+            continue;
+        }
         reject_linked_source_root_route(canonical, &path)?;
         let root = open_source_directory(&path)?;
-        let relative = path.strip_prefix(canonical)?;
-        if admission.source_root_identity(relative) != Some(root.identity()) {
+        if identity != Some(root.identity()) {
             return Err(format!("debug source set {} changed during discovery", set.name).into());
         }
         read_modules(
@@ -122,7 +152,7 @@ fn resolve_modules(
         )?;
         root.validate_named_identity()?;
     }
-    Ok(modules)
+    Ok((modules, roots))
 }
 
 fn read_modules(
@@ -660,6 +690,31 @@ mod tests {
     }
 
     #[test]
+    fn address_lookup_reports_a_changed_source_set_list_before_another_reverse_search() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/acceptance/workspace-resolve-resources");
+        let workspace = tempfile::tempdir().unwrap();
+        crate::infrastructure::test_fixtures::copy_tree(&fixture, workspace.path());
+        let address = "main:CommonModule.Probe";
+        let mut resolve = workspace_debug_resolver(workspace.path(), None).unwrap();
+        let original = resolve(DebugModuleQuery::Address(address)).unwrap();
+        let id = &original.modules[0].runtime_id;
+        let before = resolve(DebugModuleQuery::Runtime(std::slice::from_ref(id))).unwrap();
+        assert_eq!(before.modules.len(), 1);
+        crate::infrastructure::test_fixtures::copy_tree(
+            &workspace.path().join("src"),
+            &workspace.path().join("second"),
+        );
+        std::fs::write(workspace.path().join("v8project.yaml"), "source-set:\n  - {name: main, type: CONFIGURATION, path: src}\n  - {name: copy, type: CONFIGURATION, path: second}\n").unwrap();
+        let checked = resolve(DebugModuleQuery::Address(address)).unwrap();
+        assert_eq!(&checked.modules[0].runtime_id, id);
+        assert_ne!(checked.source_sets_revision, before.source_sets_revision);
+        let after = resolve(DebugModuleQuery::Runtime(std::slice::from_ref(id))).unwrap();
+        assert_eq!(after.source_sets_revision, checked.source_sets_revision);
+        assert_eq!(after.modules.len(), 2);
+    }
+
+    #[test]
     fn reverse_query_detects_duplicate_module_created_after_attach() {
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/fixtures/acceptance/workspace-resolve-resources");
@@ -723,6 +778,7 @@ mod tests {
         assert_eq!(
             resolve_modules(workspace.path(), query, &prior, &mut observed)
                 .unwrap()
+                .0
                 .len(),
             1
         );
@@ -734,6 +790,7 @@ mod tests {
         let mut addresses: Vec<_> =
             resolve_modules(workspace.path(), query, &prior, &mut HashMap::new())
                 .unwrap()
+                .0
                 .into_iter()
                 .map(|module| module.address.to_string())
                 .collect();

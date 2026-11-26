@@ -492,14 +492,16 @@ impl Session {
             .values()
             .map(|(id, _)| id.clone())
             .collect::<Vec<_>>();
-        let addresses = self.modules.addresses(&ids)?;
+        let resolved = self.modules.breakpoint_addresses(&ids)?;
         // A different source at an existing address cannot inherit the installed lines or conditions.
-        updated.retain(|at, (id, _)| addresses.get(id).and_then(Option::as_ref) == Some(at));
+        updated.retain(|at, (id, _)| resolved.get(id).and_then(Option::as_ref) == Some(at));
         if !breakpoints.is_empty() && !updated.contains_key(address) {
             return Err(format!("ambiguous or changed debug module {address}").into());
         }
         self.rdbg
             .breakpoints(updated.values().map(|(id, points)| (id, points)))?;
+        self.modules
+            .remember(updated.iter().map(|(at, (id, _))| (id, at.as_str())));
         self.breakpoints = updated;
         Ok(json!({"breakpoints":breakpoints.iter().map(|bp| {
             json!({"verified":true,"line":bp.line,"source":source})

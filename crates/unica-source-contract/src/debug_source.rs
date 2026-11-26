@@ -23,9 +23,15 @@ pub enum DebugModuleQuery<'a> {
     Runtime(&'a [DebugModuleId]),
 }
 
+pub struct DebugModuleMatches {
+    pub modules: Vec<DebugModuleSource>,
+    /// Changes when the set of supported source roots observed by this resolver changes.
+    pub source_sets_revision: u64,
+}
+
 /// A resolver belongs to one DAP session and may retain evidence for unchanged source files.
 pub type ResolveDebugModules = Box<
     dyn FnMut(
         DebugModuleQuery<'_>,
-    ) -> Result<Vec<DebugModuleSource>, Box<dyn std::error::Error + Send + Sync>>,
+    ) -> Result<DebugModuleMatches, Box<dyn std::error::Error + Send + Sync>>,
 >;
