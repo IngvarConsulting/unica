@@ -26,7 +26,19 @@ pub(super) struct WorkspaceMetadata {
     pub(super) directory_field: &'static str,
 }
 
-/// A coding host that can install the Unica plugin.
+/// Per-call channels supplied by host bridges, independently of package layout.
+pub(super) const WORKSPACE_METADATA: &[WorkspaceMetadata] = &[
+    WorkspaceMetadata {
+        capability: "codex/sandbox-state-meta",
+        directory_field: "sandboxCwd",
+    },
+    WorkspaceMetadata {
+        capability: "pro.ingvar/unica-dsh-workspace",
+        directory_field: "cwd",
+    },
+];
+
+/// A coding host with a native plugin.json manifest.
 ///
 /// Everything the bootstrap knows about a particular host lives in one of these
 /// descriptors, so supporting one more host is adding an entry to [`KNOWN`]
@@ -35,8 +47,6 @@ pub(super) struct WorkspaceMetadata {
 pub(super) struct PluginHost {
     /// Project directory variables, including compatible host aliases.
     pub(super) workspace_environment: &'static [&'static str],
-    /// Capability and request field for per-call workspace context.
-    pub(super) workspace_metadata: Option<WorkspaceMetadata>,
     /// Package directory that carries this host's `plugin.json`.
     pub(super) manifest_dir: &'static str,
     /// Whether the manifest must point at `skills/` explicitly. A host that
@@ -59,10 +69,6 @@ pub(super) const KNOWN: &[PluginHost] = &[CODEX, CLAUDE, ZCODE];
 /// the Codex home directory instead.
 const CODEX: PluginHost = PluginHost {
     workspace_environment: &[],
-    workspace_metadata: Some(WorkspaceMetadata {
-        capability: "codex/sandbox-state-meta",
-        directory_field: "sandboxCwd",
-    }),
     manifest_dir: ".codex-plugin",
     expects_skills_pointer: true,
     expects_manifest_servers: true,
@@ -79,7 +85,6 @@ const CODEX: PluginHost = PluginHost {
 /// plugin its own data directory, which is where the runtime cache belongs.
 const CLAUDE: PluginHost = PluginHost {
     workspace_environment: &["CLAUDE_PROJECT_DIR"],
-    workspace_metadata: None,
     manifest_dir: ".claude-plugin",
     expects_skills_pointer: false,
     expects_manifest_servers: false,
@@ -94,7 +99,6 @@ const CLAUDE: PluginHost = PluginHost {
 /// directory. Its compatible Claude aliases are read by the preceding descriptor.
 const ZCODE: PluginHost = PluginHost {
     workspace_environment: &["ZCODE_PROJECT_DIR"],
-    workspace_metadata: None,
     manifest_dir: ".zcode-plugin",
     expects_skills_pointer: true,
     expects_manifest_servers: true,
