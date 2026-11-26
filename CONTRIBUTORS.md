@@ -12,6 +12,7 @@
 | @VictorMurashkin | 23651763 | 1.0 | #2857 | murashkin.victor@gmail.com, 23651763+VictorMurashkin@users.noreply.github.com, murashkin@balanceprof.ru |
 | @Agrajaga | 22379662 | 1.0 | #3189 | soplomiha@gmail.com |
 | @Sejix | 41991967 | 1.0 | #3290 | sejix@yandex.ru, 41991967+Sejix@users.noreply.github.com |
+| @sksibak | 169291335 | 1.0 | #3311 | vsksibak@gmail.com |
 
 ## Без оферты
 
