@@ -968,13 +968,13 @@ mod tests {
         };
 
         let before = unica_workspace::test_support::tree_snapshot(&fixture.source_dir());
-        for attribute_type in [None, Some("String")] {
+        for attribute_type in [None, Some("Boolean")] {
             let error = plan(attribute_type).unwrap_err();
             assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{error:?}");
             assert!(
                 error
                     .to_string()
-                    .contains("requires a TextDocument attribute"),
+                    .contains("requires a String or TextDocument attribute"),
                 "{error:?}"
             );
             assert_eq!(

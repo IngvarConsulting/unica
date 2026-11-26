@@ -1,9 +1,9 @@
 {
  "id": "S-1389-text-document-field-wrong-type",
- "name": "typed-text-document-field-refuses-string-binding",
+ "name": "typed-text-document-field-refuses-boolean-binding",
  "issue": 1389,
  "area": "Формы",
- "task": "Отказать TextDocumentField при привязке к строковому реквизиту; исходная форма не изменяется",
+ "task": "Отказать TextDocumentField при привязке к реквизиту типа Булево; исходная форма не изменяется",
  "wire": [
   {
    "tool": "unica.apply",
@@ -15,8 +15,8 @@
       "args": {
        "items": [
         {
-         "name": "AcceptanceString",
-         "type": "String"
+         "name": "AcceptanceBoolean",
+         "type": "Boolean"
         }
        ]
       }
@@ -65,7 +65,7 @@
         {
          "name": "InvalidTextDocumentField",
          "type": "TextDocumentField",
-         "path": "AcceptanceString"
+         "path": "AcceptanceBoolean"
         }
        ]
       }
@@ -75,7 +75,7 @@
    "expect": [
     "refused"
    ],
-   "refusal": "bad_value: TextDocumentField 'InvalidTextDocumentField' path 'AcceptanceString' requires a TextDocument attribute",
+   "refusal": "bad_value: TextDocumentField 'InvalidTextDocumentField' path 'AcceptanceBoolean' requires a String or TextDocument attribute",
    "assertions": [
     {
      "pointer": "/diagnostics/0/code",
