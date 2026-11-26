@@ -224,6 +224,44 @@ impl<'a> LogicalViewReadAuthority<'a> {
         })
     }
 
+    /// A file missing on the editor's fast path can be an empty logical
+    /// module. Prove that module and point-read its retained source again.
+    pub fn read_missing_editor_module(
+        cancellation: &'a CancellationToken,
+        read: ProviderReadAuthority,
+        profile: PlatformProfile,
+        deadline: ProviderDeadline,
+        module: &QualifiedAddress,
+    ) -> Result<String, ViewError> {
+        let authority = Self::over_artifacts(cancellation, read, profile, deadline);
+        let admitted = authority.snapshot(module)?;
+        let capability = profile.module_capability(module).ok_or_else(|| {
+            ViewError::new(
+                RefusalCode::NotFound,
+                "the address does not name a BSL module",
+            )
+        })?;
+        authority.verify_module_owner(module, capability, &admitted)?;
+        let route = route_logical_address(module, profile)
+            .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
+        if authority.inherited_route_part(&route, &admitted)?.is_some() {
+            return Err(ViewError::new(
+                RefusalCode::NotFound,
+                "an inherited form has no local BSL module",
+            ));
+        }
+
+        let target = module_source_address(module, capability)?;
+        let text = authority.read.module_source(&target)?;
+        if authority.snapshot(module)? != admitted {
+            return Err(ViewError::new(
+                RefusalCode::ConcurrentChange,
+                "source changed during the editor module read",
+            ));
+        }
+        Ok(text.unwrap_or_default())
+    }
+
     /// The saved text of the module at a source-root-relative path, read as
     /// is, without projecting it.
     pub(crate) fn module_source_at_path(&self, path: &str) -> Option<String> {

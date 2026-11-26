@@ -76,6 +76,16 @@ pub trait LspModuleReads: Send + Sync {
     ) -> Result<Box<dyn ModuleSourceRead>, V5LspFailure>;
     /// Чтение сохранённых файлов набора, без буферов какой-либо сессии.
     fn saved(&self, source_set: &str) -> Result<Box<dyn ModuleSourceRead>, V5LspFailure>;
+
+    /// Чтение документа после того, как обычное чтение не нашло его файл.
+    /// Пустой текст допустим только для существующего логического модуля.
+    fn read_missing_document(
+        &self,
+        source_set: &str,
+        module: &ModuleDocument,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<String, V5LspFailure>;
 }
 
 /// Папка редактора, допущенная как рабочая область. Вызывающий держит актора,
@@ -357,7 +367,7 @@ impl LspHost for UnicaLspHost {
             },
             call => {
                 let session = read(&session);
-                answer(&session, call).unwrap_or_else(failed)
+                answer(&session, call, context).unwrap_or_else(failed)
             }
         }
     }
@@ -464,10 +474,14 @@ impl Session {
 
 /// The answer to one editor request, from the document as this session
 /// sees it: its open buffer, otherwise the file.
-fn answer(session: &Session, call: V5LspCall) -> Result<V5LspOutcome, V5LspFailure> {
+fn answer(
+    session: &Session,
+    call: V5LspCall,
+    context: &LspCallContext,
+) -> Result<V5LspOutcome, V5LspFailure> {
     match call {
         V5LspCall::TextDocumentContent { uri } => Ok(V5LspOutcome::Text {
-            text: document_text(session, &uri)?,
+            text: document_text(session, &uri, context)?,
         }),
         V5LspCall::Hover { .. }
         | V5LspCall::Definition { .. }
@@ -560,7 +574,7 @@ fn symbol_answer(
             operation,
         },
         &SymbolRequestContext {
-            deadline: ProviderDeadline::new(context.deadline()),
+            deadline: request_provider_deadline(context),
             cancellation,
         },
     );
@@ -843,7 +857,11 @@ struct CompletionCall {
     completion: Arc<dyn LspCompletion>,
 }
 
-fn completion_call(session: &Session, uri: &str) -> Result<CompletionCall, V5LspFailure> {
+fn completion_call(
+    session: &Session,
+    uri: &str,
+    context: &LspCallContext,
+) -> Result<CompletionCall, V5LspFailure> {
     let location = session
         .documents
         .locate(uri)
@@ -857,7 +875,7 @@ fn completion_call(session: &Session, uri: &str) -> Result<CompletionCall, V5Lsp
         .module()
         .ok_or(V5LspFailure::DocumentUnknown)?;
     Ok(CompletionCall {
-        text: document_text(session, uri)?,
+        text: document_text(session, uri, context)?,
         session: session.documents.session().to_owned(),
         source_set: location.source_set,
         completion: Arc::clone(&space.completion),
@@ -874,7 +892,7 @@ fn completion_answer(
     position: V5LspPosition,
     context: &LspCallContext,
 ) -> Result<V5LspOutcome, V5LspFailure> {
-    let asked = completion_call(&read(session), uri)?;
+    let asked = completion_call(&read(session), uri, context)?;
     let lines = LineIndex::new(&asked.text);
     let offset = lines
         .offset(
@@ -1056,7 +1074,11 @@ fn hover_markdown(answer: &SymbolAnswer<Option<SymbolInfo>>) -> Option<String> {
     Some(text)
 }
 
-fn document_text(session: &Session, uri: &str) -> Result<String, V5LspFailure> {
+fn document_text(
+    session: &Session,
+    uri: &str,
+    context: &LspCallContext,
+) -> Result<String, V5LspFailure> {
     let location = session
         .documents
         .locate(uri)
@@ -1068,14 +1090,30 @@ fn document_text(session: &Session, uri: &str) -> Result<String, V5LspFailure> {
     let read = space
         .reads
         .read(session.documents.session(), &location.source_set)?;
-    session
+    let text = session
         .documents
         .content(uri, read.as_ref())
         .map_err(|error| match error {
             LspDocumentError::Read(_) | LspDocumentError::Overlay(_) => V5LspFailure::Unavailable,
             _ => V5LspFailure::DocumentUnknown,
-        })?
-        .ok_or(V5LspFailure::DocumentUnknown)
+        })?;
+    if let Some(text) = text {
+        return Ok(text);
+    }
+    let module = location
+        .document
+        .module()
+        .ok_or(V5LspFailure::DocumentUnknown)?;
+    space.reads.read_missing_document(
+        &location.source_set,
+        &module,
+        request_provider_deadline(context),
+        context.cancellation(),
+    )
+}
+
+fn request_provider_deadline(context: &LspCallContext) -> ProviderDeadline {
+    ProviderDeadline::new(context.deadline())
 }
 
 /// The analysis of an opened space starts preparing at once, in the
