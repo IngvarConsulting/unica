@@ -41,6 +41,7 @@ pub(crate) struct CatalogSemantics {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunIntent {
+    InfobaseCheck,
     InfobaseCreate,
     SourceImport,
     SourceExport,
@@ -75,6 +76,7 @@ pub struct RunOperation {
 impl RunOperation {
     pub const fn name(&self) -> &'static str {
         match self.intent {
+            RunIntent::InfobaseCheck => "infobase.check",
             RunIntent::InfobaseCreate => "infobase.create",
             RunIntent::SourceImport => "push",
             RunIntent::SourceExport => "pull",
@@ -97,6 +99,7 @@ impl RunOperation {
 
     pub const fn description(&self) -> &'static str {
         match self.intent {
+            RunIntent::InfobaseCheck => "Check login to the configured origin infobase without exporting sources. Success gives platformVersion of the 1C client used for login.",
             RunIntent::InfobaseCreate => {
                 "Create an absent infobase. A file infobase is created with the main configuration of the project (its CONFIGURATION source set) and the runner remembers that set, so the first push loads it only if it changed and loads the other sets in full; a cluster infobase is created empty and the first push loads every set in full."
             }
@@ -170,7 +173,7 @@ impl RunOperation {
             RunIntent::ClientRun => &["clientSession"],
             RunIntent::WebPublish => &["webPublication"],
             RunIntent::DebugServerStart | RunIntent::DebugServerStop => &["debugServerSession"],
-            RunIntent::ExtensionList => &["infobaseRead"],
+            RunIntent::InfobaseCheck | RunIntent::ExtensionList => &["infobaseRead"],
             RunIntent::ExtensionActivate
             | RunIntent::ConfigurationApply
             | RunIntent::ConfigurationReset => &["infobase"],
@@ -179,7 +182,7 @@ impl RunOperation {
 
     pub fn args_schema(&self) -> Option<Value> {
         match self.intent {
-            RunIntent::ExtensionList => {
+            RunIntent::InfobaseCheck | RunIntent::ExtensionList => {
                 Some(json!({"type":"object","additionalProperties":false,"properties":{}}))
             }
             RunIntent::ExtensionActivate => Some(
@@ -544,6 +547,7 @@ fn cursor(description: &'static str) -> Value {
 
 fn run_dictionary() -> Vec<RunOperation> {
     [
+        RunIntent::InfobaseCheck,
         RunIntent::InfobaseCreate,
         RunIntent::SourceImport,
         RunIntent::SourceExport,
@@ -659,6 +663,7 @@ mod tests {
         assert_eq!(
             names,
             [
+                "infobase.check",
                 "infobase.create",
                 "push",
                 "pull",
@@ -1092,6 +1097,7 @@ mod tests {
                 .map(|operation| operation.intent)
                 .collect::<Vec<_>>(),
             [
+                RunIntent::InfobaseCheck,
                 RunIntent::InfobaseCreate,
                 RunIntent::SourceImport,
                 RunIntent::SourceExport,
@@ -1130,6 +1136,7 @@ mod tests {
                 .map(|operation| operation.name())
                 .collect::<Vec<_>>(),
             [
+                "infobase.check",
                 "infobase.create",
                 "push",
                 "pull",
@@ -1253,6 +1260,7 @@ mod tests {
         assert_eq!(
             names,
             [
+                "infobase.check",
                 "infobase.create",
                 "push",
                 "pull",
@@ -1295,6 +1303,7 @@ mod tests {
                 .map(|operation| operation.name())
                 .collect::<Vec<_>>(),
             [
+                "infobase.check",
                 "infobase.create",
                 "push",
                 "pull",
@@ -1335,8 +1344,8 @@ mod tests {
                 .iter()
                 .filter(|operation| operation.implemented)
                 .count()
-                == 14,
-            "the implemented runtime dictionary includes web publication preparation"
+                == 15,
+            "the implemented runtime dictionary includes the infobase login probe"
         );
     }
 

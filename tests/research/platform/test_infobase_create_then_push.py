@@ -25,6 +25,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import queue
@@ -179,7 +180,7 @@ class InfobaseCreateThenPush(unittest.TestCase):
         (self.workspace / "v8project.local.yaml").write_text(
             "infobases:\n"
             "  origin:\n"
-            f"    connection: '/F {self.workspace / 'ib'}'\n",
+            f"    connection: '/F {self.root / 'ib'}'\n",
             encoding="utf-8",
         )
         state = self.root / "state"
@@ -191,6 +192,35 @@ class InfobaseCreateThenPush(unittest.TestCase):
         self.assertNotEqual(
             result.get("isError"), True, f"{step}: {outcome(result)}\nstderr: {self.client.stderr_tail()}"
         )
+
+    def test_check_reads_the_selected_origin_without_changing_workspace_files(self) -> None:
+        def workspace_files() -> dict[Path, str]:
+            return {
+                path.relative_to(self.workspace): hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in self.workspace.rglob("*") if path.is_file()
+            }
+
+        project = self.workspace / "v8project.yaml"
+        pinned = project.read_bytes()
+        # The first lookup must not persist an inferred tools.platform.version.
+        unpinned = "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n"
+        project.write_text(unpinned, encoding="utf-8")
+        initial = workspace_files()
+        preview = self.client.call("unica.run", {"op": "infobase.check", "args": {}, "dryRun": True})
+        self.assert_ok("preview missing origin", preview)
+        missing = self.client.run("infobase.check", {})
+        self.assertIs(missing["structuredContent"]["ok"], False)
+        self.assertEqual(missing["structuredContent"]["data"]["runnerCode"], "infobase_not_found")
+        self.assertEqual(workspace_files(), initial)
+
+        project.write_bytes(pinned)
+        self.assert_ok("create temporary origin", self.client.run("infobase.create", {}))
+        bound = workspace_files()
+        for _ in range(2):
+            checked = self.client.run("infobase.check", {})["structuredContent"]
+            self.assertIs(checked["ok"], True)
+            self.assertEqual(checked["data"]["platformVersion"], os.environ[BUILD_ENV])
+            self.assertEqual(workspace_files(), bound)
 
     def test_a_created_infobase_takes_a_push_without_force(self) -> None:
         created = self.client.run("infobase.create", {})
