@@ -102,7 +102,8 @@ fn read_modules(
         None
     };
 
-    if matches!(query, DebugModuleQuery::Runtime(id) if id.extension != extension) {
+    if matches!(query, DebugModuleQuery::Runtime(ids) if !ids.iter().any(|id| id.extension == extension))
+    {
         return Ok(());
     }
     let owner_filter = address.and_then(|at| at.segments().first());
@@ -114,7 +115,8 @@ fn read_modules(
         extension: extension.as_deref(),
         modules,
     };
-    if owner_filter.is_none_or(|seg| seg.kind() == NodeKind::Module)
+    if index.wants_role(PlatformXmlModuleRole::ManagedApplicationModule)
+        && owner_filter.is_none_or(|seg| seg.kind() == NodeKind::Module)
         && root
             .relative_file_stamp(Path::new("Ext/ManagedApplicationModule.bsl"))?
             .is_some()
@@ -145,7 +147,7 @@ fn read_modules(
         }
         let metadata = format!("{}.{name}", kind.as_str());
         match kind {
-            NodeKind::CommonModule => {
+            NodeKind::CommonModule if index.wants_role(PlatformXmlModuleRole::Module) => {
                 index.read(
                     &format!("{metadata}.Module"),
                     PlatformXmlModuleRole::Module,
@@ -153,7 +155,7 @@ fn read_modules(
                     name,
                 )?;
             }
-            NodeKind::CommonForm => {
+            NodeKind::CommonForm if index.wants_role(PlatformXmlModuleRole::FormModule) => {
                 index.read(
                     &format!("{metadata}.FormModule"),
                     PlatformXmlModuleRole::FormModule,
@@ -161,8 +163,10 @@ fn read_modules(
                     name,
                 )?;
             }
-            _ if has_direct_module_route(kind, ModuleRole::Object)
-                || has_nested_module_role(kind, ModuleRole::Form) =>
+            _ if (index.wants_role(PlatformXmlModuleRole::ObjectModule)
+                && has_direct_module_route(kind, ModuleRole::Object))
+                || (index.wants_role(PlatformXmlModuleRole::FormModule)
+                    && has_nested_module_role(kind, ModuleRole::Form)) =>
             {
                 index.read_owner(&metadata, kind, name)?;
             }
@@ -189,6 +193,16 @@ impl SourceSetModules<'_> {
         matches!(self.query, DebugModuleQuery::FirstSaved { .. }) && !self.modules.is_empty()
     }
 
+    fn wants_role(&self, role: PlatformXmlModuleRole) -> bool {
+        match self.query {
+            DebugModuleQuery::Runtime(ids) => ids.iter().any(|id| {
+                id.extension.as_deref() == self.extension
+                    && Some(id.property) == role_property(role)
+            }),
+            _ => true,
+        }
+    }
+
     fn read_owner(&mut self, metadata: &str, kind: NodeKind, name: &str) -> Result<()> {
         let descriptor_path = descriptor_path(metadata)?;
         if self.root.relative_file_stamp(&descriptor_path)?.is_none() {
@@ -199,7 +213,8 @@ impl SourceSetModules<'_> {
         let owner = metadata_owner(&document, kind.as_str())?;
         self.check_name(owner, name)?;
 
-        if has_direct_module_route(kind, ModuleRole::Object)
+        if self.wants_role(PlatformXmlModuleRole::ObjectModule)
+            && has_direct_module_route(kind, ModuleRole::Object)
             && self.address.is_none_or(|at| {
                 at.segments()
                     .get(1)
@@ -212,7 +227,10 @@ impl SourceSetModules<'_> {
             }
         }
 
-        if !self.first_found() && has_nested_module_role(kind, ModuleRole::Form) {
+        if self.wants_role(PlatformXmlModuleRole::FormModule)
+            && !self.first_found()
+            && has_nested_module_role(kind, ModuleRole::Form)
+        {
             for form in owner
                 .children()
                 .filter(|node| node.has_tag_name("ChildObjects"))
@@ -248,16 +266,38 @@ impl SourceSetModules<'_> {
         kind: NodeKind,
         name: &str,
     ) -> Result<()> {
-        if !self.module_exists(metadata)? {
+        let reverse = matches!(self.query, DebugModuleQuery::Runtime(_));
+        if !reverse && !self.module_exists(metadata)? {
             return Ok(());
         }
         let owner_metadata = metadata
             .rsplit_once('.')
             .ok_or("debug module has no metadata owner")?
             .0;
-        let xml = descriptor(self.root, &descriptor_path(owner_metadata)?)?;
+        let xml = match descriptor(self.root, &descriptor_path(owner_metadata)?) {
+            Ok(xml) => xml,
+            Err(error)
+                if reverse
+                    && error
+                        .downcast_ref::<std::io::Error>()
+                        .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound)
+                    && !self.module_exists(metadata)? =>
+            {
+                return Ok(())
+            }
+            Err(error) => return Err(error),
+        };
         let document = Document::parse(&xml)?;
         let owner = metadata_owner(&document, kind.as_str())?;
+        if let DebugModuleQuery::Runtime(ids) = self.query {
+            let object: uuid::Uuid = owner
+                .attribute("uuid")
+                .ok_or("missing metadata UUID")?
+                .parse()?;
+            if !ids.iter().any(|id| id.object == object) || !self.module_exists(metadata)? {
+                return Ok(());
+            }
+        }
         self.check_name(owner, name)?;
         self.add(metadata, role, owner)
     }
@@ -280,15 +320,7 @@ impl SourceSetModules<'_> {
         role: PlatformXmlModuleRole,
         owner: Node<'_, '_>,
     ) -> Result<()> {
-        let property = match role {
-            PlatformXmlModuleRole::Module => "d5963243-262e-4398-b4d7-fb16d06484f6",
-            PlatformXmlModuleRole::ManagedApplicationModule => {
-                "d22e852a-cf8a-4f77-8ccb-3548e7792bea"
-            }
-            PlatformXmlModuleRole::ObjectModule => "a637f77f-3840-441d-a1c3-699c8c5cb7e0",
-            PlatformXmlModuleRole::FormModule => "32e087ab-1491-49b6-aba7-43571b41ac2b",
-            _ => return Err("unsupported debug module role".into()),
-        };
+        let property = role_property(role).ok_or("unsupported debug module role")?;
         let logical = logical_module_from_metadata(metadata)
             .ok_or("module metadata has no logical address")?;
         let source = DebugModuleSource {
@@ -299,19 +331,30 @@ impl SourceSetModules<'_> {
                     .attribute("uuid")
                     .ok_or("missing metadata UUID")?
                     .parse()?,
-                property: property.parse()?,
+                property,
             },
         };
         let matches = match self.query {
             DebugModuleQuery::FirstSaved { .. } => true,
             DebugModuleQuery::Address(expected) => source.address.to_string() == expected,
-            DebugModuleQuery::Runtime(expected) => &source.runtime_id == expected,
+            DebugModuleQuery::Runtime(expected) => expected.contains(&source.runtime_id),
         };
         if matches {
             self.modules.push(source);
         }
         Ok(())
     }
+}
+
+/// Property UUID in the RDBG module identity distinguishes these four module routes.
+fn role_property(role: PlatformXmlModuleRole) -> Option<uuid::Uuid> {
+    Some(uuid::Uuid::from_u128(match role {
+        PlatformXmlModuleRole::Module => 0xd5963243_262e_4398_b4d7_fb16d06484f6,
+        PlatformXmlModuleRole::ManagedApplicationModule => 0xd22e852a_cf8a_4f77_8ccb_3548e7792bea,
+        PlatformXmlModuleRole::ObjectModule => 0xa637f77f_3840_441d_a1c3_699c8c5cb7e0,
+        PlatformXmlModuleRole::FormModule => 0x32e087ab_1491_49b6_aba7_43571b41ac2b,
+        _ => return None,
+    }))
 }
 
 fn descriptor_path(metadata: &str) -> Result<std::path::PathBuf> {
@@ -436,6 +479,63 @@ mod tests {
     }
 
     #[test]
+    fn reverse_query_detects_duplicate_module_created_after_attach() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/acceptance/workspace-resolve-resources");
+        let workspace = tempfile::tempdir().unwrap();
+        crate::infrastructure::test_fixtures::copy_tree(&fixture, workspace.path());
+        let src = workspace.path().join("src");
+        let id = workspace_debug_modules(
+            workspace.path(),
+            DebugModuleQuery::Address("main:CommonModule.Probe"),
+        )
+        .unwrap()
+        .pop()
+        .unwrap()
+        .runtime_id;
+        let matches = || {
+            workspace_debug_modules(
+                workspace.path(),
+                DebugModuleQuery::Runtime(std::slice::from_ref(&id)),
+            )
+            .unwrap()
+        };
+        assert_eq!(matches().len(), 1);
+        let config = src.join("Configuration.xml");
+        let xml = std::fs::read_to_string(&config).unwrap();
+        std::fs::write(
+            config,
+            xml.replace(
+                "</ChildObjects>",
+                "<CommonModule>Duplicate</CommonModule></ChildObjects>",
+            ),
+        )
+        .unwrap();
+        let module_dir = src.join("CommonModules");
+        crate::infrastructure::test_fixtures::copy_tree(
+            &module_dir.join("Probe"),
+            &module_dir.join("Duplicate"),
+        );
+        let original = std::fs::read_to_string(module_dir.join("Probe.xml")).unwrap();
+        std::fs::write(
+            module_dir.join("Duplicate.xml"),
+            original.replace("Probe", "Duplicate"),
+        )
+        .unwrap();
+        let mut addresses: Vec<_> = matches()
+            .into_iter()
+            .map(|module| module.address.to_string())
+            .collect();
+        addresses.sort();
+        assert_eq!(
+            addresses,
+            ["main:CommonModule.Duplicate", "main:CommonModule.Probe"]
+        );
+        std::fs::remove_file(module_dir.join("Duplicate/Ext/Module.bsl")).unwrap();
+        assert_eq!(matches().len(), 1);
+    }
+
+    #[test]
     fn workspace_distinguishes_borrowed_module_from_its_base() {
         let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/fixtures/acceptance/workspace-borrowed");
@@ -456,9 +556,11 @@ mod tests {
                 .into_iter()
                 .next()
                 .unwrap();
-            let reverse =
-                workspace_debug_modules(&workspace, DebugModuleQuery::Runtime(&module.runtime_id))
-                    .unwrap();
+            let reverse = workspace_debug_modules(
+                &workspace,
+                DebugModuleQuery::Runtime(std::slice::from_ref(&module.runtime_id)),
+            )
+            .unwrap();
             assert_eq!(reverse.len(), 1);
             assert_eq!(reverse[0].address.to_string(), address);
             assert_eq!(module.runtime_id.extension.as_deref(), extension);

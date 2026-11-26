@@ -10,7 +10,6 @@ use crate::{ResolveModules, Result};
 pub(crate) struct Modules {
     root: PathBuf,
     resolve: ResolveModules,
-    known: HashMap<DebugModuleId, String>,
 }
 
 impl Modules {
@@ -28,7 +27,6 @@ impl Modules {
         Ok(Self {
             root: root.to_owned(),
             resolve,
-            known: HashMap::new(),
         })
     }
 
@@ -41,41 +39,26 @@ impl Modules {
         Ok(first)
     }
 
-    pub fn id(&mut self, address: &str) -> Result<DebugModuleId> {
-        let source = self
+    pub fn saved_id(&self, address: &str) -> Result<Option<DebugModuleId>> {
+        Ok(self
             .lookup(DebugModuleQuery::Address(address))?
-            .ok_or_else(|| format!("unknown debug module {address}"))?;
-        let id = source.runtime_id;
-        if let Some(previous) = self.known.get(&id) {
-            if previous != address
-                && self
-                    .lookup(DebugModuleQuery::Address(previous))?
-                    .is_some_and(|source| source.runtime_id == id)
-            {
-                return Err(format!("ambiguous debug module {address}").into());
-            }
-        }
-        self.known
-            .retain(|known_id, known_address| known_id == &id || known_address != address);
-        self.known.insert(id.clone(), address.to_owned());
-        Ok(id)
+            .map(|source| source.runtime_id))
     }
 
-    pub fn address(&mut self, id: &DebugModuleId) -> Result<Option<String>> {
-        if let Some(address) = self.known.get(id) {
-            if self
-                .lookup(DebugModuleQuery::Address(address))?
-                .is_some_and(|source| &source.runtime_id == id)
-            {
-                return Ok(Some(address.clone()));
+    /// A runtime identity with multiple saved owners cannot name a source file.
+    pub fn addresses(
+        &self,
+        ids: &[DebugModuleId],
+    ) -> Result<HashMap<DebugModuleId, Option<String>>> {
+        let mut addresses = HashMap::new();
+        if !ids.is_empty() {
+            for source in (self.resolve)(&self.root, DebugModuleQuery::Runtime(ids))? {
+                addresses
+                    .entry(source.runtime_id)
+                    .and_modify(|value| *value = None)
+                    .or_insert_with(|| Some(source.address.to_string()));
             }
         }
-        self.known.remove(id);
-        let Some(source) = self.lookup(DebugModuleQuery::Runtime(id))? else {
-            return Ok(None);
-        };
-        let address = source.address.to_string();
-        self.known.insert(id.clone(), address.clone());
-        Ok(Some(address))
+        Ok(addresses)
     }
 }

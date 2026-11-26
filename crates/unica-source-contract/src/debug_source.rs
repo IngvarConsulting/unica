@@ -21,5 +21,5 @@ pub struct DebugModuleSource {
 pub enum DebugModuleQuery<'a> {
     FirstSaved { source_set: Option<&'a str> },
     Address(&'a str),
-    Runtime(&'a DebugModuleId),
+    Runtime(&'a [DebugModuleId]),
 }
