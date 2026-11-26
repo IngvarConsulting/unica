@@ -144,20 +144,15 @@ fn a_development_checkout_has_nothing_to_prefetch_and_says_so() {
     fs::create_dir_all(&plugin_root).unwrap();
     fs::write(
         plugin_root.join("runtime-manifest.json"),
-        serde_json::to_vec(&serde_json::json!({
-            "schemaVersion": 2,
-            "pluginVersion": "0.8.0",
-            "development": true,
-            "source": { "repository": "https://github.com/IngvarConsulting/unica", "commit": "workspace" },
-            "release": { "repository": "https://github.com/IngvarConsulting/unica", "tag": "workspace" },
-            "artifacts": {}
-        })).unwrap(),
-    ).unwrap();
+        include_str!("../../../../plugins/unica/runtime-manifest.json"),
+    )
+    .unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_unica-bootstrap"))
         .arg("prefetch")
         .arg("--plugin-root")
         .arg(&plugin_root)
         .env("UNICA_RUNTIME_CACHE_DIR", &cache)
+        .env("UNICA_PROVIDER_STATE_DIR", scratch.join("state"))
         .output()
         .expect("bootstrap process must start");
 
@@ -170,6 +165,10 @@ fn a_development_checkout_has_nothing_to_prefetch_and_says_so() {
     assert!(
         stderr.contains("is a development manifest: it publishes no artifacts"),
         "отказ обязан назвать причину: {stderr}"
+    );
+    assert!(
+        !cache.exists(),
+        "отказ происходит до создания кеша загрузки"
     );
     fs::remove_dir_all(scratch).unwrap();
 }

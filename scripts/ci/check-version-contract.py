@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the release version shared by Unica package contracts."""
+"""Validate Unica's release version labels and development manifest marker."""
 
 from __future__ import annotations
 
@@ -94,13 +94,24 @@ def main() -> int:
     parser.add_argument("--expected")
     args = parser.parse_args()
 
+    repo_root = args.repo_root.resolve()
     try:
-        values = read_version_contract(args.repo_root.resolve())
+        values = read_version_contract(repo_root)
+        manifest_path = repo_root / "plugins" / "unica" / "runtime-manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (KeyError, OSError, ValueError, json.JSONDecodeError, tomllib.TOMLDecodeError) as error:
         print(f"version contract error: {error}", file=sys.stderr)
         return 1
 
     errors = validate_version_contract(values, expected=args.expected)
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("development") is not True
+        or manifest.get("pluginVersion") != "workspace"
+    ):
+        errors.append(
+            "plugins/unica/runtime-manifest.json must use development: true and pluginVersion: workspace"
+        )
     if errors:
         for error in errors:
             print(error, file=sys.stderr)
