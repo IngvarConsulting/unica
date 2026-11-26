@@ -5,10 +5,13 @@ public stdio MCP server named `unica`. Prompt-visible skills call native
 `unica.*` tools; bundled analyzers, runners, indexes, and the standards adapter
 remain private implementation details.
 
-One plugin directory serves Codex, Claude Code, and ZCode. Their native
-manifests are `.codex-plugin/plugin.json`, `.claude-plugin/plugin.json`, and
-`.zcode-plugin/plugin.json`; all use the same `.mcp.json`, skills, and runtime.
-ZCode prefers its native manifest rather than loading a second plugin.
+One plugin directory serves Codex, Claude Code, ZCode, and DeepSeek Harness.
+Their native manifests are `.codex-plugin/plugin.json`,
+`.claude-plugin/plugin.json`, `.zcode-plugin/plugin.json`, and the DSH bundle
+manifest `package.json`; all use the same `.mcp.json`, skills, and runtime.
+ZCode prefers its native manifest rather than loading a second plugin. DSH reads
+the bundle patch `dsh/cordis.patch.yml`, which declares the same MCP server and
+the `skills/` directory for the DSH loader.
 
 ## Public installation
 
@@ -82,6 +85,27 @@ schema. A successful package build or direct MCP `tools/list` does not prove
 that the model received the schema unchanged; the fresh-task trial is a separate
 acceptance step. The reported optional-field discrepancy is tracked in
 [#1032](https://github.com/IngvarConsulting/unica/issues/1032).
+
+### DeepSeek Harness
+
+DSH installs a plugin as an npm package, so the plugin root carries
+`package.json` beside the host manifests; its `dsh.bundle.patch` names
+`dsh/cordis.patch.yml`. That patch declares one stdio MCP server named `unica`
+and one skill root, so the `unica.*` tools and the Unica skills reach every
+session; DSH derives its own names for the tools from the server name.
+
+In **Plugins → Add plugin**, choose this directory. DSH also installs the same
+package from a Git commit, which is how `unica-marketplace` serves it: the
+catalog entry names `path:/plugins/unica`, so the plugin root is the installed
+package and nothing outside it is fetched.
+
+DSH starts that server once per Host and keeps the directory the Host was
+started in as the project, because its MCP bridge sends neither request metadata
+nor `roots/list`. Tools write only inside that project, so start DSH in the
+project you are working on, or set `UNICA_PROJECT_DIR` in the Host environment.
+The first start downloads and verifies the pinned runtime under the DSH home and
+can take a few minutes; later starts reuse it. The skills stay in the catalog
+regardless of that choice.
 
 ## Release candidates
 

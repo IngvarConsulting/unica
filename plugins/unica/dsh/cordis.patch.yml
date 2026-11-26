@@ -1,0 +1,48 @@
+# Unica for DeepSeek Harness: one stdio MCP server and one skill root.
+#
+# DSH has no default discovery for either surface, so both are declared here.
+# Everything Unica-specific stays in the plugin itself: this patch only points
+# DSH at it. `!!js` runs as `with (ctx) { eval(expr) }` in the Loader, so
+# `baseUrl` is the file URL of this patch and `process` is the Host's process.
+# Paths are resolved through the installed package rather than through `baseUrl`
+# itself, so the same expression works whether the row is read from this patch
+# or from a higher profile layer.
+#
+# `command` runs the launcher under the Host's own Node-compatible executable.
+# Under the Desktop build that is the Electron binary, which behaves as Node
+# only with `ELECTRON_RUN_AS_NODE`; the variable is inert for a plain Node.
+#
+# DSH's MCP bridge sends neither request metadata nor `roots/list`, so the
+# launcher hands the project to Unica through `UNICA_PROJECT_DIR`; the packaged
+# runtime accepts that override and refuses a bare launch cwd.
+#
+# The runtime cache and the provider state are host-neutral overrides of the
+# bootstrap. DSH keeps them under its home, which the MCP bridge scrubs from the
+# child environment, so the paths are resolved here instead.
+- insert:
+    - id: unica-mcp
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: unica
+        transport: stdio
+        command: !!js process.execPath
+        args:
+          - !!js process.getBuiltinModule('node:path').join(process.getBuiltinModule('node:path').dirname(process.getBuiltinModule('node:module').createRequire(baseUrl).resolve('@ingvarconsulting/unica/package.json')), 'dsh', 'launch.mjs')
+        env:
+          ELECTRON_RUN_AS_NODE: '1'
+          UNICA_RUNTIME_CACHE_DIR: !!js process.getBuiltinModule('node:path').join(process.env.DSH_HOME || process.getBuiltinModule('node:path').join(process.getBuiltinModule('node:os').homedir(), '.dsh'), 'unica', 'runtimes')
+          UNICA_PROVIDER_STATE_DIR: !!js process.getBuiltinModule('node:path').join(process.env.DSH_HOME || process.getBuiltinModule('node:path').join(process.getBuiltinModule('node:os').homedir(), '.dsh'), 'unica', 'provider-state')
+        # A cold runtime install downloads the pinned tools inside the host's
+        # MCP startup budget; the package declares its own budget for it.
+        startupTimeoutMs: 900000
+        failOnStartupError: false
+    - id: unica-skills
+      name: '@deepseek-ai/dsh-skill-filesystem'
+      config:
+        providerName: unica
+        # Only Unica's own skills: the project, custom and user roots stay with
+        # the provider the shipped presets mount.
+        includeDefaultRoots: false
+        watch: false
+        customSkillDirs:
+          - !!js process.getBuiltinModule('node:path').join(process.getBuiltinModule('node:path').dirname(process.getBuiltinModule('node:module').createRequire(baseUrl).resolve('@ingvarconsulting/unica/package.json')), 'skills')

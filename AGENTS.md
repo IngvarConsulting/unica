@@ -33,8 +33,10 @@
 
 Контракт пакета задают `plugins/unica/.mcp.json`, манифесты
 `plugins/unica/.codex-plugin/plugin.json`,
-`plugins/unica/.claude-plugin/plugin.json` и
-`plugins/unica/.zcode-plugin/plugin.json`, `plugins/unica/third-party/tools.lock.json`.
+`plugins/unica/.claude-plugin/plugin.json`,
+`plugins/unica/.zcode-plugin/plugin.json` и бандл DeepSeek Harness
+`plugins/unica/package.json` с патчем `plugins/unica/dsh/cordis.patch.yml`,
+`plugins/unica/third-party/tools.lock.json`.
 Спецификации XML 1С и JSON-DSL — в `plugins/unica/references/specs/`.
 Расхождение с эмиттером разбирайте по содержательному тесту, фикстуре или
 официальному дампу платформы. Происхождение адаптированных апстримов описано

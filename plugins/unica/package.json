@@ -1,0 +1,39 @@
+{
+  "name": "@ingvarconsulting/unica",
+  "version": "0.17.0",
+  "private": true,
+  "description": "Practical 1C:Enterprise development workflows: the unica MCP server and the Unica skills.",
+  "type": "module",
+  "license": "LGPL-3.0-or-later",
+  "homepage": "https://github.com/IngvarConsulting/unica",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/IngvarConsulting/unica.git"
+  },
+  "exports": {
+    "./package.json": "./package.json",
+    "./locale/*.json": "./dsh/locale/*.json",
+    "./icon": "./assets/unica-icon.svg"
+  },
+  "files": [
+    ".claude-plugin",
+    ".codex-plugin",
+    ".mcp.json",
+    ".zcode-plugin",
+    "ATTRIBUTIONS.md",
+    "LICENSE",
+    "README.md",
+    "assets",
+    "bootstrap",
+    "dsh",
+    "references",
+    "runtime-manifest.json",
+    "skills",
+    "third-party"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./dsh/cordis.patch.yml"
+    }
+  }
+}
