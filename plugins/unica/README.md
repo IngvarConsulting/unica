@@ -88,24 +88,16 @@ acceptance step. The reported optional-field discrepancy is tracked in
 
 ### DeepSeek Harness
 
-DSH installs a plugin as an npm package, so the plugin root carries
-`package.json` beside the host manifests; its `dsh.bundle.patch` names
-`dsh/cordis.patch.yml`. That patch declares one stdio MCP server named `unica`
-and one skill root, so the `unica.*` tools and the Unica skills reach every
-session; DSH derives its own names for the tools from the server name.
+Install the packaged `plugins/unica` directory from the Unica release in a DSH
+profile using **Plugins → Add plugin**. The package registers the Unica skills
+and exposes the MCP tools to agents in that profile. On first use, the native
+bootstrap downloads and verifies the runtime pinned by the package.
 
-In **Plugins → Add plugin**, choose this directory. DSH also installs the same
-package from a Git commit, which is how `unica-marketplace` serves it: the
-catalog entry names `path:/plugins/unica`, so the plugin root is the installed
-package and nothing outside it is fetched.
-
-DSH starts that server once per Host and keeps the directory the Host was
-started in as the project, because its MCP bridge sends neither request metadata
-nor `roots/list`. Tools write only inside that project, so start DSH in the
-project you are working on, or set `UNICA_PROJECT_DIR` in the Host environment.
-The first start downloads and verifies the pinned runtime under the DSH home and
-can take a few minutes; later starts reuse it. The skills stay in the catalog
-regardless of that choice.
+Choose the workspace in DSH before asking the agent to use Unica. The bridge
+sends the calling session's workspace with each tool request. Sessions sharing
+a host can therefore work on different projects. To verify the selection, ask
+the agent to read the workspace with `unica.view` and check the returned
+`workspaceRoot`.
 
 ## Release candidates
 

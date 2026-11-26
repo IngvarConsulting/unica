@@ -632,6 +632,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
                 manifest.parent.mkdir(parents=True)
                 version = "0.13.0-rc.2" if directory == ".zcode-plugin" else "0.13.0-rc.3"
                 manifest.write_text(json.dumps({"version": version}), encoding="utf-8")
+            (plugin_root / "package.json").write_text(json.dumps({"version": "0.13.0-rc.3"}), encoding="utf-8")
             with self.assertRaisesRegex(SystemExit, "host manifests disagree.*zcode=0.13.0-rc.2"):
                 module.read_release_version(plugin_root)
 
