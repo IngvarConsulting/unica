@@ -33,6 +33,7 @@ mod v13_service;
 mod v13_source_export;
 mod v13_source_import;
 mod v13_source_set_name;
+mod v13_web_run;
 mod v13_workspace_bootstrap;
 
 #[cfg(test)]
