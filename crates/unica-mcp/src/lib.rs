@@ -104,6 +104,8 @@ enum SurfaceToolOutcome {
     Legacy(Box<OperationResult>),
     /// A compatibility Task tool answered with a canonical result to project.
     Canonical(unica_execution_contract::invocation::DomainResult),
+    /// An accepted push continues independently of the current MCP call.
+    PendingReceipt(unica_execution_contract::invocation::DomainResult),
     CompatibilityTask {
         result: CompatibilityTaskResult,
         timing: TaskObservationTimer,
@@ -358,13 +360,14 @@ impl UnicaServer {
                 }
                 other => other,
             };
+            let handed_off = matches!(&outcome, Ok(SurfaceToolOutcome::PendingReceipt(_)));
             match project_surface_outcome(self, tool, outcome, response_budget, started)? {
                 CallToolResponse::Complete(result) => {
-                    let step = human_choice::StepReport::of(tool, arguments, &result);
+                    let step = human_choice::StepReport::of(tool, arguments, &result, handed_off);
                     let refused = step.refused;
                     steps.push(step);
                     last = Some(result);
-                    if refused {
+                    if refused || handed_off {
                         break;
                     }
                 }
@@ -466,9 +469,9 @@ fn execute_surface_tool(
             if let Some(request) =
                 crate::application::v13::task_tools::parse_task_tool_call(name, arguments)
             {
-                if delivery != TaskDelivery::Receipt {
+                if delivery != TaskDelivery::Receipt && name != "unica.task.result" {
                     return Err(ErrorData::invalid_params(
-                        "compatibility task tools serve only protocol revisions before 2026-07-28",
+                        "compatibility task state and cancellation serve only protocol revisions before 2026-07-28",
                         None,
                     ));
                 }
@@ -499,6 +502,9 @@ fn execute_surface_tool(
                         &cancellation,
                         progress.as_ref(),
                         host.response_budget,
+                        tool == V5ToolIdentity::Run
+                            && arguments.get("op").and_then(Value::as_str) == Some("push")
+                            && arguments.get("dryRun").and_then(Value::as_bool) == Some(false),
                     ),
                     TaskDelivery::Receipt => Ok(SurfaceToolOutcome::Canonical(
                         project_compatibility_snapshot(&snapshot, CompatibilityProjection::State),
@@ -517,9 +523,10 @@ use crate::application::v13::task_tools::{
 const TASK_WAIT_PROGRESS_META_KEY: &str = "unica/taskWait";
 
 /// A 2026-07-28 call without Tasks in its own request cannot take a Task
-/// (#3220): the call waits for the Task to end and answers with its result,
-/// the same result `unica.task.result` returns. Each wait lasts one handoff
-/// window and publishes progress for a client that gave a progressToken. A
+/// (#3220): the call waits for the Task to end and answers with its result.
+/// An executing push still pending after one observation hands off a receipt
+/// with the same taskId and a result tool visible to this client (#3299).
+/// Each wait publishes progress for a client that gave a progressToken. A
 /// cancellation of the call has already asked the daemon to cancel the
 /// Task through the call's own control; the wait asks once more and ends.
 /// A question the Task ended with is asked the way a direct refusal asks
@@ -536,22 +543,28 @@ fn await_task_result(
     cancellation: &CanonicalCancellation,
     progress: &dyn ProgressSink,
     budget: unica_bootstrap::ResponseBudget,
+    handoff_after_wait: bool,
 ) -> Result<SurfaceToolOutcome, ErrorData> {
     use unica_execution_contract::invocation::InvocationStatus;
 
     let task_id = snapshot.task_id();
     let wait_ms = u64::try_from(unica_execution::invocation::INVOCATION_HANDOFF_WINDOW.as_millis())
         .unwrap_or(u64::MAX);
+    let handoff_deadline =
+        handoff_after_wait.then(|| FrontendInvocationDeadline::new(Instant::now(), None));
+    let mut observed = false;
     let mut waits = 0_u32;
     let mut lost_since = None::<Instant>;
     while matches!(
         snapshot.status(),
         InvocationStatus::Queued | InvocationStatus::Working
     ) {
-        let deadline = FrontendInvocationDeadline::new(Instant::now(), None);
         // A cancelled request gets no answer: ask once more for the Task to
         // stop and end the wait, so a draining frontend is not held by it.
         if cancellation.requested() {
+            // The exact-request cancellation may fail on a replaced daemon.
+            // Its fallback needs a budget even when observation used its own.
+            let deadline = FrontendInvocationDeadline::new(Instant::now(), None);
             let _ = (router.cancel)(task_id, deadline);
             return Ok(SurfaceToolOutcome::Canonical(
                 unica_execution_contract::invocation::DomainResult::canonical_rejection(
@@ -559,6 +572,13 @@ fn await_task_result(
                     unica_refusal::RefusalCode::Cancelled,
                     "the call was cancelled while it waited for its Task",
                 ),
+            ));
+        }
+        let deadline = handoff_deadline
+            .unwrap_or_else(|| FrontendInvocationDeadline::new(Instant::now(), None));
+        if handoff_after_wait && (observed || Instant::now() >= deadline.transport_cutoff()) {
+            return Ok(SurfaceToolOutcome::PendingReceipt(
+                project_compatibility_snapshot(&snapshot, CompatibilityProjection::State),
             ));
         }
         waits = waits.saturating_add(1);
@@ -571,7 +591,10 @@ fn await_task_result(
         });
         snapshot = match (router.wait)(task_id, wait_ms, deadline, CanonicalCancellation::default())
         {
-            Ok(next) if next.task_id() == task_id => next,
+            Ok(next) if next.task_id() == task_id => {
+                observed = true;
+                next
+            }
             Ok(_) => {
                 unica_error_reporting::capture_internal(
                     unica_error_reporting::InternalError::TaskProtocolInvariant,
@@ -594,7 +617,15 @@ fn await_task_result(
                 if recoverable
                     && since.elapsed() < unica_execution::invocation::INVOCATION_HANDOFF_WINDOW
                 {
-                    std::thread::sleep(Duration::from_millis(snapshot.poll_interval_ms()));
+                    let retry_after = Duration::from_millis(snapshot.poll_interval_ms());
+                    let retry_after = handoff_deadline.map_or(retry_after, |deadline| {
+                        retry_after.min(
+                            deadline
+                                .transport_cutoff()
+                                .saturating_duration_since(Instant::now()),
+                        )
+                    });
+                    std::thread::sleep(retry_after);
                     continue;
                 }
                 return Ok(SurfaceToolOutcome::Canonical(unobservable_task(task_id)));
@@ -867,19 +898,20 @@ fn v13_tool_definitions(profile: V13TaskProfile) -> &'static [Tool] {
                 )
             })
             .collect::<Vec<_>>();
-        if profile == V13TaskProfile::Compatibility {
-            tools.extend(
-                crate::application::v13::task_tools::compatibility_tool_contracts()
-                    .into_iter()
-                    .map(|contract| {
-                        v13_tool_definition(
-                            contract.name,
-                            Some(contract.description),
-                            contract.input_schema,
-                        )
-                    }),
-            );
-        }
+        tools.extend(
+            crate::application::v13::task_tools::compatibility_tool_contracts()
+                .into_iter()
+                .filter(|contract| {
+                    profile == V13TaskProfile::Compatibility || contract.name == "task.result"
+                })
+                .map(|contract| {
+                    v13_tool_definition(
+                        contract.name,
+                        Some(contract.description),
+                        contract.input_schema,
+                    )
+                }),
+        );
         tools
     };
     match profile {
@@ -1052,9 +1084,9 @@ impl ServerHandler for UnicaServer {
         let (all, modern) = match &self.router {
             SurfaceToolRouter::LegacyV12(_) => (all_tool_definitions(), modern_peer(&context)),
             SurfaceToolRouter::CanonicalV13(_) => {
-                // The catalog follows the protocol revision, not one request's
-                // Tasks declaration: a 2026-07-28 client may declare Tasks in
-                // `tools/list` and not in `tools/call` (#3220).
+                // The catalog follows the protocol revision: a client may
+                // declare Tasks in `tools/list` and omit them in `tools/call`.
+                // Both modern calls can use the listed result tool (#3299).
                 let profile = if modern_protocol_authority(&context) {
                     V13TaskProfile::Native
                 } else {
@@ -1196,13 +1228,16 @@ impl ServerHandler for UnicaServer {
         .await;
         let (mut refusal, mut choice) = match outcome {
             Ok(SurfaceToolOutcome::Choice { refusal, choice }) => (refusal, choice),
-            // A Task that ended in a refusal with a question asks it when the
-            // client reads the result (INV.MCP.HUMAN-CHOICE). The stored result
-            // stays as it is: the refusal is the answer without a choice.
+            // Legacy observation keeps its question flow. A modern receipt
+            // read has no verified origin workspace for a chosen mutation,
+            // so it returns the stored refusal without asking here.
             Ok(SurfaceToolOutcome::CompatibilityTask {
                 result: CompatibilityTaskResult::Snapshot(result),
                 timing,
-            }) if !result.ok && result.human_choice.is_some() => {
+            }) if !result.ok
+                && result.human_choice.is_some()
+                && task_delivery(&context) == TaskDelivery::Receipt =>
+            {
                 let mut choice = result.human_choice.clone().expect("checked above");
                 // Only a person answers a question of a Task: a client that
                 // cannot ask gets the stored refusal, nothing runs unasked.
@@ -1786,7 +1821,7 @@ fn project_surface_outcome(
                 .map(CallToolResponse::from)
                 .map_err(crate::task_projection::projection_error)
         }
-        SurfaceToolOutcome::Canonical(result) => {
+        SurfaceToolOutcome::Canonical(result) | SurfaceToolOutcome::PendingReceipt(result) => {
             crate::task_projection::call_tool_result(&result, response_budget)
                 .map(CallToolResponse::from)
                 .map_err(crate::task_projection::projection_error)
