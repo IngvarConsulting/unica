@@ -1217,7 +1217,7 @@ pub fn emit_meta_enum_properties(
     ));
     emit_meta_standard_attributes(lines, indent, "Enum");
     lines.push(format!("{indent}<Characteristics/>"));
-    lines.push(format!("{indent}<QuickChoice>false</QuickChoice>"));
+    lines.push(format!("{indent}<QuickChoice>true</QuickChoice>"));
     lines.push(format!("{indent}<ChoiceMode>BothWays</ChoiceMode>"));
     for tag in [
         "DefaultListForm",

@@ -1,0 +1,80 @@
+{
+  "id": "S-3336-enum-quick-choice",
+  "issue": 3336,
+  "area": "Создание и удаление объектов",
+  "task": "Создать перечисление по виду и имени. Прочитать сохранённый план без записи и проверить быстрый выбор в XML и карточке нового объекта.",
+  "workspace": "tests/fixtures/acceptance/workspace-all-kinds",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": ["ok"],
+      "captures": {
+        "configuration": {"pointer": "/next/0/args/at"},
+        "originalConfiguration": {"kind": "sha256", "file": "src/Configuration.xml"}
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {"at": "main:Configuration.Can.object.create"},
+      "expect": ["ok"],
+      "assertions": [
+        {"pointer": "/data/props/op", "eq": "object.create"}
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.configuration",
+        "ops": [
+          {
+            "op": "object.create",
+            "args": {"values": {"kind": "Enum", "name": "QuickChoiceProbe"}}
+          }
+        ]
+      },
+      "expect": ["ok"],
+      "captures": {
+        "token": {"pointer": "/data/executionToken"}
+      }
+    },
+    {
+      "tool": "unica.diff",
+      "args": {"executionToken": "$capture.token"},
+      "expect": ["ok"],
+      "assertions": [
+        {"pointer": "/data/truncated", "eq": false}
+      ],
+      "fileAssertions": [
+        {"path": "src/Configuration.xml", "kind": "sha256", "eq": "$capture.originalConfiguration"},
+        {"path": "src/Enums/QuickChoiceProbe.xml", "kind": "exists", "eq": false}
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {"executionToken": "$capture.token"},
+      "expect": ["ok"],
+      "fileAssertions": [
+        {
+          "path": "src/Enums/QuickChoiceProbe.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Enum/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}QuickChoice",
+          "eq": {
+            "$reference": {
+              "path": "src/Enums/LanguageAware.xml",
+              "select": "./{http://v8.1c.ru/8.3/MDClasses}Enum/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}QuickChoice"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {"at": "main:Enum.QuickChoiceProbe"},
+      "expect": ["ok"],
+      "assertions": [
+        {"pointer": "/data/props/QuickChoice", "eq": true}
+      ]
+    }
+  ]
+}
