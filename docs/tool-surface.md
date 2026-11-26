@@ -201,7 +201,7 @@ Idempotently request cancellation and return the current durable Task state with
 
 **Сценарии:**
 
-- Отменить Task в сессии прежней версии протокола
+- Запросить отмену задания по квитанции в профиле без Tasks
 
 ### `unica.task.get`
 
@@ -217,7 +217,7 @@ Read the current durable Task state immediately without waiting or re-running th
 
 **Сценарии:**
 
-- Немедленно получить состояние Task в сессии прежней версии протокола
+- Прочитать состояние того же задания после переподключения без Tasks
 
 ### `unica.task.result`
 
@@ -234,7 +234,7 @@ Wait for a Task result for a bounded interval; returns the canonical result or a
 
 **Сценарии:**
 
-- Ожидать результат Task в compatibility-профиле
+- Получить сохранённый результат долгого вызова без Tasks по исходному taskId
 
 ## view
 

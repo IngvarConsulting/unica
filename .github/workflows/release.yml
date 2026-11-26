@@ -813,7 +813,7 @@ jobs:
             --plugin-root "$runtime_root" \
             --total-timeout-seconds 120
       - id: wire-native
-        name: Probe native package wire profile
+        name: Probe modern package wire profiles with and without Tasks
         shell: bash
         env:
           UNICA_PROVIDER_STATE_DIR: ${{ runner.temp }}/unica-p0-${{ matrix.target }}
@@ -822,13 +822,17 @@ jobs:
           set -euo pipefail
           executable=".build/tool-bundles/$TARGET/bin/$TARGET/unica"
           if [ "$TARGET" = "win-x64" ]; then executable="${executable}.exe"; fi
-          python scripts/ci/probe-unica-wire.py \
-            --binary "$executable" \
-            --protocol-version 2026-07-28 \
-            --tasks-capability on \
-            --profile native \
-            --target "$TARGET" \
-            --output ".build/p0-wire/native-$TARGET.json"
+          for profile in native direct; do
+            tasks=off
+            if [ "$profile" = native ]; then tasks=on; fi
+            python scripts/ci/probe-unica-wire.py \
+              --binary "$executable" \
+              --protocol-version 2026-07-28 \
+              --tasks-capability "$tasks" \
+              --profile "$profile" \
+              --target "$TARGET" \
+              --output ".build/p0-wire/$profile-$TARGET.json"
+          done
       - id: wire-compat
         name: Probe compatibility package wire profile
         shell: bash

@@ -78,6 +78,7 @@ fn verify_requires_both_lifecycles_and_the_exact_v13_compatibility_surface() {
             "tools/list\n",
             "server/discover\n",
             "tools/list\n",
+            "tools/list\n",
         )
     );
 }
@@ -199,6 +200,7 @@ fn verify_rejects_task_compatibility_tools_on_the_direct_lifecycle() {
         &record,
         &legacy_catalog,
         &legacy_catalog,
+        &legacy_catalog,
         &["2025-06-18", "2025-11-25", "2026-07-28"],
     );
 
@@ -215,6 +217,30 @@ fn verify_rejects_task_compatibility_tools_on_the_direct_lifecycle() {
     for task_tool in ["unica.task.get", "unica.task.result", "unica.task.cancel"] {
         assert!(error.contains(task_tool), "{error}");
     }
+}
+
+/// rule: CTR.WIRE.CANONICAL-TOOL-PROFILES
+#[test]
+fn verify_rejects_missing_receipt_tools_only_in_modern_requests_without_tasks() {
+    let root = temp_root("missing-modern-receipt-tools");
+    let complete = tools_list_response(&LEGACY_TOOLS, None, &[]);
+    let native = tools_list_response(&CANONICAL_TOOLS, None, &[]);
+    let runtime = write_fake_runtime_serving(
+        &root,
+        &root.join("record"),
+        &complete,
+        &native,
+        &native,
+        &["2025-06-18", "2025-11-25", "2026-07-28"],
+    );
+    let error = verify_runtime(
+        &runtime,
+        &root,
+        &root.join("provider-state"),
+        Duration::from_secs(2),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("unica.task.result"), "{error}");
 }
 
 /// rule: INV.WIRE.GUARANTEED-VERSIONS
@@ -255,6 +281,7 @@ fn write_fake_runtime(
         root,
         provider_state_record,
         &legacy_tools,
+        &legacy_tools,
         &direct_tools,
         supported_versions,
     )
@@ -264,13 +291,14 @@ fn write_fake_runtime_serving(
     root: &Path,
     provider_state_record: &Path,
     legacy_tools: &str,
+    modern_compat_tools: &str,
     direct_tools: &str,
     supported_versions: &[&str],
 ) -> PathBuf {
     let path = root.join("fake-unica");
     let supported = serde_json::to_string(supported_versions).unwrap();
     let requests = root.join("requests.txt");
-    let tools_list_seen = root.join("tools-list-seen");
+    let native_tools = direct_tools.replace("\"id\":2", "\"id\":3");
     fs::write(
         &path,
         format!(
@@ -287,13 +315,12 @@ while IFS= read -r line; do
     *'"method":"server/discover"'*) printf '%s\n' server/discover >> '{requests}'; printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"resultType":"complete","supportedVersions":{supported},"capabilities":{{}},"ttlMs":0,"cacheScope":"private"}}}}' ;;
 	    *'"method":"tools/list"'*)
 	      printf '%s\n' tools/list >> '{requests}'
-	      if [ -e '{tools_list_seen}' ]; then
-	        printf '%s\n' '{direct_tools}'
-	      else
-	        : > '{tools_list_seen}'
-	        printf '%s\n' '{legacy_tools}'
-	      fi
-	      ;;
+	      case "$line" in
+              *'io.modelcontextprotocol/tasks'*) printf '%s\n' '{native_tools}' ;;
+              *'2026-07-28'*) printf '%s\n' '{modern_compat_tools}' ;;
+              *) printf '%s\n' '{legacy_tools}' ;;
+            esac
+            ;;
   esac
 done
 "#,
@@ -303,7 +330,7 @@ done
 	            runtime_manifests = root.join("runtime-manifests.txt").display(),
 	            startup_notices = root.join("startup-notices.txt").display(),
 	            requests = requests.display(),
-	            tools_list_seen = tools_list_seen.display(),
+
 	        ),
     )
     .unwrap();
@@ -311,7 +338,7 @@ done
     path
 }
 
-/// The 2026-07-28 catalog: the canonical eight, never the task compatibility tools.
+/// A 2026-07-28 request that declares native Tasks: the canonical eight, never the task compatibility tools.
 const CANONICAL_TOOLS: [&str; 8] = [
     "unica.view",
     "unica.apply",

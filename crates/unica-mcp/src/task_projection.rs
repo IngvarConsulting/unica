@@ -496,6 +496,7 @@ mod tests {
         };
         let (task_id, invocation_id, receipt_key_digest) = v5_common();
         let completed = V5DaemonTaskSnapshot::Completed {
+            choice_request: None,
             task_id,
             invocation_id,
             receipt_key_digest,
@@ -654,6 +655,7 @@ mod tests {
             let maximum_timestamp =
                 chrono::DateTime::<chrono::Utc>::MAX_UTC.timestamp_millis() as u64;
             let snapshot = V5DaemonTaskSnapshot::Completed {
+                choice_request: None,
                 task_id,
                 invocation_id,
                 receipt_key_digest,
@@ -760,6 +762,7 @@ mod tests {
         let canonical_before = serde_json::to_vec(&result).unwrap();
         let (task_id, invocation_id, receipt_key_digest) = v5_common();
         let completed = V5DaemonTaskSnapshot::Completed {
+            choice_request: None,
             task_id,
             invocation_id,
             receipt_key_digest,
@@ -889,6 +892,7 @@ mod tests {
         // Завершённое задание встраивает тот же ответ.
         let (task_id, invocation_id, receipt_key_digest) = v5_common();
         let completed = V5DaemonTaskSnapshot::Completed {
+            choice_request: None,
             task_id,
             invocation_id,
             receipt_key_digest,

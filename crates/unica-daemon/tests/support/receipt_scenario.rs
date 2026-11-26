@@ -3995,6 +3995,7 @@ fn completed_probe_task(key: &ReceiptKey, ok: bool) -> Result<V5DaemonTaskSnapsh
     )
     .map_err(|error| format!("construct completed protocol-v5 Task terminal: {error}"))?;
     Ok(V5DaemonTaskSnapshot::Completed {
+        choice_request: None,
         task_id: key.reserved_task_id(),
         invocation_id: key.invocation_id(),
         receipt_key_digest: receipt_key_digest(key),

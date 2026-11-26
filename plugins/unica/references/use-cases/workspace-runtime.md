@@ -66,16 +66,16 @@ A preview does not write sources or read the current extension contents.
 
 ### Work the call must not wait for
 
-A long operation does not need a separate call: any `unica.run` invocation
-that outlives the handoff window becomes a durable Task. A protocol
-`2026-07-28` call that does not declare Tasks itself never sees the Task: it
-waits for the end and answers with the result. A session of an earlier
-protocol gets a receipt: keep the returned `taskId`, read the state with
-`unica.task.get`, wait for a bounded interval with `unica.task.result`, and
-cancel with `unica.task.cancel`; a client with native Tasks uses `tasks/get`
-and `tasks/cancel` instead. The terminal result never
-publishes raw stdout. The Task state is the authority for the outcome; a
-`working` state alone does not prove that the runner is making progress.
+A quick call returns its result directly. When the daemon hands any operation
+to a Task, a call without Tasks receives a receipt with `data.task.taskId`.
+Save that ID. Use `unica.task.get` for current state, `unica.task.result` to
+wait up to 7000 ms for the result, and `unica.task.cancel` to request
+cancellation. A new connection in the same workspace can read the same Task.
+Closing the connection or cancelling a wait after handoff leaves the operation
+running. A client that declares native Tasks on its call uses the MCP Task
+methods. The terminal result never publishes raw stdout. Read the Task state
+for the outcome. A `working` state alone does not prove that the runner is
+making progress.
 
 If a call's answer is lost, Unica answers with the ordinary Task receipt of
 the Task the call may continue as (`data.task.taskId`, status `queued`,
@@ -98,7 +98,7 @@ work under its own `taskId` only while no source changed since it began;
 
 Keep the `taskId` and the operation's infobase and workspace identity. Read
 `tasks/get` (or `unica.task.get`) and use `unica.task.result` only for a bounded
-wait in the compatibility profile. A late `tasks/cancel` is a request, not a
+wait without native Tasks. A late `tasks/cancel` is a request, not a
 receipt that the mutation stopped: native Tasks report it in the next
 `tasks/get.statusMessage`; compatibility tools expose `cancelRequested: true`.
 If the cancel request itself times out, read the Task again before deciding

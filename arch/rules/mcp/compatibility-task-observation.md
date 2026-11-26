@@ -4,7 +4,7 @@ id: CTR.WIRE.COMPATIBILITY-TASK-TOOLS
 
 # Compatibility Task возвращает сохранённое состояние без нового исполнения
 
-В [режиме совместимости](mcp-tool-profiles.md) `unica.task.get` читает
+В [каталоге без Tasks](mcp-tool-profiles.md) `unica.task.get` читает
 задание сразу, `unica.task.result` ждёт его результат, `unica.task.cancel`
 повторяет отмену без нового исполнения предметной операции. Все три
 принимают канонический `taskId`; `result` допускает `waitMs` от 0 до 7000,

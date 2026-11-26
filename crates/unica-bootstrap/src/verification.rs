@@ -202,7 +202,15 @@ fn verify_modern_direct(probe_launch: &ProbeLaunch<'_>, timeout: Duration) -> Re
         }),
     )?;
     let tools_response = receive_response(&probe.receiver, 2, timeout)?;
-    check_modern_direct_surface(&tools_response)
+    check_compatibility_surface(&tools_response)?;
+    let mut native_meta = meta;
+    native_meta["io.modelcontextprotocol/clientCapabilities"] =
+        json!({"extensions": {"io.modelcontextprotocol/tasks": {}}});
+    send_json(
+        &mut probe.stdin,
+        &json!({"jsonrpc":"2.0", "id":3, "method":"tools/list", "params":{"_meta":native_meta}}),
+    )?;
+    check_modern_direct_surface(&receive_response(&probe.receiver, 3, timeout)?)
 }
 
 fn check_modern_direct_surface(tools_response: &Value) -> Result<()> {

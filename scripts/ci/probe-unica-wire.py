@@ -619,7 +619,7 @@ class WireProbe:
         self.command = command
         self.protocol_version = protocol_version
         self.tasks_capability = tasks_capability
-        if profile is not None and profile not in {"native", "compatibility"}:
+        if profile is not None and profile not in {"native", "direct", "compatibility"}:
             raise ValueError(f"unsupported wire evidence profile: {profile}")
         if (profile is None) != (target is None):
             raise ValueError("wire evidence profile and target must be provided together")
@@ -1564,7 +1564,7 @@ def main() -> None:
         "--tasks-capability", required=True, choices=("on", "off")
     )
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--profile", choices=("native", "compatibility"))
+    parser.add_argument("--profile", choices=("native", "direct", "compatibility"))
     parser.add_argument("--target", choices=EVIDENCE_TARGETS)
     parser.add_argument("--timeout-seconds", type=float, default=20.0)
     args = parser.parse_args()
