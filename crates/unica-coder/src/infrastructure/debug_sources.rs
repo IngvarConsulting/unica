@@ -342,23 +342,24 @@ impl SourceSetModules<'_> {
         if !reverse && !self.module_exists(metadata)? {
             return Ok(());
         }
+        match self.read_descriptor(metadata, role, kind, name) {
+            Err(_) if reverse && !self.module_exists(metadata)? => Ok(()),
+            result => result,
+        }
+    }
+
+    fn read_descriptor(
+        &mut self,
+        metadata: &str,
+        role: PlatformXmlModuleRole,
+        kind: NodeKind,
+        name: &str,
+    ) -> Result<()> {
         let owner_metadata = metadata
             .rsplit_once('.')
             .ok_or("debug module has no metadata owner")?
             .0;
-        let xml = match descriptor(self.root, &descriptor_path(owner_metadata)?) {
-            Ok(xml) => xml,
-            Err(error)
-                if reverse
-                    && error
-                        .downcast_ref::<std::io::Error>()
-                        .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound)
-                    && !self.module_exists(metadata)? =>
-            {
-                return Ok(())
-            }
-            Err(error) => return Err(error),
-        };
+        let xml = descriptor(self.root, &descriptor_path(owner_metadata)?)?;
         let document = Document::parse(&xml)?;
         let owner = metadata_owner(&document, kind.as_str())?;
         if let DebugModuleQuery::Runtime(ids) = self.query {
@@ -604,6 +605,7 @@ mod tests {
             ["main:CommonModule.Duplicate", "main:CommonModule.Probe"]
         );
         std::fs::remove_file(module_dir.join("Duplicate/Ext/Module.bsl")).unwrap();
+        std::fs::write(module_dir.join("Duplicate.xml"), "no saved module").unwrap();
         assert_eq!(matches().len(), 1);
     }
 
