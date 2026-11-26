@@ -25,7 +25,7 @@ use uuid::Uuid;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
-type NewResolver = fn() -> ResolveDebugModules;
+type NewResolver = fn(&Path, Option<&str>) -> Result<ResolveDebugModules>;
 
 const DEFAULT_AUTO_ATTACH_TYPES: [&str; 3] = ["Client", "ManagedClient", "ServerEmulation"];
 const DEBUG_TARGET_TYPES: &[&str] = &[
@@ -308,7 +308,7 @@ impl Session {
         } else {
             Some(string(args, "sourceSet")?)
         };
-        let modules = Modules::open(root, source_set, resolve_modules())?;
+        let modules = Modules::new(resolve_modules(root, source_set)?);
         let rdbg = Arc::new(Rdbg::attach(port.try_into()?, alias)?);
         let session = Self {
             modules,

@@ -36,16 +36,33 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>
 // current descriptor, registration and BSL file. Retain at most one reverse query's observations.
 type OwnerIds = HashMap<PathBuf, (FileStamp, uuid::Uuid)>;
 
-pub fn workspace_debug_resolver() -> ResolveDebugModules {
+pub fn workspace_debug_resolver(
+    workspace: &Path,
+    source_set: Option<&str>,
+) -> Result<ResolveDebugModules> {
+    if !workspace.is_absolute() {
+        return Err("rootProject must be an absolute Unica workspace path".into());
+    }
+    let workspace = unica_workspace::paths::normalize_path_identity(workspace)?;
+    let reader = unica_workspace::discovery::ProjectDiscoveryReader::new(&workspace);
+    if !unica_source_designer::project_sources::has_debug_source_set(&reader, source_set)? {
+        return Err(match source_set {
+            Some(name) => format!(
+                "debug source set {name} is not available; use the names resolved by workspace"
+            ),
+            None => "workspace has no supported debug source set".to_string(),
+        }
+        .into());
+    }
     let mut previous = OwnerIds::new();
-    Box::new(move |workspace, query| {
+    Ok(Box::new(move |query| {
         let mut observed = OwnerIds::new();
-        let found = resolve_modules(workspace, query, &previous, &mut observed)?;
+        let found = resolve_modules(&workspace, query, &previous, &mut observed)?;
         if matches!(query, DebugModuleQuery::Runtime(_)) {
             previous = observed;
         }
         Ok(found)
-    })
+    }))
 }
 
 #[cfg(test)]
@@ -53,7 +70,7 @@ fn workspace_debug_modules(
     workspace: &Path,
     query: DebugModuleQuery<'_>,
 ) -> Result<Vec<DebugModuleSource>> {
-    workspace_debug_resolver()(workspace, query)
+    workspace_debug_resolver(workspace, None)?(query)
 }
 
 fn resolve_modules(
@@ -64,15 +81,9 @@ fn resolve_modules(
 ) -> Result<Vec<DebugModuleSource>> {
     let address = match query {
         DebugModuleQuery::Address(text) => Some(QualifiedAddress::parse(text)?),
-        _ => None,
+        DebugModuleQuery::Runtime(_) => None,
     };
-    let requested_set = match query {
-        DebugModuleQuery::FirstSaved { source_set } => source_set,
-        _ => address.as_ref().map(QualifiedAddress::source_set),
-    };
-    if !workspace.is_absolute() {
-        return Err("rootProject must be an absolute Unica workspace path".into());
-    }
+    let requested_set = address.as_ref().map(QualifiedAddress::source_set);
     let admission =
         super::source_workspace::discover_project_source_admission(workspace, &mut || Ok(()))?;
     let map = admission.map();
@@ -106,9 +117,6 @@ fn resolve_modules(
             observed,
         )?;
         root.validate_named_identity()?;
-        if matches!(query, DebugModuleQuery::FirstSaved { .. }) && !modules.is_empty() {
-            break;
-        }
     }
     Ok(modules)
 }
@@ -163,8 +171,7 @@ fn read_modules(
             owner,
         )?;
     }
-    if index.first_found() || owner_filter.is_some_and(|segment| segment.kind() == NodeKind::Module)
-    {
+    if owner_filter.is_some_and(|segment| segment.kind() == NodeKind::Module) {
         return Ok(());
     }
     let registrations = root_child_objects(&document)?
@@ -183,9 +190,6 @@ fn read_modules(
     for (kind, name) in registrations {
         if index.supports_kind(kind) {
             index.read_registered(kind, name)?;
-            if index.first_found() {
-                break;
-            }
         }
     }
     for parent in index.directories.values() {
@@ -207,10 +211,6 @@ struct SourceSetModules<'a> {
 }
 
 impl SourceSetModules<'_> {
-    fn first_found(&self) -> bool {
-        matches!(self.query, DebugModuleQuery::FirstSaved { .. }) && !self.modules.is_empty()
-    }
-
     fn wants_role(&self, role: PlatformXmlModuleRole) -> bool {
         match self.query {
             DebugModuleQuery::Runtime(ids) => ids.iter().any(|id| {
@@ -283,7 +283,6 @@ impl SourceSetModules<'_> {
         }
 
         if self.wants_role(PlatformXmlModuleRole::FormModule)
-            && !self.first_found()
             && has_nested_module_role(kind, ModuleRole::Form)
         {
             for form in owner
@@ -306,9 +305,6 @@ impl SourceSetModules<'_> {
                     NodeKind::Form,
                     form_name,
                 )?;
-                if self.first_found() {
-                    break;
-                }
             }
         }
         Ok(())
@@ -445,7 +441,6 @@ impl SourceSetModules<'_> {
             },
         };
         let matches = match self.query {
-            DebugModuleQuery::FirstSaved { .. } => true,
             DebugModuleQuery::Address(expected) => source.address.to_string() == expected,
             DebugModuleQuery::Runtime(expected) => expected.contains(&source.runtime_id),
         };
@@ -523,6 +518,43 @@ fn property<'a>(owner: Node<'a, '_>, name: &str) -> Option<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn debug_attach_skips_a_declared_source_root_that_is_a_file() {
+        let workspace = tempfile::tempdir().unwrap();
+        let root = workspace.path();
+        std::fs::write(
+            root.join("v8project.yaml"),
+            "source-set:\n  - {name: main, type: CONFIGURATION, path: broken}\n  - {name: ext, type: EXTENSION, path: ext}\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("broken"), "").unwrap();
+        std::fs::create_dir(root.join("ext")).unwrap();
+        std::fs::write(root.join("ext/Configuration.xml"), "").unwrap();
+        assert!(workspace_debug_resolver(root, None).is_ok());
+        assert!(workspace_debug_resolver(root, Some("main")).is_err());
+        assert!(workspace_debug_resolver(root, Some("ext")).is_ok());
+    }
+
+    #[test]
+    fn debug_attach_requires_a_regular_file_for_edt_format_evidence() {
+        let workspace = tempfile::tempdir().unwrap();
+        let root = workspace.path();
+        std::fs::write(
+            root.join("v8project.yaml"),
+            "source-set:\n  - {name: main, type: CONFIGURATION, path: src}\n",
+        )
+        .unwrap();
+        let src = root.join("src");
+        std::fs::create_dir(&src).unwrap();
+        std::fs::write(src.join("Configuration.xml"), "").unwrap();
+        let marker = src.join(".project");
+        std::fs::create_dir(&marker).unwrap();
+        assert!(workspace_debug_resolver(root, Some("main")).is_ok());
+        std::fs::remove_dir(&marker).unwrap();
+        std::fs::write(marker, "").unwrap();
+        assert!(workspace_debug_resolver(root, Some("main")).is_err());
+    }
 
     #[test]
     fn debug_modules_use_registered_object_and_form_descriptors() {

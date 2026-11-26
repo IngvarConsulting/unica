@@ -473,11 +473,18 @@ pub fn discover_project_source_map_actor_pass(
     )
 }
 
-fn discover_project_source_map_internal(
+struct SourceSetCandidates {
+    config_path: Option<PathBuf>,
+    source_sets: Vec<ConfigSourceSet>,
+    configured_format_raw: Option<String>,
+}
+
+/// Read the declarations or recognize the layout without collecting any object inventory.
+fn source_set_candidates(
     workspace_root: &Path,
-    checkpoint: &mut dyn FnMut() -> Result<(), String>,
     state: &mut SourceMapDiscoveryState,
-) -> Result<ProjectSourceMap, String> {
+    checkpoint: &mut dyn FnMut() -> Result<(), String>,
+) -> Result<SourceSetCandidates, String> {
     checkpoint()?;
     let project_config = workspace_root.join("v8project.yaml");
     let project_config_raw = snapshot_project_map_input(&project_config, true, state, checkpoint)?;
@@ -499,7 +506,69 @@ fn discover_project_source_map_internal(
     if source_sets.is_empty() {
         source_sets = autodetect_source_sets(workspace_root, state, checkpoint)?;
     }
+    Ok(SourceSetCandidates {
+        config_path,
+        source_sets,
+        configured_format_raw,
+    })
+}
 
+/// An attach needs a supported source root, even if no BSL has been saved there yet.
+/// Inspect only the project declaration and known root markers. A breakpoint or stack
+/// lookup proves the registration and runtime identity of its individual modules.
+pub fn has_debug_source_set(
+    reader: &dyn ProjectDiscoveryRead,
+    requested: Option<&str>,
+) -> Result<bool, String> {
+    let root = reader.workspace_root();
+    let mut state = SourceMapDiscoveryState::health(reader);
+    let candidates = source_set_candidates(root, &mut state, &mut || Ok(()))?;
+    for set in candidates.source_sets {
+        if requested.is_some_and(|name| name != set.name)
+            || !matches!(
+                set.kind,
+                SourceSetKind::Configuration | SourceSetKind::Extension
+            )
+        {
+            continue;
+        }
+        let directory = match health_source_directory_opened(reader, root, &set.path)? {
+            Ok(Some(directory)) => directory,
+            Ok(None) => continue,
+            Err(error) if open_failure_is_wrong_kind(reader, &error) => continue,
+            Err(error) => {
+                return Err(format!(
+                    "source directory could not be opened safely: {error}"
+                ))
+            }
+        };
+        let present = |name: &str| regular_marker_present(reader, &directory, name);
+        if present("Configuration.xml")? {
+            let mut has_edt = false;
+            for marker in EDT_SOURCE_MARKERS {
+                if present(marker)? {
+                    has_edt = true;
+                    break;
+                }
+            }
+            if !has_edt {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+fn discover_project_source_map_internal(
+    workspace_root: &Path,
+    checkpoint: &mut dyn FnMut() -> Result<(), String>,
+    state: &mut SourceMapDiscoveryState,
+) -> Result<ProjectSourceMap, String> {
+    let SourceSetCandidates {
+        config_path,
+        source_sets,
+        configured_format_raw,
+    } = source_set_candidates(workspace_root, state, checkpoint)?;
     let mut project_source_sets = Vec::with_capacity(source_sets.len());
     for source_set in source_sets {
         checkpoint()?;
@@ -1346,16 +1415,7 @@ fn probe_source_root_markers(
                 );
             }
             ProbeDirectory::Retained(handle) => {
-                match secure_regular_file_exists(state.reader(), handle, Path::new(marker)) {
-                    Ok(exists) => found |= exists,
-                    Err(SecureMarkerProbeError::UnsafeOrWrongKind(_)) => {
-                        // An autodetected candidate has no declared source set on which to
-                        // report an incomplete format probe. Unsafe or wrong-kind routes are
-                        // not evidence and must never be followed; declared source sets still
-                        // retain the same error as a per-set NotRun outcome.
-                    }
-                    Err(SecureMarkerProbeError::Incomplete(reason)) => return Err(reason),
-                }
+                found |= regular_marker_present(state.reader(), handle, marker)?;
             }
             ProbeDirectory::Path(root) => {
                 found |= snapshot_project_map_input(&root.join(marker), false, state, checkpoint)?
@@ -1945,6 +2005,19 @@ impl SecureMarkerProbeError {
         match self {
             Self::UnsafeOrWrongKind(reason) | Self::Incomplete(reason) => reason,
         }
+    }
+}
+
+/// Only a regular file reached without following links is format evidence.
+fn regular_marker_present(
+    reader: &dyn ProjectDiscoveryRead,
+    directory: &DirectoryReader,
+    marker: &str,
+) -> Result<bool, String> {
+    match secure_regular_file_exists(reader, directory, Path::new(marker)) {
+        Ok(present) => Ok(present),
+        Err(SecureMarkerProbeError::UnsafeOrWrongKind(_)) => Ok(false),
+        Err(SecureMarkerProbeError::Incomplete(reason)) => Err(reason),
     }
 }
 

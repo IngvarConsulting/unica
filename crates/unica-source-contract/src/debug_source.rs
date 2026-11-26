@@ -19,7 +19,6 @@ pub struct DebugModuleSource {
 /// Which saved module evidence the debugger needs for this request.
 #[derive(Clone, Copy)]
 pub enum DebugModuleQuery<'a> {
-    FirstSaved { source_set: Option<&'a str> },
     Address(&'a str),
     Runtime(&'a [DebugModuleId]),
 }
@@ -27,7 +26,6 @@ pub enum DebugModuleQuery<'a> {
 /// A resolver belongs to one DAP session and may retain evidence for unchanged source files.
 pub type ResolveDebugModules = Box<
     dyn FnMut(
-        &std::path::Path,
         DebugModuleQuery<'_>,
     ) -> Result<Vec<DebugModuleSource>, Box<dyn std::error::Error + Send + Sync>>,
 >;
