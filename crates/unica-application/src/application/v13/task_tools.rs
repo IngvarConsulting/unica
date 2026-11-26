@@ -72,6 +72,8 @@ impl TaskToolError {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompatibilityProjection {
+    /// The initial modern receipt offers its result even if the Task already ended.
+    Handoff,
     State,
     TerminalResult,
 }
@@ -306,15 +308,21 @@ pub fn project_task_snapshot(
         }
         result.diagnostics = vec![diagnostic];
     }
-    if matches!(
+    let working = matches!(
         snapshot.status,
         InvocationStatus::Queued | InvocationStatus::Working
-    ) {
+    );
+    if working || projection == CompatibilityProjection::Handoff {
+        let wait_ms = if working {
+            snapshot.poll_interval_ms.min(DEFAULT_TASK_RESULT_WAIT_MS)
+        } else {
+            0
+        };
         result.next.push(json!({
             "tool": "unica.task.result",
             "args": {
                 "taskId": snapshot.task_id.to_string(),
-                "waitMs": snapshot.poll_interval_ms.min(DEFAULT_TASK_RESULT_WAIT_MS)
+                "waitMs": wait_ms
             }
         }));
     }

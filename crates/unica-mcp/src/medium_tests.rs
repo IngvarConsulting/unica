@@ -2209,15 +2209,12 @@ async fn a_lost_submit_is_a_task_for_native_clients_and_a_task_receipt_for_other
     }
 }
 
-/// Хост объявляет Tasks в `tools/list`, но не в `tools/call` (#3220).
-/// Каталог 2026-07-28 — восемь инструментов, что бы ни объявил `tools/list`;
-/// вызов без Tasks, ставший заданием, ждёт его конца и отвечает итогом,
-/// а клиента с progressToken держит прогресс.
+/// A lost observation can be retried by UUID without repeating the call.
 /// rule: CTR.WIRE.CANONICAL-TOOL-PROFILES
 /// rule: INV.WIRE.NATIVE-TASK-CAPABILITY
 #[tokio::test]
 async fn a_modern_receipt_survives_lost_reads_and_only_an_explicit_cancel_stops_work() {
-    use unica_execution_contract::invocation::{DomainResult, InvocationStatus, TaskId};
+    use unica_execution_contract::invocation::{InvocationStatus, TaskId};
     let id = TaskId::new();
     let submits = Arc::new(AtomicUsize::new(0));
     let calls = Arc::clone(&submits);
@@ -2248,12 +2245,7 @@ async fn a_modern_receipt_survives_lost_reads_and_only_an_explicit_cancel_stops_
                     None,
                 ),
             )),
-            1 => Ok(canonical_snapshot(id, InvocationStatus::Failed, None)),
-            _ => Ok(canonical_snapshot(
-                id,
-                InvocationStatus::Completed,
-                Some(DomainResult::success("saved terminal")),
-            )),
+            _ => Ok(canonical_snapshot(id, InvocationStatus::Working, None)),
         }
     });
     let get: Arc<CanonicalTaskHandler> =
@@ -2271,19 +2263,17 @@ async fn a_modern_receipt_survives_lost_reads_and_only_an_explicit_cancel_stops_
     );
     assert_eq!(reads.load(Ordering::SeqCst), 0);
     client.send(json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":7,"reason":"original caller disconnected"}})).await;
-    for (number, code) in [(8, "task_transport_failed"), (9, "task_failed"), (10, "")] {
-        client.send(json!({"jsonrpc":"2.0","id":number,"method":"tools/call","params":{"name":"unica.task.result","arguments":{"taskId":id.to_string(),"waitMs":0},"_meta":modern_meta()}})).await;
+    for number in [8, 9] {
+        client.send(json!({"jsonrpc":"2.0","id":number,"method":"tools/call","params":{"name":"unica.task.result","arguments":{"taskId":id,"waitMs":0},"_meta":modern_meta()}})).await;
         let answer = client.receive().await;
-        if code.is_empty() {
+        let result = &answer["result"]["structuredContent"];
+        if number == 8 {
             assert_eq!(
-                answer["result"]["structuredContent"]["summary"], "saved terminal",
+                result["diagnostics"][0]["code"], "task_transport_failed",
                 "{answer}"
             );
         } else {
-            assert_eq!(
-                answer["result"]["structuredContent"]["diagnostics"][0]["code"], code,
-                "{answer}"
-            );
+            assert_eq!(result["data"]["task"]["status"], "working", "{answer}");
         }
     }
     assert_eq!(cancelled.load(Ordering::SeqCst), 0);

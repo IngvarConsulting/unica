@@ -198,50 +198,91 @@ async fn modern_quick_push_returns_the_terminal_result_inline() {
 /// Delivery follows the daemon's disposition even when its Task has already completed.
 #[tokio::test]
 async fn a_completed_task_handoff_keeps_its_receipt_and_exact_result() {
-    let id = TaskId::new();
-    let completed = canonical_snapshot(
-        id,
-        InvocationStatus::Completed,
-        Some(DomainResult::success("push applied")),
+    let mut refusal = DomainResult::canonical_rejection(
+        None,
+        unica_refusal::RefusalCode::InvalidState,
+        "refused by operation",
     );
-    let submitted = completed.clone();
-    let call: Arc<CanonicalCallHandler> =
-        Arc::new(move |_, _, _, _, _| Ok(CanonicalCallOutcome::Task(submitted.clone())));
-    let get: Arc<CanonicalTaskHandler> = Arc::new(move |requested, _| {
-        assert_eq!(requested, id);
-        Ok(completed.clone())
-    });
-    let (mut client, _) = spawn_unica_server(UnicaServer::with_canonical_v13_tasks(
-        call,
-        Arc::clone(&get),
-        get,
+    refusal.human_choice = Some(Box::new(
+        unica_execution_contract::invocation::HumanChoice::confirmation(
+            "push.force",
+            "Overwrite?",
+            "Overwrite",
+            "local changes will be lost",
+            "unica.run",
+            &serde_json::Map::new(),
+        ),
     ));
-    client
-        .send(
-            json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{
-              "name":"unica.run","arguments":{"op":"push","dryRun":false},"_meta":modern_meta()
-            }}),
-        )
-        .await;
-    let receipt = client.receive().await;
-    assert_eq!(
-        receipt["result"]["structuredContent"]["data"]["task"]["taskId"],
-        id.to_string(),
-        "{receipt}"
-    );
-    client
-        .send(
-            json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{
-              "name":"unica.task.result","arguments":{"taskId":id,"waitMs":0},"_meta":modern_meta()
-            }}),
-        )
-        .await;
-    let result = client.receive().await;
-    assert_eq!(
-        result["result"]["structuredContent"]["summary"], "push applied",
-        "{result}"
-    );
-    client.shutdown().await;
+    for (status, terminal, expected) in [
+        (
+            InvocationStatus::Completed,
+            Some(DomainResult::success("push applied")),
+            "push applied",
+        ),
+        (
+            InvocationStatus::Completed,
+            Some(refusal),
+            "refused by operation",
+        ),
+        (InvocationStatus::Failed, None, "Task failed"),
+        (InvocationStatus::Cancelled, None, "Task was cancelled"),
+    ] {
+        let id = TaskId::new();
+        let completed = canonical_snapshot(id, status, terminal);
+        let submitted = completed.clone();
+        let call: Arc<CanonicalCallHandler> =
+            Arc::new(move |_, _, _, _, _| Ok(CanonicalCallOutcome::Task(submitted.clone())));
+        let get: Arc<CanonicalTaskHandler> = Arc::new(move |requested, _| {
+            assert_eq!(requested, id);
+            Ok(completed.clone())
+        });
+        let (mut client, _) = spawn_unica_server(UnicaServer::with_canonical_v13_tasks(
+            call,
+            Arc::clone(&get),
+            get,
+        ));
+        client
+            .send(
+                json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{
+                  "name":"unica.run","arguments":{"op":"push","dryRun":false},"_meta":modern_meta()
+                }}),
+            )
+            .await;
+        let receipt = client.receive().await;
+        assert_eq!(
+            receipt["result"]["structuredContent"]["data"]["task"]["taskId"],
+            id.to_string(),
+            "{receipt}"
+        );
+        let next = &receipt["result"]["structuredContent"]["next"][0];
+        assert_eq!(next["tool"], "unica.task.result", "{receipt}");
+        assert_eq!(next["args"], json!({"taskId":id,"waitMs":0}), "{receipt}");
+        client
+            .send(
+                json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{
+                  "name":next["tool"],"arguments":next["args"],"_meta":modern_meta()
+                }}),
+            )
+            .await;
+        let result = client.receive().await;
+        assert_eq!(
+            result["result"]["structuredContent"]["summary"], expected,
+            "{result}"
+        );
+        assert!(
+            result["result"]["structuredContent"]["next"].is_null(),
+            "{result}"
+        );
+        for (i, tool) in [(3, "unica.task.get"), (4, "unica.task.cancel")] {
+            client.send(json!({"jsonrpc":"2.0","id":i,"method":"tools/call","params":{"name":tool,"arguments":{"taskId":id},"_meta":modern_meta()}})).await;
+            let observation = client.receive().await;
+            assert!(
+                observation["result"]["structuredContent"]["next"].is_null(),
+                "{observation}"
+            );
+        }
+        client.shutdown().await;
+    }
 }
 
 /// Cancellation belongs to the observing request. Only the separate cancel

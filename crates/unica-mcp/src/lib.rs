@@ -505,7 +505,11 @@ fn execute_surface_tool(
                     TaskDelivery::Receipt | TaskDelivery::ModernReceipt => Ok(
                         SurfaceToolOutcome::TaskReceipt(project_compatibility_snapshot(
                             &snapshot,
-                            CompatibilityProjection::State,
+                            if delivery == TaskDelivery::ModernReceipt {
+                                CompatibilityProjection::Handoff
+                            } else {
+                                CompatibilityProjection::State
+                            },
                         )),
                     ),
                 },
