@@ -408,6 +408,34 @@ mod tests {
     }
 
     #[test]
+    fn addressed_breakpoint_reads_current_descriptor_without_opening_other_owners() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/acceptance/workspace-resolve-resources");
+        let workspace = tempfile::tempdir().unwrap();
+        crate::infrastructure::test_fixtures::copy_tree(&fixture, workspace.path());
+        let src = workspace.path().join("src");
+        std::fs::write(src.join("DataProcessors/Processor.xml"), "broken XML").unwrap();
+        let address = "main:CommonModule.Probe";
+        let resolve = || {
+            workspace_debug_modules(workspace.path(), DebugModuleQuery::Address(address)).unwrap()
+        };
+        let before = resolve().pop().unwrap();
+        let descriptor = src.join("CommonModules/Probe.xml");
+        let xml = std::fs::read_to_string(&descriptor).unwrap();
+        let changed_id = "9ef29706-e9aa-43a3-8d32-a67074059840";
+        std::fs::write(
+            &descriptor,
+            xml.replace(&before.runtime_id.object.to_string(), changed_id),
+        )
+        .unwrap();
+        let after = resolve().pop().unwrap();
+        assert_eq!(after.runtime_id.object.to_string(), changed_id);
+        assert_eq!(after.address, before.address);
+        std::fs::remove_file(src.join("CommonModules/Probe/Ext/Module.bsl")).unwrap();
+        assert!(resolve().is_empty());
+    }
+
+    #[test]
     fn workspace_distinguishes_borrowed_module_from_its_base() {
         let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/fixtures/acceptance/workspace-borrowed");

@@ -450,7 +450,6 @@ impl Session {
     fn set_breakpoints(&mut self, args: &Value) -> Result<Value> {
         let source = &args["source"];
         let address = string(source, "path")?;
-        let module = self.modules.id(address)?;
         let requested = args["breakpoints"]
             .as_array()
             .ok_or("expected breakpoints array")?;
@@ -477,7 +476,16 @@ impl Session {
             })
             .collect::<Result<Vec<_>>>()?;
         let mut updated = self.breakpoints.clone();
-        updated.insert(address.to_owned(), (module, breakpoints.clone()));
+        // An installed breakpoint can still be cleared after its saved file was deleted.
+        if breakpoints.is_empty() {
+            if updated.remove(address).is_none() {
+                self.modules.id(address)?;
+            }
+        } else {
+            let module = self.modules.id(address)?;
+            updated.retain(|_, (installed, _)| installed != &module);
+            updated.insert(address.to_owned(), (module, breakpoints.clone()));
+        }
         self.rdbg
             .breakpoints(updated.values().map(|(id, points)| (id, points)))?;
         self.breakpoints = updated;
