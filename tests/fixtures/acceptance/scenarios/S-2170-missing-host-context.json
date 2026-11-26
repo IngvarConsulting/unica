@@ -16,7 +16,7 @@
       "assertions": [
         {
           "pointer": "/summary",
-          "eq": "No host workspace context for this call: no startup project was captured. This connection requires host context (UNICA_HOST_CONTEXT_REQUIRED=1 or packaged runtime); launch cwd is not an allowed fallback. No recognized request metadata (codex/sandbox-state-meta (sandboxCwd)); client roots: not supplied for this call. Project variables (CLAUDE_PROJECT_DIR, ZCODE_PROJECT_DIR) are captured once: set one to an existing absolute project directory and reconnect the MCP server from that project. The host can restore a later call without reconnecting by supplying valid recognized metadata or client roots when this session supports roots/list. Startup capture stays unchanged until reconnect."
+          "eq": "No host workspace context for this call: no startup project was captured. This connection requires host context (UNICA_HOST_CONTEXT_REQUIRED=1 or packaged runtime); launch cwd is not an allowed fallback. No recognized request metadata (codex/sandbox-state-meta (sandboxCwd), pro.ingvar/unica-dsh-workspace (cwd)); client roots: not supplied for this call. Project variables (CLAUDE_PROJECT_DIR, ZCODE_PROJECT_DIR) are captured once: set one to an existing absolute project directory and reconnect the MCP server from that project. The host can restore a later call without reconnecting by supplying valid recognized metadata or client roots when this session supports roots/list. Startup capture stays unchanged until reconnect."
         },
         {
           "pointer": "/diagnostics/0/outcome",
