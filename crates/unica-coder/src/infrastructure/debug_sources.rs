@@ -648,23 +648,25 @@ mod tests {
             duplicate.replace(&id.object.to_string(), &other.to_string()),
         )
         .unwrap();
-        // Workspace admission canonicalizes the host's temporary root (e.g. /var on macOS).
-        let root = open_source_directory(&src.canonicalize().unwrap()).unwrap();
+        let source_root = unica_workspace::paths::normalize_path_identity(&src).unwrap();
+        let root = open_source_directory(&source_root).unwrap();
         let relative = Path::new("CommonModules/Duplicate.xml");
-        let prior = HashMap::from([(
-            root.path().join(relative),
-            (root.relative_file_stamp(relative).unwrap().unwrap(), other),
-        )]);
+        let key = root.path().join(relative);
+        let stamp = root.relative_file_stamp(relative).unwrap().unwrap();
+        let prior = HashMap::from([(key.clone(), (stamp, other))]);
+        let mut observed = HashMap::new();
         let query = DebugModuleQuery::Runtime(std::slice::from_ref(&id));
         assert_eq!(
-            resolve_modules(workspace.path(), query, &prior, &mut HashMap::new())
+            resolve_modules(workspace.path(), query, &prior, &mut observed)
                 .unwrap()
                 .len(),
             1
         );
+        assert_eq!(observed.get(&key), Some(&(stamp, other)));
         let fresh = module_dir.join("replacement.xml");
         std::fs::write(&fresh, duplicate).unwrap();
         std::fs::rename(fresh, &copy).unwrap();
+        assert_ne!(root.relative_file_stamp(relative).unwrap(), Some(stamp));
         let mut addresses: Vec<_> =
             resolve_modules(workspace.path(), query, &prior, &mut HashMap::new())
                 .unwrap()
