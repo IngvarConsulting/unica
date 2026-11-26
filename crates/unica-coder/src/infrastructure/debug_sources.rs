@@ -131,49 +131,33 @@ fn read_modules(
     {
         return Ok(());
     }
-    for entry in root_child_objects(&document)?
+    let registrations = root_child_objects(&document)?
         .children()
         .filter(Node::is_element)
-    {
-        let name = entry.text().unwrap_or_default().trim();
-        if owner_filter.is_some_and(|seg| seg.name() != Some(name)) {
-            continue;
-        }
-        let Ok(kind) = NodeKind::parse(entry.tag_name().name()) else {
-            continue;
-        };
-        if owner_filter.is_some_and(|seg| seg.kind() != kind) {
-            continue;
-        }
-        let metadata = format!("{}.{name}", kind.as_str());
-        match kind {
-            NodeKind::CommonModule if index.wants_role(PlatformXmlModuleRole::Module) => {
-                index.read(
-                    &format!("{metadata}.Module"),
-                    PlatformXmlModuleRole::Module,
-                    kind,
-                    name,
-                )?;
+        .filter_map(|entry| {
+            let name = entry.text().unwrap_or_default().trim();
+            if owner_filter.is_some_and(|seg| seg.name() != Some(name)) {
+                return None;
             }
-            NodeKind::CommonForm if index.wants_role(PlatformXmlModuleRole::FormModule) => {
-                index.read(
-                    &format!("{metadata}.FormModule"),
-                    PlatformXmlModuleRole::FormModule,
-                    kind,
-                    name,
-                )?;
+            let kind = NodeKind::parse(entry.tag_name().name()).ok()?;
+            owner_filter
+                .is_none_or(|seg| seg.kind() == kind)
+                .then_some((kind, name))
+        });
+    if matches!(query, DebugModuleQuery::Runtime(_)) {
+        let entries: Vec<_> = registrations
+            .filter(|(kind, _)| index.supports_kind(*kind))
+            .collect();
+        index.read_reverse(&entries)?;
+    } else {
+        for (kind, name) in registrations {
+            if !index.supports_kind(kind) {
+                continue;
             }
-            _ if (index.wants_role(PlatformXmlModuleRole::ObjectModule)
-                && has_direct_module_route(kind, ModuleRole::Object))
-                || (index.wants_role(PlatformXmlModuleRole::FormModule)
-                    && has_nested_module_role(kind, ModuleRole::Form)) =>
-            {
-                index.read_owner(&metadata, kind, name)?;
+            index.read_registered(kind, name)?;
+            if index.first_found() {
+                break;
             }
-            _ => {}
-        }
-        if index.first_found() {
-            break;
         }
     }
     Ok(())
@@ -201,6 +185,94 @@ impl SourceSetModules<'_> {
             }),
             _ => true,
         }
+    }
+
+    fn supports_kind(&self, kind: NodeKind) -> bool {
+        match kind {
+            NodeKind::CommonModule => self.wants_role(PlatformXmlModuleRole::Module),
+            NodeKind::CommonForm => self.wants_role(PlatformXmlModuleRole::FormModule),
+            _ => {
+                (self.wants_role(PlatformXmlModuleRole::ObjectModule)
+                    && has_direct_module_route(kind, ModuleRole::Object))
+                    || (self.wants_role(PlatformXmlModuleRole::FormModule)
+                        && has_nested_module_role(kind, ModuleRole::Form))
+            }
+        }
+    }
+
+    fn read_registered(&mut self, kind: NodeKind, name: &str) -> Result<()> {
+        let metadata = format!("{}.{name}", kind.as_str());
+        match kind {
+            NodeKind::CommonModule => {
+                self.read(
+                    &format!("{metadata}.Module"),
+                    PlatformXmlModuleRole::Module,
+                    kind,
+                    name,
+                )?;
+            }
+            NodeKind::CommonForm => {
+                self.read(
+                    &format!("{metadata}.FormModule"),
+                    PlatformXmlModuleRole::FormModule,
+                    kind,
+                    name,
+                )?;
+            }
+            _ => self.read_owner(&metadata, kind, name)?,
+        }
+        Ok(())
+    }
+
+    /// RDBG only sends UUIDs. Other registered descriptors of the same kind must be checked for
+    /// aliases. Each worker holds the same admitted source root and returns its own matches.
+    fn read_reverse(&mut self, entries: &[(NodeKind, &str)]) -> Result<()> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let workers = std::thread::available_parallelism()
+            .map_or(1, std::num::NonZeroUsize::get)
+            .min(entries.len());
+        if workers == 1 {
+            for &(kind, name) in entries {
+                self.read_registered(kind, name)?;
+            }
+            return Ok(());
+        }
+        let root = self.root;
+        let set = self.set;
+        let query = self.query;
+        let extension = self.extension;
+        std::thread::scope(|scope| -> Result<()> {
+            let readers = entries
+                .chunks(entries.len().div_ceil(workers))
+                .map(|share| {
+                    std::thread::Builder::new().spawn_scoped(scope, move || -> Result<_> {
+                        let mut modules = Vec::new();
+                        let mut index = SourceSetModules {
+                            root,
+                            set,
+                            query,
+                            address: None,
+                            extension,
+                            modules: &mut modules,
+                        };
+                        for &(kind, name) in share {
+                            index.read_registered(kind, name)?;
+                        }
+                        Ok(modules)
+                    })
+                })
+                .collect::<std::io::Result<Vec<_>>>()?;
+            for reader in readers {
+                self.modules.extend(
+                    reader
+                        .join()
+                        .map_err(|_| "debug source reader panicked")??,
+                );
+            }
+            Ok(())
+        })
     }
 
     fn read_owner(&mut self, metadata: &str, kind: NodeKind, name: &str) -> Result<()> {
