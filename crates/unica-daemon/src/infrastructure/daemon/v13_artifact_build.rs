@@ -281,6 +281,7 @@ struct StableInputs {
     config_sha256: String,
     local_config_sha256: Option<String>,
     declared: Vec<String>,
+    first_configuration: Option<String>,
     output_sha256: Option<String>,
     external: Option<ExternalPlan>,
 }
@@ -300,7 +301,7 @@ fn capture_inputs(prepared: &PreparedArtifactBuild) -> Result<StableInputs, Doma
     let local_config_sha256 = digest_optional_workspace_file(root, Path::new(LOCAL_CONFIG_NAME))
         .map_err(|error| reject(RefusalCode::InvalidState, error))?
         .map(|(digest, _)| digest);
-    let declared = declared_source_sets(&root.join(CONFIG_NAME))?;
+    let (declared, first_configuration) = declared_source_sets(&root.join(CONFIG_NAME))?;
     if let Some(source_set) = &prepared.arguments.source_set {
         if !declared.contains(source_set) {
             return Err(reject(
@@ -319,6 +320,7 @@ fn capture_inputs(prepared: &PreparedArtifactBuild) -> Result<StableInputs, Doma
         config_sha256,
         local_config_sha256,
         declared,
+        first_configuration,
         output_sha256,
         external: external_plan(prepared)?,
     })
@@ -521,7 +523,7 @@ fn publish_external(
     Ok(())
 }
 
-fn declared_source_sets(config: &Path) -> Result<Vec<String>, DomainResult> {
+fn declared_source_sets(config: &Path) -> Result<(Vec<String>, Option<String>), DomainResult> {
     let text = std::fs::read_to_string(config)
         .map_err(|error| reject(RefusalCode::InvalidState, format!("{CONFIG_NAME}: {error}")))?;
     let document: serde_yaml::Value = serde_yaml::from_str(&text).map_err(|error| {
@@ -534,6 +536,7 @@ fn declared_source_sets(config: &Path) -> Result<Vec<String>, DomainResult> {
         )
     })?;
     let mut names = Vec::new();
+    let mut first_configuration = None;
     for entry in document
         .get("source-set")
         .and_then(serde_yaml::Value::as_sequence)
@@ -546,6 +549,12 @@ fn declared_source_sets(config: &Path) -> Result<Vec<String>, DomainResult> {
                 format!("{CONFIG_NAME} declares a source-set without a name"),
             ));
         };
+        // The runner builds extensions on the first CONFIGURATION in declaration order.
+        if first_configuration.is_none()
+            && entry.get("type").and_then(serde_yaml::Value::as_str) == Some("CONFIGURATION")
+        {
+            first_configuration = Some(name.to_string());
+        }
         names.push(name.to_string());
     }
     if names.is_empty() {
@@ -554,7 +563,7 @@ fn declared_source_sets(config: &Path) -> Result<Vec<String>, DomainResult> {
             format!("{CONFIG_NAME} declares no source-set; there is nothing to build"),
         ));
     }
-    Ok(names)
+    Ok((names, first_configuration))
 }
 
 fn execute_with_runner(
@@ -661,20 +670,30 @@ fn execute_with_resolved_runner(
             "make planned building the {} from source set `{source_set}` without publishing anything",
             prepared.arguments.kind.suffix()
         ));
+        let cfe = prepared.arguments.kind == ArtifactKind::Cfe;
+        let configuration_source_set = if cfe {
+            before.first_configuration.as_ref()
+        } else {
+            before.external.as_ref().map(|plan| &plan.configuration_set)
+        };
+        let mut plan = json!({
+            "artifact": {
+                "kind": prepared.arguments.kind.suffix(),
+                "path": path_text(&prepared.arguments.output_relative),
+            },
+            "sourceSet": source_set,
+            "source": before.external.as_ref().map(|plan| &plan.at),
+            "configurationSourceSet": configuration_source_set,
+            "extension": prepared.arguments.extension,
+            "outputExists": before.output_sha256.is_some(),
+        });
+        if cfe {
+            plan["temporaryInfobase"] = json!(true);
+        }
         result.data = Some(json!({
             "op": OPERATION,
             "dryRun": true,
-            "plan": {
-                "artifact": {
-                    "kind": prepared.arguments.kind.suffix(),
-                    "path": path_text(&prepared.arguments.output_relative),
-                },
-                "sourceSet": source_set,
-                "source": before.external.as_ref().map(|plan| &plan.at),
-                "configurationSourceSet": before.external.as_ref().map(|plan| &plan.configuration_set),
-                "extension": prepared.arguments.extension,
-                "outputExists": before.output_sha256.is_some(),
-            },
+            "plan": plan,
             "providerDispatched": false,
             "requiresPlatform": true,
         }));
@@ -1757,6 +1776,8 @@ mod tests {
         assert_eq!(data["plan"]["artifact"]["path"], "dist/main.cf");
         assert_eq!(data["plan"]["sourceSet"], "main");
         assert_eq!(data["plan"]["outputExists"], false);
+        assert_eq!(data["plan"]["configurationSourceSet"], Value::Null);
+        assert!(data["plan"].get("temporaryInfobase").is_none());
         assert!(result.rev.is_none());
         assert_eq!(result.next[0]["args"]["dryRun"], false);
         assert!(result.next[0]["args"].get("ifRev").is_none());
@@ -1809,6 +1830,11 @@ mod tests {
     #[test]
     fn preview_of_an_extension_passes_the_set_and_the_extension() {
         let root = workspace();
+        // The runner builds on the first CONFIGURATION when more than one is declared.
+        let config = root.path().join(CONFIG_NAME);
+        let mut yaml = fs::read_to_string(&config).unwrap();
+        yaml.push_str("  - name: other\n    type: CONFIGURATION\n    path: other\n");
+        fs::write(&config, yaml).unwrap();
         let prepared = build_of(
             root.path(),
             "dist/sales.cfe",
@@ -1828,7 +1854,11 @@ mod tests {
         )]);
         let result = run(root.path(), &prepared, &runner);
         assert!(result.ok, "{result:?}");
-        assert_eq!(result.data.as_ref().unwrap()["plan"]["extension"], "Sales");
+        let plan = &result.data.as_ref().unwrap()["plan"];
+        assert_eq!(plan["extension"], "Sales");
+        assert_eq!(plan["sourceSet"], "ext-sales");
+        assert_eq!(plan["temporaryInfobase"], true);
+        assert_eq!(plan["configurationSourceSet"], "main");
         assert!(runner
             .joined_args(0)
             .contains("--json-message make ext-sales --output "));

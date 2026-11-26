@@ -27,13 +27,20 @@ Work through MCP `unica`:
   skills); a borrowed module's `PropertyState` is updated in the same
   transaction
 
-Runtime export or loading of `.cfe` artifacts goes through `unica.run`:
-`download` with `extension` writes the `.cfe` from the infobase, and `make`
-builds an artifact from sources; each operation is previewed first with
-`dryRun: true` and executed with `dryRun: false`. Loading a `.cfe` file
-(`upload`) and the separate `apply`/`reset` are unavailable until the runner
-supports them ([#1246](https://github.com/IngvarConsulting/unica/issues/1246));
-send extension sources with `push` instead.
+Use `unica.run` to produce a `.cfe`:
+
+- `download` with `extension` exports the named extension from the selected
+  infobase. Use `state: "database"` to export the applied extension.
+- `make` with `extension` builds from the matching workspace extension source
+  set in a temporary file infobase. A cold build loads the full main
+  configuration before the extension. The runner can reuse the build infobase
+  on later builds. The preview shows `plan.temporaryInfobase: true` and names
+  the main source set in `plan.configurationSourceSet`.
+
+Preview with `dryRun: true` before executing with `dryRun: false`. Send
+extension sources with `push`. Loading a `.cfe` file (`upload`) and the
+separate `apply` and `reset` operations remain unavailable until the runner
+supports them ([#1246](https://github.com/IngvarConsulting/unica/issues/1246)).
 
 Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,

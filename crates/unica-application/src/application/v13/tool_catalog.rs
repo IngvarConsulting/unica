@@ -108,10 +108,10 @@ impl RunOperation {
                 "Re-export a source set in a writable export format through a temporary file infobase: the set is loaded into it with the platform line of the format and exported back in full, replacing the files of the set. The project infobase and files stay unchanged."
             }
             RunIntent::ArtifactBuild => {
-                "Build a CF, CFE, EPF or ERF artifact from attached sources. External artifacts require a singleton Designer sourceSet and a declared main configuration."
+                "Build a CF, CFE, EPF or ERF artifact from workspace sources in a temporary file infobase. A cold CFE build loads the full main configuration before the extension. Use download to export an extension already installed in the project infobase. External artifacts require a singleton Designer sourceSet and a declared main configuration."
             }
             RunIntent::CfExport => {
-                "Export the working configuration, the database configuration, or an extension out of the infobase to a CF or CFE file."
+                "Export a CF or CFE directly from the selected infobase. Use extension with state: database to export an applied extension as a CFE. Use state: working for the working configuration or extension."
             }
             RunIntent::CfImport => {
                 "Upload a CF or CFE into the working configuration without applying the database configuration."
@@ -194,7 +194,7 @@ impl RunOperation {
                 "properties": {
                     "state": {"type": "string", "enum": ["working", "database"]},
                     "output": {"type": "string", "description": "Workspace-relative .cf or .cfe output path."},
-                    "extension": {"type": "string", "description": "1C extension name; omit for the main configuration."}
+                    "extension": {"type": "string", "description": "Name of the extension to export from the selected infobase. Omit for the main configuration."}
                 },
                 "required": ["state", "output"]
             })),
@@ -218,7 +218,7 @@ impl RunOperation {
                 "properties": {
                     "output": {"type": "string", "description": "Workspace-relative .cf, .cfe, .epf or .erf file to build. External builds publish one file and preserve its neighbors."},
                     "sourceSet": {"type": "string", "description": "Name of one source set declared in v8project.yaml; required for .epf/.erf, with exactly one matching external object."},
-                    "extension": {"type": "string", "description": "Extension name in the infobase for a .cfe output; required for .cfe and refused for other output kinds."}
+                    "extension": {"type": "string", "description": "Name of the extension to build in the temporary build infobase. It must match the declared EXTENSION source-set name. Required for .cfe and refused for other output kinds."}
                 },
                 "required": ["output"]
             })),
@@ -1579,7 +1579,7 @@ mod tests {
                 "properties": {
                     "state": {"type": "string", "enum": ["working", "database"]},
                     "output": {"type": "string", "description": "Workspace-relative .cf or .cfe output path."},
-                    "extension": {"type": "string", "description": "1C extension name; omit for the main configuration."}
+                    "extension": {"type": "string", "description": "Name of the extension to export from the selected infobase. Omit for the main configuration."}
                 },
                 "required": ["state", "output"]
             }))
