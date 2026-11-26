@@ -586,12 +586,9 @@ impl ResolvedProjectSourceAdmission {
     }
 }
 
-pub fn discover_project_source_admission(
+fn retain_source_selection_workspace(
     workspace_root: &Path,
-    discovery: Arc<dyn unica_source_contract::read::SourceMapDiscovery>,
-    checkpoint: &mut dyn FnMut() -> Result<(), String>,
-) -> Result<ResolvedProjectSourceAdmission, String> {
-    checkpoint()?;
+) -> Result<RetainedDirectoryCapability, String> {
     let canonical_workspace = crate::paths::normalize_path_identity(workspace_root)?;
     let workspace = RetainedDirectoryCapability::open(&canonical_workspace).map_err(|error| {
         format!("project source-map workspace cannot be retained without following links: {error}")
@@ -599,7 +596,23 @@ pub fn discover_project_source_admission(
     workspace
         .validate_named_identity()
         .map_err(|error| format!("project source-map workspace identity changed: {error}"))?;
+    Ok(workspace)
+}
 
+/// Opens a single read pass for queries that do not retain evidence for a later write.
+pub fn open_source_selection_read_pass(
+    workspace_root: &Path,
+) -> Result<impl unica_source_contract::read::SourceSelectionReadPass, String> {
+    RetainedSelectionPass::new(retain_source_selection_workspace(workspace_root)?)
+}
+
+pub fn discover_project_source_admission(
+    workspace_root: &Path,
+    discovery: Arc<dyn unica_source_contract::read::SourceMapDiscovery>,
+    checkpoint: &mut dyn FnMut() -> Result<(), String>,
+) -> Result<ResolvedProjectSourceAdmission, String> {
+    checkpoint()?;
+    let workspace = retain_source_selection_workspace(workspace_root)?;
     let (first_map, first_pass) =
         discover_source_map_pass(workspace.clone(), discovery.as_ref(), checkpoint)?;
     let first_semantic = CompleteProjectSourceSelection::from_map(&first_map, workspace.path());

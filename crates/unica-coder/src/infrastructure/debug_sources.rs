@@ -15,7 +15,7 @@ use unica_address::{
 };
 use unica_source_contract::{
     debug_source::{DebugModuleId, DebugModuleQuery, DebugModuleSource, ResolveDebugModules},
-    read::{FileStamp, ReadFile, SourceDirectory},
+    read::{FileStamp, ReadFile, SourceDirectory, SourceSelectionReadPass},
     ProjectSourceSet, SourceFormat, SourceSetKind, SourceSetState,
 };
 use unica_source_designer::{
@@ -43,9 +43,13 @@ pub fn workspace_debug_resolver(
     if !workspace.is_absolute() {
         return Err("rootProject must be an absolute Unica workspace path".into());
     }
-    let workspace = unica_workspace::paths::normalize_path_identity(workspace)?;
-    let reader = unica_workspace::discovery::ProjectDiscoveryReader::new(&workspace);
-    if !unica_source_designer::project_sources::has_debug_source_set(&reader, source_set)? {
+    let mut pass = unica_workspace::selection_evidence::open_source_selection_read_pass(workspace)?;
+    let workspace = pass.workspace_path().to_path_buf();
+    if !unica_source_designer::project_sources::has_debug_source_set(
+        &mut pass,
+        unica_workspace::paths::host_path_text,
+        source_set,
+    )? {
         return Err(match source_set {
             Some(name) => format!(
                 "debug source set {name} is not available; use the names resolved by workspace"
@@ -523,17 +527,45 @@ mod tests {
     fn debug_attach_skips_a_declared_source_root_that_is_a_file() {
         let workspace = tempfile::tempdir().unwrap();
         let root = workspace.path();
-        std::fs::write(
-            root.join("v8project.yaml"),
-            "source-set:\n  - {name: main, type: CONFIGURATION, path: broken}\n  - {name: ext, type: EXTENSION, path: ext}\n",
-        )
-        .unwrap();
         std::fs::write(root.join("broken"), "").unwrap();
         std::fs::create_dir(root.join("ext")).unwrap();
         std::fs::write(root.join("ext/Configuration.xml"), "").unwrap();
-        assert!(workspace_debug_resolver(root, None).is_ok());
-        assert!(workspace_debug_resolver(root, Some("main")).is_err());
-        assert!(workspace_debug_resolver(root, Some("ext")).is_ok());
+        for broken in ["broken", "broken/nested"] {
+            std::fs::write(
+                root.join("v8project.yaml"),
+                format!("source-set:\n  - {{name: main, type: CONFIGURATION, path: {broken}}}\n  - {{name: ext, type: EXTENSION, path: ext}}\n"),
+            )
+            .unwrap();
+            assert!(workspace_debug_resolver(root, None).is_ok());
+            assert!(workspace_debug_resolver(root, Some("main")).is_err());
+            assert!(workspace_debug_resolver(root, Some("ext")).is_ok());
+        }
+    }
+
+    #[test]
+    fn debug_attach_skips_a_linked_source_root_in_declared_and_autodetected_layouts() {
+        let workspace = tempfile::tempdir().unwrap();
+        let root = workspace.path();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("Configuration.xml"), "").unwrap();
+        std::fs::create_dir_all(root.join("src/extensions/ext")).unwrap();
+        std::fs::write(root.join("src/extensions/ext/Configuration.xml"), "").unwrap();
+        if !super::super::test_fixtures::dir_link_or_skip(outside.path(), root.join("src/cf")) {
+            return;
+        }
+        let assert_only_extension = || {
+            assert!(workspace_debug_resolver(root, None).is_ok());
+            assert!(workspace_debug_resolver(root, Some("main")).is_err());
+            assert!(workspace_debug_resolver(root, Some("ext")).is_ok());
+        };
+        std::fs::write(
+            root.join("v8project.yaml"),
+            "source-set:\n  - {name: main, type: CONFIGURATION, path: src/cf}\n  - {name: ext, type: EXTENSION, path: src/extensions/ext}\n",
+        )
+        .unwrap();
+        assert_only_extension();
+        std::fs::remove_file(root.join("v8project.yaml")).unwrap();
+        assert_only_extension();
     }
 
     #[test]

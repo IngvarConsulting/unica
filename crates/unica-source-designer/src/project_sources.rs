@@ -517,12 +517,14 @@ fn source_set_candidates(
 /// Inspect only the project declaration and known root markers. A breakpoint or stack
 /// lookup proves the registration and runtime identity of its individual modules.
 pub fn has_debug_source_set(
-    reader: &dyn ProjectDiscoveryRead,
+    pass: &mut dyn SourceSelectionReadPass,
+    host_text_fn: fn(String) -> String,
     requested: Option<&str>,
 ) -> Result<bool, String> {
-    let root = reader.workspace_root();
-    let mut state = SourceMapDiscoveryState::health(reader);
-    let candidates = source_set_candidates(root, &mut state, &mut || Ok(()))?;
+    let root = pass.workspace_path().to_path_buf();
+    let mut state = SourceMapDiscoveryState::actor(pass, host_text_fn);
+    let mut checkpoint = || Ok(());
+    let candidates = source_set_candidates(&root, &mut state, &mut checkpoint)?;
     for set in candidates.source_sets {
         if requested.is_some_and(|name| name != set.name)
             || !matches!(
@@ -532,28 +534,11 @@ pub fn has_debug_source_set(
         {
             continue;
         }
-        let directory = match health_source_directory_opened(reader, root, &set.path)? {
-            Ok(Some(directory)) => directory,
-            Ok(None) => continue,
-            Err(error) if open_failure_is_wrong_kind(reader, &error) => continue,
-            Err(error) => {
-                return Err(format!(
-                    "source directory could not be opened safely: {error}"
-                ))
-            }
-        };
-        let present = |name: &str| regular_marker_present(reader, &directory, name);
-        if present("Configuration.xml")? {
-            let mut has_edt = false;
-            for marker in EDT_SOURCE_MARKERS {
-                if present(marker)? {
-                    has_edt = true;
-                    break;
-                }
-            }
-            if !has_edt {
-                return Ok(true);
-            }
+        let set = detect_source_set_format(&root, set, &mut state, &mut checkpoint)?;
+        if set.source_format == SourceFormat::PlatformXml
+            && set.source_state == SourceSetState::Supported
+        {
+            return Ok(true);
         }
     }
     Ok(false)
@@ -1415,7 +1400,16 @@ fn probe_source_root_markers(
                 );
             }
             ProbeDirectory::Retained(handle) => {
-                found |= regular_marker_present(state.reader(), handle, marker)?;
+                match secure_regular_file_exists(state.reader(), handle, Path::new(marker)) {
+                    Ok(exists) => found |= exists,
+                    Err(SecureMarkerProbeError::UnsafeOrWrongKind(_)) => {
+                        // An autodetected candidate has no declared source set on which to
+                        // report an incomplete format probe. Unsafe or wrong-kind routes are
+                        // not evidence and must never be followed; declared source sets still
+                        // retain the same error as a per-set NotRun outcome.
+                    }
+                    Err(SecureMarkerProbeError::Incomplete(reason)) => return Err(reason),
+                }
             }
             ProbeDirectory::Path(root) => {
                 found |= snapshot_project_map_input(&root.join(marker), false, state, checkpoint)?
@@ -2005,19 +1999,6 @@ impl SecureMarkerProbeError {
         match self {
             Self::UnsafeOrWrongKind(reason) | Self::Incomplete(reason) => reason,
         }
-    }
-}
-
-/// Only a regular file reached without following links is format evidence.
-fn regular_marker_present(
-    reader: &dyn ProjectDiscoveryRead,
-    directory: &DirectoryReader,
-    marker: &str,
-) -> Result<bool, String> {
-    match secure_regular_file_exists(reader, directory, Path::new(marker)) {
-        Ok(present) => Ok(present),
-        Err(SecureMarkerProbeError::UnsafeOrWrongKind(_)) => Ok(false),
-        Err(SecureMarkerProbeError::Incomplete(reason)) => Err(reason),
     }
 }
 
