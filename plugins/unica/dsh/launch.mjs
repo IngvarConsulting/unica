@@ -9,14 +9,12 @@
  * so the same plugin directory serves DSH as it serves the other hosts through
  * `.mcp.json`.
  *
- * The workspace is the directory the Host was started in. DSH's MCP bridge
- * sends neither request metadata nor `roots/list`, so the launcher hands the
- * project to Unica through `UNICA_PROJECT_DIR`, the host-neutral override the
- * packaged runtime accepts; a value already in the Host environment wins.
+ * Workspace identity arrives with each MCP request from its DSH session.
  */
 
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { constants } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -46,15 +44,6 @@ function fail(message, code) {
   process.exit(code);
 }
 
-/** Workspace: the installer's override, else the directory the Host started in.
- *
- * Unica validates the path and refuses an unusable one with `invalid_state`,
- * so a bad value is never silently replaced by another project here.
- */
-function applyProjectDirectory() {
-  process.env.UNICA_PROJECT_DIR = process.env.UNICA_PROJECT_DIR || process.cwd();
-}
-
 /**
  * Installed package: the bootstrap verifies the pinned runtime and starts it.
  * Source checkout: the command the development `.mcp.json` carries.
@@ -66,7 +55,11 @@ function selectCommand() {
     return { command: binary, args: ['run', '--plugin-root', PLUGIN_ROOT] };
   }
   const manifest = resolve(PLUGIN_ROOT, '..', '..', 'Cargo.toml');
-  if (existsSync(manifest)) {
+  const checkout = dirname(manifest);
+  if (PLUGIN_ROOT === join(checkout, 'plugins', 'unica') &&
+      !existsSync(join(PLUGIN_ROOT, 'runtime-manifest.json')) &&
+      existsSync(join(checkout, 'crates', 'unica-product', 'Cargo.toml')) &&
+      existsSync(manifest)) {
     return {
       command: 'cargo',
       args: ['run', '--quiet', '--manifest-path', manifest, '--bin', 'unica', '--'],
@@ -79,7 +72,10 @@ function selectCommand() {
 }
 
 function main() {
-  applyProjectDirectory();
+  process.env.UNICA_HOST_CONTEXT_REQUIRED = '1';
+  for (const name of ['UNICA_PROJECT_DIR', 'CLAUDE_PROJECT_DIR', 'ZCODE_PROJECT_DIR']) {
+    delete process.env[name];
+  }
   const selected = selectCommand();
   const child = spawn(selected.command, selected.args, { stdio: 'inherit' });
   child.on('error', (error) => {
@@ -87,8 +83,7 @@ function main() {
   });
   child.on('exit', (code, signal) => {
     if (signal) {
-      process.kill(process.pid, signal);
-      return;
+      process.exit(128 + constants.signals[signal]);
     }
     process.exit(code ?? EXIT_UNAVAILABLE);
   });

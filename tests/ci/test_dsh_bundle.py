@@ -1,10 +1,7 @@
 """Контракт бандла Unica для DeepSeek Harness.
 
-DSH ставит плагин как npm-пакет: `package.json` в корне плагина объявляет
-`dsh.bundle.patch`, а патч вставляет строки готовых пакетов установки —
-MCP-клиент с сервером `unica` и провайдер навыков с корнем `skills/`. Своего
-кода у бандла почти нет, поэтому проверять нечего, кроме объявлений: опечатка
-в пути или в имени пакета видна только после установки, в чужом профиле.
+DSH ставит плагин как npm-пакет. Патч регистрирует инструменты с рабочей
+папкой текущей сессии и провайдер навыков с корнем `skills/`.
 
 Манифест лежит в корне плагина, а не в отдельном пакете: DSH ставит плагин из
 каталога `plugins/unica` репозитория и из `unica-marketplace`, где pnpm забирает
@@ -187,9 +184,9 @@ class DshPatchTests(unittest.TestCase):
             sorted(row.get("id") for row in rows), ["unica-mcp", "unica-skills"]
         )
         server = row_by_id("unica-mcp")
-        self.assertEqual(server.get("name"), "@deepseek-ai/dsh-mcp-client")
-        self.assertEqual(server["config"].get("serverName"), "unica")
-        self.assertEqual(server["config"].get("transport"), "stdio")
+        provider = server["name"].removeprefix(package()["name"] + "/")
+        self.assertEqual(provider, "dsh-tools")
+        self.assertTrue((PLUGIN_ROOT / package()["exports"][f"./{provider}"]).is_file())
         skills = row_by_id("unica-skills")
         self.assertEqual(skills.get("name"), "@deepseek-ai/dsh-skill-filesystem")
         self.assertEqual(skills["config"].get("providerName"), "unica")
@@ -202,9 +199,9 @@ class DshPatchTests(unittest.TestCase):
         self.assertEqual(len(directories), 1)
         self.assertIsInstance(directories[0], JsExpression)
 
-    def test_javascript_paths_reach_the_launcher_and_the_skills(self) -> None:
+    def test_javascript_path_reaches_the_skills(self) -> None:
         expressions = re.findall(r"!!js (.+)", PATCH.read_text(encoding="utf-8"))
-        self.assertGreaterEqual(len(expressions), 3)
+        self.assertEqual(len(expressions), 1)
 
         resolved = set()
         for expression in expressions:
@@ -213,17 +210,7 @@ class DshPatchTests(unittest.TestCase):
                 continue
             self.assertTrue(path.exists(), f"нет пути из выражения: {path}")
             resolved.add(path.resolve())
-        self.assertIn(LAUNCHER.resolve(), resolved)
         self.assertIn((PLUGIN_ROOT / "skills").resolve(), resolved)
-
-    def test_runtime_overrides_live_under_the_dsh_home(self) -> None:
-        env = row_by_id("unica-mcp")["config"].get("env", {})
-
-        for name in ("UNICA_RUNTIME_CACHE_DIR", "UNICA_PROVIDER_STATE_DIR"):
-            self.assertIsInstance(env.get(name), JsExpression, name)
-            self.assertIn("DSH_HOME", env[name])
-            self.assertIn(".dsh", env[name])
-
 
 class DshLauncherTests(unittest.TestCase):
     def test_the_launcher_starts_the_run_command_without_a_handshake(self) -> None:
@@ -238,12 +225,10 @@ class DshLauncherTests(unittest.TestCase):
         self.assertIn("dirname(dirname(fileURLToPath(import.meta.url)))", source)
         self.assertIn("'bootstrap', 'bin'", source)
 
-    def test_the_launcher_hands_the_project_through_the_override(self) -> None:
+    def test_the_launcher_requires_explicit_workspace_context(self) -> None:
         source = LAUNCHER.read_text(encoding="utf-8")
-
-        # Пакетный рантайм не берёт cwd запуска: проект передаётся только
-        # переменной, которую знает `INV.WORKSPACE.HOST-CONTEXT`.
-        self.assertIn("process.env.UNICA_PROJECT_DIR", source)
+        self.assertIn("process.env.UNICA_HOST_CONTEXT_REQUIRED = '1'", source)
+        self.assertNotIn("process.cwd()", source)
 
     def test_the_target_matrix_matches_the_packaged_launcher(self) -> None:
         packaged = set(

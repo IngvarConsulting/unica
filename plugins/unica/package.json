@@ -13,7 +13,8 @@
   "exports": {
     "./package.json": "./package.json",
     "./locale/*.json": "./dsh/locale/*.json",
-    "./icon": "./assets/unica-icon.svg"
+    "./icon": "./assets/unica-icon.svg",
+    "./dsh-tools": "./dsh/tools.mjs"
   },
   "files": [
     ".claude-plugin",
@@ -35,5 +36,10 @@
     "bundle": {
       "patch": "./dsh/cordis.patch.yml"
     }
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-mcp-client": "0.2.2-rc.5",
+    "@deepseek-ai/dsh-subprocess": "0.2.2-rc.5",
+    "@modelcontextprotocol/client": "2.2.0"
   }
 }

@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Unica",
-    "description": "Practical 1C:Enterprise development workflows for an agent: metadata, forms, roles, DCS and MXL layouts, EPF/ERF artifacts, infobases, and searching, reviewing, diagnosing and testing BSL code. Adds two surfaces to every session: the unica MCP server, whose tools appear under the server-qualified names DSH derives for them, and 50 Unica skills such as meta-add, form-compile and code-review that route the work to those tools. Ask for a 1C task directly, or load the skill for the operation you need. The first start downloads and verifies the pinned runtime into <DSH home>/unica/runtimes and can take a few minutes; later starts reuse it. One connection serves one project: the directory DSH was started in, or UNICA_PROJECT_DIR when the profile sets it. Tools write only inside that project, and working on another project needs a restart. Turning the bundle off removes both the tools and the skills."
+    "description": "Use Unica tools and skills to develop and test 1C:Enterprise applications. Each tool call uses the current working directory of the calling DSH session. On first launch Unica downloads and verifies its runtime. Later sessions reuse the cached runtime."
   }
 }
