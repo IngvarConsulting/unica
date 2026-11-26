@@ -55,10 +55,10 @@ class ReleaseProofTests(unittest.TestCase):
             "unica.diff",
             "unica.run",
             "unica.docs",
+            "unica.task.result",
         }
         self.compatibility_names = self.native_names | {
             "unica.task.get",
-            "unica.task.result",
             "unica.task.cancel",
         }
 
@@ -183,7 +183,7 @@ class ReleaseProofTests(unittest.TestCase):
         report = self.evaluate()
 
         self.assertEqual(report["status"], "passed")
-        self.assertEqual(report["surfaces"]["native"]["toolCount"], 8)
+        self.assertEqual(report["surfaces"]["native"]["toolCount"], 9)
         self.assertEqual(report["surfaces"]["compatibility"]["toolCount"], 11)
         self.assertEqual(report["legacyBaseline"]["overlap"], [])
         self.assertEqual(

@@ -391,14 +391,21 @@ pub(crate) struct StepReport {
     pub(crate) tool: String,
     pub(crate) arguments: Map<String, Value>,
     pub(crate) refused: bool,
+    pending: bool,
 }
 
 impl StepReport {
-    pub(crate) fn of(tool: &str, arguments: &Map<String, Value>, result: &CallToolResult) -> Self {
+    pub(crate) fn of(
+        tool: &str,
+        arguments: &Map<String, Value>,
+        result: &CallToolResult,
+        pending: bool,
+    ) -> Self {
         Self {
             tool: tool.to_string(),
             arguments: without_confirmation(arguments),
             refused: result.is_error == Some(true),
+            pending,
         }
     }
 }
@@ -432,7 +439,13 @@ pub(crate) fn name_the_choice(
             text.push('.');
             let total = 1 + option.then.len();
             for (index, step) in steps.iter().enumerate() {
-                let outcome = if step.refused { "refused" } else { "done" };
+                let outcome = if step.refused {
+                    "refused"
+                } else if step.pending {
+                    "pending"
+                } else {
+                    "done"
+                };
                 text.push_str(&format!(
                     "\n{}/{total} {outcome}: {}",
                     index + 1,
@@ -720,7 +733,7 @@ mod tests {
         let mut result = CallToolResult::default();
         result.content.push(ContentBlock::text("loaded"));
 
-        let step = StepReport::of("unica.run", &choice.options[0].arguments, &result);
+        let step = StepReport::of("unica.run", &choice.options[0].arguments, &result, false);
         let named = name_the_choice(result, &choice, &choice.options[0], &[step]);
 
         let first = serde_json::to_value(&named.content[0]).unwrap();

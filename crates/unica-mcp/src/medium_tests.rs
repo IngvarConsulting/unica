@@ -53,8 +53,9 @@ fn production_mcp_surface_exposes_only_canonical_v13_tools_and_task_compatibilit
             "unica.diff",
             "unica.run",
             "unica.docs",
+            "unica.task.result",
         ],
-        "the native Tasks-capable profile must expose exactly the eight canonical tools"
+        "the modern catalog includes only the main tools and the receipt reader"
     );
 
     let compatibility = v13_tool_definitions(V13TaskProfile::Compatibility)
@@ -101,7 +102,12 @@ fn every_tool_that_can_return_source_text_declares_its_result_size() {
     }
     assert_eq!(
         declaring,
-        ["unica.view", "unica.view", "unica.task.result"],
+        [
+            "unica.view",
+            "unica.task.result",
+            "unica.view",
+            "unica.task.result",
+        ],
         "native and compatibility profiles"
     );
     // Бюджет любого хоста в байтах не длиннее объявленного предела
@@ -912,7 +918,7 @@ async fn undeclared_surfaces_answer_cleanly_when_probed_anyway() {
 
 /// rule: CTR.WIRE.CANONICAL-TOOL-PROFILES
 #[tokio::test]
-async fn surface_profiles_publish_eight_native_or_eleven_compatibility_tools_per_client() {
+async fn surface_profiles_publish_the_tools_for_each_protocol() {
     surface_profiles_case().await;
 }
 
@@ -2210,9 +2216,8 @@ async fn a_lost_submit_is_a_task_for_native_clients_and_a_task_receipt_for_other
 }
 
 /// Хост объявляет Tasks в `tools/list`, но не в `tools/call` (#3220).
-/// Каталог 2026-07-28 — восемь инструментов, что бы ни объявил `tools/list`;
-/// вызов без Tasks, ставший заданием, ждёт его конца и отвечает итогом,
-/// а клиента с progressToken держит прогресс.
+/// Каталог 2026-07-28 публикует `unica.task.result` при любом объявлении Tasks.
+/// Предпросмотр ждёт окончания задания и отправляет прогресс клиенту.
 /// rule: CTR.WIRE.CANONICAL-TOOL-PROFILES
 /// rule: INV.WIRE.NATIVE-TASK-CAPABILITY
 #[tokio::test]
@@ -2324,6 +2329,129 @@ async fn awaited_call(server: UnicaServer) -> Value {
     answer
 }
 
+/// A Codex client without Tasks can stop waiting for a slow push and read
+/// its accepted invocation through the same tools/list profile.
+/// rule: INV.WIRE.NATIVE-TASK-CAPABILITY
+/// rule: CTR.WIRE.CANONICAL-TOOL-PROFILES
+#[tokio::test]
+async fn modern_push_hands_off_to_a_listed_result_tool() {
+    use unica_execution_contract::invocation::{DomainResult, InvocationStatus, TaskId};
+
+    let task_id = TaskId::new();
+    let submissions = Arc::new(AtomicUsize::new(0));
+    let calls = Arc::clone(&submissions);
+    let call: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _, _| {
+        calls.fetch_add(1, Ordering::SeqCst);
+        Ok(CanonicalCallOutcome::Task(canonical_snapshot(
+            task_id,
+            InvocationStatus::Working,
+            None,
+        )))
+    });
+    let get: Arc<CanonicalTaskHandler> = Arc::new(|_, _| panic!("unexpected task action"));
+    let wait: Arc<CanonicalTaskWaitHandler> = {
+        let waits = AtomicUsize::new(0);
+        Arc::new(move |id, _, _, _| {
+            assert_eq!(id, task_id);
+            let first = waits.fetch_add(1, Ordering::SeqCst) == 0;
+            let snapshot = if first {
+                canonical_snapshot(task_id, InvocationStatus::Working, None)
+            } else {
+                canonical_snapshot(
+                    task_id,
+                    InvocationStatus::Completed,
+                    Some(DomainResult::success("push applied")),
+                )
+            };
+            Ok(snapshot)
+        })
+    };
+    let (mut client, _) = spawn_unica_server(UnicaServer::with_canonical_v13_task_handlers(
+        call,
+        Arc::clone(&get),
+        wait,
+        get,
+    ));
+    client
+        .send(json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/list",
+            "params": {"_meta": modern_meta()}
+        }))
+        .await;
+    let catalog = client.receive().await;
+    client
+        .send(json!({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {
+            "name": "unica.run", "arguments": {"op": "push", "args": {}, "dryRun": false},
+                "_meta": modern_meta()
+            }
+        }))
+        .await;
+    let accepted = client.receive().await;
+    let result = &accepted["result"]["structuredContent"];
+    assert_eq!(
+        result["data"]["task"]["taskId"],
+        task_id.to_string(),
+        "{accepted}"
+    );
+    assert_eq!(result["data"]["task"]["status"], "working", "{accepted}");
+    let next = &result["next"][0];
+    assert_eq!(next["tool"], "unica.task.result", "{accepted}");
+    assert!(
+        catalog["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool["name"] == next["tool"]),
+        "{catalog}"
+    );
+    client
+        .send(json!({
+            "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+            "params": {"name": next["tool"], "arguments": next["args"], "_meta": modern_meta()}
+        }))
+        .await;
+    let terminal = client.receive().await;
+    assert_eq!(
+        terminal["result"]["structuredContent"]["summary"], "push applied",
+        "{terminal}"
+    );
+    assert_eq!(submissions.load(Ordering::SeqCst), 1);
+    client.shutdown().await;
+}
+
+/// rule: INV.WIRE.NATIVE-TASK-CAPABILITY
+#[tokio::test]
+async fn modern_quick_push_returns_the_terminal_result_inline() {
+    use unica_execution_contract::invocation::{DomainResult, InvocationStatus, TaskId};
+
+    let task_id = TaskId::new();
+    let wait: Arc<CanonicalTaskWaitHandler> = Arc::new(move |id, _, _, _| {
+        assert_eq!(id, task_id);
+        Ok(canonical_snapshot(
+            task_id,
+            InvocationStatus::Completed,
+            Some(DomainResult::success("push applied")),
+        ))
+    });
+    let (mut client, _) = spawn_unica_server(awaited_task_server(task_id, wait));
+    client
+        .send(json!({
+            "jsonrpc":"2.0", "id":1, "method":"tools/call",
+            "params":{
+                "name":"unica.run", "arguments":{"op":"push", "args":{}, "dryRun":false},
+                "_meta":modern_meta()
+            }
+        }))
+        .await;
+    let answer = client.receive().await;
+    let result = &answer["result"]["structuredContent"];
+    assert_eq!(result["summary"], "push applied", "{answer}");
+    assert!(result["data"].get("task").is_none(), "{answer}");
+    client.shutdown().await;
+}
+
 fn lost_observation() -> V5TaskExchangeError {
     V5TaskExchangeError::Transport(TaskObservationTimer::start(Instant::now()).failed(
         TaskObservationStage::AcquirePeer,
@@ -2406,20 +2534,22 @@ async fn cancelling_a_call_that_waits_for_its_task_cancels_the_task() {
         )))
     });
     let cancelled = Arc::new(AtomicBool::new(false));
-    let waited = Arc::clone(&cancelled);
-    let wait: Arc<CanonicalTaskWaitHandler> = Arc::new(move |_, _, _, _| {
-        std::thread::sleep(Duration::from_millis(10));
-        let status = if waited.load(Ordering::SeqCst) {
-            InvocationStatus::Cancelled
-        } else {
-            InvocationStatus::Working
-        };
-        Ok(canonical_snapshot(task_id, status, None))
+    let waiting = Arc::new(tokio::sync::Notify::new());
+    let entered = Arc::clone(&waiting);
+    let wait: Arc<CanonicalTaskWaitHandler> = Arc::new(move |_, _, deadline, _| {
+        entered.notify_one();
+        std::thread::sleep(
+            deadline
+                .transport_cutoff()
+                .saturating_duration_since(Instant::now()),
+        );
+        Err(lost_observation())
     });
     let get: Arc<CanonicalTaskHandler> =
         Arc::new(move |_, _| Ok(canonical_snapshot(task_id, InvocationStatus::Working, None)));
     let requested = Arc::clone(&cancelled);
-    let cancel: Arc<CanonicalTaskHandler> = Arc::new(move |_, _| {
+    let cancel: Arc<CanonicalTaskHandler> = Arc::new(move |_, deadline| {
+        assert!(deadline.transport_cutoff() > Instant::now());
         requested.store(true, Ordering::SeqCst);
         Ok(canonical_snapshot(task_id, InvocationStatus::Working, None))
     });
@@ -2429,10 +2559,15 @@ async fn cancelling_a_call_that_waits_for_its_task_cancels_the_task() {
     client
         .send(json!({
             "jsonrpc":"2.0", "id":7, "method":"tools/call",
-            "params":{"name":"unica.run", "arguments":{}, "_meta":modern_meta()}
+            "params":{
+                "name":"unica.run", "arguments":{"op":"push", "args":{}, "dryRun":false},
+                "_meta":modern_meta()
+            }
         }))
         .await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    tokio::time::timeout(TEST_STEP, waiting.notified())
+        .await
+        .expect("the push entered observation");
     assert!(!cancelled.load(Ordering::SeqCst));
     client
         .send(json!({
@@ -2440,7 +2575,8 @@ async fn cancelling_a_call_that_waits_for_its_task_cancels_the_task() {
             "params":{"requestId":7, "reason":"test"}
         }))
         .await;
-    let deadline = Instant::now() + TEST_STEP;
+    let deadline =
+        Instant::now() + unica_execution::invocation::INVOCATION_HANDOFF_WINDOW + TEST_STEP;
     while !cancelled.load(Ordering::SeqCst) || in_flight.running() > 0 {
         assert!(Instant::now() < deadline, "the Task was not cancelled");
         tokio::time::sleep(Duration::from_millis(5)).await;

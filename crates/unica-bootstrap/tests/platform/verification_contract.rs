@@ -212,7 +212,7 @@ fn verify_rejects_task_compatibility_tools_on_the_direct_lifecycle() {
     .to_string();
 
     assert!(error.contains("2026-07-28"), "{error}");
-    for task_tool in ["unica.task.get", "unica.task.result", "unica.task.cancel"] {
+    for task_tool in ["unica.task.get", "unica.task.cancel"] {
         assert!(error.contains(task_tool), "{error}");
     }
 }
@@ -311,8 +311,8 @@ done
     path
 }
 
-/// The 2026-07-28 catalog: the canonical eight, never the task compatibility tools.
-const CANONICAL_TOOLS: [&str; 8] = [
+/// The 2026-07-28 catalog: the eight main tools and the receipt reader.
+const CANONICAL_TOOLS: [&str; 9] = [
     "unica.view",
     "unica.apply",
     "unica.resolve",
@@ -321,6 +321,7 @@ const CANONICAL_TOOLS: [&str; 8] = [
     "unica.diff",
     "unica.run",
     "unica.docs",
+    "unica.task.result",
 ];
 
 /// A legacy `initialize` session: the canonical eight plus task compatibility.

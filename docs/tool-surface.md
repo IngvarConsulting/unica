@@ -157,6 +157,7 @@ List canonical runtime operations and their invocation contract, or preview/exec
 - Получить машинно-читаемый словарь допустимых runtime намерений
 - Предпросмотреть и выгрузить main CF, extension CFE или полный DT из существующей ИБ
 - Различить сборку артефакта, экспорт конфигурации и полный снимок ИБ без выбора platform provider моделью
+- Дочитать результат долгого push по квитанции в MCP 2026-07-28 без Tasks
 
 ## search
 
@@ -228,13 +229,13 @@ Wait for a Task result for a bounded interval; returns the canonical result or a
 | `taskId` | string | да | Opaque Task identifier returned by Unica |
 | `waitMs` | integer | нет | Bounded wait in milliseconds; defaults to 7000 |
 
-**Результат сейчас:** Ждёт не более 7000 мс и возвращает terminal result либо новый working receipt без повторного исполнения (отвечают типизированным `data`)
+**Результат сейчас:** В обоих профилях ждёт не более 7000 мс и возвращает итог либо квитанцию продолжающегося задания. Чтение сохраняет идентичность исходного вызова. (отвечают типизированным `data`)
 
 **Целевой контракт:** достигнут
 
 **Сценарии:**
 
-- Ожидать результат Task в compatibility-профиле
+- Ожидать итог по тому же taskId в каталоге старого или нового протокола
 
 ## view
 
