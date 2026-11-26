@@ -15,3 +15,11 @@ pub struct DebugModuleSource {
     pub address: QualifiedAddress,
     pub runtime_id: DebugModuleId,
 }
+
+/// Which saved module evidence the debugger needs for this request.
+#[derive(Clone, Copy)]
+pub enum DebugModuleQuery<'a> {
+    FirstSaved { source_set: Option<&'a str> },
+    Address(&'a str),
+    Runtime(&'a DebugModuleId),
+}

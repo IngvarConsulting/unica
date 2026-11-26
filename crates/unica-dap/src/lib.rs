@@ -20,12 +20,12 @@ use modules::Modules;
 use rdbg::{child, field, Rdbg, TargetAttachment};
 use roxmltree::{Document, Node};
 use serde_json::{json, Value};
-use unica_source_contract::debug_source::{DebugModuleId, DebugModuleSource};
+use unica_source_contract::debug_source::{DebugModuleId, DebugModuleQuery, DebugModuleSource};
 use uuid::Uuid;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
-type ResolveModules = fn(&Path) -> Result<Vec<DebugModuleSource>>;
+type ResolveModules = fn(&Path, DebugModuleQuery<'_>) -> Result<Vec<DebugModuleSource>>;
 
 const DEFAULT_AUTO_ATTACH_TYPES: [&str; 3] = ["Client", "ManagedClient", "ServerEmulation"];
 const DEBUG_TARGET_TYPES: &[&str] = &[
@@ -283,7 +283,7 @@ struct SnapshotNode {
 struct Session {
     rdbg: Arc<Rdbg>,
     modules: Modules,
-    breakpoints: HashMap<DebugModuleId, Vec<Breakpoint>>,
+    breakpoints: HashMap<String, (DebugModuleId, Vec<Breakpoint>)>,
     targets: HashMap<u64, Target>,
     next_id: u64,
     event_reader: Option<Receiver<Result<String>>>,
@@ -302,20 +302,12 @@ impl Session {
         }
         let port = args["debugServerPort"].as_u64().unwrap_or(1550);
         let alias = args["infoBaseAlias"].as_str().unwrap_or("DefAlias");
-        let sources = resolve_modules(root)?;
-        if !args["sourceSet"].is_null() {
-            let set = string(args, "sourceSet")?;
-            if !sources
-                .iter()
-                .any(|source| source.address.source_set() == set)
-            {
-                return Err(format!(
-                    "debug source set {set} is not available; use the names resolved by workspace"
-                )
-                .into());
-            }
-        }
-        let modules = Modules::new(sources)?;
+        let source_set = if args["sourceSet"].is_null() {
+            None
+        } else {
+            Some(string(args, "sourceSet")?)
+        };
+        let modules = Modules::open(root, source_set, resolve_modules)?;
         let rdbg = Arc::new(Rdbg::attach(port.try_into()?, alias)?);
         let session = Self {
             modules,
@@ -485,8 +477,9 @@ impl Session {
             })
             .collect::<Result<Vec<_>>>()?;
         let mut updated = self.breakpoints.clone();
-        updated.insert(module, breakpoints.clone());
-        self.rdbg.breakpoints(updated.iter())?;
+        updated.insert(address.to_owned(), (module, breakpoints.clone()));
+        self.rdbg
+            .breakpoints(updated.values().map(|(id, points)| (id, points)))?;
         self.breakpoints = updated;
         Ok(json!({"breakpoints":breakpoints.iter().map(|bp| {
             json!({"verified":true,"line":bp.line,"source":source})
@@ -1160,15 +1153,11 @@ impl Session {
                     // reason unless the new location has a user breakpoint.
                     let user_breakpoint = frames.first().is_some_and(|frame| {
                         let address = frame.body["source"]["path"].as_str().unwrap_or_default();
-                        self.modules
-                            .id(address)
-                            .ok()
-                            .and_then(|module| self.breakpoints.get(&module))
-                            .is_some_and(|lines| {
-                                lines.iter().any(|bp| {
-                                    bp.condition.is_none() && frame.body["line"] == bp.line
-                                })
-                            })
+                        self.breakpoints.get(address).is_some_and(|(_, lines)| {
+                            lines
+                                .iter()
+                                .any(|bp| bp.condition.is_none() && frame.body["line"] == bp.line)
+                        })
                     });
                     let reason = if target.stepping && !user_breakpoint {
                         "step"
@@ -1227,6 +1216,7 @@ impl Session {
     }
 
     fn read_frames(&mut self, result: Node<'_, '_>) -> Result<Vec<Frame>> {
+        let mut sources = HashMap::new();
         let stack: Vec<_> = result
             .children()
             .filter(|node| node.has_tag_name("callStack"))
@@ -1244,7 +1234,14 @@ impl Session {
                     object: field(module, "objectID").ok_or("missing rdbg object ID")?.parse()?,
                     property: field(module, "propertyID").ok_or("missing rdbg property ID")?.parse()?,
                 };
-                if let Some(address) = self.modules.address(&runtime_id) {
+                let source = match sources.entry(runtime_id) {
+                    std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                    std::collections::hash_map::Entry::Vacant(entry) => {
+                        let address = self.modules.address(entry.key())?;
+                        entry.insert(address)
+                    }
+                };
+                if let Some(address) = source.as_deref() {
                     body["source"] = json!({"name":address,"path":address});
                 }
             }

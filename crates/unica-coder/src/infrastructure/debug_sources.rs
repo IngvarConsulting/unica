@@ -9,7 +9,7 @@ use unica_address::{
     source_target::MetadataAddress,
 };
 use unica_source_contract::{
-    debug_source::{DebugModuleId, DebugModuleSource},
+    debug_source::{DebugModuleId, DebugModuleQuery, DebugModuleSource},
     read::SourceDirectory,
     SourceFormat, SourceSetKind, SourceSetState,
 };
@@ -18,7 +18,7 @@ use unica_source_designer::{
     module_layout::{
         logical_module_from_metadata, platform_xml_module_relative, PlatformXmlModuleRole,
     },
-    registration::cf_edit_child_object_entries,
+    registration::root_child_objects,
 };
 use unica_workspace::{
     discovery::{lexical_contained_source_root, reject_linked_source_root_route},
@@ -27,7 +27,18 @@ use unica_workspace::{
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
-pub fn workspace_debug_modules(workspace: &Path) -> Result<Vec<DebugModuleSource>> {
+pub fn workspace_debug_modules(
+    workspace: &Path,
+    query: DebugModuleQuery<'_>,
+) -> Result<Vec<DebugModuleSource>> {
+    let address = match query {
+        DebugModuleQuery::Address(text) => Some(QualifiedAddress::parse(text)?),
+        _ => None,
+    };
+    let requested_set = match query {
+        DebugModuleQuery::FirstSaved { source_set } => source_set,
+        _ => address.as_ref().map(QualifiedAddress::source_set),
+    };
     if !workspace.is_absolute() {
         return Err("rootProject must be an absolute Unica workspace path".into());
     }
@@ -37,7 +48,8 @@ pub fn workspace_debug_modules(workspace: &Path) -> Result<Vec<DebugModuleSource
     let canonical = Path::new(&map.workspace_root);
     let mut modules = Vec::new();
     for set in &map.source_sets {
-        if set.source_format != SourceFormat::PlatformXml
+        if requested_set.is_some_and(|name| name != set.name)
+            || set.source_format != SourceFormat::PlatformXml
             || set.source_state != SourceSetState::Supported
             || !matches!(
                 set.kind,
@@ -53,11 +65,18 @@ pub fn workspace_debug_modules(workspace: &Path) -> Result<Vec<DebugModuleSource
         if admission.source_root_identity(relative) != Some(root.identity()) {
             return Err(format!("debug source set {} changed during discovery", set.name).into());
         }
-        read_modules(&root, &set.name, set.kind, &mut modules)?;
+        read_modules(
+            &root,
+            &set.name,
+            set.kind,
+            query,
+            address.as_ref(),
+            &mut modules,
+        )?;
         root.validate_named_identity()?;
-    }
-    if modules.is_empty() {
-        return Err("workspace has no supported saved debug modules".into());
+        if matches!(query, DebugModuleQuery::FirstSaved { .. }) && !modules.is_empty() {
+            break;
+        }
     }
     Ok(modules)
 }
@@ -66,6 +85,8 @@ fn read_modules(
     root: &SourceDirectory,
     set: &str,
     kind: SourceSetKind,
+    query: DebugModuleQuery<'_>,
+    address: Option<&QualifiedAddress>,
     modules: &mut Vec<DebugModuleSource>,
 ) -> Result<()> {
     let configuration = descriptor(root, Path::new("Configuration.xml"))?;
@@ -81,15 +102,22 @@ fn read_modules(
         None
     };
 
+    if matches!(query, DebugModuleQuery::Runtime(id) if id.extension != extension) {
+        return Ok(());
+    }
+    let owner_filter = address.and_then(|at| at.segments().first());
     let mut index = SourceSetModules {
         root,
         set,
+        query,
+        address,
         extension: extension.as_deref(),
         modules,
     };
-    if root
-        .relative_file_stamp(Path::new("Ext/ManagedApplicationModule.bsl"))?
-        .is_some()
+    if owner_filter.is_none_or(|seg| seg.kind() == NodeKind::Module)
+        && root
+            .relative_file_stamp(Path::new("Ext/ManagedApplicationModule.bsl"))?
+            .is_some()
     {
         index.add(
             "ManagedApplicationModule",
@@ -97,11 +125,24 @@ fn read_modules(
             owner,
         )?;
     }
-    for entry in cf_edit_child_object_entries(&configuration)? {
-        let Ok(kind) = NodeKind::parse(&entry.type_name) else {
+    if index.first_found() || owner_filter.is_some_and(|segment| segment.kind() == NodeKind::Module)
+    {
+        return Ok(());
+    }
+    for entry in root_child_objects(&document)?
+        .children()
+        .filter(Node::is_element)
+    {
+        let name = entry.text().unwrap_or_default().trim();
+        if owner_filter.is_some_and(|seg| seg.name() != Some(name)) {
+            continue;
+        }
+        let Ok(kind) = NodeKind::parse(entry.tag_name().name()) else {
             continue;
         };
-        let name = &entry.object_name;
+        if owner_filter.is_some_and(|seg| seg.kind() != kind) {
+            continue;
+        }
         let metadata = format!("{}.{name}", kind.as_str());
         match kind {
             NodeKind::CommonModule => {
@@ -127,6 +168,9 @@ fn read_modules(
             }
             _ => {}
         }
+        if index.first_found() {
+            break;
+        }
     }
     Ok(())
 }
@@ -134,11 +178,17 @@ fn read_modules(
 struct SourceSetModules<'a> {
     root: &'a SourceDirectory,
     set: &'a str,
+    query: DebugModuleQuery<'a>,
+    address: Option<&'a QualifiedAddress>,
     extension: Option<&'a str>,
     modules: &'a mut Vec<DebugModuleSource>,
 }
 
 impl SourceSetModules<'_> {
+    fn first_found(&self) -> bool {
+        matches!(self.query, DebugModuleQuery::FirstSaved { .. }) && !self.modules.is_empty()
+    }
+
     fn read_owner(&mut self, metadata: &str, kind: NodeKind, name: &str) -> Result<()> {
         let descriptor_path = descriptor_path(metadata)?;
         if self.root.relative_file_stamp(&descriptor_path)?.is_none() {
@@ -149,14 +199,20 @@ impl SourceSetModules<'_> {
         let owner = metadata_owner(&document, kind.as_str())?;
         self.check_name(owner, name)?;
 
-        if has_direct_module_route(kind, ModuleRole::Object) {
+        if has_direct_module_route(kind, ModuleRole::Object)
+            && self.address.is_none_or(|at| {
+                at.segments()
+                    .get(1)
+                    .is_some_and(|segment| segment.kind() == NodeKind::Module)
+            })
+        {
             let target = format!("{metadata}.ObjectModule");
             if self.module_exists(&target)? {
                 self.add(&target, PlatformXmlModuleRole::ObjectModule, owner)?;
             }
         }
 
-        if has_nested_module_role(kind, ModuleRole::Form) {
+        if !self.first_found() && has_nested_module_role(kind, ModuleRole::Form) {
             for form in owner
                 .children()
                 .filter(|node| node.has_tag_name("ChildObjects"))
@@ -164,12 +220,22 @@ impl SourceSetModules<'_> {
                 .filter(|node| node.has_tag_name("Form"))
             {
                 let form_name = form.text().ok_or("missing registered form name")?.trim();
+                if self.address.is_some_and(|at| {
+                    !at.segments().get(1).is_some_and(|seg| {
+                        seg.kind() == NodeKind::Form && seg.name() == Some(form_name)
+                    })
+                }) {
+                    continue;
+                }
                 self.read(
                     &format!("{metadata}.Form.{form_name}.FormModule"),
                     PlatformXmlModuleRole::FormModule,
                     NodeKind::Form,
                     form_name,
                 )?;
+                if self.first_found() {
+                    break;
+                }
             }
         }
         Ok(())
@@ -225,7 +291,7 @@ impl SourceSetModules<'_> {
         };
         let logical = logical_module_from_metadata(metadata)
             .ok_or("module metadata has no logical address")?;
-        self.modules.push(DebugModuleSource {
+        let source = DebugModuleSource {
             address: QualifiedAddress::parse(&format!("{}:{logical}", self.set))?,
             runtime_id: DebugModuleId {
                 extension: self.extension.map(str::to_owned),
@@ -235,7 +301,15 @@ impl SourceSetModules<'_> {
                     .parse()?,
                 property: property.parse()?,
             },
-        });
+        };
+        let matches = match self.query {
+            DebugModuleQuery::FirstSaved { .. } => true,
+            DebugModuleQuery::Address(expected) => source.address.to_string() == expected,
+            DebugModuleQuery::Runtime(expected) => &source.runtime_id == expected,
+        };
+        if matches {
+            self.modules.push(source);
+        }
         Ok(())
     }
 }
@@ -294,7 +368,6 @@ mod tests {
     fn debug_modules_use_registered_object_and_form_descriptors() {
         let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/fixtures/acceptance/workspace-resolve-resources");
-        let modules = workspace_debug_modules(&workspace).unwrap();
         for (address, object, property) in [
             (
                 "main:DataProcessor.Processor.Module.Object",
@@ -312,24 +385,32 @@ mod tests {
                 "32e087ab-1491-49b6-aba7-43571b41ac2b",
             ),
         ] {
-            let module = modules
-                .iter()
-                .find(|module| module.address.to_string() == address)
+            let module = workspace_debug_modules(&workspace, DebugModuleQuery::Address(address))
+                .unwrap()
+                .into_iter()
+                .next()
                 .unwrap_or_else(|| panic!("missing debug module {address}"));
             assert_eq!(module.runtime_id.object.to_string(), object);
             assert_eq!(module.runtime_id.property.to_string(), property);
         }
-        assert!(modules.iter().all(|module| {
-            let address = module.address.to_string();
-            !address.contains(".Ghost.") && !address.contains(".Orphan.")
-        }));
+        for missing in [
+            "main:DataProcessor.Orphan.Module.Object",
+            "main:CommonForm.Orphan.Module.Form",
+            "main:DataProcessor.Orphan.Form.Main.Module.Form",
+            "main:DataProcessor.Processor.Form.Ghost.Module.Form",
+        ] {
+            assert!(
+                workspace_debug_modules(&workspace, DebugModuleQuery::Address(missing))
+                    .unwrap()
+                    .is_empty()
+            );
+        }
     }
 
     #[test]
     fn workspace_distinguishes_borrowed_module_from_its_base() {
         let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/fixtures/acceptance/workspace-borrowed");
-        let modules = workspace_debug_modules(&workspace).unwrap();
         for (address, extension, uuid) in [
             (
                 "main:CommonModule.КешЗначений",
@@ -342,10 +423,16 @@ mod tests {
                 "6d1e0c2b-8a4f-4b3e-a5c6-7d8e9f0a1b21",
             ),
         ] {
-            let module = modules
-                .iter()
-                .find(|module| module.address.to_string() == address)
+            let module = workspace_debug_modules(&workspace, DebugModuleQuery::Address(address))
+                .unwrap()
+                .into_iter()
+                .next()
                 .unwrap();
+            let reverse =
+                workspace_debug_modules(&workspace, DebugModuleQuery::Runtime(&module.runtime_id))
+                    .unwrap();
+            assert_eq!(reverse.len(), 1);
+            assert_eq!(reverse[0].address.to_string(), address);
             assert_eq!(module.runtime_id.extension.as_deref(), extension);
             assert_eq!(module.runtime_id.object.to_string(), uuid);
             assert_eq!(
