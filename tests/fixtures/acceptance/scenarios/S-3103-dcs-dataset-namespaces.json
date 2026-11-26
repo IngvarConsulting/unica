@@ -1,0 +1,391 @@
+{
+  "id": "S-3103-dcs-dataset-namespaces",
+  "issue": 3103,
+  "area": "СКД",
+  "task": "Создать отчёт, макет СКД и набор данных запроса. Проверить, что XML в diff наследует пространства имён, исходники до исполнения плана сохраняются, опубликованный набор читается и проходит проверку СКД.",
+  "workspace": "tests/fixtures/acceptance/workspace-dcs",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "initialConfiguration": {
+          "file": "src/cf/Configuration.xml",
+          "kind": "sha256"
+        },
+        "configuration": {
+          "pointer": "/data/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Configuration.Can.object.create"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Can"
+        },
+        {
+          "pointer": "/data/props/op",
+          "eq": "object.create"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.configuration",
+        "ops": [
+          {
+            "op": "object.create",
+            "args": {
+              "values": {
+                "kind": "Report",
+                "name": "NamespaceReport"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "captures": {
+        "reportToken": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/NamespaceReport.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/cf/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialConfiguration"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.reportToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.NamespaceReport"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "initialReport": {
+          "file": "src/cf/Reports/NamespaceReport.xml",
+          "kind": "sha256"
+        },
+        "report": {
+          "pointer": "/data/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.NamespaceReport.Can.template.add"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Can"
+        },
+        {
+          "pointer": "/data/props/op",
+          "eq": "template.add"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.report",
+        "ops": [
+          {
+            "op": "template.add",
+            "args": {
+              "items": [
+                {
+                  "name": "NamespaceSchema",
+                  "templateType": "DataCompositionSchema"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "captures": {
+        "templateToken": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/NamespaceReport/Templates/NamespaceSchema/Ext/Template.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/cf/Reports/NamespaceReport.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialReport"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.templateToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.NamespaceReport.Template.NamespaceSchema"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "scaffold": {
+          "file": "src/cf/Reports/NamespaceReport/Templates/NamespaceSchema/Ext/Template.xml",
+          "kind": "sha256"
+        },
+        "template": {
+          "pointer": "/data/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.NamespaceReport.Template.NamespaceSchema.Can.dataSet.add"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Can"
+        },
+        {
+          "pointer": "/data/props/op",
+          "eq": "dataSet.add"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.template",
+        "ops": [
+          {
+            "op": "dataSet.add",
+            "args": {
+              "items": [
+                {
+                  "name": "NamespaceData",
+                  "kind": "Query",
+                  "dataSource": "ИсточникДанных1",
+                  "query": "ВЫБРАТЬ 1 КАК Сумма"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "captures": {
+        "datasetToken": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/NamespaceReport/Templates/NamespaceSchema/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.scaffold"
+        }
+      ]
+    },
+    {
+      "tool": "unica.diff",
+      "args": {
+        "executionToken": "$capture.datasetToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/chunks/1/side",
+          "eq": "after"
+        },
+        {
+          "pointer": "/data/chunks/1/path",
+          "eq": "Reports/NamespaceReport/Templates/NamespaceSchema/Ext/Template.xml"
+        },
+        {
+          "pointer": "/data/chunks/1/content",
+          "contains": "<dataSet xsi:type=\"DataSetQuery\">"
+        },
+        {
+          "pointer": "/data/chunks/1/content",
+          "contains": "<name>NamespaceData</name>"
+        },
+        {
+          "pointer": "/data/chunks/1/content",
+          "contains": "<dataSource>ИсточникДанных1</dataSource>"
+        },
+        {
+          "pointer": "/data/chunks/1/content",
+          "contains": "<query>ВЫБРАТЬ 1 КАК Сумма</query>"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/NamespaceReport/Templates/NamespaceSchema/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.scaffold"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.datasetToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/NamespaceReport/Templates/NamespaceSchema/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}dataSet/{http://v8.1c.ru/8.1/data-composition-system/schema}name",
+          "eq": [
+            "NamespaceData"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/NamespaceReport/Templates/NamespaceSchema/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}dataSet/{http://v8.1c.ru/8.1/data-composition-system/schema}dataSource",
+          "eq": [
+            "ИсточникДанных1"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/NamespaceReport/Templates/NamespaceSchema/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}dataSet/{http://v8.1c.ru/8.1/data-composition-system/schema}query",
+          "eq": [
+            "ВЫБРАТЬ 1 КАК Сумма"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.NamespaceReport.Template.NamespaceSchema.DataSet"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "cf:Report.NamespaceReport.Template.NamespaceSchema.DataSet.NamespaceData"
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "$capture.template"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "validators": [
+        "dcs"
+      ]
+    }
+  ]
+}
