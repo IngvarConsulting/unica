@@ -3,17 +3,23 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use unica_source_contract::debug_source::{DebugModuleId, DebugModuleQuery, DebugModuleSource};
+use unica_source_contract::debug_source::{
+    DebugModuleId, DebugModuleQuery, DebugModuleSource, ResolveDebugModules,
+};
 
-use crate::{ResolveModules, Result};
+use crate::Result;
 
 pub(crate) struct Modules {
     root: PathBuf,
-    resolve: ResolveModules,
+    resolve: ResolveDebugModules,
 }
 
 impl Modules {
-    pub fn open(root: &Path, source_set: Option<&str>, resolve: ResolveModules) -> Result<Self> {
+    pub fn open(
+        root: &Path,
+        source_set: Option<&str>,
+        mut resolve: ResolveDebugModules,
+    ) -> Result<Self> {
         let sources = resolve(root, DebugModuleQuery::FirstSaved { source_set })?;
         if sources.is_empty() {
             return Err(match source_set {
@@ -30,7 +36,7 @@ impl Modules {
         })
     }
 
-    fn lookup(&self, query: DebugModuleQuery<'_>) -> Result<Option<DebugModuleSource>> {
+    fn lookup(&mut self, query: DebugModuleQuery<'_>) -> Result<Option<DebugModuleSource>> {
         let mut matches = (self.resolve)(&self.root, query)?.into_iter();
         let first = matches.next();
         if let Some(other) = matches.next() {
@@ -39,7 +45,7 @@ impl Modules {
         Ok(first)
     }
 
-    pub fn saved_id(&self, address: &str) -> Result<Option<DebugModuleId>> {
+    pub fn saved_id(&mut self, address: &str) -> Result<Option<DebugModuleId>> {
         Ok(self
             .lookup(DebugModuleQuery::Address(address))?
             .map(|source| source.runtime_id))
@@ -47,7 +53,7 @@ impl Modules {
 
     /// A runtime identity with multiple saved owners cannot name a source file.
     pub fn addresses(
-        &self,
+        &mut self,
         ids: &[DebugModuleId],
     ) -> Result<HashMap<DebugModuleId, Option<String>>> {
         let mut addresses = HashMap::new();

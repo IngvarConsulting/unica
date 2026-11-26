@@ -19,7 +19,7 @@ fn run() {
             unica_daemon::interfaces::daemon::connect_user_daemon,
         )),
         Some("dap") => exit(unica_dap::run_stdio(
-            unica_daemon::interfaces::workspace_debug_modules,
+            unica_daemon::interfaces::workspace_debug_resolver,
         )),
         Some("mcp") => {}
         Some(command) if !command.starts_with('-') => {

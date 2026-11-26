@@ -23,3 +23,11 @@ pub enum DebugModuleQuery<'a> {
     Address(&'a str),
     Runtime(&'a [DebugModuleId]),
 }
+
+/// A resolver belongs to one DAP session and may retain evidence for unchanged source files.
+pub type ResolveDebugModules = Box<
+    dyn FnMut(
+        &std::path::Path,
+        DebugModuleQuery<'_>,
+    ) -> Result<Vec<DebugModuleSource>, Box<dyn std::error::Error + Send + Sync>>,
+>;

@@ -1,6 +1,11 @@
 //! Workspace-backed resolution of the saved modules supported by DAP attach.
 
-use std::path::Path;
+use std::{
+    collections::HashMap,
+    io::Read,
+    path::{Path, PathBuf},
+    time::SystemTime,
+};
 
 use roxmltree::{Document, Node};
 use unica_address::{
@@ -9,8 +14,8 @@ use unica_address::{
     source_target::MetadataAddress,
 };
 use unica_source_contract::{
-    debug_source::{DebugModuleId, DebugModuleQuery, DebugModuleSource},
-    read::SourceDirectory,
+    debug_source::{DebugModuleId, DebugModuleQuery, DebugModuleSource, ResolveDebugModules},
+    read::{FileStamp, ReadFile, SourceDirectory},
     SourceFormat, SourceSetKind, SourceSetState,
 };
 use unica_source_designer::{
@@ -27,9 +32,35 @@ use unica_workspace::{
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
-pub fn workspace_debug_modules(
+// Only a negative UUID match can avoid reading XML. A candidate source still proves its
+// current descriptor, registration and BSL file. Retain at most one reverse query's observations.
+type OwnerIds = HashMap<PathBuf, (FileStamp, uuid::Uuid)>;
+
+pub fn workspace_debug_resolver() -> ResolveDebugModules {
+    let mut previous = OwnerIds::new();
+    Box::new(move |workspace, query| {
+        let mut observed = OwnerIds::new();
+        let found = resolve_modules(workspace, query, &previous, &mut observed)?;
+        if matches!(query, DebugModuleQuery::Runtime(_)) {
+            previous = observed;
+        }
+        Ok(found)
+    })
+}
+
+#[cfg(test)]
+fn workspace_debug_modules(
     workspace: &Path,
     query: DebugModuleQuery<'_>,
+) -> Result<Vec<DebugModuleSource>> {
+    workspace_debug_resolver()(workspace, query)
+}
+
+fn resolve_modules(
+    workspace: &Path,
+    query: DebugModuleQuery<'_>,
+    previous: &OwnerIds,
+    observed: &mut OwnerIds,
 ) -> Result<Vec<DebugModuleSource>> {
     let address = match query {
         DebugModuleQuery::Address(text) => Some(QualifiedAddress::parse(text)?),
@@ -72,6 +103,8 @@ pub fn workspace_debug_modules(
             query,
             address.as_ref(),
             &mut modules,
+            previous,
+            observed,
         )?;
         root.validate_named_identity()?;
         if matches!(query, DebugModuleQuery::FirstSaved { .. }) && !modules.is_empty() {
@@ -88,6 +121,8 @@ fn read_modules(
     query: DebugModuleQuery<'_>,
     address: Option<&QualifiedAddress>,
     modules: &mut Vec<DebugModuleSource>,
+    previous: &OwnerIds,
+    observed: &mut OwnerIds,
 ) -> Result<()> {
     let configuration = descriptor(root, Path::new("Configuration.xml"))?;
     let document = Document::parse(&configuration)?;
@@ -114,6 +149,9 @@ fn read_modules(
         address,
         extension: extension.as_deref(),
         modules,
+        previous,
+        observed,
+        directories: HashMap::new(),
     };
     if index.wants_role(PlatformXmlModuleRole::ManagedApplicationModule)
         && owner_filter.is_none_or(|seg| seg.kind() == NodeKind::Module)
@@ -144,21 +182,16 @@ fn read_modules(
                 .is_none_or(|seg| seg.kind() == kind)
                 .then_some((kind, name))
         });
-    if matches!(query, DebugModuleQuery::Runtime(_)) {
-        let entries: Vec<_> = registrations
-            .filter(|(kind, _)| index.supports_kind(*kind))
-            .collect();
-        index.read_reverse(&entries)?;
-    } else {
-        for (kind, name) in registrations {
-            if !index.supports_kind(kind) {
-                continue;
-            }
+    for (kind, name) in registrations {
+        if index.supports_kind(kind) {
             index.read_registered(kind, name)?;
             if index.first_found() {
                 break;
             }
         }
+    }
+    for parent in index.directories.values() {
+        parent.validate_named_identity()?;
     }
     Ok(())
 }
@@ -170,6 +203,9 @@ struct SourceSetModules<'a> {
     address: Option<&'a QualifiedAddress>,
     extension: Option<&'a str>,
     modules: &'a mut Vec<DebugModuleSource>,
+    previous: &'a OwnerIds,
+    observed: &'a mut OwnerIds,
+    directories: HashMap<PathBuf, SourceDirectory>,
 }
 
 impl SourceSetModules<'_> {
@@ -222,57 +258,6 @@ impl SourceSetModules<'_> {
             _ => self.read_owner(&metadata, kind, name)?,
         }
         Ok(())
-    }
-
-    /// RDBG only sends UUIDs. Other registered descriptors of the same kind must be checked for
-    /// aliases. Each worker holds the same admitted source root and returns its own matches.
-    fn read_reverse(&mut self, entries: &[(NodeKind, &str)]) -> Result<()> {
-        if entries.is_empty() {
-            return Ok(());
-        }
-        let workers = std::thread::available_parallelism()
-            .map_or(1, std::num::NonZeroUsize::get)
-            .min(entries.len());
-        if workers == 1 {
-            for &(kind, name) in entries {
-                self.read_registered(kind, name)?;
-            }
-            return Ok(());
-        }
-        let root = self.root;
-        let set = self.set;
-        let query = self.query;
-        let extension = self.extension;
-        std::thread::scope(|scope| -> Result<()> {
-            let readers = entries
-                .chunks(entries.len().div_ceil(workers))
-                .map(|share| {
-                    std::thread::Builder::new().spawn_scoped(scope, move || -> Result<_> {
-                        let mut modules = Vec::new();
-                        let mut index = SourceSetModules {
-                            root,
-                            set,
-                            query,
-                            address: None,
-                            extension,
-                            modules: &mut modules,
-                        };
-                        for &(kind, name) in share {
-                            index.read_registered(kind, name)?;
-                        }
-                        Ok(modules)
-                    })
-                })
-                .collect::<std::io::Result<Vec<_>>>()?;
-            for reader in readers {
-                self.modules.extend(
-                    reader
-                        .join()
-                        .map_err(|_| "debug source reader panicked")??,
-                );
-            }
-            Ok(())
-        })
     }
 
     fn read_owner(&mut self, metadata: &str, kind: NodeKind, name: &str) -> Result<()> {
@@ -359,7 +344,22 @@ impl SourceSetModules<'_> {
             .rsplit_once('.')
             .ok_or("debug module has no metadata owner")?
             .0;
-        let xml = descriptor(self.root, &descriptor_path(owner_metadata)?)?;
+        let path = descriptor_path(owner_metadata)?;
+        let mut file = self.open_descriptor(&path)?;
+        let key = self.root.path().join(&path);
+        let stamp = if let DebugModuleQuery::Runtime(ids) = self.query {
+            let stamp = file.stamp()?;
+            if let Some((_, object)) = self.previous.get(&key).filter(|(old, _)| *old == stamp) {
+                if !ids.iter().any(|id| id.object == *object) {
+                    self.observed.insert(key, (stamp, *object));
+                    return Ok(());
+                }
+            }
+            Some(stamp)
+        } else {
+            None
+        };
+        let xml = read_descriptor_file(&mut file)?;
         let document = Document::parse(&xml)?;
         let owner = metadata_owner(&document, kind.as_str())?;
         if let DebugModuleQuery::Runtime(ids) = self.query {
@@ -367,12 +367,46 @@ impl SourceSetModules<'_> {
                 .attribute("uuid")
                 .ok_or("missing metadata UUID")?
                 .parse()?;
+            if let Some(stamp) = stamp.filter(|s| {
+                s.settled(
+                    SystemTime::now(),
+                    super::v13_large_configuration::SETTLE_WINDOW,
+                )
+            }) {
+                if file.stamp()? == stamp {
+                    self.observed.insert(key, (stamp, object));
+                }
+            }
             if !ids.iter().any(|id| id.object == object) || !self.module_exists(metadata)? {
                 return Ok(());
             }
         }
         self.check_name(owner, name)?;
         self.add(metadata, role, owner)
+    }
+
+    fn open_descriptor(&mut self, path: &Path) -> Result<ReadFile> {
+        if !matches!(self.query, DebugModuleQuery::Runtime(_)) {
+            return Ok(self.root.open_relative_regular_nofollow(path)?);
+        }
+        let parent = path.parent().ok_or("descriptor has no parent")?;
+        let leaf = Path::new(path.file_name().ok_or("descriptor has no filename")?);
+        let directory = match self.directories.entry(parent.to_owned()) {
+            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let mut directory = self.root.clone();
+                for component in parent.components() {
+                    let std::path::Component::Normal(name) = component else {
+                        return Err(
+                            "debug descriptor parent must stay inside its source set".into()
+                        );
+                    };
+                    directory = directory.retain_directory_child(name)?;
+                }
+                entry.insert(directory)
+            }
+        };
+        Ok(directory.open_relative_regular_nofollow(leaf)?)
     }
 
     fn module_exists(&self, metadata: &str) -> Result<bool> {
@@ -438,6 +472,10 @@ fn descriptor_path(metadata: &str) -> Result<std::path::PathBuf> {
 }
 
 fn descriptor(root: &SourceDirectory, path: &Path) -> Result<String> {
+    read_descriptor_file(&mut root.open_relative_regular_nofollow(path)?)
+}
+
+fn read_descriptor_file(file: &mut ReadFile) -> Result<String> {
     // resource-limit: dap.saved-descriptor-bytes
     // class: step
     // unit: bytes
@@ -450,10 +488,13 @@ fn descriptor(root: &SourceDirectory, path: &Path) -> Result<String> {
     // on-reach: Workspace отказывает в чтении дескриптора, attach возвращает ошибку.
     // issue: #1119
     const MAX_DESCRIPTOR_BYTES: usize = 16 * 1024 * 1024;
-    Ok(String::from_utf8(root.read_relative_regular_bounded(
-        path,
-        MAX_DESCRIPTOR_BYTES,
-    )?)?)
+    let mut contents = Vec::new();
+    file.take(MAX_DESCRIPTOR_BYTES as u64 + 1)
+        .read_to_end(&mut contents)?;
+    if contents.len() > MAX_DESCRIPTOR_BYTES {
+        return Err("debug module descriptor exceeds the byte limit".into());
+    }
+    Ok(String::from_utf8(contents)?)
 }
 
 fn metadata_owner<'a, 'input>(doc: &'a Document<'input>, kind: &str) -> Result<Node<'a, 'input>> {
@@ -595,10 +636,37 @@ mod tests {
             original.replace("Probe", "Duplicate"),
         )
         .unwrap();
-        let mut addresses: Vec<_> = matches()
-            .into_iter()
-            .map(|module| module.address.to_string())
-            .collect();
+        // A descriptor replaced between stops must not reuse its previously observed UUID.
+        let copy = module_dir.join("Duplicate.xml");
+        let other = uuid::Uuid::from_u128(0x199e14fb_c4f5_4189_bea0_aa40749dff10);
+        let duplicate = std::fs::read_to_string(&copy).unwrap();
+        std::fs::write(
+            &copy,
+            duplicate.replace(&id.object.to_string(), &other.to_string()),
+        )
+        .unwrap();
+        let root = open_source_directory(&src).unwrap();
+        let relative = Path::new("CommonModules/Duplicate.xml");
+        let prior = HashMap::from([(
+            root.path().join(relative),
+            (root.relative_file_stamp(relative).unwrap().unwrap(), other),
+        )]);
+        let query = DebugModuleQuery::Runtime(std::slice::from_ref(&id));
+        assert_eq!(
+            resolve_modules(workspace.path(), query, &prior, &mut HashMap::new())
+                .unwrap()
+                .len(),
+            1
+        );
+        let fresh = module_dir.join("replacement.xml");
+        std::fs::write(&fresh, duplicate).unwrap();
+        std::fs::rename(fresh, &copy).unwrap();
+        let mut addresses: Vec<_> =
+            resolve_modules(workspace.path(), query, &prior, &mut HashMap::new())
+                .unwrap()
+                .into_iter()
+                .map(|module| module.address.to_string())
+                .collect();
         addresses.sort();
         assert_eq!(
             addresses,

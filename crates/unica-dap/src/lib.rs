@@ -20,12 +20,12 @@ use modules::Modules;
 use rdbg::{child, field, Rdbg, TargetAttachment};
 use roxmltree::{Document, Node};
 use serde_json::{json, Value};
-use unica_source_contract::debug_source::{DebugModuleId, DebugModuleQuery, DebugModuleSource};
+use unica_source_contract::debug_source::{DebugModuleId, ResolveDebugModules};
 use uuid::Uuid;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
-type ResolveModules = fn(&Path, DebugModuleQuery<'_>) -> Result<Vec<DebugModuleSource>>;
+type NewResolver = fn() -> ResolveDebugModules;
 
 const DEFAULT_AUTO_ATTACH_TYPES: [&str; 3] = ["Client", "ManagedClient", "ServerEmulation"];
 const DEBUG_TARGET_TYPES: &[&str] = &[
@@ -47,7 +47,7 @@ const DEBUG_TARGET_TYPES: &[&str] = &[
     "MobileManagedServer",
 ];
 
-pub fn run_stdio(resolve_modules: ResolveModules) -> i32 {
+pub fn run_stdio(resolve_modules: NewResolver) -> i32 {
     let (tx, rx) = bounded(8);
     std::thread::spawn(move || {
         let mut input = io::stdin().lock();
@@ -115,7 +115,7 @@ fn read_frame(input: &mut impl BufRead) -> Result<Option<Value>> {
 
 struct Adapter<W> {
     output: W,
-    resolve_modules: ResolveModules,
+    resolve_modules: NewResolver,
     seq: u64,
     initialized: bool,
     session: Option<Session>,
@@ -293,7 +293,7 @@ struct Session {
 }
 
 impl Session {
-    fn attach(args: &Value, resolve_modules: ResolveModules) -> Result<Self> {
+    fn attach(args: &Value, resolve_modules: NewResolver) -> Result<Self> {
         let root = Path::new(string(args, "rootProject")?);
         if args["debugServerHost"]
             .as_str()
@@ -308,7 +308,7 @@ impl Session {
         } else {
             Some(string(args, "sourceSet")?)
         };
-        let modules = Modules::open(root, source_set, resolve_modules)?;
+        let modules = Modules::open(root, source_set, resolve_modules())?;
         let rdbg = Arc::new(Rdbg::attach(port.try_into()?, alias)?);
         let session = Self {
             modules,
