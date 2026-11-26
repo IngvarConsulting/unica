@@ -22,11 +22,11 @@ impl<'a> LogicalViewReadAuthority<'a> {
             })?;
         let (module_at, _) = shared_module_prefix(&canonical, self.profile, capability)
             .map_err(|error| ViewError::new(RefusalCode::BadValue, error))?;
-        // Registration, owner identity, format and module containment are proved
-        // by the same reader as view, using this invocation's retained root.
+        // A logical read proves the module capability and its owner. Analysis
+        // also needs the source file itself, as does resolving its location.
         self.read_exact(&module_at, &admitted)?;
         let target = module_source_address(&module_at, capability)?;
-        let relative = self.read.module_export_path(&target)?;
+        let relative = self.existing_export_path(&module_at, None)?;
         let context = self.diagnostic_context(workspace, Some(target), TargetKind::Module);
         crate::infrastructure::diagnostics::CanonicalDiagnosticMapping::from_proven_module(
             context,
