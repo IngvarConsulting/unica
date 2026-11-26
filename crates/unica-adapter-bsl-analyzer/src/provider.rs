@@ -705,6 +705,7 @@ pub fn parse_bsl_analyzer_search(
     }
     for (index, hit) in hits.iter_mut().enumerate() {
         hit.rank = Some(index + 1);
+        hit.snippet_evidence = listing_snippet_evidence(&hit.snippet);
     }
 
     if hits.is_empty() {
@@ -827,6 +828,30 @@ fn parse_bsl_analyzer_search_envelope(
     })
 }
 
+fn listing_snippet_evidence(snippet: &str) -> SearchSnippetEvidence {
+    let (shown, tail) = snippet.rsplit_once('\n').unwrap_or(("", snippet));
+    let Some(count) = tail
+        .strip_prefix("... (")
+        .and_then(|tail| tail.strip_suffix(" more lines)"))
+    else {
+        return SearchSnippetEvidence::Complete;
+    };
+    let count = Some(count)
+        .filter(|count| count.bytes().all(|byte| byte.is_ascii_digit()))
+        .and_then(|count| count.parse().ok());
+    truncated_snippet_evidence(shown, count)
+}
+
+fn truncated_snippet_evidence(shown: &str, omitted_lines: Option<usize>) -> SearchSnippetEvidence {
+    match omitted_lines.and_then(std::num::NonZeroUsize::new) {
+        Some(omitted_lines) => SearchSnippetEvidence::Truncated {
+            shown_bytes: shown.len(),
+            omitted_lines,
+        },
+        None => SearchSnippetEvidence::Unavailable,
+    }
+}
+
 fn parse_bsl_analyzer_envelope_hit(
     raw: &Value,
     locations: &mut SearchLocationProjector<'_>,
@@ -848,6 +873,15 @@ fn parse_bsl_analyzer_envelope_hit(
     if let Some(graph_id) = text("graph_id") {
         attributes.insert("graphId".to_string(), json!(graph_id));
     }
+    let snippet = text("snippet").unwrap_or_default();
+    let snippet_evidence =
+        raw.get("snippet_truncated_lines")
+            .map_or(SearchSnippetEvidence::Complete, |count| {
+                truncated_snippet_evidence(
+                    snippet,
+                    count.as_u64().and_then(|count| usize::try_from(count).ok()),
+                )
+            });
     Ok(ProviderSearchHit {
         rank: None,
         provider_score: None,
@@ -859,7 +893,8 @@ fn parse_bsl_analyzer_envelope_hit(
             .map(|line| line as usize),
         symbol: text("symbol").map(str::to_string),
         kind: text("kind").map(str::to_string),
-        snippet: text("snippet").unwrap_or_default().to_string(),
+        snippet: snippet.to_string(),
+        snippet_evidence,
         attributes,
     })
 }
@@ -925,6 +960,7 @@ pub fn parse_bsl_analyzer_header(
         symbol: Some(symbol.to_string()),
         kind: Some(kind.to_string()),
         snippet: String::new(),
+        snippet_evidence: SearchSnippetEvidence::Complete,
         attributes,
     })
 }

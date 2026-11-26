@@ -524,6 +524,18 @@ pub enum SearchCoverage {
     None,
 }
 
+/// Source text identified by the provider inside its display snippet.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SearchSnippetEvidence {
+    #[default]
+    Complete,
+    Truncated {
+        shown_bytes: usize,
+        omitted_lines: std::num::NonZeroUsize,
+    },
+    Unavailable,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderSearchHit {
@@ -537,6 +549,8 @@ pub struct ProviderSearchHit {
     pub symbol: Option<String>,
     pub kind: Option<String>,
     pub snippet: String,
+    #[serde(skip)]
+    pub snippet_evidence: SearchSnippetEvidence,
     pub attributes: Map<String, Value>,
 }
 
@@ -1368,6 +1382,7 @@ mod tests {
                     symbol: Some("Post".to_string()),
                     kind: Some("procedure".to_string()),
                     snippet: "Procedure Post()".to_string(),
+                    snippet_evidence: Default::default(),
                     attributes: Map::new(),
                 }],
                 Vec::new(),
@@ -1493,6 +1508,7 @@ mod tests {
                 symbol: Some("Post".to_string()),
                 kind: Some("procedure".to_string()),
                 snippet: "Procedure Post()".to_string(),
+                snippet_evidence: Default::default(),
                 attributes: Map::new(),
             }],
             Vec::new(),
@@ -1646,6 +1662,7 @@ mod tests {
                 symbol: None,
                 kind: None,
                 snippet: String::new(),
+                snippet_evidence: Default::default(),
                 attributes: Map::new(),
             }],
             Vec::new(),

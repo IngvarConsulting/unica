@@ -122,6 +122,7 @@ fn code_search_schema_accepts_a_real_partial_provider_section() {
             symbol: None,
             kind: None,
             snippet: "Post".to_string(),
+            snippet_evidence: Default::default(),
             attributes: Map::new(),
         }],
         vec!["ignored malformed provider result #1".to_string()],

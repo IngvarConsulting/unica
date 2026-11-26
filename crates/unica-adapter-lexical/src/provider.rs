@@ -469,6 +469,7 @@ pub fn parse_git_grep_record(
         symbol: None,
         kind: None,
         snippet: snippet.to_string(),
+        snippet_evidence: Default::default(),
         attributes: Map::new(),
     })
 }

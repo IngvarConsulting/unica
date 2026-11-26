@@ -1,6 +1,8 @@
 //! Модули: текст, строки, тела и владельцы модулей.
 
 use super::*;
+use std::borrow::Cow;
+use unica_code_intelligence::model::{ProviderSearchHit, SearchSnippetEvidence};
 
 impl<'a> LogicalViewReadAuthority<'a> {
     /// Resolve names the node's kind and its own source lines. In a BSL
@@ -105,38 +107,17 @@ impl<'a> LogicalViewReadAuthority<'a> {
         Ok((kind.as_str().to_string(), selected_lines(at, lines)?))
     }
 
-    /// Inspect containment and source bytes in one retained projection, with
-    /// one final source identity/cancellation fence for the entire answer.
-    pub(super) fn with_body_line_projection<T>(
-        &self,
-        module: &QualifiedAddress,
-        from: usize,
-        to: usize,
-        inspect: impl FnOnce(QualifiedAddress, &ModuleProjectionSet) -> T,
-    ) -> Result<T, ViewError> {
-        self.with_module_projection(module, |module_at, projections| {
-            let body = projections
-                .methods()
-                .iter()
-                .filter(|method| from >= method.text_from_line && to <= method.to_line)
-                .min_by_key(|method| method.to_line - method.text_from_line)
-                .map_or_else(
-                    || format!("{module_at}.Body"),
-                    |method| format!("{}.Body", method.at),
-                );
-            let body = QualifiedAddress::parse(&body)
-                .map_err(|error| ViewError::new(RefusalCode::BadValue, error.to_string()))?;
-            Ok(inspect(body, projections))
-        })
-    }
-
     /// One retained projection of the module that `module` names, fenced by
     /// the source identity it was admitted with: a change while `inspect`
     /// reads it refuses the whole answer instead of mixing two revisions.
     pub(super) fn with_module_projection<T>(
         &self,
         module: &QualifiedAddress,
-        inspect: impl FnOnce(&QualifiedAddress, &ModuleProjectionSet) -> Result<T, ViewError>,
+        inspect: impl FnOnce(
+            &QualifiedAddress,
+            ModuleCapability,
+            &ModuleProjectionSet,
+        ) -> Result<T, ViewError>,
     ) -> Result<T, ViewError> {
         self.read_checkpoint()?;
         let admitted = self.snapshot(module)?;
@@ -151,7 +132,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
         let (module_at, _) = module_prefix(module, self.profile, capability)?;
         self.verify_module_owner(&module_at, capability, &admitted)?;
         let projections = self.module_projection(&module_at, capability, &admitted)?;
-        let result = inspect(&module_at, &projections)?;
+        let result = inspect(&module_at, capability, &projections)?;
         self.read_checkpoint()?;
         if self.snapshot(module)? != admitted {
             return Err(ViewError::new(
@@ -171,7 +152,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
         module: &QualifiedAddress,
         lines: &[usize],
     ) -> Result<Vec<ModuleLine>, ViewError> {
-        self.with_module_projection(module, |_, projections| {
+        self.with_module_projection(module, |_, _, projections| {
             let count = projections.source_text().lines().count();
             lines
                 .iter()
@@ -203,7 +184,11 @@ impl<'a> LogicalViewReadAuthority<'a> {
         from: usize,
         to: usize,
     ) -> Result<QualifiedAddress, ViewError> {
-        self.with_body_line_projection(module, from, to, |body, _| body)
+        self.with_module_projection(module, |module, _, projection| {
+            let body = method_body_address(module, containing_method(projection, from, to));
+            QualifiedAddress::parse(&body)
+                .map_err(|error| ViewError::new(RefusalCode::BadValue, error.to_string()))
+        })
     }
 
     /// The module address a source-root-relative BSL file path has by the
@@ -219,7 +204,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
 
     /// The saved text of a module, read by the same projection as `view`.
     pub fn module_text(&self, module: &QualifiedAddress) -> Result<String, ViewError> {
-        self.with_module_projection(module, |_, projections| {
+        self.with_module_projection(module, |_, _, projections| {
             Ok(projections.source_text().to_string())
         })
     }
@@ -237,7 +222,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
 
     /// Whether a common module is global, by its descriptor.
     pub(crate) fn common_module_is_global(&self, module: &QualifiedAddress) -> Option<bool> {
-        self.with_module_projection(module, |_, projections| {
+        self.with_module_projection(module, |_, _, projections| {
             Ok(projections
                 .summary()
                 .props
@@ -291,29 +276,32 @@ impl<'a> LogicalViewReadAuthority<'a> {
         )
     }
 
-    pub fn body_for_search_hit(
+    pub fn bodies_for_search_hits<'hit>(
         &self,
         module: &QualifiedAddress,
-        from: usize,
-        to: usize,
-        snippet: &str,
-    ) -> Result<Option<QualifiedAddress>, ViewError> {
-        self.with_body_line_projection(module, from, to, |body, projection| {
+        hits: impl IntoIterator<Item = &'hit ProviderSearchHit>,
+    ) -> Result<Vec<Option<String>>, ViewError> {
+        self.with_module_projection(module, |module, capability, projection| {
             let source = projection.source_text();
-            if from == 0 || to < from || to > source.lines().count() {
-                return None;
+            let line_count = source.lines().count();
+            let mut addresses = Vec::new();
+            for hit in hits {
+                self.read_checkpoint()?;
+                addresses.push(proven_search_address(module, projection, line_count, hit));
             }
-            let start = source
-                .split_inclusive('\n')
-                .take(from - 1)
-                .map(str::len)
-                .sum::<usize>();
-            let end = source
-                .split_inclusive('\n')
-                .take(to)
-                .map(str::len)
-                .sum::<usize>();
-            source[start..end].contains(snippet).then_some(body)
+            if addresses.iter().any(Option::is_some) {
+                self.read_checkpoint()?;
+                let target = module_source_address(module, capability)?;
+                // A retained revision fences the actor/root. Recheck the bytes
+                // once per matching module for writes outside the actor.
+                if self.read.module_source(&target)?.as_deref() != Some(source) {
+                    return Err(ViewError::new(
+                        RefusalCode::ConcurrentChange,
+                        "module source changed while proving search hits",
+                    ));
+                }
+            }
+            Ok(addresses)
         })
     }
 
@@ -567,4 +555,140 @@ impl<'a> LogicalViewReadAuthority<'a> {
     ) -> Result<(), ViewError> {
         self.verify_registered_owner(target, admitted)
     }
+}
+
+fn containing_method(
+    projection: &ModuleProjectionSet,
+    from: usize,
+    to: usize,
+) -> Option<&MethodProjection> {
+    projection
+        .methods()
+        .iter()
+        .filter(|method| from >= method.text_from_line && to <= method.to_line)
+        .min_by_key(|method| method.to_line - method.text_from_line)
+}
+
+fn method_body_address(module: &QualifiedAddress, method: Option<&MethodProjection>) -> String {
+    method.map_or_else(
+        || format!("{module}.Body"),
+        |method| format!("{}.Body", method.at),
+    )
+}
+
+fn proven_search_address(
+    module: &QualifiedAddress,
+    projection: &ModuleProjectionSet,
+    line_count: usize,
+    hit: &ProviderSearchHit,
+) -> Option<String> {
+    let proven_end = prove_search_hit(projection.source_text(), line_count, hit)?;
+    let from = hit.line;
+    let method = containing_method(projection, from, proven_end);
+    // A Method Body resolves by name and requires one declaration.
+    if method.is_some_and(|method| {
+        projection
+            .methods()
+            .iter()
+            .filter(|candidate| candidate.name == method.name)
+            .nth(1)
+            .is_some()
+    }) {
+        return None;
+    }
+    let body = method_body_address(module, method);
+    Some(if from == proven_end {
+        format!("{body}#L{from}")
+    } else {
+        format!("{body}#L{from}-L{proven_end}")
+    })
+}
+
+fn prove_search_hit(source: &str, line_count: usize, hit: &ProviderSearchHit) -> Option<usize> {
+    let (reported_end, proven_end, shown) = search_hit_span(hit)?;
+    if reported_end > line_count {
+        return None;
+    }
+    let start = source
+        .split_inclusive('\n')
+        .take(hit.line - 1)
+        .map(str::len)
+        .sum::<usize>();
+    let end = start
+        + source
+            .split_inclusive('\n')
+            .skip(hit.line - 1)
+            .take(reported_end - hit.line + 1)
+            .map(str::len)
+            .sum::<usize>();
+    let source = normalize_search_eol(&source[start..end]);
+    let shown = normalize_search_eol(shown);
+    let proven = if proven_end < reported_end {
+        unique_line_prefix(&source, &shown)
+    } else if hit.line == reported_end {
+        source
+            .find(shown.as_ref())
+            .zip(shown.chars().next())
+            .is_some_and(|(first, character)| {
+                let next = first + character.len_utf8();
+                !source[next..].contains(shown.as_ref())
+            })
+    } else {
+        source == shown || source.strip_suffix('\n') == Some(shown.as_ref())
+    };
+    proven.then_some(proven_end)
+}
+
+fn search_hit_span(hit: &ProviderSearchHit) -> Option<(usize, usize, &str)> {
+    let from = hit.line;
+    if from == 0 {
+        return None;
+    }
+    match hit.snippet_evidence {
+        SearchSnippetEvidence::Complete => {
+            let to = hit
+                .end_line
+                .or_else(|| from.checked_add(hit.snippet.lines().count().saturating_sub(1)))?;
+            (to >= from && !hit.snippet.is_empty()).then_some((to, to, hit.snippet.as_str()))
+        }
+        SearchSnippetEvidence::Truncated {
+            shown_bytes,
+            omitted_lines,
+        } => {
+            let shown = hit.snippet.get(..shown_bytes)?;
+            if shown.chars().all(char::is_whitespace) {
+                return None;
+            }
+            let shown_end = from.checked_add(shown.split('\n').count() - 1)?;
+            let reported_end = hit.end_line?;
+            (shown_end.checked_add(omitted_lines.get())? == reported_end).then_some((
+                reported_end,
+                shown_end,
+                shown,
+            ))
+        }
+        SearchSnippetEvidence::Unavailable => None,
+    }
+}
+
+fn normalize_search_eol(text: &str) -> Cow<'_, str> {
+    if text.contains("\r\n") {
+        Cow::Owned(text.replace("\r\n", "\n"))
+    } else {
+        Cow::Borrowed(text)
+    }
+}
+
+fn unique_line_prefix(source: &str, prefix: &str) -> bool {
+    if !source
+        .strip_prefix(prefix)
+        .is_some_and(|rest| rest.starts_with('\n'))
+    {
+        return false;
+    }
+    !source.match_indices('\n').any(|(offset, _)| {
+        source[offset + 1..]
+            .strip_prefix(prefix)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('\n'))
+    })
 }
