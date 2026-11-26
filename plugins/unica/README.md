@@ -6,12 +6,10 @@ public stdio MCP server named `unica`. Prompt-visible skills call native
 remain private implementation details.
 
 One plugin directory serves Codex, Claude Code, ZCode, and DeepSeek Harness.
-Their native manifests are `.codex-plugin/plugin.json`,
-`.claude-plugin/plugin.json`, `.zcode-plugin/plugin.json`, and the DSH bundle
-manifest `package.json`; all use the same `.mcp.json`, skills, and runtime.
-ZCode prefers its native manifest rather than loading a second plugin. DSH reads
-the bundle patch `dsh/cordis.patch.yml`, which declares the same MCP server and
-the `skills/` directory for the DSH loader.
+Codex, Claude Code and ZCode use their native manifests and the shared
+`.mcp.json`. DeepSeek Harness reads the bundle manifest `package.json` and
+`dsh/cordis.patch.yml` to register its tool bridge and skill provider. All
+four hosts use the same Unica runtime and `skills/` directory.
 
 ## Public installation
 

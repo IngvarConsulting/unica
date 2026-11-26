@@ -1,10 +1,7 @@
 import { createHash } from 'node:crypto';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { fileURLToPath } from 'node:url';
 import { createMcpToolDefinition, resolveReconnectPolicy } from '@deepseek-ai/dsh-mcp-client';
-import { scrubbedParentEnv } from '@deepseek-ai/dsh-subprocess';
+import { serverCommand, serverEnvironment } from './launch.mjs';
 import { Client } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { callInWorkspace, requireWorkspaceCapability, UnsupportedRuntime, workspaceChannel } from './workspace.mjs';
@@ -22,18 +19,18 @@ function publicToolName(rawName) {
   return `${normalized.slice(0, 51)}_${hash}`;
 }
 
+// The SDK also closes on a failed initialize. A second close must await the
+// first close's EOF/termination sequence before Cordis releases this plugin.
+class OwnedStdioTransport extends StdioClientTransport {
+  closing;
+  close() {
+    return this.closing ??= super.close();
+  }
+}
+
 function transport() {
-  const home = process.env.DSH_HOME || join(homedir(), '.dsh');
-  return new StdioClientTransport({
-    command: process.execPath,
-    args: [fileURLToPath(new URL('./launch.mjs', import.meta.url))],
-    env: {
-      ...scrubbedParentEnv(),
-      ELECTRON_RUN_AS_NODE: '1',
-      UNICA_RUNTIME_CACHE_DIR: join(home, 'unica', 'runtimes'),
-      UNICA_PROVIDER_STATE_DIR: join(home, 'unica', 'provider-state'),
-    },
-  });
+  const selected = serverCommand();
+  return new OwnedStdioTransport({ ...selected, env: serverEnvironment(selected.command) });
 }
 
 async function connect(ctx, hostSignal, onReady) {
@@ -42,8 +39,11 @@ async function connect(ctx, hostSignal, onReady) {
   const registrations = [];
   const client = new Client({ name: 'unica-dsh', version: '1' }, {
     capabilities: { experimental: { [workspaceChannel]: {} } },
-    versionNegotiation: { mode: 'auto' },
+    // DSH calls tools synchronously. The supported initialize handshake keeps
+    // the cold bootstrap on the transport this plugin owns and can cancel.
+    versionNegotiation: { mode: 'legacy' },
   });
+  const stdio = transport();
   let stop;
   const closed = new Promise(resolve => { stop = resolve; });
   client.onclose = () => {
@@ -54,7 +54,7 @@ async function connect(ctx, hostSignal, onReady) {
   try {
     signal.throwIfAborted();
     // A cold bootstrap can download the runtime before the MCP handshake.
-    await client.connect(transport(), { signal, timeout: 900_000 });
+    await client.connect(stdio, { signal, timeout: 900_000 });
     requireWorkspaceCapability(client.getServerCapabilities());
     const { tools } = await client.listTools(undefined, { signal });
     signal.throwIfAborted();
@@ -77,7 +77,11 @@ async function connect(ctx, hostSignal, onReady) {
     hostSignal.removeEventListener('abort', stop);
     lifetime.abort();
     for (const dispose of registrations) dispose();
-    await client.close();
+    try {
+      await client.close();
+    } finally {
+      await stdio.close();
+    }
   }
 }
 
@@ -119,9 +123,13 @@ export async function apply(ctx) {
     }
   }
   const done = supervise();
-  ctx.effect(() => () => {
+  const dispose = () => {
     lifetime.abort();
     return done;
-  }, 'unica-session-tools.connection');
+  };
+  ctx.on('internal/plugin', fiber => {
+    if (fiber === ctx.fiber && fiber.uid === null) return dispose();
+  }, { global: true });
+  ctx.effect(() => dispose, 'unica-session-tools.connection');
   await ready;
 }

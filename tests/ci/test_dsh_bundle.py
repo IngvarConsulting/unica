@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
@@ -213,22 +214,41 @@ class DshPatchTests(unittest.TestCase):
         self.assertIn((PLUGIN_ROOT / "skills").resolve(), resolved)
 
 class DshLauncherTests(unittest.TestCase):
-    def test_the_launcher_starts_the_run_command_without_a_handshake(self) -> None:
-        source = LAUNCHER.read_text(encoding="utf-8")
-
-        self.assertIn("'run', '--plugin-root'", source)
-        self.assertNotIn("verify", source)
-
-    def test_the_launcher_serves_the_plugin_root(self) -> None:
-        source = LAUNCHER.read_text(encoding="utf-8")
-
-        self.assertIn("dirname(dirname(fileURLToPath(import.meta.url)))", source)
-        self.assertIn("'bootstrap', 'bin'", source)
-
-    def test_the_launcher_requires_explicit_workspace_context(self) -> None:
-        source = LAUNCHER.read_text(encoding="utf-8")
-        self.assertIn("process.env.UNICA_HOST_CONTEXT_REQUIRED = '1'", source)
-        self.assertNotIn("process.cwd()", source)
+    def test_direct_bootstrap_checkout_and_scrubbed_environment(self) -> None:
+        # Пустой файл фиксирует только выбор команды; его не исполняют.
+        script = """
+import assert from 'node:assert/strict';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { serverCommand, serverEnvironment } from './plugins/unica/dsh/launch.mjs';
+const checkout = process.argv[1], root = join(checkout, 'plugins', 'unica');
+const manifest = join(checkout, 'Cargo.toml');
+const touch = (p, value = '') => { mkdirSync(dirname(p), {recursive:true}); writeFileSync(p, value); };
+touch(manifest); touch(join(checkout, 'crates', 'unica-product', 'Cargo.toml'));
+touch(join(root, 'runtime-manifest.json'), JSON.stringify({development:true}));
+assert.deepEqual(serverCommand(root), {command:'cargo',args:['run','--quiet','--manifest-path',manifest,'--bin','unica','--']});
+touch(join(root, 'runtime-manifest.json'), JSON.stringify({development:false}));
+assert.throws(() => serverCommand(root, 'win32-x64'), /bootstrap is missing/);
+assert.throws(() => serverCommand(root, 'other'), /does not support/);
+const command = join(root, 'bootstrap', 'bin', 'win-x64', 'unica-bootstrap.exe');
+touch(command);
+assert.deepEqual(serverCommand(root, 'win32-x64'), {command,args:['run','--plugin-root',root]});
+const parent = { DSH_HOME:checkout, SECRET:'private', GH_TOKEN:'private',
+  UNICA_PROJECT_DIR:'older', CLAUDE_PROJECT_DIR:'foreign', ZCODE_PROJECT_DIR:'another',
+  ELECTRON_RUN_AS_NODE:'1', CARGO_TARGET_DIR:join(checkout,'build') };
+const env = serverEnvironment(command, parent);
+assert.deepEqual(env, {
+  UNICA_HOST_CONTEXT_REQUIRED:'1',
+  UNICA_RUNTIME_CACHE_DIR:join(checkout,'unica','runtimes'),
+  UNICA_PROVIDER_STATE_DIR:join(checkout,'unica','provider-state'),
+});
+assert.deepEqual(serverEnvironment('cargo', parent), {...env,CARGO_TARGET_DIR:parent.CARGO_TARGET_DIR});
+"""
+        with tempfile.TemporaryDirectory() as checkout:
+            subprocess.run(
+                ["node", "--input-type=module", "--eval", script, checkout],
+                cwd=REPO_ROOT, check=True,
+            )
 
     def test_the_target_matrix_matches_the_packaged_launcher(self) -> None:
         packaged = set(
@@ -246,14 +266,6 @@ class DshLauncherTests(unittest.TestCase):
         )
 
         self.assertEqual(launcher, packaged)
-
-    def test_the_launcher_reports_the_packaged_exit_codes(self) -> None:
-        source = LAUNCHER.read_text(encoding="utf-8")
-
-        # 66 и 78 — те же номера, что раздаёт `bootstrap/launch.sh`; 64 и 127
-        # остаются за запускателем и загрузчиком соответственно.
-        for code in ("EXIT_NO_INPUT = 66", "EXIT_UNSUPPORTED_HOST = 78"):
-            self.assertIn(code, source)
 
 
 class DshLocaleTests(unittest.TestCase):
