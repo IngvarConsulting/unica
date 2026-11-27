@@ -14,7 +14,7 @@ use unica_address::module_routes::ModuleRole;
 use unica_bsl::event_catalog::module_event_catalog;
 use unica_bsl::profile::{ModuleCapability, PlatformProfile};
 use unica_bsl_parser::{
-    parse as parse_bsl_syntax, AnnotationFact, CodeOutlineMethodKind, ExtensionAnnotationKind,
+    parse_for_module_projection, AnnotationFact, CodeOutlineMethodKind, ExtensionAnnotationKind,
     ParsedModule,
 };
 use unica_forms::events::{
@@ -377,7 +377,7 @@ fn project_module_with_specs(
     if source.len() > u32::MAX as usize {
         return Err("BSL module is too large for the analyzer parser".to_string());
     }
-    let parsed = parse_bsl_syntax(source);
+    let parsed = parse_for_module_projection(source);
     if !parsed.errors().is_empty() {
         return Err(format!(
             "BSL module projection failed because the parser reported {} diagnostic(s)",

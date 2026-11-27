@@ -1,0 +1,92 @@
+{
+  "id": "S-3263-change-and-validate-if-header",
+  "issue": 3263,
+  "area": "Расширения конфигурации",
+  "task": "Прочитать перехват ИзменениеИКонтроль в заимствованном общем модуле, где директивы расширения заменяют заголовок Если. Проверка использует структуру модуля, а Body возвращает исходные директивы.",
+  "workspace": "tests/fixtures/acceptance/workspace-change-and-validate",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "demo:CommonModule.ДемоМодуль"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/belonging",
+          "eq": "borrowed"
+        },
+        {
+          "pointer": "/data/props/extends",
+          "eq": "main:CommonModule.ДемоМодуль"
+        }
+      ],
+      "captures": {
+        "source": {
+          "kind": "sha256",
+          "file": "src/ext/CommonModules/ДемоМодуль/Ext/Module.bsl"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "demo:CommonModule.ДемоМодуль.Method.Демо_Признак"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Method"
+        },
+        {
+          "pointer": "/data/props/extension/kind",
+          "eq": "changeAndValidate"
+        },
+        {
+          "pointer": "/data/props/extension/directive",
+          "eq": "&ИзменениеИКонтроль(\"Признак\")"
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "demo:CommonModule.ДемоМодуль"
+      },
+      "expect": [
+        "ok",
+        "provider"
+      ],
+      "validators": [
+        "bsl"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "demo:CommonModule.ДемоМодуль.Body"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/sourceText",
+          "eq": "&ИзменениеИКонтроль(\"Признак\")\nФункция Демо_Признак(Число)\n#Удаление\n    Если Число > 0 Тогда\n#КонецУдаления\n#Вставка\n    Если Число >= 0 Тогда\n#КонецВставки\n        Возврат Истина;\n    КонецЕсли;\n    Возврат Ложь;\nКонецФункции\n"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ext/CommonModules/ДемоМодуль/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.source"
+        }
+      ]
+    }
+  ]
+}
