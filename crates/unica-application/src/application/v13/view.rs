@@ -367,7 +367,14 @@ impl<A: ViewReadAuthority> ViewService<A> {
         let snapshot = self.authority.snapshot(source_at)?;
         if let Some(cursor) = request.cursor.as_deref() {
             let question = request.continuation_question(snapshot.source_set_identity.clone());
-            let stored = self.cursors.read(cursor, &question).map_err(cursor_error)?;
+            let stored = self.cursors.read(cursor, &question).map_err(|error| {
+                cursor_recovery(
+                    error,
+                    "unica.view",
+                    Some(&question.canonical_at),
+                    question.page_limit,
+                )
+            })?;
             let page_node =
                 collection_metadata(stored.snapshot.node(), stored.offset, stored.snapshot.len());
             // The window holds one item past the page: its presence alone
@@ -882,6 +889,27 @@ fn cursor_error(error: ViewCursorError) -> ViewError {
         Some(detail) => ViewError::detailed(detail, error.message()),
         None => ViewError::new(error.code(), error.message()),
     }
+}
+
+pub(super) fn cursor_recovery(
+    error: ViewCursorError,
+    tool: &str,
+    at: Option<&str>,
+    limit: usize,
+) -> ViewError {
+    let mut refusal = cursor_error(error);
+    if refusal.code() == RefusalCode::InvalidCursor {
+        let args = match at {
+            Some(at) => json!({"at":at,"limit":limit}),
+            None => json!({"limit":limit}),
+        };
+        refusal.set_next(json!({
+            "tool": tool,
+            "args": args,
+            "reason": "Start a new first page. Its results may differ from the previous snapshot.",
+        }));
+    }
+    refusal
 }
 
 #[cfg(test)]

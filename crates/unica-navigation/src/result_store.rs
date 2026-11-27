@@ -316,6 +316,9 @@ pub struct StoredViewCursor {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewCursorError {
     Invalid,
+    AddressMismatch,
+    ProjectionMismatch,
+    LimitMismatch,
     CapacityExceeded,
     OwnerUnavailable,
     EntropyUnavailable,
@@ -328,7 +331,10 @@ pub enum ViewCursorError {
 impl ViewCursorError {
     pub const fn code(self) -> RefusalCode {
         match self {
-            Self::Invalid => RefusalCode::InvalidCursor,
+            Self::Invalid
+            | Self::AddressMismatch
+            | Self::ProjectionMismatch
+            | Self::LimitMismatch => RefusalCode::InvalidCursor,
             Self::CapacityExceeded => RefusalCode::ResultTooLarge,
             Self::OwnerUnavailable => RefusalDetail::CachePoisoned.code(),
             Self::EntropyUnavailable => RefusalDetail::ProviderAbsent.code(),
@@ -349,7 +355,10 @@ impl ViewCursorError {
 
     pub const fn message(self) -> &'static str {
         match self {
-            Self::Invalid => "view cursor is invalid, expired, or belongs to another question",
+            Self::Invalid => "The previous continuation is unavailable in the current service.",
+            Self::AddressMismatch => "The `at` address differs from the question bound to this cursor. Use the original `at` to continue.",
+            Self::ProjectionMismatch => "The requested view differs from the question bound to this cursor. Use the original view to continue.",
+            Self::LimitMismatch => "The `limit` page size differs from the question bound to this cursor. Use the original `limit` to continue.",
             Self::CapacityExceeded => "new view snapshot exceeds the temporary retained-state budget; earlier continuations remain available",
             Self::OwnerUnavailable => "view cursor owner is unavailable",
             Self::EntropyUnavailable => "view cursor entropy is unavailable",
@@ -1355,13 +1364,19 @@ impl ViewCursorStore {
         // Authenticate and parse before consulting the private index.
         let snapshot = view_snapshot_by_id(&state, id)?;
         let binding = &snapshot.binding;
-        if offset >= snapshot.len()
-            || binding.canonical_at != expected.canonical_at
-            || binding.projection != expected.projection
-            || binding.source_set_identity != expected.source_set_identity
-            || binding.page_limit != expected.page_limit
-        {
+        // Only a cursor for this admitted source can explain a difference in
+        // the question. All other tokens get the same unavailable result.
+        if offset >= snapshot.len() || binding.source_set_identity != expected.source_set_identity {
             return Err(ViewCursorError::Invalid);
+        }
+        if binding.canonical_at != expected.canonical_at {
+            return Err(ViewCursorError::AddressMismatch);
+        }
+        if binding.projection != expected.projection {
+            return Err(ViewCursorError::ProjectionMismatch);
+        }
+        if binding.page_limit != expected.page_limit {
+            return Err(ViewCursorError::LimitMismatch);
         }
         Ok(StoredViewCursor {
             snapshot: Arc::clone(snapshot),
@@ -2574,16 +2589,18 @@ mod medium_tests {
         other.canonical_at = "main:Document.Счет.Module.Object.Body".to_string();
         assert_eq!(
             store.read(&token, &other.question()).unwrap_err(),
-            ViewCursorError::Invalid
+            ViewCursorError::AddressMismatch
         );
         let mut other = binding.clone();
         other.projection = "Method".to_string();
         assert_eq!(
             store.read(&token, &other.question()).unwrap_err(),
-            ViewCursorError::Invalid
+            ViewCursorError::ProjectionMismatch
         );
         let mut other = binding.clone();
         other.source_set_identity = "other:sha256-source-id".to_string();
+        other.canonical_at = "other:Document.Счет.Module.Object.Body".to_string();
+        other.page_limit = 3;
         assert_eq!(
             store.read(&token, &other.question()).unwrap_err(),
             ViewCursorError::Invalid
@@ -2592,7 +2609,7 @@ mod medium_tests {
         other.page_limit = 2;
         assert_eq!(
             store.read(&token, &other.question()).unwrap_err(),
-            ViewCursorError::Invalid
+            ViewCursorError::LimitMismatch
         );
         let page = store.read(&token, &binding.question()).unwrap();
         assert_eq!(page.snapshot.items()[page.offset], json!({"line": 2}));
@@ -2906,7 +2923,12 @@ mod medium_tests {
             ));
             assert_eq!(
                 store.read(&token, &binding.question()).unwrap_err(),
-                ViewCursorError::Invalid
+                [
+                    ViewCursorError::AddressMismatch,
+                    ViewCursorError::ProjectionMismatch,
+                    ViewCursorError::Invalid,
+                    ViewCursorError::LimitMismatch
+                ][field]
             );
         }
         let usage = store.retained_usage_for_test();
@@ -3221,6 +3243,9 @@ mod medium_tests {
     fn view_cursor_failures_keep_typed_causes_on_the_wire() {
         for (error, code, detail) in [
             (ViewCursorError::Invalid, "invalid_cursor", None),
+            (ViewCursorError::AddressMismatch, "invalid_cursor", None),
+            (ViewCursorError::ProjectionMismatch, "invalid_cursor", None),
+            (ViewCursorError::LimitMismatch, "invalid_cursor", None),
             (ViewCursorError::CapacityExceeded, "result_too_large", None),
             (
                 ViewCursorError::OwnerUnavailable,

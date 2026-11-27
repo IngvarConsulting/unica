@@ -1,11 +1,12 @@
-use crate::application::v13::view::PREFERRED_PAGE_BYTES;
+use crate::application::v13::view::{cursor_recovery, PREFERRED_PAGE_BYTES};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::fmt;
 use unica_address::address::QualifiedAddress;
 use unica_execution_contract::invocation::DomainResult;
 use unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES;
-use unica_navigation::result_store::{ViewCursorBinding, ViewCursorError, ViewCursorStore};
+use unica_execution_contract::view_error::error_result;
+use unica_navigation::result_store::{ViewCursorBinding, ViewCursorStore};
 use unica_refusal::{RefusalCode, RefusalDetail};
 
 /// Diagnostics on one check page when `limit` is omitted.
@@ -48,23 +49,29 @@ pub fn page_diagnostics(
     cursor: Option<&str>,
 ) -> DomainResult {
     let at = Some(binding.canonical_at.clone());
+    let limit = binding.page_limit;
     let probe = ViewCursorStore::token_probe();
     if let Some(cursor) = cursor {
         let stored = match cursors.read(cursor, &binding.question()) {
             Ok(stored) => stored,
-            Err(error) => return error.into_result(at),
+            Err(error) => {
+                let refusal = cursor_recovery(error, "unica.check", at.as_deref(), limit);
+                return error_result(at, refusal);
+            }
         };
         // One item past the page tells whether a continuation follows.
         let window = match stored
             .snapshot
-            .read_items(stored.offset, binding.page_limit.saturating_add(1))
+            .read_items(stored.offset, limit.saturating_add(1))
         {
             Ok(window) => window,
             Err(error) => return error.into_result(at),
         };
         let node = stored.snapshot.node();
-        let render = |items, cursor, stopped_by| check_page_result(node, items, cursor, stopped_by);
-        let page = match prepare_check_page(&render, &window, 0, binding.page_limit, &probe) {
+        let render = |items, cursor, stopped_by| {
+            check_page_result(node, items, cursor, stopped_by, at.as_deref(), limit)
+        };
+        let page = match prepare_check_page(&render, &window, 0, limit, &probe) {
             Ok(page) => page,
             Err(message) => return check_page_refusal(at, message),
         };
@@ -94,11 +101,13 @@ pub fn page_diagnostics(
             "check result has no diagnostic collection",
         );
     };
-    let render = |items, cursor, stopped_by| check_page_result(&node, items, cursor, stopped_by);
+    let render = |items, cursor, stopped_by| {
+        check_page_result(&node, items, cursor, stopped_by, at.as_deref(), limit)
+    };
     if let Err(message) = preflight_check_pages(&render, &items, &probe) {
         return check_page_refusal(at, message);
     }
-    let page = match prepare_check_page(&render, &items, 0, binding.page_limit, &probe) {
+    let page = match prepare_check_page(&render, &items, 0, limit, &probe) {
         Ok(page) => page,
         Err(message) => return check_page_refusal(at, message),
     };
@@ -159,14 +168,10 @@ pub fn page_root_verdict(
     if let Some(cursor) = cursor {
         let stored = match cursors.read(cursor, &binding.question()) {
             Ok(stored) => stored,
-            Err(ViewCursorError::Invalid) => {
-                return DomainResult::canonical_rejection(
-                    None,
-                    RefusalCode::InvalidCursor,
-                    "check cursor is invalid, its verdict is no longer held, or it belongs to another question",
-                )
+            Err(error) => {
+                let refusal = cursor_recovery(error, "unica.check", None, question.limit);
+                return error_result(None, refusal);
             }
-            Err(error) => return error.into_result(None),
         };
         // One group past the page tells whether a continuation follows.
         let window = match stored
@@ -177,8 +182,9 @@ pub fn page_root_verdict(
             Err(error) => return error.into_result(None),
         };
         let node = stored.snapshot.node();
-        let render =
-            |items, cursor, stopped_by| root_page_result(node, question, items, cursor, stopped_by);
+        let render = |items, cursor, stopped_by| {
+            check_page_result(node, items, cursor, stopped_by, None, question.limit)
+        };
         let page = match prepare_check_page(&render, &window, 0, question.limit, &probe) {
             Ok(page) => page,
             Err(message) => return check_page_refusal(None, message),
@@ -207,8 +213,9 @@ pub fn page_root_verdict(
     let Some((node, items)) = split_diagnostics(result.clone()) else {
         return result;
     };
-    let render =
-        |items, cursor, stopped_by| root_page_result(&node, question, items, cursor, stopped_by);
+    let render = |items, cursor, stopped_by| {
+        check_page_result(&node, items, cursor, stopped_by, None, question.limit)
+    };
     if let Err(message) = preflight_check_pages(&render, &items, &probe) {
         return check_page_refusal(None, message);
     }
@@ -225,27 +232,6 @@ pub fn page_root_verdict(
         None
     };
     render(page.items, next, page.stopped_by)
-}
-
-fn root_page_result(
-    node: &Value,
-    question: &RootCheckQuestion,
-    items: Vec<Value>,
-    cursor: Option<String>,
-    stopped_by: &'static str,
-) -> DomainResult {
-    let mut page = check_page_result(node, items, cursor.clone(), stopped_by);
-    if let Some(cursor) = cursor {
-        page.next.insert(
-            0,
-            json!({
-                "tool": "unica.check",
-                "args": {"limit": question.limit, "cursor": cursor},
-                "reason": "остальные группы диагностик того же вердикта",
-            }),
-        );
-    }
-    page
 }
 
 /// Splits a check result into the verdict with its diagnostic count and the
@@ -378,10 +364,24 @@ fn check_page_result(
     items: Vec<Value>,
     cursor: Option<String>,
     stopped_by: &'static str,
+    at: Option<&str>,
+    limit: usize,
 ) -> DomainResult {
     let mut result: DomainResult =
         serde_json::from_value(node.clone()).expect("stored check result is a domain result");
     result.data.as_mut().expect("check has data")["diagnostics"] = Value::Array(items);
+    if let Some(cursor) = &cursor {
+        let mut args = json!({"limit":limit,"cursor":cursor});
+        let reason = if let Some(at) = at {
+            args["at"] = json!(at);
+            "остальные диагностики того же вердикта"
+        } else {
+            "остальные группы диагностик того же вердикта"
+        };
+        result
+            .next
+            .insert(0, json!({"tool":"unica.check","args":args,"reason":reason}));
+    }
     result.cursor = cursor;
     result.page = Some(json!({"stoppedBy": stopped_by}));
     result
@@ -887,6 +887,11 @@ mod tests {
             let Some(cursor) = page.cursor.clone() else {
                 break;
             };
+            assert_eq!(page.next[0]["tool"], "unica.check");
+            assert_eq!(
+                page.next[0]["args"],
+                json!({"at":binding.canonical_at,"limit":20,"cursor":cursor})
+            );
             let replay = page_diagnostics(&store, binding.clone(), None, Some(&cursor));
             assert_eq!(
                 replay,
@@ -904,6 +909,51 @@ mod tests {
         assert_eq!(page.page.as_ref().unwrap()["stoppedBy"], "complete");
     }
 
+    /// rule: INV.WIRE.READ-PAGE-BUDGET
+    #[test]
+    fn addressed_check_counts_the_continuation_call_in_the_wire_limit() {
+        let binding = check_binding("main:CommonModule.Example.Module", "revision-1", 1);
+        let mut original = page_diagnostics(
+            &ViewCursorStore::default(),
+            binding.clone(),
+            Some(check_result(2)),
+            None,
+        );
+        assert_eq!(original.next[0]["tool"], "unica.check");
+        // The pager budgets for its longest stop reason on every page.
+        original.page.as_mut().unwrap()["stoppedBy"] = json!("complete");
+        let first_finding = &original.data.as_ref().unwrap()["diagnostics"][0]["message"];
+        let bytes = super::MAX_CANONICAL_RESULT_BYTES - super::serialized_result_size(&original)
+            + first_finding.as_str().unwrap().len();
+
+        for extra in [0, 1] {
+            let mut response = check_result(2);
+            response.data.as_mut().unwrap()["diagnostics"][0]["message"] =
+                json!("x".repeat(bytes + extra));
+            let mut page = page_diagnostics(
+                &ViewCursorStore::default(),
+                binding.clone(),
+                Some(response),
+                None,
+            );
+            if extra == 0 {
+                assert!(page.ok);
+                assert_eq!(
+                    page.next[0]["args"]["cursor"].as_str(),
+                    page.cursor.as_deref()
+                );
+                page.page.as_mut().unwrap()["stoppedBy"] = json!("complete");
+                assert_eq!(
+                    super::serialized_result_size(&page),
+                    super::MAX_CANONICAL_RESULT_BYTES
+                );
+            } else {
+                assert_eq!(page.diagnostics[0]["code"], "result_too_large");
+                assert!(page.cursor.is_none());
+            }
+        }
+    }
+
     #[test]
     fn check_cursor_rejects_other_node_and_replays_saved_diagnostics_after_source_change() {
         let store = ViewCursorStore::default();
@@ -917,6 +967,17 @@ mod tests {
             Some(cursor),
         );
         assert_eq!(other.diagnostics[0]["code"], "invalid_cursor");
+        assert!(other.diagnostics[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("`at` address differs"));
+        assert_eq!(
+            other.next[0]["args"],
+            json!({"at":"main:CommonModule.Other.Module","limit":20})
+        );
+        assert!(!serde_json::to_string(&other)
+            .unwrap()
+            .contains("CommonModule.Example"));
         let stale = page_diagnostics(
             &store,
             check_binding("main:CommonModule.Example.Module", "revision-2", 20),
@@ -980,6 +1041,7 @@ mod tests {
     /// rule: INV.WIRE.CHECK-DIAGNOSTIC-PAGES
     #[test]
     fn late_finding_at_transport_edge_is_refused_before_issuing_a_cursor() {
+        let binding = check_binding("main:CommonModule.Example.Module", "revision-1", 1);
         let mut result = check_result(2);
         result.data.as_mut().unwrap()["diagnostics"][1]["message"] = json!("");
         let mut node_result = result.clone();
@@ -988,18 +1050,20 @@ mod tests {
         node_data.insert("diagnosticCount".to_string(), json!(2));
         let node = serde_json::to_value(node_result).unwrap();
         let item = result.data.as_ref().unwrap()["diagnostics"][1].clone();
-        let baseline = super::check_page_result(&node, vec![item], None, "bytes");
+        let baseline = super::check_page_result(
+            &node,
+            vec![item],
+            None,
+            "bytes",
+            Some(&binding.canonical_at),
+            binding.page_limit,
+        );
         let message_len = unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES
             - super::serialized_result_size(&baseline);
         result.data.as_mut().unwrap()["diagnostics"][1]["message"] = json!("x".repeat(message_len));
 
         let store = ViewCursorStore::default();
-        let answer = page_diagnostics(
-            &store,
-            check_binding("main:CommonModule.Example.Module", "revision-1", 1),
-            Some(result),
-            None,
-        );
+        let answer = page_diagnostics(&store, binding, Some(result), None);
         assert!(!answer.ok, "{answer:?}");
         assert_eq!(answer.diagnostics[0]["code"], "result_too_large");
         assert!(answer.cursor.is_none());
@@ -1086,7 +1150,7 @@ mod tests {
         let question = RootCheckQuestion::new("workspace", 20);
         let render = |page, cursor, stopped_by| {
             renders.set(renders.get() + 1);
-            super::root_page_result(&node, &question, page, cursor, stopped_by)
+            super::check_page_result(&node, page, cursor, stopped_by, None, question.limit)
         };
         let probe = ViewCursorStore::token_probe();
         super::preflight_check_pages(&render, &items, &probe).unwrap();
@@ -1112,7 +1176,7 @@ mod tests {
         let (node, _) = super::split_diagnostics(root_verdict(&[1])).unwrap();
         let question = RootCheckQuestion::new("workspace", 20);
         let render = |page, cursor, stopped_by| {
-            super::root_page_result(&node, &question, page, cursor, stopped_by)
+            super::check_page_result(&node, page, cursor, stopped_by, None, question.limit)
         };
         let probe = ViewCursorStore::token_probe();
         let envelope = super::PageEnvelope::measure(&render, &probe);
