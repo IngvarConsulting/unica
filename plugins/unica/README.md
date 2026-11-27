@@ -202,6 +202,10 @@ described in the [DataCompositionSchema specification](references/specs/1c-dcs-s
 
 Find logical addresses with `unica.search` using `corpus: "names"`.
 Use `unica.resolve` when a physical path arrived from outside Unica.
+For a missing file with a recognized layout, the `not_found` diagnostic may
+include a `candidate` with `at`, `kind`, `fileState: "absent"`, and
+`verification: "unverified"`. A path outside the admitted source sets returns
+`outside_source_sets`. A `paths` batch reports these fields on each refused item.
 Addresses have the form `<sourceSet>:<Kind>.<Name>...`; Unica resolves
 physical source files internally.
 

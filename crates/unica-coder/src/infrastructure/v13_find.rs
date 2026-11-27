@@ -1,3 +1,6 @@
+mod path_miss;
+pub use path_miss::{classify_path_miss, PathMiss};
+
 use crate::application::v13::find::{
     normalize_layout_path, FindDocument, FindFact, FindFactKind, FindIndex, FindPathAlias,
     NameRanker, RankedNames,
@@ -550,37 +553,19 @@ impl WorkspaceFindDirectoryBuilder {
         let mut absolute_witnesses = Vec::with_capacity(sources.len());
         let mut source_matches = Vec::with_capacity(sources.len());
         if absolute_query {
-            let root_matches = sources
-                .iter()
-                .map(|source| absolute_query_relative_path(source, path, deadline, cancellation))
-                .collect::<Result<Vec<_>, _>>()?;
-            let deepest = sources
-                .iter()
-                .zip(&root_matches)
-                .filter(|(_, relative)| relative.is_some())
-                .map(|(source, _)| source.root.path().components().count())
-                .max();
-            for (source, relative) in sources.iter().zip(root_matches) {
-                let selected =
-                    relative.is_some() && deepest == Some(source.root.path().components().count());
-                source_matches.push(selected);
-                absolute_witnesses.push(if selected {
-                    retain_absolute_target(
-                        source,
-                        relative.as_deref().ok_or_else(unsafe_layout_entry)?,
-                        deadline,
-                        cancellation,
-                    )?
-                } else {
-                    None
+            let relatives = deepest_source_relatives(sources, path, deadline, cancellation)?;
+            for (source, relative) in sources.iter().zip(relatives) {
+                source_matches.push(relative.is_some());
+                absolute_witnesses.push(match relative {
+                    Some(relative) => {
+                        retain_absolute_target(source, &relative, deadline, cancellation)?
+                    }
+                    None => None,
                 });
             }
         } else {
             for source in sources {
-                source_matches.push(point_path_depths(&parts).any(|depth| {
-                    let tail = parts[parts.len() - depth..].join("/");
-                    normalized != tail && source_path_ends_with_query(source, &normalized, &tail)
-                }));
+                source_matches.push(relative_query_depth(source, &normalized, &parts).is_some());
                 absolute_witnesses.push(None);
             }
         }
@@ -2620,6 +2605,17 @@ fn source_path_ends_with_query(source: &LayoutFindSource<'_>, query: &str, relat
             .is_some_and(|prefix| prefix.ends_with('/'))
 }
 
+fn relative_query_depth(
+    source: &LayoutFindSource<'_>,
+    normalized: &str,
+    parts: &[&str],
+) -> Option<usize> {
+    point_path_depths(parts).rev().find(|depth| {
+        let tail = parts[parts.len() - depth..].join("/");
+        normalized != tail && source_path_ends_with_query(source, normalized, &tail)
+    })
+}
+
 fn source_path_matches_query(source: &LayoutFindSource<'_>, query: &str, relative: &str) -> bool {
     query == relative || source_path_ends_with_query(source, query, relative)
 }
@@ -2628,6 +2624,30 @@ fn source_path_matches_query(source: &LayoutFindSource<'_>, query: &str, relativ
 struct AbsoluteTargetWitness {
     identity: FileIdentity,
     relative: PathBuf,
+}
+
+fn deepest_source_relatives(
+    sources: &[LayoutFindSource<'_>],
+    query: &str,
+    deadline: ProviderDeadline,
+    cancellation: &CancellationToken,
+) -> Result<Vec<Option<PathBuf>>, FindBuildError> {
+    let mut relatives = sources
+        .iter()
+        .map(|source| absolute_query_relative_path(source, query, deadline, cancellation))
+        .collect::<Result<Vec<_>, _>>()?;
+    let deepest = sources
+        .iter()
+        .zip(&relatives)
+        .filter(|(_, path)| path.is_some())
+        .map(|(source, _)| source.root.path().components().count())
+        .max();
+    for (source, relative) in sources.iter().zip(&mut relatives) {
+        if Some(source.root.path().components().count()) != deepest {
+            *relative = None;
+        }
+    }
+    Ok(relatives)
 }
 
 /// Compare the ancestor at the retained root's depth by its no-follow
@@ -2746,28 +2766,48 @@ fn retain_absolute_target(
     {
         return Ok(None);
     }
+    retain_query_target(source, relative, deadline, cancellation)
+}
+
+fn retain_query_target(
+    source: &LayoutFindSource<'_>,
+    relative: &Path,
+    deadline: ProviderDeadline,
+    cancellation: &CancellationToken,
+) -> Result<Option<AbsoluteTargetWitness>, FindBuildError> {
+    let depth = relative.components().count();
     let mut current = source.root.clone();
     for (index, component) in relative.components().enumerate() {
+        if index > SOURCE_TREE_TRAVERSAL_MAX_DEPTH {
+            return Err(FindBuildError::new(
+                RefusalCode::ProviderLimitExceeded,
+                "resolve path exceeds the source tree traversal depth",
+            ));
+        }
         let std::path::Component::Normal(name) = component else {
             return Ok(None);
         };
-        let child = retain_optional_child(&current, name, deadline, cancellation)?;
+        let Some(child) = retain_optional_child(&current, name, deadline, cancellation)? else {
+            current
+                .validate_named_identity()
+                .map_err(child_read_error)?;
+            return Ok(None);
+        };
         if index + 1 == depth {
             let identity = match child {
-                Some(SourceEntry::Directory(child)) => {
+                SourceEntry::Directory(child) => {
                     child
                         .validate_named_identity()
                         .map_err(|_| unsafe_layout_entry())?;
                     child.identity()
                 }
-                Some(SourceEntry::RegularFile(child)) => {
+                SourceEntry::RegularFile(child) => {
                     child
                         .validate_named_identity()
                         .map_err(|_| unsafe_layout_entry())?;
                     child.identity()
                 }
-                None => return Ok(None),
-                Some(_) => return Err(unsafe_layout_entry()),
+                _ => return Err(unsafe_layout_entry()),
             };
             return Ok(Some(AbsoluteTargetWitness {
                 identity,
@@ -2775,9 +2815,8 @@ fn retain_absolute_target(
             }));
         }
         current = match child {
-            Some(SourceEntry::Directory(child)) => child,
-            None => return Ok(None),
-            Some(_) => return Err(unsafe_layout_entry()),
+            SourceEntry::Directory(child) => child,
+            _ => return Err(unsafe_layout_entry()),
         };
     }
     Ok(None)

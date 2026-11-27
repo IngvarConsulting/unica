@@ -1178,3 +1178,27 @@ fn resolve_external_alias_batch_lines_keep_point_owner_proof() {
     }
     mcp.finish();
 }
+
+/// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
+#[cfg(unix)]
+#[test]
+fn absent_layout_paths_keep_literal_backslashes_distinct_in_a_batch() {
+    let root = resource_resolve_fixture();
+    let literal = r"src/Catalogs\Gone.xml";
+    std::fs::write(root.path().join(literal), "other file").unwrap();
+    let mut mcp = resource_resolve_mcp(root.path());
+    let result = mcp.completed_tool_call(call_tool(
+        2,
+        "unica.resolve",
+        json!({
+            "paths": ["src/Catalogs/Gone.xml", literal, root.path().join(literal)]
+        }),
+    ));
+    let items = result["data"]["items"].as_array().unwrap();
+    assert_eq!(items[0]["candidate"]["at"], "main:Catalog.Gone", "{result}");
+    for item in &items[1..] {
+        assert_eq!(item["code"], "not_found");
+        assert!(item.get("candidate").is_none(), "{item}");
+    }
+    mcp.finish();
+}

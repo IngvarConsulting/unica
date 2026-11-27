@@ -940,7 +940,7 @@ fn with_resolve_layout<T>(
 fn batch_refusal(refusal: &DomainResult) -> Value {
     let diagnostic = refusal.diagnostics.first().cloned().unwrap_or_default();
     let mut item = Map::new();
-    for key in ["code", "detailCode", "message"] {
+    for key in ["code", "detailCode", "message", "candidate"] {
         if let Some(value) = diagnostic.get(key) {
             item.insert(key.to_string(), value.clone());
         }

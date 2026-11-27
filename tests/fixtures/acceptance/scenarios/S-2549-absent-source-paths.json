@@ -1,0 +1,194 @@
+{
+  "id": "S-2549-absent-source-paths",
+  "name": "distinguish-absent-layout-paths-from-files-outside-sources",
+  "issue": 2549,
+  "area": "Навигация по исходникам",
+  "task": "По пути из списка изменений получить предполагаемый адрес отсутствующего дескриптора или модуля и отличить файл вне допущенных исходников, в том числе в пакете путей.",
+  "workspace": "tests/fixtures/acceptance/workspace-resolve-resources",
+  "wire": [
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "src/Catalogs/Gone.xml"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: no admitted source set places `src/Catalogs/Gone.xml`",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/candidate",
+          "eq": {
+            "at": "main:Catalog.Gone",
+            "kind": "Catalog",
+            "verification": "unverified",
+            "fileState": "absent"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "src/Documents/Invoice/Forms/Gone.xml"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: no admitted source set places `src/Documents/Invoice/Forms/Gone.xml`",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/candidate",
+          "eq": {
+            "at": "main:Document.Invoice.Form.Gone.Metadata",
+            "kind": "Metadata",
+            "verification": "unverified",
+            "fileState": "absent"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "src/Documents/Removed/Ext/ObjectModule.bsl"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: no admitted source set places `src/Documents/Removed/Ext/ObjectModule.bsl`",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/candidate",
+          "eq": {
+            "at": "main:Document.Removed.Module.Object",
+            "kind": "Module",
+            "verification": "unverified",
+            "fileState": "absent"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "v8project.yaml"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "outside_source_sets: `v8project.yaml` is outside the admitted source sets",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "outside_source_sets"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "paths": [
+          "src/Documents/Invoice/Forms/Gone.xml",
+          "$workspace/src/Documents/Removed/Ext/ObjectModule.bsl",
+          "src/Catalogs/Gone.xml",
+          "v8project.yaml",
+          "src/unknown.txt",
+          "src/Documents/Invoice/Forms/Gone.xml",
+          "Documents/Invoice/Ext/ObjectModule.bsl",
+          "src/Documents/Removed/Ext/ObjectModule.bsl:8",
+          "src/Documents/Invoice/Forms/Gone/Ext/Form.xml",
+          "docs/a/b/c/d/e/f/g/h/README.md",
+          "src/DataProcessors/Orphan/Ext/ObjectModule.bsl"
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/candidate",
+          "eq": {
+            "at": "main:Document.Invoice.Form.Gone.Metadata",
+            "kind": "Metadata",
+            "verification": "unverified",
+            "fileState": "absent"
+          }
+        },
+        {
+          "pointer": "/data/items/1/candidate",
+          "eq": {
+            "at": "main:Document.Removed.Module.Object",
+            "kind": "Module",
+            "verification": "unverified",
+            "fileState": "absent"
+          }
+        },
+        {
+          "pointer": "/data/items/2/candidate",
+          "eq": {
+            "at": "main:Catalog.Gone",
+            "kind": "Catalog",
+            "verification": "unverified",
+            "fileState": "absent"
+          }
+        },
+        {
+          "pointer": "/data/items/3/code",
+          "eq": "outside_source_sets"
+        },
+        {
+          "pointer": "/data/items/4/code",
+          "eq": "not_found"
+        },
+        {
+          "pointer": "/data/items/5/candidate",
+          "eq": {
+            "at": "main:Document.Invoice.Form.Gone.Metadata",
+            "kind": "Metadata",
+            "verification": "unverified",
+            "fileState": "absent"
+          }
+        },
+        {
+          "pointer": "/data/items/6/at",
+          "eq": "main:Document.Invoice.Module.Object"
+        },
+        {
+          "pointer": "/data/items/7/candidate",
+          "eq": {
+            "at": "main:Document.Removed.Module.Object",
+            "kind": "Module",
+            "verification": "unverified",
+            "fileState": "absent"
+          }
+        },
+        {
+          "pointer": "/data/items/7/line",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/8/candidate",
+          "eq": {
+            "at": "main:Document.Invoice.Form.Gone",
+            "kind": "Form",
+            "verification": "unverified",
+            "fileState": "absent"
+          }
+        },
+        {
+          "pointer": "/data/items/9/code",
+          "eq": "outside_source_sets"
+        },
+        {
+          "pointer": "/data/items/10/code",
+          "eq": "not_found"
+        },
+        {
+          "pointer": "/data/items/10/candidate",
+          "absent": true
+        }
+      ]
+    }
+  ]
+}

@@ -134,10 +134,10 @@ impl PathLine {
         self.line
     }
 
-    /// Одно написание пути на оба разделителя: пакет разрешает такой путь
-    /// один раз, сколько бы строк и повторов в нём ни было.
+    /// Ключ физического пути без строки. В Unix обратная косая черта
+    /// допустима в имени файла, поэтому два написания могут называть разные файлы.
     pub fn key(&self) -> String {
-        self.path.replace('\\', "/")
+        self.path.replace(std::path::MAIN_SEPARATOR, "/")
     }
 }
 
@@ -358,9 +358,11 @@ mod tests {
         };
         assert!(items[0].is_err());
         assert_eq!(items[1].as_ref().unwrap().line(), Some(3));
+        let native = PathLine::parse(r"src\a.bsl").unwrap().key();
+        let portable = PathLine::parse("src/a.bsl:4").unwrap().key();
         assert_eq!(
-            PathLine::parse(r"src\a.bsl").unwrap().key(),
-            PathLine::parse("src/a.bsl:4").unwrap().key()
+            native == portable,
+            std::path::Path::new(r"src\a.bsl") == std::path::Path::new("src/a.bsl")
         );
     }
 

@@ -1308,7 +1308,7 @@ fn resolve_paths_refuses_only_the_failing_item() {
         [
             Some("not_found"),
             Some("not_found"),
-            Some("not_found"),
+            Some("outside_source_sets"),
             Some("bad_value"),
             Some("bad_value"),
             Some("bad_value"),

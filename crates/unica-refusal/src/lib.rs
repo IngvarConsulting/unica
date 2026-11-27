@@ -64,6 +64,8 @@ pub enum RefusalCode {
     BadValue,
     /// `not_found`
     NotFound,
+    /// `outside_source_sets`
+    OutsideSourceSets,
     /// `source_set_unknown`
     SourceSetUnknown,
     /// `target_not_found`
@@ -148,6 +150,7 @@ impl RefusalCode {
             Self::TaskSessionClosed => "task_session_closed",
             Self::BadValue => "bad_value",
             Self::NotFound => "not_found",
+            Self::OutsideSourceSets => "outside_source_sets",
             Self::SourceSetUnknown => "source_set_unknown",
             Self::TargetNotFound => "target_not_found",
             Self::ContainmentDenied => "containment_denied",
@@ -205,6 +208,7 @@ impl RefusalCode {
             Self::TaskSessionClosed => Outcome::RetryAsIs,
             Self::BadValue => Outcome::FixCall,
             Self::NotFound => Outcome::FixCall,
+            Self::OutsideSourceSets => Outcome::FixCall,
             Self::SourceSetUnknown => Outcome::FixCall,
             Self::TargetNotFound => Outcome::FixCall,
             Self::ContainmentDenied => Outcome::FixCall,
@@ -251,7 +255,7 @@ impl RefusalCode {
     }
 
     /// Весь словарь — для проверок полноты и порождения ведомостей.
-    pub const ALL: [Self; 43] = [
+    pub const ALL: [Self; 44] = [
         Self::ConcurrentChange,
         Self::Conflict,
         Self::SourceSelectionChanged,
@@ -260,6 +264,7 @@ impl RefusalCode {
         Self::TaskSessionClosed,
         Self::BadValue,
         Self::NotFound,
+        Self::OutsideSourceSets,
         Self::SourceSetUnknown,
         Self::TargetNotFound,
         Self::ContainmentDenied,
