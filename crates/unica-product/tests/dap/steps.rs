@@ -77,7 +77,7 @@ impl Peer {
         let (events, pending) = mpsc::channel();
         let (seen, actions) = mpsc::channel();
         let server = thread::spawn(move || {
-            serve_rdbg(listener, |command, body| match command {
+            serve_rdbg(listener, "127.0.0.1", |command, body| match command {
                 "pingDebugUIParams" => pending.try_recv().unwrap_or_default(),
                 "attachDetachDbgTargets" => "<response><result>true</result></response>".into(),
                 "step" => {

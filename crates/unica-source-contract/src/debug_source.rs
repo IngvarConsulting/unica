@@ -1,5 +1,8 @@
 //! A saved workspace module and the identity used by the platform debugger.
 
+mod endpoint;
+pub use endpoint::DebugServerUrl;
+
 use unica_address::{
     address::{AddressError, NodeKind, QualifiedAddress},
     module_routes::{has_direct_module_route, has_nested_module_role, ModuleRole},

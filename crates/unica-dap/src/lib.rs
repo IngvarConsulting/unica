@@ -1,5 +1,6 @@
-//! DAP attach sessions for the local 1C debug server.
+//! DAP attach sessions for an existing 1C debug server.
 
+mod endpoint;
 mod modules;
 mod rdbg;
 
@@ -16,12 +17,14 @@ use std::{
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 use crossbeam_channel::{bounded, never, select, Receiver, RecvTimeoutError};
+use endpoint::{attach_server, server_from_cli, DebugServerError};
 use modules::Modules;
 use rdbg::{child, field, Rdbg, TargetAttachment};
 use roxmltree::{Document, Node};
 use serde_json::{json, Value};
 use unica_source_contract::debug_source::{
-    external_processor_frame_name, DebugModuleId, ResolveDebugModules, OBJECT_MODULE_PROPERTY_ID,
+    external_processor_frame_name, DebugModuleId, DebugServerUrl, ResolveDebugModules,
+    OBJECT_MODULE_PROPERTY_ID,
 };
 use uuid::Uuid;
 
@@ -49,7 +52,14 @@ const DEBUG_TARGET_TYPES: &[&str] = &[
     "MobileManagedServer",
 ];
 
-pub fn run_stdio(resolve_modules: NewResolver) -> i32 {
+pub fn run_stdio(resolve_modules: NewResolver, args: &[String]) -> i32 {
+    let selected_server = match server_from_cli(args) {
+        Ok(server) => server,
+        Err(error) => {
+            eprintln!("unica dap: {error}");
+            return 2;
+        }
+    };
     let (tx, rx) = bounded(8);
     std::thread::spawn(move || {
         let mut input = io::stdin().lock();
@@ -72,6 +82,7 @@ pub fn run_stdio(resolve_modules: NewResolver) -> i32 {
     let mut adapter = Adapter {
         output: io::stdout().lock(),
         resolve_modules,
+        selected_server,
         seq: 0,
         initialized: false,
         session: None,
@@ -118,6 +129,7 @@ fn read_frame(input: &mut impl BufRead) -> Result<Option<Value>> {
 struct Adapter<W> {
     output: W,
     resolve_modules: NewResolver,
+    selected_server: Option<DebugServerUrl>,
     seq: u64,
     initialized: bool,
     session: Option<Session>,
@@ -154,6 +166,10 @@ impl<W: Write> Adapter<W> {
                 Err(error) => {
                     response["success"] = json!(false);
                     response["message"] = json!(error.to_string());
+                    if let Some(error) = error.downcast_ref::<DebugServerError>() {
+                        response["body"] =
+                            json!({"error":{"id":error.id(),"format":error.to_string()}});
+                    }
                 }
             }
             self.send(response)?;
@@ -198,6 +214,7 @@ impl<W: Write> Adapter<W> {
                 self.initialized = true;
                 Ok(json!({
                     "supportsConfigurationDoneRequest": true,
+                    "supportsUnicaDebugServerUrl": true,
                     "supportsConditionalBreakpoints": true,
                     "supportsSetExpression": true,
                     "supportsExceptionFilterOptions": true,
@@ -210,7 +227,11 @@ impl<W: Write> Adapter<W> {
                 }))
             }
             "attach" if self.initialized && self.session.is_none() => {
-                self.session = Some(Session::attach(args, self.resolve_modules)?);
+                self.session = Some(Session::attach(
+                    args,
+                    self.resolve_modules,
+                    self.selected_server.as_ref(),
+                )?);
                 events.push(event("initialized", json!({})));
                 Ok(json!({}))
             }
@@ -304,23 +325,25 @@ struct Session {
 }
 
 impl Session {
-    fn attach(args: &Value, resolve_modules: NewResolver) -> Result<Self> {
+    fn attach(
+        args: &Value,
+        resolve_modules: NewResolver,
+        selected_server: Option<&DebugServerUrl>,
+    ) -> Result<Self> {
+        let url = attach_server(args, selected_server)?;
         let root = Path::new(string(args, "rootProject")?);
-        if args["debugServerHost"]
-            .as_str()
-            .is_some_and(|host| host != "127.0.0.1" && host != "localhost")
-        {
-            return Err("the debug server must be local".into());
-        }
-        let port = args["debugServerPort"].as_u64().unwrap_or(1550);
-        let alias = args["infoBaseAlias"].as_str().unwrap_or("DefAlias");
+        let alias = if args["infoBaseAlias"].is_null() {
+            "DefAlias"
+        } else {
+            string(args, "infoBaseAlias")?
+        };
         let source_set = if args["sourceSet"].is_null() {
             None
         } else {
             Some(string(args, "sourceSet")?)
         };
         let modules = Modules::new(resolve_modules(root, source_set)?);
-        let rdbg = Arc::new(Rdbg::attach(port.try_into()?, alias)?);
+        let rdbg = Arc::new(Rdbg::attach(&url, alias)?);
         let session = Self {
             modules,
             rdbg,
