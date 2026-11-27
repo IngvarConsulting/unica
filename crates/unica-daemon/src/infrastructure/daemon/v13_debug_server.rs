@@ -7,7 +7,7 @@ use super::v13_infobase_exports::{
     runner_envelope_refusal, runner_rejection, runner_start_rejection, CONFIG_NAME,
     RUNNER_OUTPUT_LIMIT,
 };
-use crate::application::v13::tool_catalog::RUNNER_SUPPORTS_DEBUG_SERVER_PREPARE;
+use crate::application::v13::tool_catalog::PINNED_RUNNER;
 use crate::infrastructure::workspace::discover_workspace;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -184,7 +184,7 @@ impl PreparedDebugServer {
                             runner,
                             session,
                             self.dry_run,
-                            RUNNER_SUPPORTS_DEBUG_SERVER_PREPARE,
+                            PINNED_RUNNER.debug_server_prepare,
                             &cancellation,
                         );
                         if !self.dry_run && result.ok {

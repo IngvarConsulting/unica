@@ -156,6 +156,15 @@ def check_public_prepare(test, server, operations, runner_binary, owner_pid):
     if not supports_prepare:
         test.assertFalse(preview["ok"], preview)
         test.assertEqual(preview["diagnostics"][0]["code"], "unsupported_operation")
+        refused = tool_result(completed_delivery_call(
+            server, "unica.run", {"op": PREPARE, "args": args, "dryRun": False},
+            "request prepare with an older runner", retry_pending_index=False,
+        ))
+        test.assertFalse(refused["ok"], refused)
+        test.assertEqual(refused["diagnostics"][0]["code"], "unsupported_operation")
+        for result in (preview, refused):
+            test.assertNotIn("release", result.get("data") or {})
+            test.assertNotIn("url", result.get("data") or {})
         return
     test.assertTrue(advertised[0]["terminal"])
     test.assertFalse(advertised[0]["dryRunRequired"])
@@ -163,28 +172,50 @@ def check_public_prepare(test, server, operations, runner_binary, owner_pid):
     test.assertTrue(preview["ok"], preview)
     test.assertEqual(preview["data"], {"op": PREPARE, "contractVersion": 1, "action": "planned"})
 
-    prepared = run_operation(server, PREPARE, args, "prepare debugger for dedicated file infobase")
-    data = prepared["data"]
-    release = data["release"]
-    test.assertEqual(release["op"], STOP)
-    session = release["args"]["session"]
-    test.assertRegex(session, r"^[0-9a-f]{32}$")
+    def release(session):
+        result = run_operation(server, STOP, {"session": session}, "release the preparation lease")
+        test.assertEqual(result["data"]["session"], session)
+        return result["data"]
+
+    def acquire():
+        data = run_operation(server, PREPARE, args, "prepare debugger for dedicated file infobase")["data"]
+        test.assertEqual(set(data["release"]), {"op", "args"})
+        test.assertEqual(data["release"]["op"], STOP)
+        test.assertEqual(set(data["release"]["args"]), {"session"})
+        session = data["release"]["args"]["session"]
+        test.assertRegex(session, r"^[0-9a-f]{32}$")
+        return session, data
+
+    first, prepared = acquire()
+    pending = [first]
     try:
-        test.assertEqual(data["action"], "prepared")
-        test.assertEqual(data["contractVersion"], 1)
-        test.assertEqual(data["scope"], "clientAndServer")
-        test.assertTrue(data["infoBaseAlias"])
-        endpoint = urlsplit(data["url"])
+        second, reused = acquire()
+        pending.append(second)
+        test.assertNotEqual(first, second)
+        for data in (prepared, reused):
+            test.assertEqual(data["op"], PREPARE)
+            test.assertEqual(data["action"], "prepared")
+            test.assertEqual(data["contractVersion"], 1)
+            test.assertEqual(data["scope"], "clientAndServer")
+            test.assertEqual(data["infoBaseAlias"], "DefAlias")
+        test.assertEqual(prepared["url"], reused["url"])
+        endpoint = urlsplit(prepared["url"])
         test.assertEqual(endpoint.scheme, "http")
         test.assertIsNotNone(endpoint.port)
         if endpoint.hostname != "localhost":
             test.assertTrue(ipaddress.ip_address(endpoint.hostname).is_loopback)
         test.assertTrue(rdbg_ready(endpoint.port, endpoint.hostname))
+        test.assertEqual(release(first)["action"], "released")
+        pending.remove(first)
+        test.assertTrue(rdbg_ready(endpoint.port, endpoint.hostname))
+        test.assertEqual(release(second)["action"], "stopped")
+        pending.remove(second)
+        test.assertFalse(tcp_listening(endpoint.port, endpoint.hostname))
+        test.assertEqual(release(second)["action"], "nothing_to_stop")
     finally:
-        released = run_operation(server, STOP, {"session": session}, "release the preparation lease")
-    test.assertEqual(released["data"]["action"], "stopped")
-    test.assertEqual(released["data"]["session"], session)
-    test.assertFalse(tcp_listening(endpoint.port, endpoint.hostname))
+        with ExitStack() as cleanup:
+            for session in pending:
+                cleanup.callback(release, session)
 
 
 class NativeDbgsCase(unittest.TestCase):

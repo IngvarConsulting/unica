@@ -66,9 +66,6 @@ pub enum RunIntent {
 /// what remains: the gap issue names the acceptance criteria.
 const RUNNER_LOAD_GAP: &str = "unavailable with the pinned v8-runner adapter: the runner has push --no-apply, apply and reset, but the adapter does not run them yet, and the runner's upload of a CF/CFE file still applies the database configuration. Sources go through push, which applies the database configuration. Gap: https://github.com/IngvarConsulting/unica/issues/1246";
 
-/// v8-runner 0.19.0 has neither debug-server prepare nor its release receipt.
-pub const RUNNER_SUPPORTS_DEBUG_SERVER_PREPARE: bool = false;
-
 #[derive(Debug)]
 pub struct RunOperation {
     pub intent: RunIntent,
@@ -297,11 +294,13 @@ impl RunOperation {
 pub struct RunnerContract {
     pub version: &'static str,
     pub interactive_login: bool,
+    pub debug_server_prepare: bool,
 }
 
 pub const PINNED_RUNNER: RunnerContract = RunnerContract {
     version: "0.19.1",
     interactive_login: true,
+    debug_server_prepare: false,
 };
 
 fn client_run_args_schema(supports_interactive_login: bool) -> Value {
@@ -630,7 +629,7 @@ fn run_dictionary() -> Vec<RunOperation> {
             terminal,
             rejects_sessions: terminal,
             implemented: match intent {
-                RunIntent::DebugServerPrepare => RUNNER_SUPPORTS_DEBUG_SERVER_PREPARE,
+                RunIntent::DebugServerPrepare => PINNED_RUNNER.debug_server_prepare,
                 RunIntent::CfImport
                 | RunIntent::ConfigurationApply
                 | RunIntent::ConfigurationReset => false,
