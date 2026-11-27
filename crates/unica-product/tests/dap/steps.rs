@@ -64,13 +64,14 @@ fn step_workspace() -> tempfile::TempDir {
 
 struct Peer {
     address: SocketAddr,
+    target_type: &'static str,
     events: Sender<String>,
     actions: Receiver<String>,
     server: Option<thread::JoinHandle<Vec<String>>>,
 }
 
 impl Peer {
-    fn start() -> Self {
+    fn start(target_type: &'static str) -> Self {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let address = listener.local_addr().unwrap();
         let (events, pending) = mpsc::channel();
@@ -96,6 +97,7 @@ impl Peer {
         });
         Self {
             address,
+            target_type,
             events,
             actions,
             server: Some(server),
@@ -103,7 +105,7 @@ impl Peer {
     }
 
     fn stop(&self, stack: &[String]) {
-        self.events.send(format!("<response><result><cmdID>callStackFormed</cmdID><targetID><id>{TARGET}</id><targetType>ManagedClient</targetType></targetID>{}</result></response>", stack.concat())).unwrap();
+        self.events.send(format!("<response><result><cmdID>callStackFormed</cmdID><targetID><id>{TARGET}</id><targetType>{}</targetType></targetID>{}</result></response>", self.target_type, stack.concat())).unwrap();
     }
 }
 
@@ -211,6 +213,26 @@ impl Dap {
         }
         id
     }
+
+    fn step(
+        &mut self,
+        peer: &Peer,
+        thread: u64,
+        command: &str,
+        stack: &[String],
+        expected: &[(Option<&str>, u32)],
+    ) {
+        self.request(command, json!({"threadId": thread}));
+        let action = peer.actions.recv_timeout(TIMEOUT).unwrap();
+        let expected_action = match command {
+            "stepIn" => "StepIn",
+            "stepOut" => "StepOut",
+            _ => panic!("unsupported test step {command}"),
+        };
+        assert_eq!(action, expected_action);
+        peer.stop(stack);
+        assert_eq!(self.stopped_stack("step", expected), thread);
+    }
 }
 
 impl Drop for Dap {
@@ -232,7 +254,7 @@ fn frame(module: &str, line: u32) -> String {
 #[test]
 fn step_in_and_out_preserve_sources_across_module_boundaries() {
     let root = step_workspace();
-    let peer = Peer::start();
+    let peer = Peer::start("ManagedClient");
     let mut dap = Dap::open(root.path(), peer.address.port());
     // 1C 8.5.4.2028 sends a Base64-encoded presentation and omits type for the base configuration.
     // ОбщийМодуль.Probe.Модуль.Run()
@@ -329,18 +351,86 @@ fn step_in_and_out_preserve_sources_across_module_boundaries() {
         ("stepOut", vec![frame(&cfg, 10)], vec![(base, 10)]),
     ];
     for (command, stack, expected) in cases {
-        dap.request(command, json!({"threadId": thread_id}));
-        let action = peer.actions.recv_timeout(TIMEOUT).unwrap();
-        assert_eq!(
-            action,
-            if command == "stepIn" {
-                "StepIn"
-            } else {
-                "StepOut"
-            }
-        );
-        peer.stop(&stack);
-        assert_eq!(dap.stopped_stack("step", &expected), thread_id);
+        dap.step(&peer, thread_id, command, &stack, &expected);
     }
     dap.request("disconnect", json!({}));
+}
+
+#[test]
+fn server_steps_from_a_loaded_external_processor_to_its_configuration_callback_and_back() {
+    let root = step_workspace();
+    let base = Some("main:CommonModule.Probe");
+    let caller = module(
+        "",
+        PROBE,
+        COMMON_ROLE,
+        "0J7QsdGJ0LjQudCc0L7QtNGD0LvRjC5Qcm9iZS7QnNC+0LTRg9C70YwuUnVuKCk=",
+    );
+    let callback = module(
+        "",
+        PROBE,
+        COMMON_ROLE,
+        "0J7QsdGJ0LjQudCc0L7QtNGD0LvRjC5Qcm9iZS7QnNC+0LTRg9C70YwuTGVhZigp",
+    );
+    // The server connected the EPF from temporary storage and created its object.
+    // Its runtime URL does not identify a file on the developer's machine.
+    let external = module(
+        "<type>ExtMDModule</type><URL>e1cib/tempstorage/test</URL>",
+        "2df5362f-05be-5a3f-8bb8-c422d5b52470",
+        OBJECT_ROLE,
+        "0JLQvdC10YjQvdGP0Y/QntCx0YDQsNCx0L7RgtC60LAuU3ludGhldGljUHJvY2Vzc29yLtCc0L7QtNGD0LvRjNCe0LHRitC10LrRgtCwLkVudHJ5KCk=",
+    );
+    let external_path = "epf:ExternalDataProcessor.SyntheticProcessor.Module.Object";
+    for source in [None, Some(external_path)] {
+        if source.is_some() {
+            let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures/acceptance/workspace-external-alias/epf");
+            let epf = root.path().join("epf");
+            fs::create_dir_all(epf.join("source/Ext")).unwrap();
+            fs::copy(fixture.join("source.xml"), epf.join("source.xml")).unwrap();
+            fs::copy(
+                fixture.join("source/Ext/ObjectModule.bsl"),
+                epf.join("source/Ext/ObjectModule.bsl"),
+            )
+            .unwrap();
+            fs::write(
+                root.path().join("v8project.yaml"),
+                format!("{MAIN}  - {{name: epf, type: EXTERNAL_DATA_PROCESSORS, path: epf}}\n"),
+            )
+            .unwrap();
+        }
+        let peer = Peer::start("ServerEmulation");
+        let mut dap = Dap::open(root.path(), peer.address.port());
+        peer.stop(&[frame(&caller, 11)]);
+        let thread = dap.stopped_stack("pause", &[(base, 11)]);
+        dap.step(
+            &peer,
+            thread,
+            "stepIn",
+            &[frame(&caller, 11), frame(&external, 2)],
+            &[(source, 2), (base, 11)],
+        );
+        dap.step(
+            &peer,
+            thread,
+            "stepIn",
+            &[frame(&caller, 11), frame(&external, 2), frame(&callback, 2)],
+            &[(base, 2), (source, 2), (base, 11)],
+        );
+        dap.step(
+            &peer,
+            thread,
+            "stepOut",
+            &[frame(&caller, 11), frame(&external, 2)],
+            &[(source, 2), (base, 11)],
+        );
+        dap.step(
+            &peer,
+            thread,
+            "stepOut",
+            &[frame(&caller, 11)],
+            &[(base, 11)],
+        );
+        dap.request("disconnect", json!({}));
+    }
 }

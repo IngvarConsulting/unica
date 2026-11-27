@@ -185,6 +185,16 @@ impl Modules {
         result
     }
 
+    pub fn external_processor_address(&mut self, id: &DebugModuleId, name: &str) -> Option<String> {
+        let sources = self
+            .search(DebugModuleQuery::ExternalProcessorFrame { name, id })
+            .ok()?;
+        match sources.as_slice() {
+            [source] if source.runtime_id == *id => Some(source.address.to_string()),
+            _ => None,
+        }
+    }
+
     /// Ordinary and exception stops use the same saved frame evidence. A qualified
     /// presentation can identify a source even when another owner shares its runtime ID.
     pub fn frame_addresses<'a>(
@@ -330,6 +340,7 @@ mod tests {
                 .filter(|(id, at)| match query {
                     DebugModuleQuery::Address(requested) => *at == requested,
                     DebugModuleQuery::Runtime(ids) => ids.contains(id),
+                    DebugModuleQuery::ExternalProcessorFrame { .. } => false,
                     DebugModuleQuery::Frame { module, id: wanted } => {
                         let address = QualifiedAddress::parse(at).unwrap();
                         id == wanted
@@ -347,6 +358,85 @@ mod tests {
             })
         });
         (Modules::new(resolver), workspace)
+    }
+
+    #[test]
+    fn external_lookup_requires_one_exact_source_and_never_reuses_the_internal_id_cache() {
+        let id = DebugModuleId {
+            extension: None,
+            object: Uuid::from_u128(17),
+            property: unica_source_contract::debug_source::OBJECT_MODULE_PROPERTY_ID,
+        };
+        let expected = id.clone();
+        let owner = "SyntheticProcessor";
+        let epf = "epf:ExternalDataProcessor.SyntheticProcessor.Module.Object";
+        let internal = "main:DataProcessor.SyntheticProcessor.Module.Object";
+        let (mut external, mut runtime) = (0, 0);
+        let mut modules = Modules::new(Box::new(move |query| {
+            let source = |at: &str, runtime_id: DebugModuleId| DebugModuleSource {
+                address: QualifiedAddress::parse(at).unwrap(),
+                runtime_id,
+            };
+            let found = match query {
+                DebugModuleQuery::Runtime(ids) => {
+                    runtime += 1;
+                    assert_eq!(runtime, 1, "external lookup must never scan internal ids");
+                    assert_eq!(ids, std::slice::from_ref(&expected));
+                    vec![source(internal, expected.clone())]
+                }
+                DebugModuleQuery::Address(at) => {
+                    assert_eq!(at, internal);
+                    vec![source(internal, expected.clone())]
+                }
+                DebugModuleQuery::ExternalProcessorFrame { id, name } => {
+                    assert_eq!(id, &expected);
+                    assert_eq!(name, owner);
+                    external += 1;
+                    match external {
+                        1 => vec![source(epf, expected.clone())],
+                        2 => vec![],
+                        3 => vec![
+                            source(epf, expected.clone()),
+                            source(
+                                "copy:ExternalDataProcessor.SyntheticProcessor.Module.Object",
+                                expected.clone(),
+                            ),
+                        ],
+                        4 => vec![source(
+                            epf,
+                            DebugModuleId {
+                                object: Uuid::nil(),
+                                ..expected.clone()
+                            },
+                        )],
+                        5 => return Err("external source unavailable".into()),
+                        _ => panic!("unexpected lookup"),
+                    }
+                }
+                DebugModuleQuery::Frame { .. } => {
+                    panic!("external frame reached configuration lookup")
+                }
+            };
+            Ok(DebugModuleMatches {
+                modules: found,
+                source_sets_revision: 1,
+            })
+        }));
+        assert_eq!(
+            modules.frame_addresses([(Some(&id), "", None)].into_iter()),
+            [Some(internal.into())]
+        );
+        assert_eq!(
+            modules.external_processor_address(&id, owner).as_deref(),
+            Some(epf)
+        );
+        for _ in 0..4 {
+            assert_eq!(modules.external_processor_address(&id, owner), None);
+        }
+        assert_eq!(
+            modules.frame_addresses([(Some(&id), "", None)].into_iter()),
+            [Some(internal.into())]
+        );
     }
 
     #[test]

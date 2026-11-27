@@ -30,24 +30,7 @@ pub struct DebugFrameModule(String);
 
 impl DebugFrameModule {
     pub fn from_presentation(presentation: &str, id: &DebugModuleId) -> Option<Self> {
-        let (call, arguments) = presentation.split_once('(')?;
-        if !arguments.ends_with(')') {
-            return None;
-        }
-        let call = match call.split_once(' ') {
-            Some((prefix, call))
-                if !prefix.is_empty() && id.extension.as_deref() == Some(prefix) =>
-            {
-                call
-            }
-            Some(_) => return None,
-            None => call,
-        };
-        let (module, method) = call.rsplit_once('.')?;
-        let parts: Vec<_> = module.splitn(6, '.').collect();
-        if !parts.iter().copied().chain([method]).all(is_identifier) {
-            return None;
-        }
+        let parts = frame_module_parts(presentation, id.extension.as_deref())?;
         match parts.as_slice() {
             [name] if id.property == COMMON_MODULE_PROPERTY_ID => {
                 Some(Self(format!("CommonModule.{name}")))
@@ -86,6 +69,45 @@ impl DebugFrameModule {
     }
 }
 
+/// Only the qualified object-module frame of a dynamically loaded processor names its owner.
+pub fn external_processor_frame_name<'a>(
+    presentation: &'a str,
+    id: &DebugModuleId,
+) -> Option<&'a str> {
+    if id.extension.is_some() || id.property != OBJECT_MODULE_PROPERTY_ID || id.object.is_nil() {
+        return None;
+    }
+    let parts = frame_module_parts(presentation, None)?;
+    match parts.as_slice() {
+        [kind, name, "МодульОбъекта" | "ObjectModule"]
+            if NodeKind::parse(kind).ok() == Some(NodeKind::ExternalDataProcessor) =>
+        {
+            Some(*name)
+        }
+        _ => None,
+    }
+}
+
+fn frame_module_parts<'a>(presentation: &'a str, extension: Option<&str>) -> Option<Vec<&'a str>> {
+    let (call, arguments) = presentation.split_once('(')?;
+    if !arguments.ends_with(')') {
+        return None;
+    }
+    let call = match call.split_once(' ') {
+        Some((prefix, call)) if !prefix.is_empty() && extension == Some(prefix) => call,
+        Some(_) => return None,
+        None => call,
+    };
+    let (module, method) = call.rsplit_once('.')?;
+    let parts: Vec<_> = module.splitn(6, '.').collect();
+    parts
+        .iter()
+        .copied()
+        .chain([method])
+        .all(is_identifier)
+        .then_some(parts)
+}
+
 fn is_identifier(name: &str) -> bool {
     let mut chars = name.chars();
     chars
@@ -101,6 +123,11 @@ pub enum DebugModuleQuery<'a> {
     /// Look up just the registered address named by the frame and verify the complete ID.
     Frame {
         module: &'a DebugFrameModule,
+        id: &'a DebugModuleId,
+    },
+    /// ExtMDModule uses its own source sets, even when a config/extension UUID is identical.
+    ExternalProcessorFrame {
+        name: &'a str,
         id: &'a DebugModuleId,
     },
     Runtime(&'a [DebugModuleId]),
@@ -208,6 +235,52 @@ mod tests {
                 None,
                 "{name}"
             );
+        }
+    }
+
+    #[test]
+    fn external_processor_frame_requires_its_own_qualified_object_and_role() {
+        let id = DebugModuleId {
+            extension: None,
+            object: Uuid::from_u128(0x2df5362f_05be_5a3f_8bb8_c422d5b52470),
+            property: OBJECT_MODULE_PROPERTY_ID,
+        };
+        let presentation = "ВнешняяОбработка.SyntheticProcessor.МодульОбъекта.Entry()";
+        assert_eq!(
+            external_processor_frame_name(presentation, &id),
+            Some("SyntheticProcessor")
+        );
+        assert_eq!(
+            external_processor_frame_name(
+                "ExternalDataProcessor.Probe.ObjectModule.Open(One, Two)",
+                &id
+            ),
+            Some("Probe")
+        );
+        for name in [
+            "Обработка.SyntheticProcessor.МодульОбъекта.Entry()",
+            "ВнешнийОтчет.Probe.МодульОбъекта.Open()",
+            "Probe.Open()",
+            "ВнешняяОбработка.Probe.Форма.Open()",
+            "ВнешняяОбработка.Bad/Name.МодульОбъекта.Open()",
+        ] {
+            assert_eq!(external_processor_frame_name(name, &id), None, "{name}");
+        }
+        for wrong in [
+            DebugModuleId {
+                object: Uuid::nil(),
+                ..id.clone()
+            },
+            DebugModuleId {
+                property: COMMON_MODULE_PROPERTY_ID,
+                ..id.clone()
+            },
+            DebugModuleId {
+                extension: Some("External".to_string()),
+                ..id.clone()
+            },
+        ] {
+            assert_eq!(external_processor_frame_name(presentation, &wrong), None);
         }
     }
 
