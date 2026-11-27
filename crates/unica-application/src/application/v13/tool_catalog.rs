@@ -255,7 +255,7 @@ impl RunOperation {
                     "mode": {
                         "type": "string",
                         "enum": ["create", "replace"],
-                        "description": "Which irreversible change is allowed: create an absent infobase, or replace the data of an existing one. A mode that does not match the observed target is refused."
+                        "description": "Which irreversible change is allowed: create an absent infobase, or replace the data of an existing one. For a file infobase, a mismatch with the observed target is reported as infobase_restore_mode_mismatch in preview and execution."
                     }
                 },
                 "required": ["input", "mode"]
