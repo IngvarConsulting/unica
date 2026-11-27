@@ -1,0 +1,120 @@
+{
+  "id": "S-3084-qualified-platform-help",
+  "issue": 3084,
+  "area": "Справка платформы",
+  "task": "Запросить метод и свойство по имени владельца. Первой идёт статья члена указанного типа. При достаточном числе совпадений Синтакс-помощник отдаёт пять находок.",
+  "workspace": "tests/fixtures/acceptance/workspace-docs-qualified-lookup",
+  "wire": [
+    {
+      "tool": "unica.docs",
+      "args": {
+        "query": "ТаблицаОбразца.Найти",
+        "source": "platform-help",
+        "limit": 5
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/sections/0/hits/0/documentId",
+          "eq": "platform-syntax-help:8.3.27.2074:syntax-context:objects/SampleTable/methods/Find.html"
+        },
+        {
+          "pointer": "/data/sections/0/hits/0/kind",
+          "eq": "method"
+        },
+        {
+          "pointer": "/data/sections/0/hits/0/owner",
+          "eq": "ТаблицаОбразца"
+        },
+        {
+          "pointer": "/data/sections/0/hits/4/rank",
+          "eq": 5
+        },
+        {
+          "pointer": "/data/sections/0/hits/5",
+          "absent": true
+        },
+        {
+          "pointer": "/data/sections/1/hits",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.docs",
+      "args": {
+        "query": "SampleTable.Find",
+        "source": "platform-help",
+        "limit": 5
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/sections/0/hits/0/documentId",
+          "eq": "platform-syntax-help:8.3.27.2074:syntax-context:objects/SampleTable/methods/Find.html"
+        },
+        {
+          "pointer": "/data/sections/0/hits/0/kind",
+          "eq": "method"
+        },
+        {
+          "pointer": "/data/sections/0/hits/0/owner",
+          "eq": "ТаблицаОбразца"
+        },
+        {
+          "pointer": "/data/sections/0/hits/4/rank",
+          "eq": 5
+        },
+        {
+          "pointer": "/data/sections/0/hits/5",
+          "absent": true
+        },
+        {
+          "pointer": "/data/sections/1/hits",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.docs",
+      "args": {
+        "query": "ТаблицаОбразца.Колонки",
+        "source": "platform-help",
+        "limit": 5
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/sections/0/hits/0/documentId",
+          "eq": "platform-syntax-help:8.3.27.2074:syntax-context:objects/SampleTable/properties/Columns.html"
+        },
+        {
+          "pointer": "/data/sections/0/hits/0/kind",
+          "eq": "property"
+        },
+        {
+          "pointer": "/data/sections/0/hits/0/owner",
+          "eq": "ТаблицаОбразца"
+        },
+        {
+          "pointer": "/data/sections/0/hits/4/rank",
+          "eq": 5
+        },
+        {
+          "pointer": "/data/sections/0/hits/5",
+          "absent": true
+        },
+        {
+          "pointer": "/data/sections/1/hits",
+          "eq": []
+        }
+      ]
+    }
+  ]
+}
