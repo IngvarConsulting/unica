@@ -423,35 +423,13 @@ pub(super) fn execute(
             return missing_runner_rejection(Some(prepared.operation().to_string()), absence)
         }
     };
-    super::super::runner::with_runner_receipt(&prepared.context.workspace_root, &tool.program, |runner| {
-        execute_with_recipe_policy(prepared, runner, cancellation, &tool)
-    })
+    super::super::runner::with_runner_receipt(
+        &prepared.context.workspace_root,
+        &tool.program,
+        |runner| execute_with_tool(prepared, runner, cancellation, &tool),
+    )
 }
 
-fn execute_with_recipe_policy(
-    prepared: &PreparedSourceExport,
-    runner: &dyn ProcessRunner,
-    cancellation: CancellationToken,
-    tool: &BundledTool,
-) -> DomainResult {
-    let root = &prepared.context.workspace_root;
-    let capabilities = merge::capabilities(root, runner, &cancellation, tool);
-    let run = |cancellation| {
-        execute_with_capabilities(prepared, runner, cancellation, tool, capabilities)
-    };
-    if capabilities.ephemeral_platform {
-        run(cancellation)
-    } else {
-        super::super::runner::with_prepared_working_copy(
-            root,
-            prepared.operation(),
-            cancellation,
-            run,
-        )
-    }
-}
-
-#[cfg(test)]
 fn execute_with_tool(
     prepared: &PreparedSourceExport,
     runner: &dyn ProcessRunner,
@@ -459,19 +437,20 @@ fn execute_with_tool(
     tool: &BundledTool,
 ) -> DomainResult {
     let root = &prepared.context.workspace_root;
-    let capabilities = merge::capabilities(root, runner, &cancellation, tool);
-    execute_with_capabilities(prepared, runner, cancellation, tool, capabilities)
-}
-
-fn execute_with_capabilities(
-    prepared: &PreparedSourceExport,
-    runner: &dyn ProcessRunner,
-    cancellation: CancellationToken,
-    tool: &BundledTool,
-    capabilities: merge::Capabilities,
-) -> DomainResult {
+    let capabilities =
+        match merge::capabilities(root, prepared.operation(), runner, &cancellation, tool) {
+            Ok(capabilities) => capabilities,
+            Err(result) => return result,
+        };
     if let Some(id) = &prepared.accept {
-        return merge::execute_with_tool(prepared, id, runner, &cancellation, tool, capabilities);
+        if !capabilities.prepare_merge {
+            return reject_at(
+                FETCH_ACCEPT,
+                RefusalCode::UnsupportedOperation,
+                "the bundled v8-runner cannot attest a merge baseline for this infobase",
+            );
+        }
+        return merge::execute_with_tool(prepared, id, runner, &cancellation, tool);
     }
     if cancellation.is_cancelled() {
         return reject_fetch(RefusalCode::Cancelled, "fetch cancelled before preparation");
@@ -503,10 +482,7 @@ fn execute_with_capabilities(
     };
     if prepared.dry_run {
         let mut request = prepared.clone();
-        let flags = capabilities.preview_flags();
-        if !flags.is_empty() {
-            request.arguments.source_set = Some(source_set);
-        }
+        request.arguments.source_set = Some(source_set);
         return preview(
             prepared,
             &request,
@@ -515,7 +491,7 @@ fn execute_with_capabilities(
             runner,
             &cancellation,
             tool,
-            flags,
+            &merge::SNAPSHOT_FLAGS,
         );
     }
     let storage = match open_storage(&root, true, FETCH) {
@@ -870,7 +846,7 @@ fn exchange(
                         || reported_set != source_set
                         || !same_path(&target_path, directory)
                         || !same_path(&stage_path, stage.path())
-                        || merge_baseline.as_ref().is_some_and(|baseline| !baseline.is_valid())
+                        || merge_baseline.as_ref().is_some_and(|baseline| !capabilities.prepare_merge || !baseline.is_valid())
                     {
                         problem = Some(invalid(
                             "v8-runner prepared a different operation, mode, extension, source set, target or stage",

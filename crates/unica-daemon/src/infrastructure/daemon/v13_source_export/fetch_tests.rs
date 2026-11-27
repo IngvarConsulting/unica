@@ -31,6 +31,7 @@ struct ProtocolRunner {
     replies: Mutex<Vec<Value>>,
     args: Mutex<Vec<String>>,
     preview: Option<Value>,
+    help: Option<&'static str>,
     merges: Mutex<Vec<Value>>,
     merge_base_generation: Option<String>,
 }
@@ -42,6 +43,11 @@ impl ProtocolRunner {
             replies: Mutex::new(Vec::new()),
             args: Mutex::new(Vec::new()),
             preview: None,
+            help: Some(if script == Script::PreparesMerge {
+                "--snapshot-only --snapshot-platform-from-sources --prepare-merge-baseline --check-merge-baseline --accept-merge-baseline"
+            } else {
+                "--snapshot-only --snapshot-platform-from-sources"
+            }),
             merges: Mutex::new(Vec::new()),
             merge_base_generation: None,
         }
@@ -79,10 +85,7 @@ impl ProcessRunner for ProtocolRunner {
             *self.args.lock().unwrap() = command.args.clone();
         }
         let stdout = if help {
-            if self.script != Script::PreparesMerge {
-                return Err("runner has no merge support".into());
-            }
-            "    --prepare-merge-baseline  Prepare a candidate\n    --snapshot-platform-from-sources  Select the source platform".to_string()
+            self.help.ok_or("cannot inspect the runner")?.to_owned()
         } else if command
             .args
             .iter()
@@ -604,7 +607,12 @@ fn a_preview_names_the_plan_and_creates_no_snapshot() {
 
     assert!(result.ok, "{result:?}");
     let args = runner.args.lock().unwrap().join(" ");
-    assert!(args.ends_with("pull main --force --dry-run"), "{args}");
+    assert!(
+        args.ends_with(
+            "pull main --force --dry-run --snapshot-only --snapshot-platform-from-sources"
+        ),
+        "{args}"
+    );
     let data = result.data.unwrap();
     assert_eq!(data["op"], FETCH);
     assert_eq!(data["plan"]["target"], "main");
@@ -1438,6 +1446,34 @@ fn fetch_accept_rejects_unowned_modified_or_unconfirmed_snapshots() {
 
 /// rule: INV.RUNTIME.FETCH-LEAVES-THE-WORKING-COPY
 #[test]
+fn a_runner_without_safe_snapshot_support_cannot_prepare_or_export_a_project() {
+    for help in [
+        None,
+        Some("--prepare-merge-baseline --snapshot-platform-from-sources"),
+        Some("--snapshot-only"),
+    ] {
+        let workspace = workspace();
+        let root = workspace.path();
+        let sources = tree(&root.join("main"));
+        let recipe = fs::read(root.join(CONFIG_NAME)).unwrap();
+        let mut runner = ProtocolRunner::new(Script::Exports);
+        runner.help = help;
+        for dry_run in [true, false] {
+            let result = run(root, &prepared(root, dry_run), &runner);
+            assert!(!result.ok, "{result:?}");
+            assert_eq!(result.diagnostics[0]["code"], "unsupported_operation");
+            assert!(runner.args.lock().unwrap().is_empty());
+            assert!(runner.decisions().is_empty());
+            assert_eq!(tree(&root.join("main")), sources);
+            assert_eq!(fs::read(root.join(CONFIG_NAME)).unwrap(), recipe);
+            assert!(!root.join(LOCAL_CONFIG_NAME).exists());
+            assert!(!root.join(".build").exists());
+        }
+    }
+}
+
+/// rule: INV.RUNTIME.FETCH-LEAVES-THE-WORKING-COPY
+#[test]
 fn a_snapshot_does_not_pin_platform_in_the_project_local_recipe() {
     let workspace = workspace();
     let root = workspace.path();
@@ -1456,7 +1492,7 @@ fn a_snapshot_does_not_pin_platform_in_the_project_local_recipe() {
         },
     }));
     let run = |prepared: &PreparedSourceExport| {
-        execute_with_recipe_policy(prepared, &runner, CancellationToken::new(), &tool)
+        execute_with_tool(prepared, &runner, CancellationToken::new(), &tool)
     };
 
     let preview = run(&prepared_with_args(root, json!({}), true));

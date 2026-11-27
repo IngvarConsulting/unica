@@ -7,36 +7,24 @@ use std::io;
 const PREPARE: &str = "--prepare-merge-baseline";
 const SNAPSHOT_ONLY: &str = "--snapshot-only";
 const EPHEMERAL_PLATFORM: &str = "--snapshot-platform-from-sources";
-const EPHEMERAL_SNAPSHOT_FLAGS: [&str; 2] = [SNAPSHOT_ONLY, EPHEMERAL_PLATFORM];
+pub(super) const SNAPSHOT_FLAGS: [&str; 2] = [SNAPSHOT_ONLY, EPHEMERAL_PLATFORM];
+const CHECK: &str = "--check-merge-baseline";
+const ACCEPT: &str = "--accept-merge-baseline";
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy)]
 pub(super) struct Capabilities {
-    prepare_merge: bool,
-    pub(super) ephemeral_platform: bool,
+    pub(super) prepare_merge: bool,
 }
 
 impl Capabilities {
-    pub(super) fn preview_flags(self) -> &'static [&'static str] {
-        if self.ephemeral_platform {
-            &EPHEMERAL_SNAPSHOT_FLAGS
-        } else {
-            &[]
-        }
-    }
-
     pub(super) fn stage_flags(self) -> Vec<String> {
-        let mut flags = Vec::new();
+        let mut flags = SNAPSHOT_FLAGS.map(str::to_owned).to_vec();
         if self.prepare_merge {
-            flags.extend([SNAPSHOT_ONLY.to_string(), PREPARE.to_string()]);
-        }
-        if self.ephemeral_platform {
-            flags.push(EPHEMERAL_PLATFORM.to_string());
+            flags.push(PREPARE.to_string());
         }
         flags
     }
 }
-const CHECK: &str = "--check-merge-baseline";
-const ACCEPT: &str = "--accept-merge-baseline";
 
 #[derive(Debug, Deserialize, Serialize)]
 pub(super) struct RunnerBaseline {
@@ -111,23 +99,41 @@ pub(super) struct MergeSnapshot {
 
 pub(super) fn capabilities(
     root: &Path,
+    operation: &str,
     runner: &dyn ProcessRunner,
     cancellation: &CancellationToken,
     tool: &BundledTool,
-) -> Capabilities {
+) -> Result<Capabilities, DomainResult> {
     use crate::infrastructure::daemon::runner::{origin_kind, OriginKind};
-    if origin_kind(root).ok() != Some(OriginKind::File) {
-        return Capabilities::default();
-    }
     use crate::infrastructure::daemon::v13_workspace_bootstrap::read_yaml_config;
+    let unsupported = || {
+        reject_at(
+            operation,
+            RefusalCode::UnsupportedOperation,
+            "the bundled v8-runner does not confirm read-only snapshot support for this infobase",
+        )
+    };
+    let cancelled = || {
+        reject_at(
+            operation,
+            RefusalCode::Cancelled,
+            "snapshot operation cancelled before provider launch",
+        )
+    };
+    if cancellation.is_cancelled() {
+        return Err(cancelled());
+    }
+    if origin_kind(root).ok() != Some(OriginKind::File) {
+        return Err(unsupported());
+    }
     let Ok(Some(config)) = read_yaml_config(root, CONFIG_NAME) else {
-        return Capabilities::default();
+        return Err(unsupported());
     };
     if config["format"]
         .as_str()
         .is_some_and(|format| format != "DESIGNER")
     {
-        return Capabilities::default();
+        return Err(unsupported());
     }
     let help = ProcessCommand {
         program: tool.program.clone(),
@@ -144,11 +150,20 @@ pub(super) fn capabilities(
         timeout: Some(std::time::Duration::from_secs(5)),
         cancellation: cancellation.clone(),
     };
-    let Ok(output) = runner.run_staged(&help) else {
-        return Capabilities::default();
-    };
-    if !output.status_success || output.stdout_truncated || output.stdout_had_invalid_utf8 {
-        return Capabilities::default();
+    let output = runner.run_staged(&help);
+    if cancellation.is_cancelled() {
+        return Err(cancelled());
+    }
+    let output = output.map_err(|_| unsupported())?;
+    if output.cancelled {
+        return Err(cancelled());
+    }
+    if !output.status_success
+        || output.timed_out
+        || output.stdout_truncated
+        || output.stdout_had_invalid_utf8
+    {
+        return Err(unsupported());
     }
     let contains = |flag| {
         output
@@ -156,11 +171,12 @@ pub(super) fn capabilities(
             .split_ascii_whitespace()
             .any(|word| word == flag)
     };
-    let prepare_merge = contains(PREPARE);
-    Capabilities {
-        prepare_merge,
-        ephemeral_platform: prepare_merge && contains(EPHEMERAL_PLATFORM),
+    if !SNAPSHOT_FLAGS.into_iter().all(contains) {
+        return Err(unsupported());
     }
+    Ok(Capabilities {
+        prepare_merge: [PREPARE, CHECK, ACCEPT].into_iter().all(contains),
+    })
 }
 
 /// Hash all regular files relative to the retained snapshot directory.
@@ -221,9 +237,8 @@ pub(super) fn execute_with_tool(
     runner: &dyn ProcessRunner,
     cancellation: &CancellationToken,
     tool: &BundledTool,
-    capabilities: Capabilities,
 ) -> DomainResult {
-    match execute_bound(prepared, id, runner, cancellation, tool, capabilities) {
+    match execute_bound(prepared, id, runner, cancellation, tool) {
         Ok(result) | Err(result) => result,
     }
 }
@@ -242,7 +257,6 @@ fn execute_bound(
     runner: &dyn ProcessRunner,
     cancellation: &CancellationToken,
     tool: &BundledTool,
-    capabilities: Capabilities,
 ) -> Result<DomainResult, DomainResult> {
     let root = normalize_path_identity(&prepared.context.workspace_root).map_err(|_| {
         reject(
@@ -301,7 +315,6 @@ fn execute_bound(
         runner,
         cancellation,
         tool,
-        capabilities,
     )?;
     let data = &envelope["data"];
     let accepted = data["baseline"] == "accepted";
@@ -348,7 +361,6 @@ fn invoke(
     runner: &dyn ProcessRunner,
     cancellation: &CancellationToken,
     tool: &BundledTool,
-    capabilities: Capabilities,
 ) -> Result<Value, DomainResult> {
     let mut args = vec![
         "--config".to_string(),
@@ -362,9 +374,7 @@ fn invoke(
     if let Some(extension) = &snapshot.binding.extension {
         args.extend(["--extension".to_string(), extension.clone()]);
     }
-    if capabilities.ephemeral_platform {
-        args.push(EPHEMERAL_PLATFORM.to_string());
-    }
+    args.push(EPHEMERAL_PLATFORM.to_string());
     let output = runner
         .run_staged(&ProcessCommand {
             program: tool.program.clone(),
