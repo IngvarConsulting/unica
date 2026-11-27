@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -38,6 +37,7 @@ class RefreshFixture:
         baseline_scope: str | None = None,
         validation_owner: str | None = None,
         validation_donor_skill: str | None = None,
+        checkout_crlf: bool = False,
     ) -> None:
         self.repo_root = root / "unica"
         self.upstream = self.repo_root / ".build" / "skill-upstreams" / "cc-1c-skills"
@@ -70,6 +70,13 @@ class RefreshFixture:
         self._git("config", "user.name", "CI")
         self._write_upstream_case("print('v1')\n")
         self.initial_commit = self.commit("initial")
+        if checkout_crlf:
+            donor_script = (
+                f".claude/skills/{self.donor_skill}/scripts/{self.donor_skill}.py"
+            )
+            self._git("config", "--local", "core.autocrlf", "true")
+            (self.upstream / donor_script).unlink()
+            self._git("checkout-index", "--", donor_script)
         self._write_accepted_snapshot(self.initial_commit)
 
     def _git(self, *arguments: str) -> str:
@@ -156,22 +163,24 @@ class RefreshFixture:
         return self.commit("symlink")
 
     def _write_accepted_snapshot(self, commit: str) -> None:
-        case_source = self.upstream / "tests" / "skills" / "cases" / self.case_scope
-        script_source = self.upstream / ".claude" / "skills" / self.donor_skill / "scripts"
-        shutil.copytree(case_source, self.snapshot / "cases" / self.case_scope)
-        shutil.copytree(script_source, self.snapshot / "skills" / self.donor_skill / "scripts")
-        if self.validation_donor_skill is not None:
-            validation_source = (
-                self.upstream
-                / ".claude"
-                / "skills"
-                / self.validation_donor_skill
-                / "scripts"
+        case_dir = f"cases/{self.case_scope}"
+        paths = {
+            f"tests/skills/{case_dir}/{name}": f"{case_dir}/{name}"
+            for name in ("_skill.json", "basic.json")
+        }
+        for skill in (self.donor_skill, self.validation_donor_skill):
+            if skill is not None:
+                script = f"skills/{skill}/scripts/{skill}.py"
+                paths[f".claude/{script}"] = script
+
+        for upstream_path, local_path in paths.items():
+            blob = subprocess.check_output(
+                ["git", "show", f"{commit}:{upstream_path}"], cwd=self.upstream
             )
-            shutil.copytree(
-                validation_source,
-                self.snapshot / "skills" / self.validation_donor_skill / "scripts",
-            )
+            destination = self.snapshot / local_path
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(blob)
+
         provenance = self.provenance(commit)
         self.provenance_path.write_text(
             json.dumps(provenance, indent=2) + "\n",
@@ -401,6 +410,7 @@ class RefreshCc1cParityTests(unittest.TestCase):
             baseline_scope="meta-compile",
             validation_owner="meta-info",
             validation_donor_skill="meta-validate",
+            checkout_crlf=True,
         )
         target = fixture.change_unrelated()
 
@@ -411,6 +421,8 @@ class RefreshCc1cParityTests(unittest.TestCase):
         self.assertEqual(review["selectedSkills"], ["meta-add"])
         self.assertEqual(review["selectedCaseScopes"], ["meta-compile"])
         self.assertEqual(review["affectedSkills"], ["meta-add", "meta-info"])
+        self.assertEqual(review["changedCases"], [])
+        self.assertEqual(review["unchangedCases"], [fixture.case_id])
         candidate_root = fixture.repo_root / review["candidatePath"]
         baseline = contract.load_json(candidate_root / "donor-baseline.json")
         self.assertEqual(
