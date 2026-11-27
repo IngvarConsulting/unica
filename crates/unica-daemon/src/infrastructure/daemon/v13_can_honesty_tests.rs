@@ -224,7 +224,7 @@ const WRITES_CHECKED_AT_LEAST: &[(&str, &[&str])] = &[
     ),
     (
         "workspace-code",
-        &["code.insert", "code.replace", "help.create"],
+        &["code.insert", "code.replace", "code.delete", "help.create"],
     ),
     (
         "workspace-resolve",
@@ -2148,6 +2148,19 @@ fn code_contract_context_matrix_matches_staged_parser_and_previews_without_write
             "code.replace",
             json!({"text":"Возврат Ложь;\n"}),
             true,
+        ),
+        (".Method.ОбработатьПример", "code.delete", json!({}), true),
+        (
+            ".Method.ОбработатьПример",
+            "code.delete",
+            json!({"text":"x"}),
+            false,
+        ),
+        (
+            ".Method.ОбработатьПример",
+            "code.delete",
+            json!({"ifRev":"stale"}),
+            false,
         ),
         (
             "",

@@ -4582,6 +4582,37 @@ fn staged_replace(at: &str, text: &str, anchor: Option<&str>) -> CodePlanOperati
     })
 }
 
+#[test]
+fn staged_method_deletion_obeys_the_owner_support_lock() {
+    let before = b"// Description\r\nProcedure Base()\r\nEndProcedure";
+    let fixture = staged_code_fixture("delete-method-support", before);
+    let operation = [parse_code_plan_operation(
+        "code.delete",
+        &json!({"at":"main:CommonModule.Sample.Method.Base"}),
+        0,
+        fixture.binding.source_set_name(),
+    )
+    .unwrap()];
+
+    let editable = staged_code_admission(&fixture, true);
+    let (staged, effects) = plan_admitted_code(&editable, &fixture.binding, &operation).unwrap();
+    assert_eq!(effects.events().len(), 1);
+    assert_eq!(staged.planned_changes().len(), 1);
+    drop(staged);
+    drop(editable);
+
+    write_locked_support_state(&fixture.source);
+    let denied = staged_code_admission(&fixture, true);
+    let error = plan_admitted_code(&denied, &fixture.binding, &operation).unwrap_err();
+    assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState);
+    assert_eq!(
+        fs::read(fixture.source.join("CommonModules/Sample/Ext/Module.bsl")).unwrap(),
+        before
+    );
+    drop(denied);
+    fixture.cleanup();
+}
+
 fn write_locked_support_state(source: &Path) {
     fs::create_dir_all(source.join("Ext")).unwrap();
     fs::write(

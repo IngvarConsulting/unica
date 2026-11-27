@@ -35,6 +35,7 @@ macro_rules! code_operations {
 code_operations!(
     Insert => ("code.insert", CodeInsert, Text),
     Replace => ("code.replace", Code, Text),
+    Delete => ("code.delete", CodeDelete, Target),
 );
 
 impl unica_operations::FamilyOperation for CodeOperation {

@@ -1,4 +1,6 @@
 //! Pure BSL byte planning, repeat proof and patch facts.
+mod delete_method;
+
 use crate::input::*;
 use diffy::{apply, DiffOptions, Patch};
 use serde::Serialize;
@@ -237,12 +239,15 @@ pub fn plan_code_postimage(
         )
         .at_path(&at_path));
     }
+    if let CodePlanOperation::Delete(args) = operation {
+        return delete_method::plan(&snapshot, args, &indexed.methods, &at_path);
+    }
     // Адрес и охват замены разбирают текст замены; он один на весь план.
     let replace_target = match operation {
         CodePlanOperation::Replace(args) => {
             Some(replacement_target(&args.at, &args.text, &text_path)?)
         }
-        CodePlanOperation::Insert(_) => None,
+        CodePlanOperation::Insert(_) | CodePlanOperation::Delete(_) => None,
     };
     // The bytes the patch writes and their line ending: the sent text lies
     // inside them, with its line endings normalized.
@@ -342,6 +347,7 @@ pub fn plan_code_postimage(
                 after,
             )
         }
+        CodePlanOperation::Delete(_) => unreachable!("deletion has its own byte proof"),
     };
     let postimage = std::str::from_utf8(&after).map_err(|_| {
         ApplyPlanError::new(
