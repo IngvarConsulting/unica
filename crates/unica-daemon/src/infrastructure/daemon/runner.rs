@@ -24,7 +24,7 @@ use unica_work_control::cancellation::{CancellationToken, CANCELLED_PREFIX};
 use unica_workspace::paths::normalize_path_identity;
 use unica_workspace::runner_lock::{RunnerLock, RunnerLockFailure};
 
-pub(super) const VERSION: &str = "0.19.0";
+pub(super) const VERSION: &str = crate::application::v13::tool_catalog::PINNED_RUNNER.version;
 pub(super) fn check_version(version: &str) -> Result<(), String> {
     if version == VERSION {
         Ok(())
