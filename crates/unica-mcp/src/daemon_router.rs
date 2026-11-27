@@ -187,6 +187,7 @@ pub type CanonicalTaskWaitHandler = dyn Fn(
 
 #[derive(Clone)]
 pub struct CanonicalDaemonRouter {
+    pub choice_scope: Arc<ChoiceScopeVerifier>,
     pub call: Arc<CanonicalCallHandler>,
     pub get: Arc<CanonicalTaskHandler>,
     pub wait: Arc<CanonicalTaskWaitHandler>,
@@ -212,6 +213,42 @@ pub fn canonical_daemon_router_observed(
     build_router(owner.into(), workspace_hint.into(), Some(observer))
 }
 
+pub type ChoiceScopeVerifier =
+    dyn Fn(&unica_bootstrap::HostRequest, &V5DaemonTaskSnapshot) -> bool + Send + Sync;
+
+/// Reconstruct the original receipt key from durable Task coordinates and the
+/// current host hint before presenting a saved choice in this workspace.
+pub(crate) fn choice_scope_verifier(
+    choice_workspace: unica_bootstrap::HostWorkspaceContext,
+    core: unica_execution::receipt_ledger::CoreIdentityDigest,
+) -> Arc<ChoiceScopeVerifier> {
+    Arc::new(
+        move |host: &unica_bootstrap::HostRequest, snapshot: &V5DaemonTaskSnapshot| {
+            let V5DaemonTaskSnapshot::Completed {
+                choice_request: Some((tool, arguments)),
+                ..
+            } = snapshot
+            else {
+                return false;
+            };
+            let Some(scope) = choice_workspace
+                .resolve_request(host)
+                .ok()
+                .and_then(|workspace| request_scope_hash(&workspace.directory).ok())
+            else {
+                return false;
+            };
+            let key = ReceiptKey::new(
+                snapshot.invocation_id(),
+                snapshot.task_id(),
+                RequestIdentity::new(core.clone(), *tool, arguments.clone(), scope),
+            );
+            &unica_execution::receipt_ledger::receipt_key_digest(&key)
+                == snapshot.receipt_key_digest()
+        },
+    )
+}
+
 fn build_router(
     client: V5DaemonClient,
     workspace: unica_bootstrap::HostWorkspaceContext,
@@ -221,6 +258,8 @@ fn build_router(
     // invocation runs on its own peer session so a slow direct response cannot
     // serialize another call behind it.
     let client = Arc::new(client);
+    let choice_scope =
+        choice_scope_verifier(workspace.clone(), client.core_identity().digest().clone());
     let call_client = Arc::clone(&client);
     let call: Arc<CanonicalCallHandler> =
         Arc::new(move |tool, arguments, host, deadline, cancellation| {
@@ -297,6 +336,7 @@ fn build_router(
         peer.cancel_task_before(task_id, cutoff)
     });
     CanonicalDaemonRouter {
+        choice_scope,
         call,
         get,
         wait,

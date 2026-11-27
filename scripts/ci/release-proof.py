@@ -126,6 +126,7 @@ def surface_profiles(names: list[str]) -> dict[str, frozenset[str]]:
         raise ProofError("surface ledger describes no unica.task.* compatibility bridge")
     return {
         "native": frozenset(names) - task_tools,
+        "direct": frozenset(names),
         "compatibility": frozenset(names),
     }
 
@@ -186,6 +187,8 @@ def _validate_wire(
     tasks = evidence.get("tasksCapability")
     if profile == "native" and (protocol != "2026-07-28" or tasks != "on"):
         raise ProofError("native profile must use protocol 2026-07-28 with Tasks on")
+    if profile == "direct" and (protocol != "2026-07-28" or tasks != "off"):
+        raise ProofError("direct profile must use protocol 2026-07-28 with Tasks off")
     if profile == "compatibility" and (protocol != "2025-06-18" or tasks != "off"):
         raise ProofError("compatibility profile must use protocol 2025-06-18 with Tasks off")
     return {
@@ -275,6 +278,7 @@ def _validate_package(
         plugin_dir / ".codex-plugin" / "plugin.json",
         plugin_dir / ".claude-plugin" / "plugin.json",
         plugin_dir / ".zcode-plugin" / "plugin.json",
+        plugin_dir / "package.json",
     ]
     versions: list[str] = []
     for manifest_path in manifest_paths:
@@ -391,6 +395,7 @@ def _validate_lifecycle(
 def evaluate_proof(
     *,
     native_wires: Mapping[str, dict[str, Any]],
+    direct_wires: Mapping[str, dict[str, Any]],
     compatibility_wires: Mapping[str, dict[str, Any]],
     baseline: dict[str, Any],
     assessment: dict[str, Any],
@@ -406,6 +411,7 @@ def evaluate_proof(
     native = _validate_wire_profiles(
         "native", native_wires, profiles["native"], surface_ledger
     )
+    direct = _validate_wire_profiles("direct", direct_wires, profiles["direct"], surface_ledger)
     compatibility = _validate_wire_profiles(
         "compatibility", compatibility_wires, profiles["compatibility"], surface_ledger
     )
@@ -418,7 +424,7 @@ def evaluate_proof(
     )
     all_rc_names = {
         name
-        for surface in (native, compatibility)
+        for surface in (native, direct, compatibility)
         for target in surface["targets"].values()
         for name in target["toolNames"]
     }
@@ -436,7 +442,7 @@ def evaluate_proof(
         "status": "passed",
         "releaseTag": release_tag,
         "package": package_summary,
-        "surfaces": {"native": native, "compatibility": compatibility},
+        "surfaces": {"native": native, "direct": direct, "compatibility": compatibility},
         "legacyBaseline": {
             "tag": baseline_tag,
             "toolCount": len(legacy_names),
@@ -459,6 +465,7 @@ def render_summary(report: dict[str, Any]) -> str:
         f"- Status: `{report['status']}`",
         f"- Release tag input: `{report['releaseTag']}`",
         f"- Native surface: `{report['surfaces']['native']['toolCount']}` tools",
+        f"- Modern surface without Tasks: `{report['surfaces']['direct']['toolCount']}` tools",
         f"- Compatibility surface: `{report['surfaces']['compatibility']['toolCount']}` tools",
         f"- Legacy overlap: `{len(report['legacyBaseline']['overlap'])}`",
         "",
@@ -506,12 +513,16 @@ def main() -> None:
         native_wires = {
             target: read_json(args.wire_dir / f"native-{target}.json") for target in TARGETS
         }
+        direct_wires = {
+            target: read_json(args.wire_dir / f"direct-{target}.json") for target in TARGETS
+        }
         compatibility_wires = {
             target: read_json(args.wire_dir / f"compatibility-{target}.json")
             for target in TARGETS
         }
         report = evaluate_proof(
             native_wires=native_wires,
+            direct_wires=direct_wires,
             compatibility_wires=compatibility_wires,
             baseline=read_json(args.baseline),
             assessment=read_json(args.assessment),

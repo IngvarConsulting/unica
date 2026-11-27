@@ -2023,6 +2023,7 @@ fn reject(
 
 #[cfg(test)]
 mod tests {
+    use super::super::runner::VERSION;
     use super::*;
     use std::fs;
     use std::sync::Mutex;
@@ -2129,7 +2130,7 @@ mod tests {
             plugin.join("third-party/tools.lock.json"),
             r#"{"schemaVersion":1,
   "targets":{"darwin-arm64":{"exe":""},"linux-x64":{"exe":""},"win-x64":{"exe":".exe"}},
-  "tools":[{"name":"v8-runner","version":"0.18.1","binaryName":"v8-runner"}]}"#,
+  "tools":[{"name":"v8-runner","version":"0.19.0","binaryName":"v8-runner"}]}"#,
         )
         .unwrap();
 
@@ -2145,7 +2146,7 @@ mod tests {
         assert_eq!(diagnostic["outcome"], "needsHuman");
         let data = rejection.data.as_ref().expect("поля движка в data");
         assert_eq!(data["tool"], "v8-runner");
-        assert_eq!(data["pinnedVersion"], "0.18.1");
+        assert_eq!(data["pinnedVersion"], "0.19.0");
         assert_eq!(data["stage"], "manifest");
         assert_eq!(data["retryable"], false);
         assert_eq!(
@@ -3817,7 +3818,7 @@ infobase:
                 &runner,
                 CancellationToken::new(),
                 &tool,
-                "0.18.1",
+                VERSION,
             );
             assert!(!result.ok, "{result:?}");
             let choice = result.human_choice.as_deref().expect("a question");
@@ -3864,7 +3865,7 @@ infobase:
             &SequenceRunner::new(vec![failed_process(restore_target_exists_envelope(true))]),
             CancellationToken::new(),
             &tool,
-            "0.18.1",
+            VERSION,
         );
         assert!(!preview.ok);
         assert!(preview.human_choice.is_none(), "{preview:?}");
@@ -3879,7 +3880,7 @@ infobase:
             &runner,
             CancellationToken::new(),
             &tool,
-            "0.18.1",
+            VERSION,
         );
         assert!(!result.ok);
         assert!(result.human_choice.is_none(), "{result:?}");

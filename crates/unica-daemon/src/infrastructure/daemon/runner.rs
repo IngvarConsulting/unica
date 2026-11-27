@@ -24,7 +24,7 @@ use unica_work_control::cancellation::{CancellationToken, CANCELLED_PREFIX};
 use unica_workspace::paths::normalize_path_identity;
 use unica_workspace::runner_lock::{RunnerLock, RunnerLockFailure};
 
-pub(super) const VERSION: &str = "0.18.1";
+pub(super) const VERSION: &str = crate::application::v13::tool_catalog::PINNED_RUNNER.version;
 pub(super) fn check_version(version: &str) -> Result<(), String> {
     if version == VERSION {
         Ok(())
@@ -254,71 +254,41 @@ pub(super) fn with_bundled_runner(
     cancellation: CancellationToken,
     run: impl FnOnce(&PinnedRunner, CancellationToken) -> DomainResult,
 ) -> DomainResult {
-    with_bundled_runner_mode(
-        root,
-        cwd,
-        at,
-        cancellation,
-        RunnerPreparation::Persistent,
-        run,
-    )
+    let Ok(resolved) = super::v13_infobase_exports::resolve_bundled_runner(cwd) else {
+        return run(&PinnedRunner::default(), cancellation);
+    };
+    with_resolved_runner(root, &resolved.tool.program, at, cancellation, run)
 }
 
-/// Snapshot operations decide how to select a platform after probing the bundled runner.
-pub(super) fn with_bundled_snapshot_runner(
+pub(super) fn with_resolved_runner(
     root: &Path,
-    cwd: &Path,
+    program: &Path,
     at: &str,
     cancellation: CancellationToken,
     run: impl FnOnce(&PinnedRunner, CancellationToken) -> DomainResult,
 ) -> DomainResult {
-    with_bundled_runner_mode(
-        root,
-        cwd,
-        at,
-        cancellation,
-        RunnerPreparation::Snapshot,
-        run,
-    )
+    with_runner_receipt(root, program, |runner| {
+        with_prepared_working_copy(root, at, cancellation, |cancellation| {
+            run(runner, cancellation)
+        })
+    })
 }
 
-enum RunnerPreparation {
-    Persistent,
-    Snapshot,
-}
-
-fn with_bundled_runner_mode(
+/// Records the runner's agent and warnings for operations with their own preparation.
+pub(super) fn with_runner_receipt(
     root: &Path,
-    cwd: &Path,
-    at: &str,
-    cancellation: CancellationToken,
-    preparation: RunnerPreparation,
-    run: impl FnOnce(&PinnedRunner, CancellationToken) -> DomainResult,
+    program: &Path,
+    run: impl FnOnce(&PinnedRunner) -> DomainResult,
 ) -> DomainResult {
     let runner = PinnedRunner::default();
-    let Ok(resolved) = super::v13_infobase_exports::resolve_bundled_runner(cwd) else {
-        return run(&runner, cancellation);
-    };
     let agents = super::live_agent::live_agents();
     agents.touch(root, std::time::Instant::now());
-    let mut result = match preparation {
-        RunnerPreparation::Persistent => {
-            with_prepared_working_copy(root, at, cancellation, |cancellation| {
-                run(&runner, cancellation)
-            })
-        }
-        RunnerPreparation::Snapshot => run(&runner, cancellation),
-    };
+    let mut result = run(&runner);
     result.warnings.extend(abandoned_warning(root, &runner));
     let Some(mut agent) = runner.agent() else {
         return result;
     };
-    let after = agents.after_command(
-        root,
-        &resolved.tool.program,
-        &agent,
-        std::time::Instant::now(),
-    );
+    let after = agents.after_command(root, program, &agent, std::time::Instant::now());
     // Holding and letting go take the runner lock of a working copy: they run
     // apart from the answer, which another command of that copy could hold up.
     if !after.marks.is_empty() {
@@ -1607,7 +1577,7 @@ source-set:
     #[test]
     fn unknown_runner_versions_are_not_probed_by_executing_an_operation() {
         assert!(check_version(VERSION).is_ok());
-        assert!(check_version("0.18.1").is_ok());
+        assert!(check_version("0.19.2").is_ok());
         for version in [
             "0.9.0",
             "0.11.3",
@@ -1628,7 +1598,10 @@ source-set:
             "0.17.5",
             "0.18.0-rc.1",
             "0.18.0",
+            "0.18.1",
             "0.18.2",
+            "0.19.0",
+            "0.19.1",
             "1.0.0",
             "1.0.0-rc.1",
             "",

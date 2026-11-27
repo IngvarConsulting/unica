@@ -19,7 +19,8 @@ fn run() {
             unica_daemon::interfaces::daemon::connect_user_daemon,
         )),
         Some("dap") => exit(unica_dap::run_stdio(
-            unica_daemon::interfaces::workspace_debug_modules,
+            unica_daemon::interfaces::workspace_debug_resolver,
+            &args[2..],
         )),
         Some("mcp") => {}
         Some(command) if !command.starts_with('-') => {
@@ -71,7 +72,7 @@ fn run() {
         println!("Supported MCP methods: initialize, tools/list, tools/call");
         println!("Agent MCP over stdio: unica [mcp]");
         println!("Editor LSP over stdio: unica lsp");
-        println!("Debugger DAP over stdio: unica dap");
+        println!("Debugger DAP over stdio: unica dap [--debug-server-url http://<host>:<port>]");
         println!("Local capacity observations: --capacity-report");
         return;
     }

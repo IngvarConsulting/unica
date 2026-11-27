@@ -762,6 +762,11 @@ enum ActorBoundCanonicalInvocationState {
         workspace_identity_hash: unica_execution_contract::invocation::SafeIdentityHash,
         delivery: RunEngineDelivery,
     },
+    InfobaseCheck {
+        check: Arc<super::v13_infobase_check::PreparedInfobaseCheck>,
+        workspace_identity_hash: unica_execution_contract::invocation::SafeIdentityHash,
+        delivery: RunEngineDelivery,
+    },
     /// Создание базы: previewApply с забором, без аргументов, известно
     /// длинным по внешнему процессу.
     InfobaseCreate {
@@ -831,6 +836,10 @@ enum PreparedCanonicalInvocationState {
     },
     ClientRun {
         launch: Arc<super::v13_client_run::PreparedTerminalRun>,
+        delivery: RunEngineDelivery,
+    },
+    InfobaseCheck {
+        check: Arc<super::v13_infobase_check::PreparedInfobaseCheck>,
         delivery: RunEngineDelivery,
     },
     InfobaseCreate {
@@ -1183,6 +1192,20 @@ impl V5CanonicalInvocationRuntime {
                 ));
             }
         }
+        if let Some(check) = super::v13_infobase_check::prepare(&request) {
+            let check = check.map_err(V5CanonicalPrepareError::Rejected)?;
+            if check.dry_run {
+                return Err(V5CanonicalPrepareError::Direct(Box::new(check.preview())));
+            }
+            let workspace_identity_hash = check.workspace_identity_hash();
+            return Ok(V5ActorBoundCanonicalInvocation(
+                ActorBoundCanonicalInvocationState::InfobaseCheck {
+                    check,
+                    workspace_identity_hash,
+                    delivery: run_delivery.clone(),
+                },
+            ));
+        }
         match super::v13_infobase_create::prepare(&request) {
             super::v13_infobase_create::Preparation::NotApplicable => {}
             super::v13_infobase_create::Preparation::Rejected(result) => {
@@ -1329,6 +1352,7 @@ impl V5ActorBoundCanonicalInvocation {
             ActorBoundCanonicalInvocationState::Extensions { .. }
             | ActorBoundCanonicalInvocationState::InfobaseExport { .. }
             | ActorBoundCanonicalInvocationState::ClientRun { .. }
+            | ActorBoundCanonicalInvocationState::InfobaseCheck { .. }
             | ActorBoundCanonicalInvocationState::InfobaseCreate { .. }
             | ActorBoundCanonicalInvocationState::SourceImport { .. }
             | ActorBoundCanonicalInvocationState::SourceExport { .. }
@@ -1362,6 +1386,10 @@ impl V5ActorBoundCanonicalInvocation {
                 ..
             }
             | ActorBoundCanonicalInvocationState::ClientRun {
+                workspace_identity_hash,
+                ..
+            }
+            | ActorBoundCanonicalInvocationState::InfobaseCheck {
                 workspace_identity_hash,
                 ..
             }
@@ -1431,6 +1459,11 @@ impl V5ActorBoundCanonicalInvocation {
                 launch, delivery, ..
             } => Ok(V5PreparedCanonicalInvocation(
                 PreparedCanonicalInvocationState::ClientRun { launch, delivery },
+            )),
+            ActorBoundCanonicalInvocationState::InfobaseCheck {
+                check, delivery, ..
+            } => Ok(V5PreparedCanonicalInvocation(
+                PreparedCanonicalInvocationState::InfobaseCheck { check, delivery },
             )),
             ActorBoundCanonicalInvocationState::InfobaseCreate {
                 create, delivery, ..
@@ -1550,6 +1583,7 @@ impl V5PreparedCanonicalInvocation {
             PreparedCanonicalInvocationState::Extensions { .. }
             | PreparedCanonicalInvocationState::InfobaseExport { .. }
             | PreparedCanonicalInvocationState::ClientRun { .. }
+            | PreparedCanonicalInvocationState::InfobaseCheck { .. }
             | PreparedCanonicalInvocationState::InfobaseCreate { .. }
             | PreparedCanonicalInvocationState::SourceImport { .. }
             | PreparedCanonicalInvocationState::SourceExport { .. }
@@ -1594,6 +1628,9 @@ impl V5PreparedCanonicalInvocation {
             }
             PreparedCanonicalInvocationState::ClientRun { launch, delivery } => {
                 Ok(delivery.execute(cancellation, |cancellation| launch.execute(cancellation)))
+            }
+            PreparedCanonicalInvocationState::InfobaseCheck { check, delivery } => {
+                Ok(delivery.execute(cancellation, |token| check.execute(token)))
             }
             PreparedCanonicalInvocationState::InfobaseCreate { create, delivery } => {
                 Ok(delivery.execute(cancellation, |cancellation| create.execute(cancellation)))

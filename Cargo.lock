@@ -3228,6 +3228,7 @@ dependencies = [
  "roxmltree",
  "rustls",
  "serde_json",
+ "unica-address",
  "unica-source-contract",
  "uuid",
 ]
@@ -3711,6 +3712,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "unica-address",
+ "url",
  "uuid",
 ]
 

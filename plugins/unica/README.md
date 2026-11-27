@@ -5,10 +5,11 @@ public stdio MCP server named `unica`. Prompt-visible skills call native
 `unica.*` tools; bundled analyzers, runners, indexes, and the standards adapter
 remain private implementation details.
 
-One plugin directory serves Codex, Claude Code, and ZCode. Their native
-manifests are `.codex-plugin/plugin.json`, `.claude-plugin/plugin.json`, and
-`.zcode-plugin/plugin.json`; all use the same `.mcp.json`, skills, and runtime.
-ZCode prefers its native manifest rather than loading a second plugin.
+One plugin directory serves Codex, Claude Code, ZCode, and DeepSeek Harness.
+Codex, Claude Code and ZCode use their native manifests and the shared
+`.mcp.json`. DeepSeek Harness reads the bundle manifest `package.json` and
+`dsh/cordis.patch.yml` to register its tool bridge and skill provider. All
+four hosts use the same Unica runtime and `skills/` directory.
 
 ## Public installation
 
@@ -82,6 +83,19 @@ schema. A successful package build or direct MCP `tools/list` does not prove
 that the model received the schema unchanged; the fresh-task trial is a separate
 acceptance step. The reported optional-field discrepancy is tracked in
 [#1032](https://github.com/IngvarConsulting/unica/issues/1032).
+
+### DeepSeek Harness
+
+Install the packaged `plugins/unica` directory from the Unica release in a DSH
+profile using **Plugins → Add plugin**. The package registers the Unica skills
+and exposes the MCP tools to agents in that profile. On first use, the native
+bootstrap downloads and verifies the runtime pinned by the package.
+
+Choose the workspace in DSH before asking the agent to use Unica. The bridge
+sends the calling session's workspace with each tool request. Sessions sharing
+a host can therefore work on different projects. To verify the selection, ask
+the agent to read the workspace with `unica.view` and check the returned
+`workspaceRoot`.
 
 ## Release candidates
 

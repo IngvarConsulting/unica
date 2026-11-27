@@ -248,11 +248,19 @@ def load_tool_bundles(
     return grouped, bin_roots
 
 
+def host_manifest_paths(plugin_root: Path) -> dict[str, Path]:
+    paths = {
+        host: plugin_root / directory / "plugin.json"
+        for host, directory in HOST_MANIFEST_DIRS.items()
+    }
+    paths["dsh"] = plugin_root / "package.json"
+    return paths
+
+
 def read_release_version(plugin_src: Path) -> str:
     """Return the release version all host manifests agree on."""
     versions = {}
-    for host, manifest_dir in HOST_MANIFEST_DIRS.items():
-        manifest_path = plugin_src / manifest_dir / "plugin.json"
+    for host, manifest_path in host_manifest_paths(plugin_src).items():
         if not manifest_path.is_file():
             raise SystemExit(f"plugin source is missing the {host} manifest: {manifest_path}")
         versions[host] = json.loads(manifest_path.read_text(encoding="utf-8"))["version"]
@@ -332,8 +340,7 @@ def write_packaged_mcp_launcher(
 
 def assert_host_manifests_present(plugin_dir: Path) -> None:
     """Every host must find its manifest in the shared plugin directory."""
-    for host, manifest_dir in sorted(HOST_MANIFEST_DIRS.items()):
-        manifest = plugin_dir / manifest_dir / "plugin.json"
+    for host, manifest in host_manifest_paths(plugin_dir).items():
         if not manifest.is_file():
             raise SystemExit(f"package is missing the {host} manifest: {manifest}")
 

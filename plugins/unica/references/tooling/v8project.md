@@ -192,7 +192,13 @@ but it ignores `version` for that boundary. With no `path`, omitted/false
 `strict: true` alone creates no boundary. This project config field is not an
 argument of `unica.run`.
 
-When neither layer sets `tools.platform.version`, a `DESIGNER` project with a
+For `infobase.check`, the runner selects the Designer client using the existing
+project settings, including an explicit `tools.platform.version: sources`.
+A successful login returns the exact client build in `data.platformVersion`.
+If the version setting is absent, the check leaves both YAML files as they are.
+
+For operations that prepare a writable runner configuration, when neither layer
+sets `tools.platform.version`, a `DESIGNER` project with a
 `CONFIGURATION` source-set runs on the platform line of its source format: the
 newest installation of the line that writes the format of `Configuration.xml`.
 Before each runner operation, previews included, Unica writes
@@ -268,6 +274,7 @@ directory named `main` keeps it.
 
 | Intent | `unica.run` operation |
 | --- | --- |
+| Check access to the selected infobase | `infobase.check` with empty args. Set `dryRun: false` for a read-only login to `origin`. Success returns the exact version of the Designer client in `data.platformVersion`. Use `dryRun: true` to preview without logging in. |
 | Create an absent infobase | `infobase.create`, empty args; a file infobase is created with the main configuration of the `CONFIGURATION` source set (`initializesSources: true`), and the first `push` loads that set only if it changed and the other sets in full; a cluster infobase is created empty, and the first `push` loads every set in full |
 | Send sources / delete an extension | `push`, optional `sourceSet`, `full` and `force`; applies the database configuration after the generation check, `force:true` overwrites the infobase. Deletion uses only `delete: "InstalledName"` |
 | Export one source set from the working configuration | `pull`, optional `sourceSet`, `extension` and `force`; without `force` the runner chooses a partial or full export, `force:true` replaces the whole set; no copy of the previous sources is kept |

@@ -226,10 +226,11 @@ skills, assets, три bootstrap-бинарника и `runtime-manifest.json`, 
 
 Для проверки исходного дерева запустите `claude --plugin-dir ./plugins/unica`
 из корня репозитория. Установка из маркетплейса для этого не нужна.
-Один каталог плагина обслуживает три хоста: Claude читает
+Один каталог плагина обслуживает четыре хоста: Claude читает
 `plugins/unica/.claude-plugin/plugin.json`, Codex —
 `plugins/unica/.codex-plugin/plugin.json`, ZCode —
-`plugins/unica/.zcode-plugin/plugin.json`.
+`plugins/unica/.zcode-plugin/plugin.json`, DeepSeek Harness — бандл
+`plugins/unica/package.json` с патчем `plugins/unica/dsh/cordis.patch.yml`.
 
 Продуктовые скиллы вызываются с префиксом плагина, например `/unica:meta-info`.
 Канонические имена MCP-инструментов в тексте — `unica.*`; в Claude имя имеет

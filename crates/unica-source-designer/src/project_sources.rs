@@ -473,11 +473,18 @@ pub fn discover_project_source_map_actor_pass(
     )
 }
 
-fn discover_project_source_map_internal(
+struct SourceSetCandidates {
+    config_path: Option<PathBuf>,
+    source_sets: Vec<ConfigSourceSet>,
+    configured_format_raw: Option<String>,
+}
+
+/// Read the declarations or recognize the layout without collecting any object inventory.
+fn source_set_candidates(
     workspace_root: &Path,
-    checkpoint: &mut dyn FnMut() -> Result<(), String>,
     state: &mut SourceMapDiscoveryState,
-) -> Result<ProjectSourceMap, String> {
+    checkpoint: &mut dyn FnMut() -> Result<(), String>,
+) -> Result<SourceSetCandidates, String> {
     checkpoint()?;
     let project_config = workspace_root.join("v8project.yaml");
     let project_config_raw = snapshot_project_map_input(&project_config, true, state, checkpoint)?;
@@ -499,7 +506,54 @@ fn discover_project_source_map_internal(
     if source_sets.is_empty() {
         source_sets = autodetect_source_sets(workspace_root, state, checkpoint)?;
     }
+    Ok(SourceSetCandidates {
+        config_path,
+        source_sets,
+        configured_format_raw,
+    })
+}
 
+/// An attach needs a supported source root, even if no BSL has been saved there yet.
+/// Inspect only the project declaration and known root markers. A breakpoint or stack
+/// lookup proves the registration and runtime identity of its individual modules.
+pub fn has_debug_source_set(
+    pass: &mut dyn SourceSelectionReadPass,
+    host_text_fn: fn(String) -> String,
+    requested: Option<&str>,
+) -> Result<bool, String> {
+    let root = pass.workspace_path().to_path_buf();
+    let mut state = SourceMapDiscoveryState::actor(pass, host_text_fn);
+    let mut checkpoint = || Ok(());
+    let candidates = source_set_candidates(&root, &mut state, &mut checkpoint)?;
+    for set in candidates.source_sets {
+        if requested.is_some_and(|name| name != set.name)
+            || !matches!(
+                set.kind,
+                SourceSetKind::Configuration | SourceSetKind::Extension
+            )
+        {
+            continue;
+        }
+        let set = detect_source_set_format(&root, set, &mut state, &mut checkpoint)?;
+        if set.source_format == SourceFormat::PlatformXml
+            && set.source_state == SourceSetState::Supported
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn discover_project_source_map_internal(
+    workspace_root: &Path,
+    checkpoint: &mut dyn FnMut() -> Result<(), String>,
+    state: &mut SourceMapDiscoveryState,
+) -> Result<ProjectSourceMap, String> {
+    let SourceSetCandidates {
+        config_path,
+        source_sets,
+        configured_format_raw,
+    } = source_set_candidates(workspace_root, state, checkpoint)?;
     let mut project_source_sets = Vec::with_capacity(source_sets.len());
     for source_set in source_sets {
         checkpoint()?;

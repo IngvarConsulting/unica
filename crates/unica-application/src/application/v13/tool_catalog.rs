@@ -41,6 +41,7 @@ pub(crate) struct CatalogSemantics {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunIntent {
+    InfobaseCheck,
     InfobaseCreate,
     SourceImport,
     SourceExport,
@@ -54,6 +55,7 @@ pub enum RunIntent {
     InfobaseExport,
     InfobaseImport,
     ClientRun,
+    WebPublish,
     DebugServerStart,
     DebugServerStop,
     ExtensionList,
@@ -77,6 +79,7 @@ pub struct RunOperation {
 impl RunOperation {
     pub const fn name(&self) -> &'static str {
         match self.intent {
+            RunIntent::InfobaseCheck => "infobase.check",
             RunIntent::InfobaseCreate => "infobase.create",
             RunIntent::SourceImport => "push",
             RunIntent::SourceExport => "pull",
@@ -90,6 +93,7 @@ impl RunOperation {
             RunIntent::InfobaseExport => "infobase.dump",
             RunIntent::InfobaseImport => "infobase.restore",
             RunIntent::ClientRun => "launch",
+            RunIntent::WebPublish => "web.publish",
             RunIntent::DebugServerStart => "debug-server.start",
             RunIntent::DebugServerStop => "debug-server.stop",
             RunIntent::ExtensionList => "extensions.list",
@@ -101,6 +105,7 @@ impl RunOperation {
 
     pub const fn description(&self) -> &'static str {
         match self.intent {
+            RunIntent::InfobaseCheck => "Check login to the configured origin infobase without exporting sources. Success gives platformVersion of the 1C client used for login.",
             RunIntent::InfobaseCreate => {
                 "Create an absent infobase. A file infobase is created with the main configuration of the project (its CONFIGURATION source set) and the runner remembers that set, so the first push loads it only if it changed and loads the other sets in full; a cluster infobase is created empty and the first push loads every set in full."
             }
@@ -142,13 +147,17 @@ impl RunOperation {
             RunIntent::ConfigurationApply => "Apply the working configuration to the database configuration; unlike unica.apply this changes the infobase.",
             RunIntent::ConfigurationReset => "Discard pending configuration changes in the infobase, restoring its database configuration.",
             RunIntent::ClientRun => "Launch an interactive 1C client session.",
-            RunIntent::DebugServerStart => "Start an owned ready local debug server for the project file infobase.",
-            RunIntent::DebugServerStop => "Release the owned debug server of this working copy by session identifier.",
+            RunIntent::WebPublish => "Prepare or verify a web publication for HTTP debugging before launching the browser.",
+            RunIntent::DebugServerStart => "Get the debugger URL, infobase alias and confirmed debugging scope for origin. The owner identifies who provides the server: runner, cluster, standalone or external. Use the returned release operation for a lease in this session.",
+            RunIntent::DebugServerStop => "Release the lease returned by debug-server.start for this working copy.",
         }
     }
 
     pub const fn support_reason(&self) -> Option<&'static str> {
         match self.intent {
+            RunIntent::DebugServerStart | RunIntent::DebugServerStop if !self.implemented => {
+                Some("debug-server.start and debug-server.stop require a v8-runner that supports debug-server.start contract version 2")
+            }
             RunIntent::CfImport | RunIntent::ConfigurationApply | RunIntent::ConfigurationReset => {
                 Some(RUNNER_LOAD_GAP)
             }
@@ -161,11 +170,10 @@ impl RunOperation {
     }
 
     pub const fn execution(&self) -> &'static str {
-        match self.intent {
-            RunIntent::ClientRun | RunIntent::DebugServerStart | RunIntent::DebugServerStop => {
-                "terminal"
-            }
-            _ => "previewApply",
+        if self.terminal {
+            "terminal"
+        } else {
+            "previewApply"
         }
     }
 
@@ -184,8 +192,9 @@ impl RunOperation {
             | RunIntent::CfImport
             | RunIntent::InfobaseImport => &["infobase"],
             RunIntent::ClientRun => &["clientSession"],
+            RunIntent::WebPublish => &["webPublication"],
             RunIntent::DebugServerStart | RunIntent::DebugServerStop => &["debugServerSession"],
-            RunIntent::ExtensionList => &["infobaseRead"],
+            RunIntent::InfobaseCheck | RunIntent::ExtensionList => &["infobaseRead"],
             RunIntent::ExtensionActivate
             | RunIntent::ConfigurationApply
             | RunIntent::ConfigurationReset => &["infobase"],
@@ -194,7 +203,7 @@ impl RunOperation {
 
     pub fn args_schema(&self) -> Option<Value> {
         match self.intent {
-            RunIntent::ExtensionList => {
+            RunIntent::InfobaseCheck | RunIntent::ExtensionList => {
                 Some(json!({"type":"object","additionalProperties":false,"properties":{}}))
             }
             RunIntent::ExtensionActivate => Some(
@@ -278,37 +287,85 @@ impl RunOperation {
                 },
                 "required": ["input", "mode"]
             })),
+            RunIntent::WebPublish => Some(json!({
+                "type":"object","additionalProperties":false,"required":["prepareDebug"],
+                "properties":{"prepareDebug":{"type":"string","pattern":"^http://(?:127[.]0[.]0[.]1|localhost):[0-9]+/?$","description":"IDE HTTP debugger endpoint with an explicit port. The receipt separately names the address for the web client."}}
+            })),
             RunIntent::DebugServerStart => Some(json!({
                 "type":"object","additionalProperties":false,"required":["ownerPid"],
-                "properties":{"ownerPid":{"type":"integer","minimum":1,"maximum":u32::MAX},
-                    "port":{"type":"integer","minimum":1,"maximum":u16::MAX}}
+                "properties":{"ownerPid":{"type":"integer","minimum":1,"maximum":u32::MAX,
+                    "description":"Process ID of the long-lived IDE that owns any local debug server created for this session."}}
             })),
             RunIntent::DebugServerStop => Some(json!({
                 "type":"object","additionalProperties":false,"required":["session"],
-                "properties":{"session":{"type":"string","pattern":"^[0-9a-f]{32}$"}}
+                "properties":{"session":{"type":"string","pattern":"^[0-9a-f]{32}$","description":"Lease token from the release operation returned by debug-server.start."}}
             })),
-            RunIntent::ClientRun => Some(json!({
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                    "clientMode": {"type": "string", "enum": ["designer", "thin", "thick", "ordinary"], "description": "1C client to launch."},
-                    "debugUrl": {"type": "string", "pattern": "^http://127[.]0[.]0[.]1:(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])(?![\\s\\S])", "description": "Ready loopback dbgs URL; thin client only. Launch receipts confirm the request and process, while DAP confirms attachment."},
-                    "execute": {"type": "string", "description": "Workspace-relative .epf or .erf external processor to run with /Execute; enterprise clients only."},
-                    "applicationParameter": {"type": "string", "description": "Exact /C value for an enterprise client; empty is distinct from omitted, NUL and designer are rejected. May accompany execute."},
-                    "waitForExit": {"type": "boolean", "default": false, "description": "Wait for thin-client completion; requires execute (.epf) or applicationParameter, and waitTimeoutMs."},
-                    "waitTimeoutMs": {"type": "integer", "minimum": 1, "maximum": 86400000, "description": "Bound for waitForExit in milliseconds."}
-                },
-                "required": ["clientMode"],
-                "allOf": [{
-                    "if": {"required": ["applicationParameter"]},
-                    "then": {"properties": {"clientMode": {"enum": ["thin", "thick", "ordinary"]}}}
-                }, {
-                    "if": {"required": ["debugUrl"]},
-                    "then": {"properties": {"clientMode": {"const": "thin"}}}
-                }]
-            })),
+            RunIntent::ClientRun => Some(client_run_args_schema(PINNED_RUNNER.interactive_login)),
         }
     }
+}
+
+/// Capabilities of the exact provider version verified by the Unica adapter.
+pub struct RunnerContract {
+    pub version: &'static str,
+    pub interactive_login: bool,
+    pub debug_server_start_v2: bool,
+}
+
+pub const DEBUG_SERVER_START_CONTRACT_VERSION: u8 = 2;
+
+pub const PINNED_RUNNER: RunnerContract = RunnerContract {
+    version: "0.19.2",
+    interactive_login: true,
+    debug_server_start_v2: true,
+};
+
+fn client_run_args_schema(supports_interactive_login: bool) -> Value {
+    let mut schema = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "clientMode": {"type": "string", "enum": ["designer", "thin", "thick", "ordinary", "web"], "description": "1C client to launch."},
+            "webDebugUrl": {"type":"string","description":"HTTP debugger address confirmed for the web client by web.publish."},
+            "debugUrl": {"type": "string", "format": "uri", "pattern": r"^http://(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:[.][a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*|\[[0-9a-f:.]+\]):(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])(?![\s\S])", "description": "Exact HTTP address of the running dbgs chosen for DAP attach. Supply a canonical DNS name, IPv4 or bracketed IPv6 and an explicit port. Thin clients only."},
+            "execute": {"type": "string", "description": "Workspace-relative .epf or .erf external processor to run with /Execute; enterprise clients only."},
+            "applicationParameter": {"type": "string", "description": "Exact /C value for an enterprise client; empty is distinct from omitted, NUL and designer are rejected. May accompany execute."},
+            "waitForExit": {"type": "boolean", "default": false, "description": "Wait for thin-client completion; requires execute (.epf) or applicationParameter, and waitTimeoutMs."},
+            "waitTimeoutMs": {"type": "integer", "minimum": 1, "maximum": 86400000, "description": "Bound for waitForExit in milliseconds."}
+        },
+        "required": ["clientMode"],
+        "allOf": [{
+            "if":{"required":["webDebugUrl"]}, "then":{"properties":{"clientMode":{"const":"web"}}}
+        }, {
+            "if":{"properties":{"clientMode":{"const":"web"}}},
+            "then":{"not":{"anyOf":[{"required":["execute"]},{"required":["applicationParameter"]},{"required":["waitForExit"]},{"required":["waitTimeoutMs"]}]}}
+        }, {
+            "if": {"required": ["applicationParameter"]},
+            "then": {"properties": {"clientMode": {"enum": ["thin", "thick", "ordinary"]}}}
+        }, {
+            "if": {"required": ["debugUrl"]},
+            "then": {"properties": {"clientMode": {"const": "thin"}}}
+        }, {
+            "if": {"required": ["interactiveLogin"]},
+            "then": {"properties": {"clientMode": {"const": "thin"}}}
+        }]
+    });
+    if supports_interactive_login {
+        schema["properties"]["interactiveLogin"] = json!({
+            "type": "boolean",
+            "description": "Use the native 1C login for this thin client, omitting project credentials. Supports debugUrl. True requires launching without waiting for exit."
+        });
+        let conditions = schema["allOf"].as_array_mut().expect("launch conditions");
+        conditions.push(json!({
+            "if": {"required": ["interactiveLogin"], "properties": {"interactiveLogin": {"const": true}}},
+            "then": {"properties": {"waitForExit": {"const": false}}, "not": {"required": ["waitTimeoutMs"]}}
+        }));
+    } else {
+        // An explicit false is an ordinary thin launch. Only named properties advertise
+        // capabilities to Designer, so a provider without native login must not list it.
+        schema["patternProperties"] = json!({r"^interactiveLogin(?![\s\S])": {"const": false}});
+    }
+    schema
 }
 
 #[derive(Debug)]
@@ -465,7 +522,7 @@ pub fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                 run_dictionary_is_data_not_command_lines: true,
                 empty_optional_result_slots_are_omitted: true,
             },
-            run_dictionary: run_dictionary(),
+            run_dictionary: run_dictionary(PINNED_RUNNER.debug_server_start_v2),
             result_envelope_schema: result_envelope_schema(),
         }),
     }
@@ -553,8 +610,9 @@ fn cursor(description: &'static str) -> Value {
     json!({"type": "string", "description": description})
 }
 
-fn run_dictionary() -> Vec<RunOperation> {
+pub fn run_dictionary(debug_server_start_v2: bool) -> Vec<RunOperation> {
     [
+        RunIntent::InfobaseCheck,
         RunIntent::InfobaseCreate,
         RunIntent::SourceImport,
         RunIntent::SourceExport,
@@ -568,6 +626,7 @@ fn run_dictionary() -> Vec<RunOperation> {
         RunIntent::InfobaseExport,
         RunIntent::InfobaseImport,
         RunIntent::ClientRun,
+        RunIntent::WebPublish,
         RunIntent::DebugServerStart,
         RunIntent::DebugServerStop,
         RunIntent::ExtensionList,
@@ -576,23 +635,23 @@ fn run_dictionary() -> Vec<RunOperation> {
         RunIntent::ConfigurationReset,
     ]
     .into_iter()
-    .map(|intent| RunOperation {
-        intent,
-        terminal: matches!(
+    .map(|intent| {
+        let terminal = matches!(
             intent,
             RunIntent::ClientRun | RunIntent::DebugServerStart | RunIntent::DebugServerStop
-        ),
-        rejects_sessions: matches!(
+        );
+        RunOperation {
             intent,
-            RunIntent::ClientRun | RunIntent::DebugServerStart | RunIntent::DebugServerStop
-        ),
-        // The pinned runner has push --no-apply, apply and reset, but its upload still applies
-        // the database configuration and the adapter does not run apply or reset yet
-        // (#1246): these are not listed, and their call is refused with that reason.
-        implemented: !matches!(
-            intent,
-            RunIntent::CfImport | RunIntent::ConfigurationApply | RunIntent::ConfigurationReset
-        ),
+            terminal,
+            rejects_sessions: terminal,
+            implemented: match intent {
+                RunIntent::DebugServerStart | RunIntent::DebugServerStop => debug_server_start_v2,
+                RunIntent::CfImport
+                | RunIntent::ConfigurationApply
+                | RunIntent::ConfigurationReset => false,
+                _ => true,
+            },
+        }
     })
     .collect()
 }
@@ -672,6 +731,7 @@ mod tests {
         assert_eq!(
             names,
             [
+                "infobase.check",
                 "infobase.create",
                 "push",
                 "pull",
@@ -685,6 +745,7 @@ mod tests {
                 "infobase.dump",
                 "infobase.restore",
                 "launch",
+                "web.publish",
                 "debug-server.start",
                 "debug-server.stop",
                 "extensions.list",
@@ -826,6 +887,35 @@ mod tests {
             assert!(op.implemented);
             assert_eq!(op.execution(), "previewApply");
             assert_eq!(op.args_schema().unwrap()["additionalProperties"], false);
+        }
+    }
+
+    /// rule: INV.RUNTIME.RUNNER-ONE-CAPABILITIES
+    #[test]
+    fn debug_server_start_v2_accepts_only_the_session_owner() {
+        let catalog = catalog_for(SurfaceRelease::V13).unwrap();
+        let op = catalog
+            .run_dictionary
+            .iter()
+            .find(|op| op.intent == RunIntent::DebugServerStart)
+            .unwrap();
+        assert_eq!(op.execution(), "terminal");
+        assert_eq!(op.effects(), &["debugServerSession"]);
+        let schema = op.args_schema().unwrap();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        for owner in [1, u32::MAX] {
+            assert!(validator.is_valid(&json!({"ownerPid": owner})));
+        }
+        for args in [
+            json!({}),
+            json!({"ownerPid": 0}),
+            json!({"ownerPid": u64::from(u32::MAX) + 1}),
+            json!({"ownerPid": "1"}),
+            json!({"ownerPid": 1, "mode": "client"}),
+            json!({"ownerPid": 1, "debugServerUrl": "http://localhost:1550"}),
+            json!({"ownerPid": 1, "port": 1550}),
+        ] {
+            assert!(!validator.is_valid(&args), "{args}");
         }
     }
 
@@ -1107,6 +1197,7 @@ mod tests {
                 .map(|operation| operation.intent)
                 .collect::<Vec<_>>(),
             [
+                RunIntent::InfobaseCheck,
                 RunIntent::InfobaseCreate,
                 RunIntent::SourceImport,
                 RunIntent::SourceExport,
@@ -1120,6 +1211,7 @@ mod tests {
                 RunIntent::InfobaseExport,
                 RunIntent::InfobaseImport,
                 RunIntent::ClientRun,
+                RunIntent::WebPublish,
                 RunIntent::DebugServerStart,
                 RunIntent::DebugServerStop,
                 RunIntent::ExtensionList,
@@ -1147,6 +1239,7 @@ mod tests {
                 .map(|operation| operation.name())
                 .collect::<Vec<_>>(),
             [
+                "infobase.check",
                 "infobase.create",
                 "push",
                 "pull",
@@ -1159,6 +1252,7 @@ mod tests {
                 "infobase.dump",
                 "infobase.restore",
                 "launch",
+                "web.publish",
                 "debug-server.start",
                 "debug-server.stop",
                 "extensions.list",
@@ -1272,6 +1366,7 @@ mod tests {
         assert_eq!(
             names,
             [
+                "infobase.check",
                 "infobase.create",
                 "push",
                 "pull",
@@ -1285,10 +1380,11 @@ mod tests {
                 "infobase.dump",
                 "infobase.restore",
                 "launch",
+                "web.publish",
                 "debug-server.start",
                 "debug-server.stop",
                 "extensions.list",
-                            "extensions.set",
+                "extensions.set",
                 "apply",
                 "reset",
             ],
@@ -1316,6 +1412,7 @@ mod tests {
                 .map(|operation| operation.name())
                 .collect::<Vec<_>>(),
             [
+                "infobase.check",
                 "infobase.create",
                 "push",
                 "pull",
@@ -1328,6 +1425,7 @@ mod tests {
                 "infobase.dump",
                 "infobase.restore",
                 "launch",
+                "web.publish",
                 "debug-server.start",
                 "debug-server.stop",
                 "extensions.list",
@@ -1358,8 +1456,8 @@ mod tests {
                 .iter()
                 .filter(|operation| operation.implemented)
                 .count()
-                == 16,
-            "the implemented dictionary includes snapshot and debug-server operations"
+                == 18,
+            "the implemented dictionary includes all snapshot and runtime operations"
         );
     }
 
@@ -1557,6 +1655,35 @@ mod tests {
 
     /// rule: INV.WIRE.TERMINAL-RUN-HAS-NO-FENCE
     #[test]
+    fn interactive_login_is_discoverable_only_for_the_supported_thin_client() {
+        for supported in [false, true] {
+            let schema = super::client_run_args_schema(supported);
+            let validate = jsonschema::validator_for(&schema).unwrap();
+            assert_eq!(
+                schema["properties"].get("interactiveLogin").is_some(),
+                supported
+            );
+            assert!(validate.is_valid(&json!({"clientMode":"thin"})));
+            for value in [false, true] {
+                let args = json!({"clientMode":"thin","debugUrl":"http://127.0.0.1:1561","interactiveLogin":value});
+                assert_eq!(validate.is_valid(&args), !value || supported, "{args}");
+            }
+            for mode in ["designer", "thick", "ordinary", "web"] {
+                assert!(!validate.is_valid(&json!({"clientMode":mode,"interactiveLogin":true})));
+            }
+            for arguments in [
+                json!({"clientMode":"thin","interactiveLogin":"true"}),
+                json!({"clientMode":"thin","interactiveLogin\n":false}),
+                json!({"clientMode":"thin","interactiveLogin":true,"applicationParameter":"","waitForExit":true,"waitTimeoutMs":2000}),
+                json!({"clientMode":"thin","interactiveLogin":true,"waitTimeoutMs":2000}),
+            ] {
+                assert!(!validate.is_valid(&arguments), "{arguments}");
+            }
+        }
+    }
+
+    /// rule: INV.WIRE.TERMINAL-RUN-HAS-NO-FENCE
+    #[test]
     fn v13_client_run_is_implemented_as_a_terminal_operation_with_closed_arguments() {
         let catalog = catalog_for(SurfaceRelease::V13).expect("canonical catalog exists");
         let client_run = catalog
@@ -1572,6 +1699,20 @@ mod tests {
             .expect("implemented operations publish argsSchema");
         assert_eq!(schema["additionalProperties"], false);
         assert_eq!(schema["required"], json!(["clientMode"]));
+        let mut expected_args = [
+            "applicationParameter",
+            "clientMode",
+            "debugUrl",
+            "execute",
+            "waitForExit",
+            "waitTimeoutMs",
+            "webDebugUrl",
+        ]
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+        if super::PINNED_RUNNER.interactive_login {
+            expected_args.insert("interactiveLogin");
+        }
         assert_eq!(
             schema["properties"]
                 .as_object()
@@ -1579,32 +1720,36 @@ mod tests {
                 .keys()
                 .map(String::as_str)
                 .collect::<std::collections::BTreeSet<_>>(),
-            [
-                "applicationParameter",
-                "clientMode",
-                "debugUrl",
-                "execute",
-                "waitForExit",
-                "waitTimeoutMs"
-            ]
-            .into_iter()
-            .collect::<std::collections::BTreeSet<_>>()
+            expected_args
         );
         assert_eq!(
             schema["properties"]["clientMode"]["enum"],
-            json!(["designer", "thin", "thick", "ordinary"])
+            json!(["designer", "thin", "thick", "ordinary", "web"])
         );
         let validator = jsonschema::validator_for(&schema).expect("valid launch args schema");
-        for url in ["http://127.0.0.1:1", "http://127.0.0.1:65535"] {
+        for url in [
+            "http://127.0.0.1:1",
+            "http://127.0.0.1:65535",
+            "http://dbgs.example.test:80",
+            "http://192.0.2.5:1561",
+            "http://[2001:db8::1]:1561",
+        ] {
             assert!(validator.is_valid(&json!({"clientMode": "thin", "debugUrl": url})));
         }
-        for url in ["http://127.0.0.1:65536", "http://127.0.0.1:1\n"] {
+        for url in [
+            "http://127.0.0.1:65536",
+            "http://127.0.0.1:1\n",
+            "http://dbgs.example.test",
+            "http://dbgs.example.test:1/path",
+            "http://dbgs.example.test:1#fragment",
+            "http://user@dbgs.example.test:1",
+        ] {
             assert!(
                 !validator.is_valid(&json!({"clientMode": "thin", "debugUrl": url})),
                 "{url:?}"
             );
         }
-        for mode in ["designer", "thin", "thick", "ordinary"] {
+        for mode in ["designer", "thin", "thick", "ordinary", "web"] {
             assert!(validator.is_valid(&json!({"clientMode": mode})));
         }
         for mode in ["thin", "thick", "ordinary"] {
@@ -1615,6 +1760,10 @@ mod tests {
             }
         }
         for arguments in [
+            json!({"clientMode":"web","execute":"x.epf"}),
+            json!({"clientMode":"web","debugUrl":"http://127.0.0.1:1561"}),
+            json!({"clientMode":"thin","webDebugUrl":"http://host:1561"}),
+            json!({"clientMode":"web","applicationParameter":""}),
             json!({"clientMode": "designer", "applicationParameter": ""}),
             json!({"clientMode": "designer", "applicationParameter": "update"}),
             json!({"clientMode": "thin", "applicationParameter": null}),

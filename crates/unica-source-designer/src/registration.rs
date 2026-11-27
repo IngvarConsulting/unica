@@ -23,12 +23,10 @@ pub fn cf_validate_child_object_type_index(type_name: &str) -> Option<usize> {
 pub fn cf_edit_child_object_entries(text: &str) -> Result<Vec<CfEditChildObjectEntry>, String> {
     cf_edit_root_child_objects(text).map(|(_, entries)| entries)
 }
-pub fn cf_edit_root_child_objects(
-    text: &str,
-) -> Result<(CfEditElementRange, Vec<CfEditChildObjectEntry>), String> {
-    let source = text.trim_start_matches('\u{feff}');
-    let source_offset = text.len() - source.len();
-    let doc = Document::parse(source).map_err(|err| format!("XML parse error: {err}"))?;
+/// Direct registration list of the configuration, without calculating edit ranges.
+pub fn root_child_objects<'a, 'input>(
+    doc: &'a Document<'input>,
+) -> Result<roxmltree::Node<'a, 'input>, String> {
     let root = doc.root_element();
     if root.tag_name().name() != "MetaDataObject" {
         return Err("Root element must be <MetaDataObject>".to_string());
@@ -49,6 +47,15 @@ pub fn cf_edit_root_child_objects(
         return Err("Multiple root metadata <ChildObjects> elements found".to_string());
     }
 
+    Ok(child_objects)
+}
+pub fn cf_edit_root_child_objects(
+    text: &str,
+) -> Result<(CfEditElementRange, Vec<CfEditChildObjectEntry>), String> {
+    let source = text.trim_start_matches('\u{feff}');
+    let source_offset = text.len() - source.len();
+    let doc = Document::parse(source).map_err(|err| format!("XML parse error: {err}"))?;
+    let child_objects = root_child_objects(&doc)?;
     let node_range = child_objects.range();
     let child_start = source_offset + node_range.start;
     let child_end = source_offset + node_range.end;

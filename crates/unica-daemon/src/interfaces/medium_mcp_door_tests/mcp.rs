@@ -2448,7 +2448,7 @@ fn main() {
     let digest = format!("{:x}", Sha256::digest(&bytes));
     let mut core_targets = serde_json::Map::new();
     let mut runner_targets = serde_json::Map::new();
-    let runner_version = "0.18.1"; // Fixture pin must match the production runner contract.
+    let runner_version = crate::application::v13::tool_catalog::PINNED_RUNNER.version;
     for host in HostTarget::ALL {
         let target = host.as_str();
         let suffix = if target == "win-x64" { ".exe" } else { "" };
@@ -2849,21 +2849,24 @@ async fn a_model_cannot_confirm_a_destructive_call_and_the_doors_confirmation_re
         }))
         .await;
     let admitted = client.receive().await;
-    let text = admitted.to_string();
     assert!(admitted["error"].is_null(), "{admitted}");
-    assert!(!text.contains("unknown argument"), "{admitted}");
-    assert!(!text.contains("\"cancelled\""), "{admitted}");
-    // The confirmed push becomes a Task; a 2026-07-28 call without Tasks
-    // waits for it and answers with the operation's own result (#3220).
+    let task = &admitted["result"]["structuredContent"]["data"]["task"];
+    assert_eq!(task["status"], "working", "{admitted}");
+    let task_id = task["taskId"].as_str().unwrap();
+    let done = read_task_result_with_meta(&mut client, task_id, 3, Some(modern_meta())).await;
+    let text = done.to_string();
+    assert!(done["error"].is_null(), "{done}");
+    assert!(!text.contains("unknown argument"), "{done}");
+    assert!(!text.contains("\"cancelled\""), "{done}");
     assert_eq!(
-        admitted["result"]["structuredContent"]["at"], "push",
-        "the confirmed push is admitted and reaches the operation: {admitted}"
+        done["result"]["structuredContent"]["at"], "push",
+        "the confirmed push is admitted and reaches the operation: {done}"
     );
     assert!(
-        admitted["result"]["structuredContent"]["data"]
+        done["result"]["structuredContent"]["data"]
             .get("task")
             .is_none(),
-        "{admitted}"
+        "{done}"
     );
     client.shutdown().await;
 }
@@ -3370,13 +3373,27 @@ fn busy_base_workspace(root: &std::path::Path, mode: &str) -> std::path::PathBuf
 /// Reads the result of `task_id` until it is no longer working; a question
 /// comes as an `elicitation/create` request.
 async fn read_task_result(client: &mut McpClient, task_id: &str, from: u64) -> Value {
+    read_task_result_with_meta(client, task_id, from, None).await
+}
+
+async fn read_task_result_with_meta(
+    client: &mut McpClient,
+    task_id: &str,
+    from: u64,
+    meta: Option<Value>,
+) -> Value {
     let deadline = Instant::now() + Duration::from_secs(30);
     let mut id = from;
     loop {
+        let mut params =
+            json!({"name": "unica.task.result", "arguments": {"taskId": task_id, "waitMs": 7000}});
+        if let Some(meta) = &meta {
+            params["_meta"] = meta.clone();
+        }
         client
             .send(json!({
                 "jsonrpc": "2.0", "id": id, "method": "tools/call",
-                "params": {"name": "unica.task.result", "arguments": {"taskId": task_id, "waitMs": 7000}}
+                "params": params
             }))
             .await;
         let message = client.receive().await;
@@ -3385,6 +3402,10 @@ async fn read_task_result(client: &mut McpClient, task_id: &str, from: u64) -> V
         {
             return message;
         }
+        assert_eq!(
+            message["result"]["structuredContent"]["data"]["task"]["taskId"], task_id,
+            "{message}"
+        );
         assert!(
             Instant::now() < deadline,
             "the Task never settled: {message}"

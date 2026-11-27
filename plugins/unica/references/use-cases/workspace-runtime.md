@@ -66,16 +66,16 @@ A preview does not write sources or read the current extension contents.
 
 ### Work the call must not wait for
 
-A long operation does not need a separate call: any `unica.run` invocation
-that outlives the handoff window becomes a durable Task. A protocol
-`2026-07-28` call that does not declare Tasks itself never sees the Task: it
-waits for the end and answers with the result. A session of an earlier
-protocol gets a receipt: keep the returned `taskId`, read the state with
-`unica.task.get`, wait for a bounded interval with `unica.task.result`, and
-cancel with `unica.task.cancel`; a client with native Tasks uses `tasks/get`
-and `tasks/cancel` instead. The terminal result never
-publishes raw stdout. The Task state is the authority for the outcome; a
-`working` state alone does not prove that the runner is making progress.
+A quick call returns its result directly. When the daemon hands any operation
+to a Task, a call without Tasks receives a receipt with `data.task.taskId`.
+Save that ID. Use `unica.task.get` for current state, `unica.task.result` to
+wait up to 7000 ms for the result, and `unica.task.cancel` to request
+cancellation. A new connection in the same workspace can read the same Task.
+Closing the connection or cancelling a wait after handoff leaves the operation
+running. A client that declares native Tasks on its call uses the MCP Task
+methods. The terminal result never publishes raw stdout. Read the Task state
+for the outcome. A `working` state alone does not prove that the runner is
+making progress.
 
 If a call's answer is lost, Unica answers with the ordinary Task receipt of
 the Task the call may continue as (`data.task.taskId`, status `queued`,
@@ -98,7 +98,7 @@ work under its own `taskId` only while no source changed since it began;
 
 Keep the `taskId` and the operation's infobase and workspace identity. Read
 `tasks/get` (or `unica.task.get`) and use `unica.task.result` only for a bounded
-wait in the compatibility profile. A late `tasks/cancel` is a request, not a
+wait without native Tasks. A late `tasks/cancel` is a request, not a
 receipt that the mutation stopped: native Tasks report it in the next
 `tasks/get.statusMessage`; compatibility tools expose `cancelRequested: true`.
 If the cancel request itself times out, read the Task again before deciding
@@ -153,6 +153,7 @@ source-set path itself has no stronger structural evidence.
 
 | Intent | `unica.run` operation |
 | --- | --- |
+| Check access to the selected infobase | `infobase.check` with empty args. Set `dryRun: false` for a read-only login to `origin`. Success returns the exact version of the Designer client in `data.platformVersion`. Use `dryRun: true` to preview without logging in. |
 | Create an absent infobase | `infobase.create`, empty args; a file infobase is created with the main configuration of the `CONFIGURATION` source set (`initializesSources: true`), and the first `push` loads that set only if it changed and the other sets in full; a cluster infobase is created empty, and the first `push` loads every set in full |
 | Send sources / delete an extension | `push`, optional `sourceSet`, `full` and `force`; applies the database configuration after the generation check, `force:true` overwrites the infobase. Deletion uses only `delete: "InstalledName"` |
 | Export one source set from the working configuration | `pull`, optional `sourceSet`, `extension` and `force`; without `force` the runner chooses a partial or full export, `force:true` replaces the whole set; no copy of the previous sources is kept |
@@ -169,6 +170,24 @@ source-set path itself has no stronger structural evidence.
 | Inspect installed extensions | `extensions.list`, empty args; preview/apply opens a platform session |
 | Change installed extension activity | `extensions.set`, `name`, boolean `active`; other properties are unavailable |
 | Apply or discard pending configuration changes | `apply` and `reset` — unavailable until the runner supports them ([#1246](https://github.com/IngvarConsulting/unica/issues/1246)) |
+
+To check a connection before creating a project, use a temporary workspace
+whose private profile declares the candidate as `infobases.origin`. Use the
+same call as for a saved project. Keep connection strings and credentials in
+the private profile. The MCP arguments are empty.
+
+```json
+{"op":"infobase.check","args":{},"dryRun":false}
+```
+
+The runner selects Designer from the current platform settings, including an
+explicit `tools.platform.version: sources`. The successful login reports the
+exact build of the client that connected. A missing version setting stays
+absent from the project files. The operation does not export sources. For a classified refusal, read `data.runnerCode`:
+`credentials_rejected` identifies a rejected login, `infobase_not_found`
+identifies a confirmed missing base, and `infobase_designer_busy` identifies
+a conflicting Designer session. A generic failure is insufficient to diagnose
+a bad password or a missing base.
 
 For `launch`, `applicationParameter` passes one exact `/C` string to an enterprise
 client. Empty is distinct from omitted; NUL and `designer` are rejected. It may

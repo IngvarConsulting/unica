@@ -287,6 +287,29 @@ class WireProbeTests(unittest.TestCase):
         self.assertEqual(evidence["profile"], "native")
         self.assertEqual(evidence["target"], "linux-x64")
 
+    def test_direct_profile_lists_each_page_without_advertising_tasks(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            capture = root / "requests.json"
+            output = root / "wire.json"
+            server = self.write_server(
+                root, pages=[["unica.view"], ["unica.task.result"]], capture_path=capture
+            )
+            result = self.run_probe(
+                server, output, protocol_version="2026-07-28",
+                tasks_capability="off", profile="direct", target="linux-x64",
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            requests = json.loads(capture.read_text(encoding="utf-8"))
+            evidence = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertEqual(evidence["profile"], "direct")
+        self.assertEqual([request["method"] for request in requests], ["tools/list"] * 2)
+        for request in requests:
+            meta = request["params"]["_meta"]
+            self.assertEqual(meta["io.modelcontextprotocol/protocolVersion"], "2026-07-28")
+            self.assertEqual(meta["io.modelcontextprotocol/clientCapabilities"], {})
+
     def test_exhausts_direct_first_pagination_and_writes_deterministic_json(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

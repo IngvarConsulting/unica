@@ -415,7 +415,6 @@ fn lock_refusal(operation: &str, error: RunnerLockFailure) -> DomainResult {
 
 pub(super) fn execute(
     prepared: &PreparedSourceExport,
-    runner: &dyn ProcessRunner,
     cancellation: CancellationToken,
 ) -> DomainResult {
     let tool = match resolve_bundled_runner(&prepared.context.cwd) {
@@ -424,7 +423,9 @@ pub(super) fn execute(
             return missing_runner_rejection(Some(prepared.operation().to_string()), absence)
         }
     };
-    execute_with_recipe_policy(prepared, runner, cancellation, &tool)
+    super::super::runner::with_runner_receipt(&prepared.context.workspace_root, &tool.program, |runner| {
+        execute_with_recipe_policy(prepared, runner, cancellation, &tool)
+    })
 }
 
 fn execute_with_recipe_policy(

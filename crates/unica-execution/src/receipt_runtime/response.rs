@@ -140,6 +140,12 @@ pub enum V5DaemonTaskSnapshot {
         cancel_requested: bool,
         terminal_epoch_ms: u64,
         terminal_digest: TerminalDigest,
+        /// Remaining receipt coordinates for verifying the workspace of a saved question.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        choice_request: Option<(
+            crate::receipt_ledger::V5ToolIdentity,
+            unica_execution_contract::invocation::NormalizedArgumentsHash,
+        )>,
         result: Box<DomainResult>,
     },
     Failed {

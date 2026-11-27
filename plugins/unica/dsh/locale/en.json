@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Unica",
+    "description": "Use Unica tools and skills to develop and test 1C:Enterprise applications. Each tool call uses the current working directory of the calling DSH session. On first launch Unica downloads and verifies its runtime. Later sessions reuse the cached runtime."
+  }
+}

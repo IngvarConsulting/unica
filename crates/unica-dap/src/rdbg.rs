@@ -2,8 +2,9 @@ use std::time::Duration;
 
 use roxmltree::{Document, Node};
 
-use unica_source_contract::debug_source::DebugModuleId;
+use unica_source_contract::debug_source::{DebugModuleId, DebugServerUrl};
 
+use crate::endpoint::DebugServerError;
 use crate::{Breakpoint, Result};
 
 const REQUEST: &str = "http://v8.1c.ru/8.3/debugger/debugRDBGRequestResponse";
@@ -50,7 +51,7 @@ pub(crate) enum TargetAttachment {
 }
 
 impl Rdbg {
-    pub fn attach(port: u16, alias: &str) -> Result<Self> {
+    pub fn attach(url: &DebugServerUrl, alias: &str) -> Result<Self> {
         let tls = rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(
             rustls::crypto::ring::default_provider(),
         ))
@@ -63,12 +64,20 @@ impl Rdbg {
                 .no_proxy()
                 .redirect(reqwest::redirect::Policy::none())
                 .build()?,
-            url: format!("http://127.0.0.1:{port}/e1crdbg/rdbg"),
+            url: format!("{url}/e1crdbg/rdbg"),
             alias: escape(alias),
             id: uuid::Uuid::new_v4(),
         };
         if let Err(error) = client.register() {
-            client.detach();
+            // A connection failure happens before registration reaches the server.
+            // A lost reply can leave our UI registered, so detach its UUID in that case.
+            let never_connected = matches!(
+                error.downcast_ref::<DebugServerError>(),
+                Some(DebugServerError::Unavailable(cause)) if cause.is_connect()
+            );
+            if !never_connected {
+                client.detach();
+            }
             return Err(error);
         }
         Ok(client)
@@ -281,15 +290,21 @@ impl Rdbg {
         } else {
             request = request.body("");
         }
+        let handshake = matches!(command, "attachDebugUI" | "setAutoAttachSettings");
         let response = match request.send() {
             Ok(response) => response,
             Err(error) if command == "pingDebugUIParams" && error.is_timeout() => {
                 return Ok(String::new());
             }
+            Err(error) if handshake => return Err(DebugServerError::Unavailable(error).into()),
             Err(error) => return Err(format!("rdbg {command}: {error:?}").into()),
         };
         let status = response.status();
-        let xml = response.text()?;
+        let xml = if handshake {
+            response.text().map_err(DebugServerError::Unavailable)?
+        } else {
+            response.text()?
+        };
         if !status.is_success() {
             let detail = Document::parse(&xml).ok().and_then(|doc| {
                 doc.descendants()

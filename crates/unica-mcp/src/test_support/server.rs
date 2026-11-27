@@ -212,6 +212,7 @@ pub fn canonical_snapshot_at(
             awaits_interrupted_work: false,
         },
         InvocationStatus::Completed => V5DaemonTaskSnapshot::Completed {
+            choice_request: None,
             task_id,
             invocation_id,
             receipt_key_digest,
@@ -433,8 +434,7 @@ pub async fn surface_profiles_case() {
     assert_v13_profile_names(&listed_tool_names(&mut modern_compat, 1, None).await, false);
     modern_compat.shutdown().await;
 
-    // Direct-first 2026-07-28 requests get the eight tools whether or not
-    // the request declares Tasks: the catalog follows the protocol revision.
+    // Each modern request declares its own capabilities.
     let (mut direct, _) = spawn_unica_server(canonical_profile_server());
     assert_v13_profile_names(
         &listed_tool_names(&mut direct, 1, Some(modern_tasks_meta())).await,
@@ -442,7 +442,7 @@ pub async fn surface_profiles_case() {
     );
     assert_v13_profile_names(
         &listed_tool_names(&mut direct, 2, Some(modern_meta())).await,
-        true,
+        false,
     );
     direct.shutdown().await;
 }
@@ -718,8 +718,7 @@ pub async fn compatibility_terminal_result_case() {
         } else {
             assert_eq!(direct["result"]["content"], json!([]));
         }
-        // A 2026-07-28 call without Tasks waits for the Task it became and
-        // answers with the same bytes as the direct answer (#3220).
+        // The receipt leads to the same terminal result and byte budget as a direct call.
         client
             .send(json!({
                 "jsonrpc":"2.0", "id":2, "method":"tools/call",
@@ -728,6 +727,15 @@ pub async fn compatibility_terminal_result_case() {
                 }
             }))
             .await;
+        let handoff = client.receive().await;
+        assert_eq!(
+            handoff["result"]["structuredContent"]["data"]["task"]["taskId"],
+            task_id.to_string()
+        );
+        assert!(waits.lock().unwrap().is_empty());
+        client.send(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{
+            "name":"unica.task.result","arguments":{"taskId":task_id.to_string(),"waitMs":7000},"_meta":meta
+        }})).await;
         let terminal = client.receive().await;
         assert_eq!(
             serde_json::to_vec(&direct["result"]).unwrap(),

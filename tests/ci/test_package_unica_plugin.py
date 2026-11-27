@@ -632,6 +632,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
                 manifest.parent.mkdir(parents=True)
                 version = "0.13.0-rc.2" if directory == ".zcode-plugin" else "0.13.0-rc.3"
                 manifest.write_text(json.dumps({"version": version}), encoding="utf-8")
+            (plugin_root / "package.json").write_text(json.dumps({"version": "0.13.0-rc.3"}), encoding="utf-8")
             with self.assertRaisesRegex(SystemExit, "host manifests disagree.*zcode=0.13.0-rc.2"):
                 module.read_release_version(plugin_root)
 
@@ -1382,12 +1383,24 @@ class PackageUnicaPluginTests(unittest.TestCase):
                 or path.startswith("skills/v8-runner/")
             }
             self.assertEqual(forbidden_script_skills, set())
+            # `package.json` в корне — манифест бандла DeepSeek Harness: DSH
+            # ставит плагин как npm-пакет и находит по нему патч. Вложенный
+            # манифест остаётся мусором от сборки, а замок зависимостей не
+            # нужен ни одному хосту.
             self.assertFalse(
                 any(
-                    Path(path).name in {"package.json", "package-lock.json"}
+                    Path(path).name == "package-lock.json"
+                    or (Path(path).name == "package.json" and path != "package.json")
                     for path in packaged_paths
                 )
             )
+            dsh_bundle = json.loads((plugin / "package.json").read_text(encoding="utf-8"))
+            self.assertEqual(dsh_bundle["name"], "@ingvarconsulting/unica")
+            self.assertEqual(
+                dsh_bundle["dsh"]["bundle"]["patch"], "./dsh/cordis.patch.yml"
+            )
+            self.assertTrue((plugin / "dsh" / "cordis.patch.yml").is_file())
+            self.assertTrue((plugin / "dsh" / "launch.mjs").is_file())
             packaged_mcp = json.loads(
                 (plugin / ".mcp.json").read_text(encoding="utf-8")
             )

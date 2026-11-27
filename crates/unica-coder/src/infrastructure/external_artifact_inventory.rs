@@ -17,6 +17,15 @@ pub fn read_inventory(
     source_kind: SourceSetKind,
     checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
 ) -> Result<ExternalArtifactInventory, ViewError> {
+    read_inventory_with_limit(root, source_kind, None, checkpoint)
+}
+
+pub fn read_inventory_with_limit(
+    root: &SourceDirectory,
+    source_kind: SourceSetKind,
+    descriptor_byte_limit: Option<usize>,
+    checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+) -> Result<ExternalArtifactInventory, ViewError> {
     checkpoint()?;
     let names = root
         .read_immediate_names_with_limit(None, || {
@@ -50,6 +59,13 @@ pub fn read_inventory(
                 })
             },
             |chunk| {
+                if descriptor_byte_limit
+                    .is_some_and(|limit| chunk.len() > limit.saturating_sub(bytes.len()))
+                {
+                    return Err(std::io::Error::other(
+                        "external descriptor exceeds the byte limit",
+                    ));
+                }
                 bytes
                     .try_reserve(chunk.len())
                     .map_err(std::io::Error::other)?;

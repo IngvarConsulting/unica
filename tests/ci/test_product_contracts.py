@@ -1856,6 +1856,7 @@ class ProductContractTests(unittest.TestCase):
             for relative in (
                 "Cargo.toml",
                 "plugins/unica/.codex-plugin/plugin.json",
+                "plugins/unica/package.json",
                 "plugins/unica/third-party/tools.lock.json",
             ):
                 target = work / relative
@@ -1890,7 +1891,7 @@ class ProductContractTests(unittest.TestCase):
                 root = Path(tmp)
                 before = {}
                 for relative in (
-                    "Cargo.toml", "plugins/unica/.codex-plugin/plugin.json",
+                    "Cargo.toml", "plugins/unica/package.json", "plugins/unica/.codex-plugin/plugin.json",
                     "plugins/unica/.claude-plugin/plugin.json", "plugins/unica/third-party/tools.lock.json",
                 ):
                     target = root / relative
@@ -1927,6 +1928,7 @@ class ProductContractTests(unittest.TestCase):
                 manifest = work / "plugins/unica" / directory / "plugin.json"
                 manifest.parent.mkdir(parents=True, exist_ok=True)
                 manifest.write_text(json.dumps({"version": "0.0.1"}), encoding="utf-8")
+            (work / "plugins/unica/package.json").write_text(json.dumps({"version": "0.0.1"}), encoding="utf-8")
             lock = work / "plugins/unica/third-party/tools.lock.json"
             lock.parent.mkdir(parents=True, exist_ok=True)
             # Two unica entries: valid JSON, but no single version to set.

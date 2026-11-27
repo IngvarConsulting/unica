@@ -155,7 +155,7 @@ pub(crate) fn input_required(choice: &HumanChoice) -> InputRequiredResult {
         CHOICE_INPUT_KEY.to_string(),
         InputRequest::Elicitation(request),
     );
-    InputRequiredResult::new(Some(requests), Some(choice_state(choice)))
+    InputRequiredResult::new(Some(requests), Some(choice_state(choice, None)))
 }
 
 /// The `input_required` Task asking the question: the Task keeps its identity
@@ -197,8 +197,15 @@ pub(crate) fn task_answer(responses: &InputResponses) -> Option<ElicitResult> {
 
 /// Digest of the question and its calls. It is not trusted: it only says
 /// which question the echoed answer belongs to.
-pub(crate) fn choice_state(choice: &HumanChoice) -> String {
-    let bytes = serde_json::to_vec(choice).expect("a choice serializes");
+pub(crate) fn choice_state(
+    choice: &HumanChoice,
+    receipt: Option<unica_execution_contract::invocation::TaskId>,
+) -> String {
+    let bytes = match receipt {
+        Some(task_id) => serde_json::to_vec(&(task_id, choice)),
+        None => serde_json::to_vec(choice),
+    }
+    .expect("a choice serializes");
     let digest = Sha256::digest(bytes);
     let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
     format!("unica-choice-1:{hex}")
@@ -267,8 +274,9 @@ impl RetriedChain {
         index: usize,
         choice: &HumanChoice,
         responses: Option<&InputResponses>,
+        receipt: Option<unica_execution_contract::invocation::TaskId>,
     ) -> Option<ElicitResult> {
-        let state = choice_state(choice);
+        let state = choice_state(choice, receipt);
         if let Some((answered_state, answer)) = self.answered.get(index) {
             return (*answered_state == state).then(|| answer_of(answer.clone()));
         }
@@ -325,15 +333,17 @@ pub(crate) fn name_earlier_choices(
 pub(crate) fn input_required_after(
     choice: &HumanChoice,
     answered: &[(&HumanChoice, &ElicitResult)],
+    receipt: Option<unica_execution_contract::invocation::TaskId>,
 ) -> InputRequiredResult {
     let mut result = input_required(choice);
+    result.request_state = Some(choice_state(choice, receipt));
     if !answered.is_empty() {
         let chain = json!({
             "answered": answered
                 .iter()
-                .map(|(question, answer)| json!({"state": choice_state(question), "answer": answer}))
+                .map(|(question, answer)| json!({"state": choice_state(question,receipt), "answer": answer}))
                 .collect::<Vec<_>>(),
-            "state": choice_state(choice),
+            "state": choice_state(choice,receipt),
         });
         result.request_state = Some(format!("{CHAIN_STATE_PREFIX}{chain}"));
     }
@@ -348,7 +358,7 @@ pub(crate) fn retried_answer(
     responses: Option<&InputResponses>,
     state: Option<&str>,
 ) -> Option<ElicitResult> {
-    RetriedChain::parse(state).answer(0, choice, responses)
+    RetriedChain::parse(state).answer(0, choice, responses, None)
 }
 
 /// The option the person chose, or `None` for every other outcome: cancel,
@@ -391,13 +401,20 @@ pub(crate) struct StepReport {
     pub(crate) tool: String,
     pub(crate) arguments: Map<String, Value>,
     pub(crate) refused: bool,
+    pending: bool,
 }
 
 impl StepReport {
-    pub(crate) fn of(tool: &str, arguments: &Map<String, Value>, result: &CallToolResult) -> Self {
+    pub(crate) fn of(
+        tool: &str,
+        arguments: &Map<String, Value>,
+        result: &CallToolResult,
+        pending: bool,
+    ) -> Self {
         Self {
             tool: tool.to_string(),
             arguments: without_confirmation(arguments),
+            pending,
             refused: result.is_error == Some(true),
         }
     }
@@ -432,7 +449,13 @@ pub(crate) fn name_the_choice(
             text.push('.');
             let total = 1 + option.then.len();
             for (index, step) in steps.iter().enumerate() {
-                let outcome = if step.refused { "refused" } else { "done" };
+                let outcome = if step.pending {
+                    "pending"
+                } else if step.refused {
+                    "refused"
+                } else {
+                    "done"
+                };
                 text.push_str(&format!(
                     "\n{}/{total} {outcome}: {}",
                     index + 1,
@@ -691,7 +714,7 @@ mod tests {
             "elicitation/create"
         );
         let state = asked["requestState"].as_str().unwrap();
-        assert_eq!(state, choice_state(&choice));
+        assert_eq!(state, choice_state(&choice, None));
 
         let mut responses = InputResponses::new();
         responses.insert(
@@ -720,7 +743,7 @@ mod tests {
         let mut result = CallToolResult::default();
         result.content.push(ContentBlock::text("loaded"));
 
-        let step = StepReport::of("unica.run", &choice.options[0].arguments, &result);
+        let step = StepReport::of("unica.run", &choice.options[0].arguments, &result, false);
         let named = name_the_choice(result, &choice, &choice.options[0], &[step]);
 
         let first = serde_json::to_value(&named.content[0]).unwrap();

@@ -1,0 +1,109 @@
+{
+  "id": "S-3252-web-debug",
+  "issue": 3252,
+  "area": "Отладка",
+  "task": "Проверить готовность веб-публикации, отличить отказ маршрута и подготовить обычный запуск той же страницы",
+  "workspace": "tests/fixtures/acceptance/workspace-xdto-rename",
+  "profile": "research-web-debug",
+  "driver": "external-web-debug-route",
+  "wire": [
+    {
+      "tool": "unica.run",
+      "args": {
+        "op": "web.publish",
+        "args": {
+          "prepareDebug": "http://localhost:1561"
+        },
+        "dryRun": false
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/state",
+          "eq": "external_route_verified"
+        },
+        {
+          "pointer": "/data/ideUrl",
+          "eq": "http://localhost:1561"
+        },
+        {
+          "pointer": "/data/publicationChanged",
+          "eq": false
+        }
+      ],
+      "captures": {
+        "webDebugger": {
+          "pointer": "/data/debuggerUrl"
+        }
+      }
+    },
+    {
+      "tool": "unica.run",
+      "args": {
+        "op": "launch",
+        "args": {
+          "clientMode": "web",
+          "webDebugUrl": "$capture.webDebugger"
+        },
+        "dryRun": true
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/providerDispatched",
+          "eq": false
+        },
+        {
+          "pointer": "/data/debuggerUrl",
+          "eq": "$capture.webDebugger"
+        }
+      ]
+    },
+    {
+      "tool": "unica.run",
+      "args": {
+        "op": "web.publish",
+        "args": {
+          "prepareDebug": "http://localhost:1561"
+        },
+        "dryRun": false
+      },
+      "expect": [
+        "provider"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/runnerCode",
+          "eq": "route_unavailable"
+        }
+      ]
+    },
+    {
+      "tool": "unica.run",
+      "args": {
+        "op": "launch",
+        "args": {
+          "clientMode": "web"
+        },
+        "dryRun": true
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/providerDispatched",
+          "eq": false
+        },
+        {
+          "pointer": "/data/url",
+          "eq": "http://localhost/demo/"
+        }
+      ]
+    }
+  ]
+}

@@ -435,13 +435,7 @@ impl PreparedSourceExport {
                 result.at = Some(operation.to_string());
                 return result;
             }
-            return super::runner::with_bundled_snapshot_runner(
-                &self.context.workspace_root,
-                &self.context.cwd,
-                operation,
-                cancellation,
-                |runner, cancellation| fetch::execute(self, runner, cancellation),
-            );
+            return fetch::execute(self, cancellation);
         }
         // A re-export runs on a config of its own: the working copy is not
         // prepared, its files stay as they are.
@@ -1766,6 +1760,7 @@ fn reject_at(operation: &str, code: RefusalCode, message: impl Into<String>) -> 
 /// `provider_absent` назначает общий помощник.
 #[cfg(test)]
 mod medium_tests {
+    use super::super::runner::VERSION;
     use super::super::v13_infobase_exports::map_runner_code;
     use super::*;
     use std::fs;
@@ -1874,7 +1869,7 @@ mod medium_tests {
                 &runner,
                 CancellationToken::new(),
                 &tool(root),
-                "0.18.1",
+                VERSION,
             )
         };
         let result = pull();

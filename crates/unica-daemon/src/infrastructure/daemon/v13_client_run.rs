@@ -19,6 +19,7 @@ use super::v13_infobase_exports::{
     runner_envelope_refusal, runner_rejection, runner_start_rejection, RunnerAbsence, CONFIG_NAME,
     RUNNER_OUTPUT_LIMIT,
 };
+use crate::application::v13::tool_catalog::PINNED_RUNNER;
 use crate::infrastructure::workspace::discover_workspace;
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
@@ -30,7 +31,7 @@ use unica_execution_contract::invocation::{DomainResult, SafeIdentityHash};
 use unica_process::runner::{ProcessCommand, ProcessOutput, ProcessRunner, ProcessStreamFailure};
 use unica_process::PendingProcessHandoff;
 use unica_refusal::RefusalCode;
-use unica_source_contract::workspace::WorkspaceContext;
+use unica_source_contract::{debug_source::DebugServerUrl, workspace::WorkspaceContext};
 use unica_work_control::cancellation::{CancellationToken, CANCELLED_PREFIX};
 
 pub(super) const OPERATION: &str = "launch";
@@ -83,6 +84,7 @@ impl ClientMode {
 #[derive(Debug, Clone)]
 struct LaunchArguments {
     mode: ClientMode,
+    interactive_login: bool,
     debug_url: Option<String>,
     /// Внешняя обработка для `/Execute`: относительный путь для ответа и
     /// абсолютный для раннера. Проверена как обычный файл внутри рабочего
@@ -105,6 +107,7 @@ pub(super) struct PreparedClientRun {
 #[derive(Debug)]
 pub(super) enum PreparedTerminalRun {
     Client(PreparedClientRun),
+    Web(super::v13_web_run::PreparedWebRun),
     DebugServer(super::v13_debug_server::PreparedDebugServer),
 }
 
@@ -112,6 +115,7 @@ impl PreparedTerminalRun {
     pub(super) fn workspace_identity_hash(&self) -> SafeIdentityHash {
         match self {
             Self::Client(run) => run.workspace_identity_hash(),
+            Self::Web(run) => run.workspace_identity_hash(),
             Self::DebugServer(run) => run.workspace_identity_hash(),
         }
     }
@@ -119,6 +123,7 @@ impl PreparedTerminalRun {
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
         match self {
             Self::Client(run) => run.execute(cancellation),
+            Self::Web(run) => run.execute(cancellation),
             Self::DebugServer(run) => run.execute(cancellation),
         }
     }
@@ -136,6 +141,21 @@ pub(super) fn prepare(request: &InvocationRequest) -> Preparation {
     }
     let operation = request.arguments().get("op").and_then(Value::as_str);
     let prepared = match operation {
+        Some(super::v13_web_run::PUBLISH) => {
+            super::v13_web_run::PreparedWebRun::parse(request, super::v13_web_run::PUBLISH)
+                .map(PreparedTerminalRun::Web)
+        }
+        Some(OPERATION)
+            if request
+                .arguments()
+                .get("args")
+                .and_then(|args| args.get("clientMode"))
+                .and_then(Value::as_str)
+                == Some("web") =>
+        {
+            super::v13_web_run::PreparedWebRun::parse(request, OPERATION)
+                .map(PreparedTerminalRun::Web)
+        }
         Some(OPERATION) => PreparedClientRun::parse(request).map(PreparedTerminalRun::Client),
         Some(operation @ (super::v13_debug_server::START | super::v13_debug_server::STOP)) => {
             super::v13_debug_server::PreparedDebugServer::parse(request, operation)
@@ -209,8 +229,17 @@ fn parse_launch_arguments(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> Result<LaunchArguments, DomainResult> {
-    const ACCEPTED: [&str; 6] = [
+    parse_launch_arguments_for_runner(args, context, PINNED_RUNNER.interactive_login)
+}
+
+fn parse_launch_arguments_for_runner(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+    supports_interactive_login: bool,
+) -> Result<LaunchArguments, DomainResult> {
+    const ACCEPTED: [&str; 7] = [
         "clientMode",
+        "interactiveLogin",
         "debugUrl",
         "execute",
         "applicationParameter",
@@ -220,7 +249,9 @@ fn parse_launch_arguments(
     if let Some(unknown) = args.keys().find(|key| !ACCEPTED.contains(&key.as_str())) {
         return Err(reject(
             RefusalCode::BadValue,
-            format!("launch does not accept `{unknown}`; the closed args are clientMode, debugUrl, execute, applicationParameter, waitForExit and waitTimeoutMs"),
+            format!(
+                "launch does not accept `{unknown}`; see the launch argsSchema in unica.run({{}})"
+            ),
         ));
     }
     let mode = args
@@ -233,17 +264,39 @@ fn parse_launch_arguments(
                 "launch clientMode must be one of designer, thin, thick, ordinary",
             )
         })?;
-    let debug_url = match args.get("debugUrl") {
-        None => None,
-        Some(Value::String(url)) if mode == ClientMode::Thin && debug_port(url).is_some() => {
-            Some(url.clone())
+    let interactive_login = match args.get("interactiveLogin") {
+        None => false,
+        Some(Value::Bool(_)) if mode != ClientMode::Thin => {
+            return Err(reject(
+                RefusalCode::BadValue,
+                "launch interactiveLogin requires clientMode thin",
+            ));
         }
+        Some(Value::Bool(true)) if !supports_interactive_login => {
+            return Err(reject(
+                RefusalCode::UnsupportedOperation,
+                "the pinned v8-runner does not support launch interactiveLogin",
+            ));
+        }
+        Some(Value::Bool(value)) => *value,
         Some(_) => {
             return Err(reject(
                 RefusalCode::BadValue,
-                "launch debugUrl requires clientMode thin and http://127.0.0.1:<port>",
+                "launch interactiveLogin must be boolean",
             ))
         }
+    };
+    let debug_url = if let Some(value) = args.get("debugUrl") {
+        let endpoint = value.as_str().and_then(DebugServerUrl::parse);
+        let Some(endpoint) = endpoint.filter(|_| mode == ClientMode::Thin) else {
+            return Err(reject(
+                RefusalCode::BadValue,
+                "launch debugUrl requires clientMode thin and a canonical http://host:port address",
+            ));
+        };
+        Some(endpoint.to_string())
+    } else {
+        None
     };
     let application_parameter =
         match args.get("applicationParameter") {
@@ -360,6 +413,12 @@ fn parse_launch_arguments(
         _ => {}
     }
     if wait_for_exit {
+        if interactive_login {
+            return Err(reject(
+                RefusalCode::BadValue,
+                "launch interactiveLogin cannot wait for exit",
+            ));
+        }
         if mode != ClientMode::Thin {
             return Err(reject(
                 RefusalCode::BadValue,
@@ -380,17 +439,12 @@ fn parse_launch_arguments(
     }
     Ok(LaunchArguments {
         mode,
+        interactive_login,
         debug_url,
         execute,
         application_parameter,
         wait_timeout_ms: if wait_for_exit { wait_timeout_ms } else { None },
     })
-}
-
-fn debug_port(url: &str) -> Option<u16> {
-    let text = url.strip_prefix("http://127.0.0.1:")?;
-    let port = text.parse::<u16>().ok()?;
-    (port != 0 && text == port.to_string()).then_some(port)
 }
 
 fn execute_with_runner(
@@ -736,6 +790,9 @@ fn invoke_runner(
     if let Some(url) = &prepared.arguments.debug_url {
         args.extend(["--debug".to_string(), url.clone()]);
     }
+    if prepared.arguments.interactive_login {
+        args.push("--interactive-login".to_string());
+    }
     if let Some((_, absolute)) = &prepared.arguments.execute {
         args.extend(["--execute".to_string(), absolute.display().to_string()]);
     }
@@ -970,6 +1027,9 @@ fn public_arguments(prepared: &PreparedClientRun) -> Value {
     );
     if let Some(url) = &prepared.arguments.debug_url {
         args.insert("debugUrl".to_string(), json!(url));
+    }
+    if prepared.arguments.interactive_login {
+        args.insert("interactiveLogin".to_string(), Value::Bool(true));
     }
     if let Value::String(execute) = execute_text(prepared) {
         args.insert("execute".to_string(), Value::String(execute));
@@ -1663,6 +1723,87 @@ fn main() {
 
     /// rule: INV.WIRE.TERMINAL-RUN-HAS-NO-FENCE
     #[test]
+    fn interactive_login_uses_only_the_opted_in_thin_launch_and_survives_preview() {
+        let root = workspace();
+        let ctx = context(root.path());
+        let url = "http://127.0.0.1:1561";
+        for opt_in in [None, Some(false), Some(true)] {
+            let mut args = json!({"clientMode":"thin","debugUrl":url});
+            if let Some(value) = opt_in {
+                args["interactiveLogin"] = json!(value);
+            }
+            for dry_run in [true, false] {
+                let prepared = PreparedClientRun {
+                    arguments: parse_launch_arguments_for_runner(
+                        args.as_object().unwrap(),
+                        &ctx,
+                        true,
+                    )
+                    .unwrap(),
+                    dry_run,
+                    context: ctx.clone(),
+                };
+                let mut receipt = if dry_run {
+                    preview_envelope("thin", None)
+                } else {
+                    launched_envelope("thin", 137, None)
+                };
+                receipt["data"]["debug"] = json!({"url":url});
+                let runner = SequenceRunner::new(vec![process(receipt, true)]);
+                let result = execute_with_resolved_runner(
+                    &prepared,
+                    &runner,
+                    CancellationToken::new(),
+                    &tool(root.path()),
+                );
+                assert!(result.ok, "{:?}", result.diagnostics);
+                let calls = runner.calls.lock().unwrap();
+                assert_eq!(calls.len(), 1);
+                assert_eq!(
+                    calls[0]
+                        .args
+                        .iter()
+                        .filter(|arg| *arg == "--interactive-login")
+                        .count(),
+                    usize::from(opt_in == Some(true))
+                );
+                assert!(calls[0]
+                    .args
+                    .windows(2)
+                    .any(|pair| pair == ["--debug", url]));
+                if dry_run {
+                    let next_args = &result.next[0]["args"]["args"];
+                    assert_eq!(
+                        next_args["interactiveLogin"].as_bool(),
+                        opt_in.filter(|v| *v)
+                    );
+                    assert_eq!(next_args["debugUrl"], url);
+                }
+            }
+        }
+        for args in [
+            json!({"clientMode":"designer","interactiveLogin":true}),
+            json!({"clientMode":"thick","interactiveLogin":true}),
+            json!({"clientMode":"ordinary","interactiveLogin":true}),
+            json!({"clientMode":"thin","interactiveLogin":"true"}),
+            json!({"clientMode":"thin","interactiveLogin":true,"waitForExit":true,"waitTimeoutMs":2000,"applicationParameter":""}),
+        ] {
+            let error = parse_launch_arguments_for_runner(args.as_object().unwrap(), &ctx, true)
+                .unwrap_err();
+            assert_eq!(error.diagnostics[0]["code"], "bad_value", "{args}");
+        }
+        let args = json!({"clientMode":"thin","interactiveLogin":true});
+        let error =
+            parse_launch_arguments_for_runner(args.as_object().unwrap(), &ctx, false).unwrap_err();
+        assert_eq!(error.diagnostics[0]["code"], "unsupported_operation");
+        let plain = json!({"clientMode":"thin","interactiveLogin":false});
+        let arguments =
+            parse_launch_arguments_for_runner(plain.as_object().unwrap(), &ctx, false).unwrap();
+        assert!(!arguments.interactive_login);
+    }
+
+    /// rule: INV.WIRE.TERMINAL-RUN-HAS-NO-FENCE
+    #[test]
     fn thin_debug_url_is_typed_and_forwarded_without_relaunch() {
         let root = workspace();
         let url = "http://127.0.0.1:11856";
@@ -1715,6 +1856,49 @@ fn main() {
             runner.discarded.load(std::sync::atomic::Ordering::Relaxed),
             1
         );
+    }
+
+    /// rule: INV.WIRE.TERMINAL-RUN-HAS-NO-FENCE
+    #[test]
+    fn thin_launch_previews_and_dispatches_the_exact_external_debug_server() {
+        let root = workspace();
+        let url = "http://dbgs.example.test:80";
+        for dry_run in [true, false] {
+            let prepared = prepared(
+                root.path(),
+                json!({"clientMode":"thin", "debugUrl":url}),
+                dry_run,
+            );
+            let mut receipt = if dry_run {
+                preview_envelope("thin", None)
+            } else {
+                launched_envelope("thin", 131, None)
+            };
+            receipt["data"]["debug"] = json!({"url":url});
+            let runner = SequenceRunner::new(vec![process(receipt, true)]);
+            let result = execute_with_resolved_runner(
+                &prepared,
+                &runner,
+                CancellationToken::new(),
+                &tool(root.path()),
+            );
+            assert!(result.ok, "{:?}", result.diagnostics);
+            let calls = runner.calls.lock().unwrap();
+            assert_eq!(calls.len(), 1);
+            assert!(calls[0]
+                .args
+                .windows(2)
+                .any(|pair| pair == ["--debug", url]));
+            let data = result.data.unwrap();
+            assert_eq!(data["debugUrl"], url);
+            assert_eq!(data["providerDispatched"], !dry_run);
+            if dry_run {
+                assert_eq!(result.next[0]["args"]["args"]["debugUrl"], url);
+            } else {
+                assert_eq!(data["pid"], 131);
+                assert_eq!(data["debugState"], "requested");
+            }
+        }
     }
 
     /// rule: INV.WIRE.TERMINAL-RUN-HAS-NO-FENCE
