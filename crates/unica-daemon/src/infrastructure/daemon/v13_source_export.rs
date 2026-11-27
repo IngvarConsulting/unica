@@ -1694,6 +1694,7 @@ fn reject(code: RefusalCode, message: impl Into<String>) -> DomainResult {
 /// `provider_absent` назначает общий помощник.
 #[cfg(test)]
 mod medium_tests {
+    use super::super::runner::VERSION;
     use super::super::v13_infobase_exports::map_runner_code;
     use super::*;
     use std::fs;
@@ -1802,7 +1803,7 @@ mod medium_tests {
                 &runner,
                 CancellationToken::new(),
                 &tool(root),
-                "0.19.0",
+                VERSION,
             )
         };
         let result = pull();

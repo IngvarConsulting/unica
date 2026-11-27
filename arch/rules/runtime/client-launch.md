@@ -11,7 +11,7 @@ id: INV.WIRE.TERMINAL-RUN-HAS-NO-FENCE
 без запуска; ответ раннера, сообщающий о запуске во время preview,
 отклоняется.
 
-Закрытые аргументы — `clientMode`, `debugUrl`, `webDebugUrl`, `execute`, `applicationParameter`,
+Закрытые аргументы — `clientMode`, `debugUrl`, `webDebugUrl`, `interactiveLogin`, `execute`, `applicationParameter`,
 `waitForExit`, `waitTimeoutMs`. Для `thin` аргумент `debugUrl` задаёт выбранный
 владельцем HTTP-адрес работающего сервера отладки в виде DNS-имени, IPv4
 или IPv6 в квадратных скобках с явным портом. DAP и тонкий клиент используют
@@ -19,6 +19,15 @@ id: INV.WIRE.TERMINAL-RUN-HAS-NO-FENCE
 При отказе запуска Unica не запускает клиента повторно без
 отладки. Квитанция с PID и `debugState: "requested"` подтверждает запуск
 с запросом отладки. Подключение клиента к серверу подтверждает DAP.
+
+Designer определяет поддержку `interactiveLogin` по наличию поля в
+`launch.argsSchema.properties` словаря `unica.run({})`. При поддержке
+поля `interactiveLogin: true` запускает тонкий клиент с обычным входом
+средствами 1С, без передачи учётных данных проекта. Адрес ИБ и `debugUrl`
+сохраняются. Этот режим доступен только без ожидания выхода клиента.
+Пропуск поля или значение `false` сохраняет запуск с настройками проекта.
+Если адаптер не поддерживает поле, явный запрос режима получает отказ
+до запуска клиента.
 
 Для отладки веб-клиента IDE вызывает `web.publish` с аргументом `prepareDebug`
 и явным `dryRun`. Аргумент содержит локальный HTTP-адрес сервера отладки
