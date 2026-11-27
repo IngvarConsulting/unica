@@ -106,7 +106,7 @@ fn resolve_modules(
 ) -> Result<(Vec<DebugModuleSource>, Vec<DebugSourceRoot>)> {
     let address = match query {
         DebugModuleQuery::Address(text) => Some(QualifiedAddress::parse(text)?),
-        DebugModuleQuery::Runtime(_) => None,
+        DebugModuleQuery::Frame { .. } | DebugModuleQuery::Runtime(_) => None,
     };
     let requested_set = address.as_ref().map(QualifiedAddress::source_set);
     let admission =
@@ -136,6 +136,14 @@ fn resolve_modules(
         if requested_set.is_some_and(|name| name != set.name) {
             continue;
         }
+        let frame_address = if let DebugModuleQuery::Frame { module, id } = query {
+            if id.extension.is_some() != (set.kind == SourceSetKind::Extension) {
+                continue;
+            }
+            Some(module.in_source_set(&set.name)?)
+        } else {
+            None
+        };
         reject_linked_source_root_route(canonical, &path)?;
         let root = open_source_directory(&path)?;
         if identity != Some(root.identity()) {
@@ -145,7 +153,7 @@ fn resolve_modules(
             &root,
             set,
             query,
-            address.as_ref(),
+            address.as_ref().or(frame_address.as_ref()),
             &mut modules,
             previous,
             observed,
@@ -177,8 +185,7 @@ fn read_modules(
         None
     };
 
-    if matches!(query, DebugModuleQuery::Runtime(ids) if !ids.iter().any(|id| id.extension == extension))
-    {
+    if runtime_ids(query).is_some_and(|ids| !ids.iter().any(|id| id.extension == extension)) {
         return Ok(());
     }
     let owner_filter = address.and_then(|at| at.segments().first());
@@ -246,13 +253,12 @@ struct SourceSetModules<'a> {
 
 impl SourceSetModules<'_> {
     fn wants_role(&self, role: PlatformXmlModuleRole) -> bool {
-        match self.query {
-            DebugModuleQuery::Runtime(ids) => ids.iter().any(|id| {
+        runtime_ids(self.query).is_none_or(|ids| {
+            ids.iter().any(|id| {
                 id.extension.as_deref() == self.extension
                     && Some(id.property) == role_property(role)
-            }),
-            _ => true,
-        }
+            })
+        })
     }
 
     fn supports_kind(&self, kind: NodeKind) -> bool {
@@ -476,12 +482,23 @@ impl SourceSetModules<'_> {
         };
         let matches = match self.query {
             DebugModuleQuery::Address(expected) => source.address.to_string() == expected,
+            DebugModuleQuery::Frame { id, .. } => {
+                source.runtime_id == *id && self.address == Some(&source.address)
+            }
             DebugModuleQuery::Runtime(expected) => expected.contains(&source.runtime_id),
         };
         if matches {
             self.modules.push(source);
         }
         Ok(())
+    }
+}
+
+fn runtime_ids(query: DebugModuleQuery<'_>) -> Option<&[DebugModuleId]> {
+    match query {
+        DebugModuleQuery::Address(_) => None,
+        DebugModuleQuery::Frame { id, .. } => Some(std::slice::from_ref(id)),
+        DebugModuleQuery::Runtime(ids) => Some(ids),
     }
 }
 
@@ -552,6 +569,7 @@ fn property<'a>(owner: Node<'a, '_>, name: &str) -> Option<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use unica_source_contract::debug_source::DebugFrameModule;
 
     #[test]
     fn debug_attach_skips_a_declared_source_root_that_is_a_file() {
@@ -687,6 +705,98 @@ mod tests {
         assert_eq!(after.address, before.address);
         std::fs::remove_file(src.join("CommonModules/Probe/Ext/Module.bsl")).unwrap();
         assert!(resolve().is_empty());
+    }
+
+    #[test]
+    fn named_frame_checks_only_the_registered_form_and_its_full_id() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/acceptance/workspace-resolve-resources");
+        let workspace = tempfile::tempdir().unwrap();
+        crate::infrastructure::test_fixtures::copy_tree(&fixture, workspace.path());
+        let src = workspace.path().join("src");
+        std::fs::write(src.join("CommonForms/Main.xml"), "unrelated broken form").unwrap();
+        let id = DebugModuleId {
+            extension: None,
+            object: uuid::Uuid::from_u128(0xf3317000_0000_4000_8000_000000000004),
+            property: role_property(PlatformXmlModuleRole::FormModule).unwrap(),
+        };
+        let mut resolve = workspace_debug_resolver(workspace.path(), None).unwrap();
+        let mut named = |name: &str, candidate: &DebugModuleId| {
+            let module = DebugFrameModule::from_presentation(name).unwrap();
+            resolve(DebugModuleQuery::Frame {
+                module: &module,
+                id: candidate,
+            })
+            .unwrap()
+            .modules
+        };
+        let frame = "Обработка.Processor.Форма.Main.Форма.ПриСозданииНаСервере()";
+        let found = named(frame, &id);
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            found[0].address.to_string(),
+            "main:DataProcessor.Processor.Form.Main.Module.Form"
+        );
+        assert_eq!(found[0].runtime_id, id);
+        for wrong in [
+            DebugModuleId {
+                object: uuid::Uuid::nil(),
+                ..id.clone()
+            },
+            DebugModuleId {
+                property: role_property(PlatformXmlModuleRole::ObjectModule).unwrap(),
+                ..id.clone()
+            },
+            DebugModuleId {
+                extension: Some("Other".into()),
+                ..id.clone()
+            },
+        ] {
+            assert!(named(frame, &wrong).is_empty());
+        }
+        // Ghost has a saved form in the fixture, but the owner did not register it.
+        assert!(named("Обработка.Processor.Форма.Ghost.Форма.Открыть()", &id).is_empty());
+        std::fs::remove_file(src.join("DataProcessors/Processor/Forms/Main/Ext/Form/Module.bsl"))
+            .unwrap();
+        assert!(named(frame, &id).is_empty());
+    }
+
+    #[test]
+    fn named_frame_retains_each_matching_source_set_and_checks_the_extension_name() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/acceptance/workspace-resolve-resources/src");
+        let workspace = tempfile::tempdir().unwrap();
+        for path in ["base", "copy", "extension"] {
+            crate::infrastructure::test_fixtures::copy_tree(&fixture, &workspace.path().join(path));
+        }
+        std::fs::write(workspace.path().join("v8project.yaml"), "source-set:\n  - {name: main, type: CONFIGURATION, path: base}\n  - {name: other, type: CONFIGURATION, path: copy}\n  - {name: ext, type: EXTENSION, path: extension}\n").unwrap();
+        let mut resolve = workspace_debug_resolver(workspace.path(), None).unwrap();
+        let module =
+            DebugFrameModule::from_presentation("DataProcessor.Processor.Form.Main.Form.Open()")
+                .unwrap();
+        let mut id = DebugModuleId {
+            extension: None,
+            object: uuid::Uuid::from_u128(0xf3317000_0000_4000_8000_000000000004),
+            property: role_property(PlatformXmlModuleRole::FormModule).unwrap(),
+        };
+        let mut source_sets = |id: &DebugModuleId| {
+            let mut sets: Vec<_> = resolve(DebugModuleQuery::Frame {
+                module: &module,
+                id,
+            })
+            .unwrap()
+            .modules
+            .into_iter()
+            .map(|source| source.address.source_set().to_owned())
+            .collect();
+            sets.sort();
+            sets
+        };
+        assert_eq!(source_sets(&id), ["main", "other"]);
+        id.extension = Some("ResourceResolve".into());
+        assert_eq!(source_sets(&id), ["ext"]);
+        id.extension = Some("ext".into());
+        assert!(source_sets(&id).is_empty());
     }
 
     #[test]

@@ -248,6 +248,8 @@ struct Breakpoint {
     condition: Option<String>,
 }
 
+type Breakpoints = HashMap<String, (DebugModuleId, Vec<Breakpoint>)>;
+
 struct Target {
     id: Uuid,
     frames: Vec<Frame>,
@@ -284,7 +286,7 @@ struct SnapshotNode {
 struct Session {
     rdbg: Arc<Rdbg>,
     modules: Modules,
-    breakpoints: HashMap<String, (DebugModuleId, Vec<Breakpoint>)>,
+    breakpoints: Breakpoints,
     targets: HashMap<u64, Target>,
     next_id: u64,
     event_reader: Option<Receiver<Result<String>>>,
@@ -476,32 +478,11 @@ impl Session {
                 Ok(Breakpoint { line, condition })
             })
             .collect::<Result<Vec<_>>>()?;
-        let mut updated = self.breakpoints.clone();
-        let installed = updated.remove(address);
-        // A previously installed breakpoint can be cleared even after its file was deleted.
-        if !breakpoints.is_empty() || installed.is_none() {
-            let id = self
-                .modules
-                .saved_id(address)?
-                .ok_or_else(|| format!("unknown debug module {address}"))?;
-            if !breakpoints.is_empty() {
-                updated.insert(address.to_owned(), (id, breakpoints.clone()));
-            }
-        }
-        let ids = updated
-            .values()
-            .map(|(id, _)| id.clone())
-            .collect::<Vec<_>>();
-        let resolved = self.modules.breakpoint_addresses(&ids)?;
-        // A different source at an existing address cannot inherit the installed lines or conditions.
-        updated.retain(|at, (id, _)| resolved.get(id).and_then(Option::as_ref) == Some(at));
-        if !breakpoints.is_empty() && !updated.contains_key(address) {
-            return Err(format!("ambiguous or changed debug module {address}").into());
-        }
+        let updated = self
+            .modules
+            .replace_breakpoints(&self.breakpoints, address, &breakpoints)?;
         self.rdbg
             .breakpoints(updated.values().map(|(id, points)| (id, points)))?;
-        self.modules
-            .remember(updated.iter().map(|(at, (id, _))| (id, at.as_str())));
         self.breakpoints = updated;
         Ok(json!({"breakpoints":breakpoints.iter().map(|bp| {
             json!({"verified":true,"line":bp.line,"source":source})
@@ -1163,7 +1144,8 @@ impl Session {
                 (Some("callStackFormed"), Some(thread))
                     if !stops.contains_key(&(target_id, "rteProcessing")) =>
                 {
-                    let frames = self.read_frames(result)?;
+                    let frames =
+                        self.read_frames(result, field(result, "stopByBP") == Some("true"))?;
                     let target = self.targets.get_mut(&thread).expect("thread was found");
                     if target.exception.is_some() {
                         if target.frames.is_empty() {
@@ -1174,8 +1156,11 @@ impl Session {
                     // 1C also marks a normal step as stopByBP. Prefer a step
                     // reason unless the new location has a user breakpoint.
                     let user_breakpoint = frames.first().is_some_and(|frame| {
-                        self.breakpoints.values().any(|(module, lines)| {
+                        self.breakpoints.iter().any(|(at, (module, lines))| {
                             frame.module.as_ref() == Some(module)
+                                && frame.body["source"]["path"]
+                                    .as_str()
+                                    .is_none_or(|path| path == at)
                                 && lines.iter().any(|bp| {
                                     bp.condition.is_none() && frame.body["line"] == bp.line
                                 })
@@ -1212,7 +1197,7 @@ impl Session {
                             .copied()
                             .unwrap_or(result)
                     };
-                    let frames = self.read_frames(stack)?;
+                    let frames = self.read_frames(stack, false)?;
                     let target = self.targets.get_mut(&thread).expect("thread was found");
                     target.frames = frames;
                     target.stepping = false;
@@ -1237,8 +1222,7 @@ impl Session {
         Ok(())
     }
 
-    fn read_frames(&mut self, result: Node<'_, '_>) -> Result<Vec<Frame>> {
-        let mut ids = HashSet::new();
+    fn read_frames(&mut self, result: Node<'_, '_>, breakpoint_stop: bool) -> Result<Vec<Frame>> {
         let mut stack = Vec::new();
         for entry in result
             .children()
@@ -1259,34 +1243,57 @@ impl Session {
                     })
                 })
                 .transpose()?;
-            ids.extend(id.iter().cloned());
-            stack.push((entry, id));
+            let line = field(entry, "lineNo")
+                .ok_or("missing rdbg stack line")?
+                .parse::<u32>()?;
+            stack.push((line, id, decode(field(entry, "presentation"))?));
         }
-        let ids: Vec<_> = ids.into_iter().collect();
-        let sources = self.modules.addresses(&ids).unwrap_or_else(|error| {
-            eprintln!("unica dap: cannot resolve stack frame sources: {error}");
-            let mut available = HashMap::new();
-            if ids.len() > 1 {
-                for id in ids {
-                    if let Ok(matches) = self.modules.addresses(std::slice::from_ref(&id)) {
-                        available.extend(matches);
-                    }
-                }
-            }
-            available
-        });
-        stack.into_iter().rev().enumerate().map(|(level, (entry, frame_module))| {
-            self.next_id += 1;
-            let id = self.next_id;
-            let mut body = json!({
-                "id":id,"name":decode(field(entry,"presentation"))?,
-                "line":field(entry,"lineNo").ok_or("missing rdbg stack line")?.parse::<u32>()?,"column":1
+        // Only the innermost frame can report a hit on one of the installed lines.
+        let mut hit = stack
+            .last()
+            .filter(|_| breakpoint_stop)
+            .and_then(|(line, id, _)| {
+                let module = id.as_ref()?;
+                self.breakpoints
+                    .iter()
+                    .find_map(|(at, (installed, points))| {
+                        (installed == module && points.iter().any(|point| point.line == *line))
+                            .then_some(at.as_str())
+                    })
             });
-            if let Some(address) = frame_module.as_ref().and_then(|id| sources.get(id)).and_then(Option::as_deref) {
-                body["source"] = json!({"name":address,"path":address});
-            }
-            Ok(Frame { id, level, module: frame_module, body, variable_paths: HashMap::new(), evaluated_children: HashMap::new(), collection_paths: HashSet::new(), snapshots: HashMap::new() })
-        }).collect()
+        let sources = self.modules.frame_addresses(
+            stack
+                .iter()
+                .rev()
+                .map(|(_, id, name)| (id.as_ref(), name.as_str(), hit.take())),
+        );
+        Ok(stack
+            .into_iter()
+            .rev()
+            .zip(sources)
+            .enumerate()
+            .map(|(level, ((line, frame_module, name), source))| {
+                self.next_id += 1;
+                let id = self.next_id;
+                let mut body = json!({
+                    "id":id,"name":name,
+                    "line":line,"column":1
+                });
+                if let Some(address) = source {
+                    body["source"] = json!({"name":address,"path":address});
+                }
+                Frame {
+                    id,
+                    level,
+                    module: frame_module,
+                    body,
+                    variable_paths: HashMap::new(),
+                    evaluated_children: HashMap::new(),
+                    collection_paths: HashSet::new(),
+                    snapshots: HashMap::new(),
+                }
+            })
+            .collect())
     }
 }
 
