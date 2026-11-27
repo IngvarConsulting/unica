@@ -41,7 +41,7 @@ class GitEventClassificationTests(unittest.TestCase):
     def git(self, repo: Path, *arguments: str) -> str:
         return subprocess.run(["git", *arguments], cwd=repo, check=True, capture_output=True, text=True).stdout.strip()
 
-    def repository(self) -> tuple[Path, str]:
+    def repository(self, *, filemode: str = "true") -> tuple[Path, str]:
         temporary = tempfile.TemporaryDirectory(prefix="ci-event-")
         self.addCleanup(temporary.cleanup)
         repo = Path(temporary.name)
@@ -49,13 +49,14 @@ class GitEventClassificationTests(unittest.TestCase):
         self.git(repo, "config", "user.name", "CI test")
         self.git(repo, "config", "user.email", "ci@example.invalid")
         self.git(repo, "config", "commit.gpgsign", "false")
-        self.git(repo, "config", "core.filemode", "true")
+        self.git(repo, "config", "core.filemode", filemode)
         (repo / "README.md").write_text("Before\n")
         (repo / "Cargo.toml").write_text("# manifest fixture\n")
         return repo, self.commit(repo)
 
-    def commit(self, repo: Path) -> str:
-        self.git(repo, "add", "--all")
+    def commit(self, repo: Path, *, stage_all: bool = True) -> str:
+        if stage_all:
+            self.git(repo, "add", "--all")
         self.git(repo, "commit", "-m", "fixture")
         return self.git(repo, "rev-parse", "HEAD")
 
@@ -170,25 +171,44 @@ class GitEventClassificationTests(unittest.TestCase):
                 self.assert_full(self.queue(repo, base, self.commit(repo)))
 
     def test_renames_deletions_symlinks_and_executable_modes_never_skip_rust(self) -> None:
-        for kind in ("rename", "delete", "symlink", "mode"):
-            with self.subTest(kind=kind):
-                repo, base = self.repository()
+        for kind, filemode in (("rename", "true"), ("delete", "true"), ("symlink", "true"),
+                               ("mode", "false"), ("mode", "true")):
+            with self.subTest(kind=kind, filemode=filemode):
+                repo, base = self.repository(filemode=filemode)
                 readme = repo / "README.md"
                 if kind == "rename":
                     readme.rename(repo / "CONTRIBUTING.md")
                 elif kind == "mode":
-                    readme.chmod(0o755)
+                    self.git(repo, "update-index", "--chmod=+x", "--", readme.name)
                 else:
                     readme.unlink()
                     if kind == "symlink":
                         readme.symlink_to("Cargo.toml")
-                incoming = self.commit(repo)
-                self.assert_full(self.queue(repo, base, incoming))
-                self.git(repo, "checkout", "--detach", base)
+
+                # Keep the staged mode when it differs from the working tree.
+                incoming = self.commit(repo, stage_all=kind != "mode")
+                if kind == "mode":
+                    base_entry = self.git(repo, "ls-tree", base, "--", readme.name)
+                    head_entry = self.git(repo, "ls-tree", incoming, "--", readme.name)
+                    base_mode, _, base_blob = base_entry.partition("\t")[0].split()
+                    head_mode, _, head_blob = head_entry.partition("\t")[0].split()
+                    self.assertEqual(("100644", "100755"), (base_mode, head_mode))
+                    self.assertEqual(base_blob, head_blob)
+
+                scope = self.queue(repo, base, incoming)
+                self.assert_full(scope)
+                if kind == "mode":
+                    self.assertEqual((base, incoming), (scope.base_sha, scope.head_sha))
+
+                # The index-only commit can leave the fixture worktree dirty.
+                self.git(repo, "checkout", "--force", "--detach", base)
                 self.git(repo, "merge", "--no-ff", incoming, "-m", "event merge")
                 merged = self.git(repo, "rev-parse", "HEAD")
                 event = {"pull_request": {"base": {"sha": base}, "head": {"sha": incoming}, "labels": []}}
-                self.assert_full(self.module.classify_event(repo, "pull_request", "refs/pull/1/merge", merged, event))
+                scope = self.module.classify_event(repo, "pull_request", "refs/pull/1/merge", merged, event)
+                self.assert_full(scope)
+                if kind == "mode":
+                    self.assertEqual((base, merged), (scope.base_sha, scope.head_sha))
 
     def test_bad_or_stale_queue_identity_falls_back_to_all_contours(self) -> None:
         repo, base = self.repository()
