@@ -197,6 +197,7 @@ fn provider_search_test_execution(
             symbol: None,
             kind: None,
             snippet: "x".repeat(snippet_bytes),
+            snippet_evidence: Default::default(),
             attributes: serde_json::Map::new(),
         })
         .collect();
@@ -2127,6 +2128,7 @@ fn body_line_provider_search_uses_current_spans_and_preserves_evidence() {
             symbol: Some("InventedMethodName".into()),
             kind: Some("procedure".into()),
             snippet: snippet.into(),
+            snippet_evidence: Default::default(),
             attributes: serde_json::Map::from_iter([("column".into(), json!(2))]),
         })
         .collect();
@@ -2179,6 +2181,98 @@ fn body_line_provider_search_uses_current_spans_and_preserves_evidence() {
         assert!(hits[3]["limits"].is_array());
         assert_eq!(hits[3]["snippet"], "stale Needle");
     }
+}
+
+/// rule: INV.APP.CODE-SEARCH-HIT-ADDRESS
+#[test]
+fn provider_search_body_proves_crlf_without_hiding_ambiguity() {
+    use unica_address::source_target::{MetadataAddress, TargetKind};
+    use unica_code_intelligence::model::ProviderSearchHit;
+    use unica_execution::invocation_store::ToolIdentity;
+    use unica_source_contract::location::SourceLocation;
+
+    let workspace = resolve_exact_workspace();
+    let path = workspace
+        .path()
+        .join("src/CommonModules/Probe/Ext/Module.bsl");
+    let shown =
+        "&После(\"BeforeProbe\")\nПроцедура Ping()\n  X = \"Needle Needle\";\nКонецПроцедуры";
+    let source = format!("// outside\r\n{}\r\n", shown.replace('\n', "\r\n"));
+    std::fs::write(&path, &source).unwrap();
+    let cases = [
+        (2, 5, shown),
+        (4, 4, "Needle"),
+        (2, 6, shown),
+        (2, 5, "Needle Needle"),
+        (2, 5, "\tX = \"Needle Needle\";"),
+    ];
+    let hits = cases
+        .into_iter()
+        .enumerate()
+        .map(|(index, (line, end_line, snippet))| ProviderSearchHit {
+            rank: Some(index + 1),
+            provider_score: Some(0.5),
+            location: SourceLocation::Addressed {
+                source_set: "main".into(),
+                metadata_path: Some(
+                    MetadataAddress::parse_logical("CommonModule.Probe.Module").unwrap(),
+                ),
+                target_kind: TargetKind::Module,
+            },
+            line,
+            end_line: Some(end_line),
+            symbol: Some("Ping".into()),
+            kind: Some("procedure".into()),
+            snippet: snippet.into(),
+            snippet_evidence: Default::default(),
+            attributes: serde_json::Map::new(),
+        })
+        .collect();
+    let section = ProviderSearchSection::complete(
+        ProviderIdentity::new(ProviderRole::Symbol, "fixture"),
+        SearchRanking::Provider,
+        SearchOrdering::Provider,
+        hits,
+        vec![],
+    )
+    .unwrap();
+    let service = Arc::new(
+        super::CanonicalV13ReadService::with_search_providers_for_test(vec![Arc::new(
+            SectionSearchProvider {
+                section,
+                calls: Arc::new(AtomicUsize::new(0)),
+            },
+        )]),
+    );
+    let result = invoke_exact_read_with_service(
+        workspace.path(),
+        ToolIdentity::Search,
+        json!({"query":"Needle","role":"symbol","scope":"main:CommonModule.Probe"}),
+        service,
+    );
+    assert!(result.ok, "{result:?}");
+    let data = result.data.unwrap();
+    let section = &data["matches"][0];
+    assert_eq!(section["searchComplete"], true, "{section:#}");
+    let hits = section["hits"].as_array().unwrap();
+    let at = "main:CommonModule.Probe.Method.Ping.Body#L2-L5";
+    assert_eq!(hits[0]["at"], at, "{section:#}");
+    let opened = invoke_exact_read(workspace.path(), ToolIdentity::View, json!({"at":at}));
+    assert_eq!(
+        opened.source_text.unwrap(),
+        source.strip_prefix("// outside\r\n").unwrap()
+    );
+    for (index, (hit, (line, end_line, snippet))) in hits.iter().zip(cases).enumerate() {
+        assert_eq!(hit["rank"], index + 1);
+        assert_eq!(hit["line"], line);
+        assert_eq!(hit["endLine"], end_line);
+        assert_eq!(hit["snippet"], snippet);
+        if index != 0 {
+            assert!(hit.get("at").is_none(), "{hit:#}");
+            assert!(hit["limits"].is_array(), "{hit:#}");
+        }
+    }
+    assert_eq!(std::fs::read_to_string(path).unwrap(), source);
 }
 
 /// rule: INV.APP.CODE-SEARCH-HIT-ADDRESS
@@ -3332,6 +3426,7 @@ fn public_role_search_surfaces_partial_provider_warning_and_hit() {
             symbol: Some("Post".to_string()),
             kind: Some("procedure".to_string()),
             snippet: "Post".to_string(),
+            snippet_evidence: Default::default(),
             attributes: serde_json::Map::new(),
         }],
         vec!["ignored malformed provider result #1".to_string()],

@@ -882,6 +882,7 @@ mod tests {
             symbol: None,
             kind: None,
             snippet: format!("hit {index}"),
+            snippet_evidence: Default::default(),
             attributes: Map::new(),
         }
     }

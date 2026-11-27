@@ -944,18 +944,14 @@ impl CanonicalV13ReadService {
             // Enrichment never changes provider order, ranks or snippets.
             for (_, (source_index,module,indices)) in groups {
                 let Ok(authority) = sources[source_index].logical_view_read_authority(cancellation) else { continue; };
-                for index in indices {
-                    let hit = &hits[index];
-                    if hit.line == 0 || hit.snippet.is_empty() { continue; }
-                    let Some(to) = hit.end_line.or_else(|| hit.line.checked_add(hit.snippet.lines().count().saturating_sub(1))) else { continue; };
-                    match authority.body_for_search_hit(&module, hit.line, to, &hit.snippet) {
-                        Ok(Some(body)) => {
-                            let at = if to == hit.line { format!("{body}#L{}", hit.line) } else { format!("{body}#L{}-L{to}", hit.line) };
-                            projected[index] = Map::from_iter([("at".into(),json!(at))]);
-                        }
-                        Ok(None) => {}
-                        Err(error) if matches!(error.code(), RefusalCode::Cancelled | RefusalCode::DeadlineExceeded | RefusalCode::ConcurrentChange) => return Err(error),
-                        Err(_) => {}
+                let addresses = match authority.bodies_for_search_hits(&module, indices.iter().map(|&index| &hits[index])) {
+                    Ok(addresses) => addresses,
+                    Err(error) if matches!(error.code(), RefusalCode::Cancelled | RefusalCode::DeadlineExceeded | RefusalCode::ConcurrentChange) => return Err(error),
+                    Err(_) => continue,
+                };
+                for (index, address) in indices.into_iter().zip(addresses) {
+                    if let Some(at) = address {
+                        projected[index] = Map::from_iter([("at".into(),json!(at))]);
                     }
                 }
             }
