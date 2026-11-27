@@ -1,18 +1,18 @@
 ---
 name: code-patch
-description: Точечно вставить или заменить BSL-код в логически адресованном модуле XML-выгрузки Configuration или Extension 1С. Используй для одной проверяемой операции insert или replace.
-argument-hint: <at> <insert|replace> <text>
+description: Точечно вставить или заменить BSL-код либо удалить адресованный метод в модуле XML-выгрузки Configuration или Extension 1С. Используй для проверяемой операции insert, replace или delete.
+argument-hint: <at> <insert|replace|delete> [text]
 allowed-tools:
   - Read
   - Glob
 ---
 
-# /code-patch — безопасная вставка и замена BSL
+# /code-patch — вставка, замена и удаление BSL
 
 ## MCP routing
 
 - Preferred path: use MCP `unica` tool `unica.apply` с операциями
-  `code.insert` и `code.replace`.
+  `code.insert`, `code.replace` и `code.delete`.
 - Do not call internal MCP/CLI adapters directly. They are hidden behind
   `unica` and synchronized by the orchestrator.
 - Сначала вызови `unica.apply` с `at` и `ops`: это план без записи.
@@ -60,6 +60,15 @@ allowed-tools:
 до записи. Одноимённые методы в ветвях `#Если … #Иначе` внутри текста
 замены или уже в модуле дубликатами не считаются.
 
+Для удаления прочитай `Method.<Имя>.Body` и `Method.<Имя>.Can.code.delete`.
+В preview укажи адрес `Method.<Имя>` и `{"op":"code.delete","args":{}}`.
+В `args.ifRev` можно передать `rev` из чтения тела, чтобы план проверил редакцию
+модуля. Удаление охватывает аннотации, директивы, прилегающие строки описания
+и комментарий на строке окончания. Одиночная рамка входит в удаление, когда
+`//+` открывает блок описания, а `//-` стоит на строке окончания. Общие и
+неоднозначные границы проверяй по `Body` модуля. Перед исполнением проверь
+точные участки через `unica.diff`.
+
 Правится модуль существующего объекта метаданных в допущенном наборе
 исходников формата платформы. Физический путь к `*Module.bsl` остаётся
 внутренней деталью: наружу его отдаёт только аварийный `unica.resolve`, и в
@@ -80,6 +89,7 @@ allowed-tools:
 |---|---|---|
 | `code.insert` | Добавляет текст в конец модуля, до/после метода или якоря | `at`, `text`; у метода — `position`; у якоря — `selector.anchor`, `position` |
 | `code.replace` | Заменяет содержимое узла по адресу | `at`, `text` |
+| `code.delete` | Удаляет один метод с его оформлением | `at` метода, необязательный `ifRev` |
 
 Несколько операций одного вызова применяются как одна правка: либо все, либо
 ни одной.

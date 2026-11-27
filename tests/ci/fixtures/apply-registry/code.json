@@ -12,6 +12,12 @@
       "operation": "code.replace",
       "applicability": "Code",
       "skeleton": "Text"
+    },
+    {
+      "variant": "Delete",
+      "operation": "code.delete",
+      "applicability": "CodeDelete",
+      "skeleton": "Target"
     }
   ]
 }

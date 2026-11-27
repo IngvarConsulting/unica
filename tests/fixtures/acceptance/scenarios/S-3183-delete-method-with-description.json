@@ -1,0 +1,358 @@
+{
+  "id": "S-3183-delete-method-with-description",
+  "name": "delete-method-with-description",
+  "issue": 3183,
+  "workspace": "tests/fixtures/acceptance/workspace-code",
+  "area": "Код BSL",
+  "task": "Удалить метод с описанием и директивой одним сохранённым планом, сохранив точные байты соседнего метода.",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Пример.Method.ОбработатьПример.Body"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "moduleRevision": {
+          "pointer": "/rev"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Пример.Method.ОбработатьПример.Can.code.delete"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/op",
+          "eq": "code.delete"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/required",
+          "eq": []
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/additionalProperties",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/ifRev/pattern",
+          "eq": "^[0-9a-f]{64}$"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/text",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/contract/notes",
+          "contains": "its //+ opener is the first attached line and its //- closer is inline"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Пример.Method.Соседний.Body"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "neighbor": {
+          "pointer": "/sourceText"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.Пример.Method.ОбработатьПример.Body",
+        "ops": [
+          {
+            "op": "code.delete",
+            "args": {}
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: apply operation `code.delete` does not apply to Body `main:CommonModule.Пример.Method.ОбработатьПример.Body`; it applies at `main:CommonModule.Пример.Method.Обр",
+      "fileAssertions": [
+        {
+          "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.Пример.Method.ОбработатьПример",
+        "ops": [
+          {
+            "op": "code.delete",
+            "args": {
+              "ifRev": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "conflict: the module text changed since it was read; read its Body again",
+      "fileAssertions": [
+        {
+          "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.Пример",
+        "ops": [
+          {
+            "op": "code.delete",
+            "args": {
+              "at": "main:CommonModule.Пример.Method.ОбработатьПример"
+            }
+          },
+          {
+            "op": "code.delete",
+            "args": {
+              "at": "main:CommonModule.Пример.Method.Missing3183"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: BSL address cannot identify one stable writable node",
+      "fileAssertions": [
+        {
+          "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.Пример.Method.ОбработатьПример",
+        "ops": [
+          {
+            "op": "code.delete",
+            "args": {
+              "ifRev": "$capture.moduleRevision"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "token": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
+        }
+      ]
+    },
+    {
+      "tool": "unica.diff",
+      "args": {
+        "executionToken": "$capture.token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/chunks/0/side",
+          "eq": "before"
+        },
+        {
+          "pointer": "/data/chunks/0/totalBytes",
+          "eq": 392
+        },
+        {
+          "pointer": "/data/chunks/1/side",
+          "eq": "after"
+        },
+        {
+          "pointer": "/data/chunks/1/totalBytes",
+          "eq": 181
+        },
+        {
+          "pointer": "/data/chunks/0/content",
+          "contains": "&НаСервере"
+        },
+        {
+          "pointer": "/data/chunks/0/content",
+          "contains": "Функция ОбработатьПример()"
+        },
+        {
+          "pointer": "/data/chunks/1/content",
+          "contains": "// соседний метод сохраняется"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "9bdf80581750a4147243acb4ed6b97c73ce38e82361eca72569b3fe1779537a2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "9bdf80581750a4147243acb4ed6b97c73ce38e82361eca72569b3fe1779537a2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Пример.Method.ОбработатьПример"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: method `ОбработатьПример` was not found",
+      "fileAssertions": [
+        {
+          "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "9bdf80581750a4147243acb4ed6b97c73ce38e82361eca72569b3fe1779537a2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.Пример.Method.ОбработатьПример",
+        "ops": [
+          {
+            "op": "code.delete",
+            "args": {}
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: BSL address cannot identify one stable writable node",
+      "fileAssertions": [
+        {
+          "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "9bdf80581750a4147243acb4ed6b97c73ce38e82361eca72569b3fe1779537a2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Пример.Method.Соседний.Body"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/sourceText",
+          "eq": "$capture.neighbor"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "9bdf80581750a4147243acb4ed6b97c73ce38e82361eca72569b3fe1779537a2"
+        }
+      ]
+    }
+  ]
+}

@@ -670,6 +670,7 @@ operation_descriptors!(
     (InterfaceOperation::HomePageSet),
     (CodeOperation::Insert),
     (CodeOperation::Replace),
+    (CodeOperation::Delete),
     (EventOperation::Implement),
 );
 
@@ -1575,10 +1576,11 @@ mod tests {
             "homePage.set",
             "code.insert",
             "code.replace",
+            "code.delete",
             "event.implement",
         ];
         let registry = crate::apply::operation_registry();
-        assert_eq!(expected.len(), 136);
+        assert_eq!(expected.len(), 137);
         assert_eq!(registry.names(), expected);
         // Семейство одноимённых операций выбирается по каноническому адресу.
         const SHARED_NAMES: &[(&str, OperationFamily, OperationFamily)] = &[

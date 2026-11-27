@@ -7,12 +7,14 @@ use unica_source_contract::route::RouteClass;
 pub enum OperationApplicability {
     Code,
     CodeInsert,
+    CodeDelete,
 }
 impl OperationApplicability {
     pub const fn shape(self) -> &'static str {
         match self {
             Self::CodeInsert => "a module address, its `Body` or `Method.M`",
             Self::Code => "a module address, its `Body`, `Method.M` or `Method.M.Body`",
+            Self::CodeDelete => "a named method address (`Method.M`)",
         }
     }
     pub fn matches(self, site: &OperationSite<'_>) -> bool {
@@ -31,12 +33,17 @@ impl OperationApplicability {
                         || terminal.kind() == NodeKind::Body
                         || (terminal.kind() == NodeKind::Method && terminal.name().is_some()))
             }
+            Self::CodeDelete => {
+                site.route() == RouteClass::Module
+                    && terminal.kind() == NodeKind::Method
+                    && terminal.name().is_some()
+            }
         }
     }
 }
 /// Адрес самого модуля: `CommonModule.X`, `Owner.X.Module.Object`,
 /// `Module.Session`.
-fn module_terminal(segments: &[AddressSegment]) -> bool {
+pub(crate) fn module_terminal(segments: &[AddressSegment]) -> bool {
     match segments.last() {
         Some(last) if last.kind() == NodeKind::Module => last.name().is_some(),
         Some(last) if last.kind() == NodeKind::CommonModule => {

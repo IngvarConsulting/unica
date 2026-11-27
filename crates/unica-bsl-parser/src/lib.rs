@@ -283,6 +283,24 @@ impl ParsedModule<'_> {
         markers
     }
 
+    pub fn comment_ranges(&self) -> impl Iterator<Item = Range<usize>> {
+        self.parsed
+            .syntax_node()
+            .descendants_with_tokens()
+            .filter_map(|element| {
+                let token = element.into_token()?;
+                (token.kind() == SyntaxKind::COMMENT).then(|| byte_range(token.text_range()))
+            })
+    }
+
+    pub fn conditional_ranges(&self) -> impl Iterator<Item = Range<usize>> {
+        self.parsed
+            .syntax_node()
+            .descendants()
+            .filter_map(PreIfDir::cast)
+            .map(|node| byte_range(node.syntax().text_range()))
+    }
+
     pub fn conditional_branches(&self) -> Vec<ConditionalBranch> {
         let mut nodes = self
             .parsed

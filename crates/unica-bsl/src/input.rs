@@ -37,9 +37,26 @@ pub struct CodeReplaceArgs {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodeDeleteArgs {
+    pub at: QualifiedAddress,
+    pub if_rev: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CodePlanOperation {
     Insert(CodeInsertArgs),
     Replace(CodeReplaceArgs),
+    Delete(CodeDeleteArgs),
+}
+
+impl CodePlanOperation {
+    pub fn if_rev(&self) -> Option<&str> {
+        match self {
+            Self::Insert(_) => None,
+            Self::Replace(args) => args.if_rev.as_deref(),
+            Self::Delete(args) => args.if_rev.as_deref(),
+        }
+    }
 }
 
 pub fn parse_code_plan_operation(
@@ -55,10 +72,11 @@ pub fn parse_code_plan_operation(
     let allowed = match operation {
         "code.insert" => &["at", "text", "selector", "position"][..],
         "code.replace" => &["at", "text", "selector", "ifRev"][..],
+        "code.delete" => &["at", "ifRev"][..],
         _ => {
             return Err(bad_code_arg(
                 &base,
-                "code planner accepts only the closed code.insert/code.replace catalog",
+                "code planner accepts only code.insert, code.replace or code.delete",
             ))
         }
     };
@@ -84,9 +102,21 @@ pub fn parse_code_plan_operation(
             "at belongs to another actor-admitted source set",
         ));
     }
+    let addressed = code_projection(&at);
+    if operation == "code.delete" {
+        if !matches!(&addressed, Some((module, CodeProjection::Method(_)))
+            if crate::applicability::module_terminal(module.segments()))
+        {
+            return Err(bad_code_arg(
+                &at_path,
+                "code.delete requires a named Method address",
+            ));
+        }
+        let if_rev = parse_if_rev(object.get("ifRev"), &base)?;
+        return Ok(CodePlanOperation::Delete(CodeDeleteArgs { at, if_rev }));
+    }
     let text_path = format!("{base}.text");
     let text = non_empty_code_string(object.get("text"), &text_path, "text")?.to_string();
-    let addressed = code_projection(&at);
     if addressed.is_some() && object.contains_key("selector") {
         return Err(bad_code_arg(
             format!("{base}.selector"),
@@ -154,27 +184,7 @@ pub fn parse_code_plan_operation(
             if anchor.is_none() && addressed.is_none() {
                 return Err(bad_code_arg(&selector_path, "selector.anchor is required for a module address; address its Body or a Method instead"));
             }
-            let if_rev = object
-                .get("ifRev")
-                .map(|value| {
-                    let path = format!("{base}.ifRev");
-                    value
-                        .as_str()
-                        .filter(|value| {
-                            value.len() == MODULE_TEXT_REVISION_HEX_LEN
-                                && value.bytes().all(|byte| {
-                                    byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
-                                })
-                        })
-                        .map(str::to_owned)
-                        .ok_or_else(|| {
-                            bad_code_arg(
-                                path,
-                                "ifRev must be a module text revision returned by a read",
-                            )
-                        })
-                })
-                .transpose()?;
+            let if_rev = parse_if_rev(object.get("ifRev"), &base)?;
             Ok(CodePlanOperation::Replace(CodeReplaceArgs {
                 at,
                 text,
@@ -184,6 +194,28 @@ pub fn parse_code_plan_operation(
         }
         _ => unreachable!("closed operation checked above"),
     }
+}
+
+fn parse_if_rev(value: Option<&Value>, base: &str) -> Result<Option<String>, ApplyPlanError> {
+    value
+        .map(|value| {
+            value
+                .as_str()
+                .filter(|value| {
+                    value.len() == MODULE_TEXT_REVISION_HEX_LEN
+                        && value
+                            .bytes()
+                            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                })
+                .map(str::to_owned)
+                .ok_or_else(|| {
+                    bad_code_arg(
+                        format!("{base}.ifRev"),
+                        "ifRev must be a module text revision returned by a read",
+                    )
+                })
+        })
+        .transpose()
 }
 
 #[derive(Debug)]
@@ -280,5 +312,6 @@ pub fn code_operation_at(
     match operation {
         CodePlanOperation::Insert(args) => &args.at,
         CodePlanOperation::Replace(args) => &args.at,
+        CodePlanOperation::Delete(args) => &args.at,
     }
 }

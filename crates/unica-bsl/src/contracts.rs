@@ -25,6 +25,16 @@ fn contract(
 
 impl CodeOperation {
     pub fn contract(self, at: Option<&QualifiedAddress>) -> OperationContract {
+        if self == Self::Delete {
+            return contract(
+                object(&[("at", text(true)), ("ifRev", module_revision())], &[]),
+                self.applicability().shape(),
+                "Delete one addressed procedure or function and its owned formatting.",
+                "Deletes the definition, its annotations and compiler directives, contiguous full-line comments immediately above them, and the comment on the closing line. A blank line separates standalone comments. A single frame belongs to the method when its //+ opener is the first attached line and its //- closer is inline after the closing keyword. Shared lines, conditional compilation and ambiguous or overlapping boundaries refuse the edit. Preview the saved plan with unica.diff before execution.",
+                json!({}),
+                "skills/code-patch/SKILL.md",
+            );
+        }
         let terminal = at.and_then(|at| at.segments().last()).map(|s| s.kind());
         let method = terminal == Some(NodeKind::Method);
         let addressed = method || terminal == Some(NodeKind::Body);
@@ -45,13 +55,7 @@ impl CodeOperation {
             required.push("position");
         }
         if self == Self::Replace {
-            fields.push(("ifRev", json!({
-                "type":"string",
-                "pattern":crate::input::MODULE_TEXT_REVISION_PATTERN,
-                "minLength":crate::input::MODULE_TEXT_REVISION_HEX_LEN,
-                "maxLength":crate::input::MODULE_TEXT_REVISION_HEX_LEN,
-                "description":"Revision of the full module text from view or workspace/textDocumentContent. A changed module refuses the plan with conflict."
-            })));
+            fields.push(("ifRev", module_revision()));
             if !addressed {
                 required.push("selector");
             }
@@ -72,4 +76,14 @@ impl CodeOperation {
         };
         contract(schema, self.applicability().shape(), "Insert or replace BSL source at the addressed module or projection.", "Module insertion without selector appends at the tail; an exact unique anchor inside one existing method requires before/after. Method insertion requires before/after. Addressed Body/Method replacement has no selector. Method.Body does not support insertion. Example anchors are templates: read the existing text before use. An args.at override changes the target; read Can at that target to obtain its contextual schema.", example, "skills/code-patch/SKILL.md")
     }
+}
+
+fn module_revision() -> Value {
+    json!({
+        "type":"string",
+        "pattern":crate::input::MODULE_TEXT_REVISION_PATTERN,
+        "minLength":crate::input::MODULE_TEXT_REVISION_HEX_LEN,
+        "maxLength":crate::input::MODULE_TEXT_REVISION_HEX_LEN,
+        "description":"Revision of the full module text from view or workspace/textDocumentContent. A changed module refuses the plan with conflict."
+    })
 }
