@@ -16,6 +16,9 @@ serde_json.workspace = true
 unica-source-contract = { path = "../unica-source-contract" }
 uuid.workspace = true
 
+[dev-dependencies]
+unica-address = { path = "../unica-address" }
+
 [package.metadata.unica]
 component = "service"
 file-io = "none"
