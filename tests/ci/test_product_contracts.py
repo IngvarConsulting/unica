@@ -1057,15 +1057,13 @@ class ProductContractTests(unittest.TestCase):
 
     def test_v8_runner_partial_load_smoke_rejects_missing_binary(self) -> None:
         module = load_contract_module()
+        runner = Path("/missing/v8-runner")
 
-        errors = module.check_v8_runner_partial_load_contract(
-            Path("/missing/v8-runner"),
-            "linux-x64",
-        )
+        errors = module.check_v8_runner_partial_load_contract(runner, "linux-x64")
 
         self.assertEqual(
             errors,
-            ["v8-runner partial-load contract: binary not found: /missing/v8-runner"],
+            [f"v8-runner partial-load contract: binary not found: {runner}"],
         )
 
     def test_v8_runner_failed_partial_receipt_requires_exit_four_and_closed_shape(
