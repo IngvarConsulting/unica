@@ -273,34 +273,68 @@ impl RunOperation {
                 "type":"object","additionalProperties":false,"required":["session"],
                 "properties":{"session":{"type":"string","pattern":"^[0-9a-f]{32}$"}}
             })),
-            RunIntent::ClientRun => Some(json!({
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                    "clientMode": {"type": "string", "enum": ["designer", "thin", "thick", "ordinary", "web"], "description": "1C client to launch."},
-                    "webDebugUrl": {"type":"string","description":"HTTP debugger address confirmed for the web client by web.publish."},
-                    "debugUrl": {"type": "string", "format": "uri", "pattern": r"^http://(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:[.][a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*|\[[0-9a-f:.]+\]):(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])(?![\s\S])", "description": "Exact HTTP address of the running dbgs chosen for DAP attach. Supply a canonical DNS name, IPv4 or bracketed IPv6 and an explicit port. Thin clients only."},
-                    "execute": {"type": "string", "description": "Workspace-relative .epf or .erf external processor to run with /Execute; enterprise clients only."},
-                    "applicationParameter": {"type": "string", "description": "Exact /C value for an enterprise client; empty is distinct from omitted, NUL and designer are rejected. May accompany execute."},
-                    "waitForExit": {"type": "boolean", "default": false, "description": "Wait for thin-client completion; requires execute (.epf) or applicationParameter, and waitTimeoutMs."},
-                    "waitTimeoutMs": {"type": "integer", "minimum": 1, "maximum": 86400000, "description": "Bound for waitForExit in milliseconds."}
-                },
-                "required": ["clientMode"],
-                "allOf": [{
-                    "if":{"required":["webDebugUrl"]}, "then":{"properties":{"clientMode":{"const":"web"}}}
-                }, {
-                    "if":{"properties":{"clientMode":{"const":"web"}}},
-                    "then":{"not":{"anyOf":[{"required":["execute"]},{"required":["applicationParameter"]},{"required":["waitForExit"]},{"required":["waitTimeoutMs"]}]}}
-                }, {
-                    "if": {"required": ["applicationParameter"]},
-                    "then": {"properties": {"clientMode": {"enum": ["thin", "thick", "ordinary"]}}}
-                }, {
-                    "if": {"required": ["debugUrl"]},
-                    "then": {"properties": {"clientMode": {"const": "thin"}}}
-                }]
-            })),
+            RunIntent::ClientRun => Some(client_run_args_schema(PINNED_RUNNER.interactive_login)),
         }
     }
+}
+
+/// Capabilities of the exact provider version verified by the Unica adapter.
+pub struct RunnerContract {
+    pub version: &'static str,
+    pub interactive_login: bool,
+}
+
+pub const PINNED_RUNNER: RunnerContract = RunnerContract {
+    version: "0.19.1",
+    interactive_login: true,
+};
+
+fn client_run_args_schema(supports_interactive_login: bool) -> Value {
+    let mut schema = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "clientMode": {"type": "string", "enum": ["designer", "thin", "thick", "ordinary", "web"], "description": "1C client to launch."},
+            "webDebugUrl": {"type":"string","description":"HTTP debugger address confirmed for the web client by web.publish."},
+            "debugUrl": {"type": "string", "format": "uri", "pattern": r"^http://(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:[.][a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*|\[[0-9a-f:.]+\]):(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])(?![\s\S])", "description": "Exact HTTP address of the running dbgs chosen for DAP attach. Supply a canonical DNS name, IPv4 or bracketed IPv6 and an explicit port. Thin clients only."},
+            "execute": {"type": "string", "description": "Workspace-relative .epf or .erf external processor to run with /Execute; enterprise clients only."},
+            "applicationParameter": {"type": "string", "description": "Exact /C value for an enterprise client; empty is distinct from omitted, NUL and designer are rejected. May accompany execute."},
+            "waitForExit": {"type": "boolean", "default": false, "description": "Wait for thin-client completion; requires execute (.epf) or applicationParameter, and waitTimeoutMs."},
+            "waitTimeoutMs": {"type": "integer", "minimum": 1, "maximum": 86400000, "description": "Bound for waitForExit in milliseconds."}
+        },
+        "required": ["clientMode"],
+        "allOf": [{
+            "if":{"required":["webDebugUrl"]}, "then":{"properties":{"clientMode":{"const":"web"}}}
+        }, {
+            "if":{"properties":{"clientMode":{"const":"web"}}},
+            "then":{"not":{"anyOf":[{"required":["execute"]},{"required":["applicationParameter"]},{"required":["waitForExit"]},{"required":["waitTimeoutMs"]}]}}
+        }, {
+            "if": {"required": ["applicationParameter"]},
+            "then": {"properties": {"clientMode": {"enum": ["thin", "thick", "ordinary"]}}}
+        }, {
+            "if": {"required": ["debugUrl"]},
+            "then": {"properties": {"clientMode": {"const": "thin"}}}
+        }, {
+            "if": {"required": ["interactiveLogin"]},
+            "then": {"properties": {"clientMode": {"const": "thin"}}}
+        }]
+    });
+    if supports_interactive_login {
+        schema["properties"]["interactiveLogin"] = json!({
+            "type": "boolean",
+            "description": "Use the native 1C login for this thin client, omitting project credentials. Supports debugUrl. True requires launching without waiting for exit."
+        });
+        let conditions = schema["allOf"].as_array_mut().expect("launch conditions");
+        conditions.push(json!({
+            "if": {"required": ["interactiveLogin"], "properties": {"interactiveLogin": {"const": true}}},
+            "then": {"properties": {"waitForExit": {"const": false}}, "not": {"required": ["waitTimeoutMs"]}}
+        }));
+    } else {
+        // An explicit false is an ordinary thin launch. Only named properties advertise
+        // capabilities to Designer, so a provider without native login must not list it.
+        schema["patternProperties"] = json!({r"^interactiveLogin(?![\s\S])": {"const": false}});
+    }
+    schema
 }
 
 #[derive(Debug)]
@@ -1516,6 +1550,35 @@ mod tests {
 
     /// rule: INV.WIRE.TERMINAL-RUN-HAS-NO-FENCE
     #[test]
+    fn interactive_login_is_discoverable_only_for_the_supported_thin_client() {
+        for supported in [false, true] {
+            let schema = super::client_run_args_schema(supported);
+            let validate = jsonschema::validator_for(&schema).unwrap();
+            assert_eq!(
+                schema["properties"].get("interactiveLogin").is_some(),
+                supported
+            );
+            assert!(validate.is_valid(&json!({"clientMode":"thin"})));
+            for value in [false, true] {
+                let args = json!({"clientMode":"thin","debugUrl":"http://127.0.0.1:1561","interactiveLogin":value});
+                assert_eq!(validate.is_valid(&args), !value || supported, "{args}");
+            }
+            for mode in ["designer", "thick", "ordinary", "web"] {
+                assert!(!validate.is_valid(&json!({"clientMode":mode,"interactiveLogin":true})));
+            }
+            for arguments in [
+                json!({"clientMode":"thin","interactiveLogin":"true"}),
+                json!({"clientMode":"thin","interactiveLogin\n":false}),
+                json!({"clientMode":"thin","interactiveLogin":true,"applicationParameter":"","waitForExit":true,"waitTimeoutMs":2000}),
+                json!({"clientMode":"thin","interactiveLogin":true,"waitTimeoutMs":2000}),
+            ] {
+                assert!(!validate.is_valid(&arguments), "{arguments}");
+            }
+        }
+    }
+
+    /// rule: INV.WIRE.TERMINAL-RUN-HAS-NO-FENCE
+    #[test]
     fn v13_client_run_is_implemented_as_a_terminal_operation_with_closed_arguments() {
         let catalog = catalog_for(SurfaceRelease::V13).expect("canonical catalog exists");
         let client_run = catalog
@@ -1531,6 +1594,20 @@ mod tests {
             .expect("implemented operations publish argsSchema");
         assert_eq!(schema["additionalProperties"], false);
         assert_eq!(schema["required"], json!(["clientMode"]));
+        let mut expected_args = [
+            "applicationParameter",
+            "clientMode",
+            "debugUrl",
+            "execute",
+            "waitForExit",
+            "waitTimeoutMs",
+            "webDebugUrl",
+        ]
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+        if super::PINNED_RUNNER.interactive_login {
+            expected_args.insert("interactiveLogin");
+        }
         assert_eq!(
             schema["properties"]
                 .as_object()
@@ -1538,17 +1615,7 @@ mod tests {
                 .keys()
                 .map(String::as_str)
                 .collect::<std::collections::BTreeSet<_>>(),
-            [
-                "applicationParameter",
-                "clientMode",
-                "debugUrl",
-                "execute",
-                "waitForExit",
-                "waitTimeoutMs",
-                "webDebugUrl"
-            ]
-            .into_iter()
-            .collect::<std::collections::BTreeSet<_>>()
+            expected_args
         );
         assert_eq!(
             schema["properties"]["clientMode"]["enum"],

@@ -2023,6 +2023,7 @@ fn reject(
 
 #[cfg(test)]
 mod tests {
+    use super::super::runner::VERSION;
     use super::*;
     use std::fs;
     use std::sync::Mutex;
@@ -3817,7 +3818,7 @@ infobase:
                 &runner,
                 CancellationToken::new(),
                 &tool,
-                "0.19.0",
+                VERSION,
             );
             assert!(!result.ok, "{result:?}");
             let choice = result.human_choice.as_deref().expect("a question");
@@ -3864,7 +3865,7 @@ infobase:
             &SequenceRunner::new(vec![failed_process(restore_target_exists_envelope(true))]),
             CancellationToken::new(),
             &tool,
-            "0.19.0",
+            VERSION,
         );
         assert!(!preview.ok);
         assert!(preview.human_choice.is_none(), "{preview:?}");
@@ -3879,7 +3880,7 @@ infobase:
             &runner,
             CancellationToken::new(),
             &tool,
-            "0.19.0",
+            VERSION,
         );
         assert!(!result.ok);
         assert!(result.human_choice.is_none(), "{result:?}");
