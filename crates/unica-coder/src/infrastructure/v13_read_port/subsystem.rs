@@ -1,4 +1,5 @@
 use super::{path_text, ProviderReadAuthority, ViewError};
+use crate::infrastructure::v13_large_configuration::ParentSubsystemInclude;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -269,9 +270,11 @@ impl ProviderReadAuthority {
     /// workspace across calls while its files keep their stamps.
     pub(crate) fn subsystem_topology(
         &self,
+        parent_include: Option<&ParentSubsystemInclude<'_>>,
         checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
     ) -> Result<Arc<unica_metadata::subsystem_topology::SubsystemTopology>, ViewError> {
-        self.artifacts.subsystem_topology(&self.root, checkpoint)
+        self.artifacts
+            .subsystem_topology(&self.root, parent_include, checkpoint)
     }
 }
 

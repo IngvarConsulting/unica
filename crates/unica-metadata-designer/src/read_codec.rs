@@ -292,6 +292,11 @@ impl MetadataReadCodec for DesignerMetadataReadCodec {
         crate::xml_model::parse_meta_borrowing(descriptor)
     }
 
+    fn parent_subsystem_include(&self, descriptor: &[u8], address: &str) -> Result<bool, String> {
+        crate::subsystem_topology::parent_subsystem_include(descriptor, address)
+            .map_err(|error| error.to_string())
+    }
+
     fn extends_parent(&self, descriptor: &[u8]) -> bool {
         crate::xml_model::descriptor_extends_parent(descriptor)
     }

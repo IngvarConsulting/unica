@@ -1,0 +1,199 @@
+{
+  "id": "S-2611-inherited-subsystem-topology",
+  "name": "borrowed-subsystems-inherit-command-interface-inclusion",
+  "issue": 2611,
+  "area": "Навигация по исходникам",
+  "task": "Узнать, в какие заимствованные подсистемы входит модуль расширения и какая из них является корнем библиотеки",
+  "workspace": "tests/fixtures/acceptance/workspace-borrowed-subsystems",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cfe:Subsystem.Отчеты"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/belonging",
+          "eq": "borrowed"
+        },
+        {
+          "pointer": "/data/props/extends",
+          "eq": "main:Subsystem.Отчеты"
+        },
+        {
+          "pointer": "/data/props/overrides",
+          "eq": "CommandInterface"
+        },
+        {
+          "pointer": "/data/props/parentStatus",
+          "eq": "resolved"
+        },
+        {
+          "pointer": "/data/props/overridesCount",
+          "eq": 1
+        },
+        {
+          "pointer": "/data/props/IncludeInCommandInterface",
+          "eq": null
+        },
+        {
+          "pointer": "/data/props/libraryRoot",
+          "absent": true
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/overridesComplete",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cfe:Subsystem.Отчеты.Relation"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "contains": {
+            "relation": "content",
+            "at": "cfe:CommonModule.ОбновлениеИнформационнойБазыТест",
+            "kind": "CommonModule"
+          }
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cfe:Subsystem.Библиотека"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/belonging",
+          "eq": "borrowed"
+        },
+        {
+          "pointer": "/data/props/extends",
+          "eq": "main:Subsystem.Библиотека"
+        },
+        {
+          "pointer": "/data/props/overrides",
+          "eq": "CommandInterface"
+        },
+        {
+          "pointer": "/data/props/parentStatus",
+          "eq": "resolved"
+        },
+        {
+          "pointer": "/data/props/overridesCount",
+          "eq": 1
+        },
+        {
+          "pointer": "/data/props/IncludeInCommandInterface",
+          "eq": null
+        },
+        {
+          "pointer": "/data/props/libraryRoot",
+          "eq": {
+            "module": "cfe:CommonModule.ОбновлениеИнформационнойБазыТест",
+            "source": "standardLibraryModule"
+          }
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/overridesComplete",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cfe:Subsystem.Библиотека.Relation"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "contains": {
+            "relation": "content",
+            "at": "cfe:CommonModule.ОбновлениеИнформационнойБазыТест",
+            "kind": "CommonModule"
+          }
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cfe:CommonModule.ОбновлениеИнформационнойБазыТест.Relation"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "subsystem",
+              "at": "cfe:Subsystem.Отчеты",
+              "kind": "Subsystem",
+              "direct": true
+            },
+            {
+              "relation": "subsystem",
+              "at": "cfe:Subsystem.Библиотека",
+              "kind": "Subsystem",
+              "direct": true
+            },
+            {
+              "relation": "library",
+              "at": "cfe:Subsystem.Библиотека",
+              "kind": "Subsystem",
+              "source": "standardLibraryModule",
+              "module": "cfe:CommonModule.ОбновлениеИнформационнойБазыТест"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        }
+      ]
+    }
+  ]
+}

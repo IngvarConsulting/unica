@@ -109,6 +109,8 @@ fn observe_completed_view_projection_for_test(at: &QualifiedAddress, revision: &
 /// identity is fixed at admission; the adapter never snapshots the tree.
 pub struct LogicalViewReadAuthority<'a> {
     cancellation: &'a CancellationToken,
+    parent_subsystem_include:
+        Option<&'a super::v13_large_configuration::ParentSubsystemInclude<'a>>,
     read: ProviderReadAuthority,
     profile: PlatformProfile,
     deadline: ProviderDeadline,
@@ -249,6 +251,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
     ) -> Self {
         Self {
             cancellation,
+            parent_subsystem_include: None,
             read,
             profile,
             deadline,
@@ -262,6 +265,14 @@ impl<'a> LogicalViewReadAuthority<'a> {
             typed_payloads: Mutex::new(BTreeMap::new()),
             form_data: Mutex::new(BTreeMap::new()),
         }
+    }
+
+    pub fn with_parent_subsystem_include(
+        mut self,
+        lookup: &'a (dyn Fn(&str) -> Result<bool, ViewError> + Sync),
+    ) -> Self {
+        self.parent_subsystem_include = Some(lookup);
+        self
     }
 
     /// Only the path resolver supplies this placement; subsequent owner and

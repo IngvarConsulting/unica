@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">
+  <Subsystem uuid="26110000-0000-4000-8000-000000000003">
+    <Properties>
+      <Name>Библиотека</Name>
+      <IncludeInCommandInterface>false</IncludeInCommandInterface>
+      <Content/>
+    </Properties>
+    <ChildObjects/>
+  </Subsystem>
+</MetaDataObject>
