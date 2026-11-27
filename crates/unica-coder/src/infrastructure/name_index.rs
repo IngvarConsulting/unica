@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::{Duration, Instant, SystemTime};
+#[cfg(any(test, feature = "test-support"))]
+use std::{cell::RefCell, thread::JoinHandle};
 
 use unica_code_intelligence::name_index::NameIndex;
 use unica_code_intelligence::symbols::NamedModules;
@@ -70,6 +72,35 @@ pub(crate) const NAME_INDEX_MODULE_BYTES: usize = 64 * 1024 * 1024;
 pub(crate) const NAME_INDEX_BUDGET_BYTES: usize = 256 * 1024 * 1024;
 
 static FOREGROUND_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    static CAPTURED_BUILDS: RefCell<Option<Vec<JoinHandle<()>>>> = const { RefCell::new(None) };
+}
+
+/// Observe the actual worker launched by one test request. Join it after
+/// the request returns and releases its foreground guard.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn capture_name_index_build_for_test<T>(request: impl FnOnce() -> T) -> (T, JoinHandle<()>) {
+    struct ClearCapture;
+    impl Drop for ClearCapture {
+        fn drop(&mut self) {
+            CAPTURED_BUILDS.with(|capture| *capture.borrow_mut() = None);
+        }
+    }
+
+    CAPTURED_BUILDS.with(|capture| {
+        let mut capture = capture.borrow_mut();
+        assert!(capture.is_none(), "name index capture is already active");
+        *capture = Some(Vec::new());
+    });
+    let _clear = ClearCapture;
+    let answer = request();
+    let mut builds = CAPTURED_BUILDS.with(|capture| capture.take().unwrap());
+    assert_eq!(builds.len(), 1, "expected one name index worker");
+    (answer, builds.pop().unwrap())
+}
 
 /// Held while an MCP call executes; the name index build waits meanwhile.
 pub struct ForegroundCall(());
@@ -161,7 +192,15 @@ impl SourceNameIndex {
             let owner = Arc::downgrade(self);
             let root = root.clone();
             let modules = Arc::clone(modules);
-            std::thread::spawn(move || walk(&owner, &root, &modules));
+            let worker = std::thread::spawn(move || walk(&owner, &root, &modules));
+            #[cfg(any(test, feature = "test-support"))]
+            CAPTURED_BUILDS.with(|capture| {
+                if let Some(builds) = capture.borrow_mut().as_mut() {
+                    builds.push(worker);
+                }
+            });
+            #[cfg(not(any(test, feature = "test-support")))]
+            drop(worker);
         }
         (state.ready, state.capped)
     }
