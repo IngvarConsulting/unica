@@ -51,6 +51,7 @@ pub mod subsystem_operations;
 
 pub mod interface_operations;
 
+pub mod embedded_help;
 pub mod site;
 
 pub mod borrowing;

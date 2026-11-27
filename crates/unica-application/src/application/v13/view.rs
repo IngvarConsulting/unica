@@ -455,9 +455,10 @@ impl<A: ViewReadAuthority> ViewService<A> {
             ));
         };
         if let Some((text, revision)) = text {
-            // Проекция может ответить на другой вопрос о том же узле
-            // (контракт операции `.Can.<op>`): текст несёт только сам `Body`.
-            if object.get("kind").and_then(Value::as_str) == Some("Body") {
+            // Проекция контракта `.Can.<op>` не несёт исходный текст узла.
+            let kind = object.get("kind").and_then(Value::as_str);
+            let body = kind == Some("Body");
+            if body || kind == Some("Help") {
                 if self.authority.snapshot(source_at)? != snapshot {
                     return Err(ViewError::new(
                         RefusalCode::ConcurrentChange,
@@ -500,17 +501,19 @@ impl<A: ViewReadAuthority> ViewService<A> {
                         );
                         result.data = data;
                         result.next.extend(error.next().iter().cloned());
-                        result.source_text_read_hint = Some(Box::new(
-                            unica_execution_contract::invocation::SourceTextReadHint {
-                                from_line: from,
-                                to_line: to,
-                                prefix: Some(prefix),
-                            },
-                        ));
+                        if body {
+                            result.source_text_read_hint = Some(Box::new(
+                                unica_execution_contract::invocation::SourceTextReadHint {
+                                    from_line: from,
+                                    to_line: to,
+                                    prefix: Some(prefix),
+                                },
+                            ));
+                        }
                     }
                     SourceText::Window { .. } => unreachable!("a Body has one coordinate window"),
                 }
-                if result.source_text_read_hint.is_none() && to >= from {
+                if body && result.source_text_read_hint.is_none() && to >= from {
                     result.source_text_read_hint = Some(Box::new(
                         unica_execution_contract::invocation::SourceTextReadHint {
                             from_line: from,

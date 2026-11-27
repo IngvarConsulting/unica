@@ -84,6 +84,10 @@ impl MetadataReadCodec for DesignerMetadataReadCodec {
         crate::language_code::read_code(descriptor)
     }
 
+    fn help_pages(&self, descriptor: &[u8]) -> Result<Vec<String>, String> {
+        crate::help::registered_pages(descriptor)
+    }
+
     fn functional_option(
         &self,
         descriptor: &str,

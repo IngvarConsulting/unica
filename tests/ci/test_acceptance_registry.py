@@ -355,8 +355,8 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
                 [row for row in registry if row[1] == "Metadata"],
                 [row for row in self.CONTEXT_ROWS if row[1] == "Metadata"],
             )
-            self.assertEqual(len(registry), 136)
-            self.assertEqual(len({row[0] for row in registry}), 130)
+            self.assertEqual(len(registry), 137)
+            self.assertEqual(len({row[0] for row in registry}), 131)
             registration = f"({operation}::ObjectBorrow),"
             self.assertEqual(original.count(registration), 1)
             replacements = {
@@ -578,8 +578,8 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             self.assertLessEqual(migrated_names, implemented)
         self.assertIn(("content.set", "Metadata", "ExchangePlan", "Items"), registry)
         self.assertIn("content.set", implemented)
-        self.assertEqual(len(registry), 136)
-        self.assertEqual(len({entry[0] for entry in registry}), 130)
+        self.assertEqual(len(registry), 137)
+        self.assertEqual(len({entry[0] for entry in registry}), 131)
 
     def test_dcs_rows_keep_their_declared_metadata_and_family_order(self) -> None:
         module = self.renderer()

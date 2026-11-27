@@ -74,6 +74,12 @@
       "skeleton": "Values"
     },
     {
+      "variant": "HelpReplace",
+      "operation": "help.replace",
+      "applicability": "MetadataHelpPage",
+      "skeleton": "Values"
+    },
+    {
       "variant": "AttributeAdd",
       "operation": "attribute.add",
       "applicability": "MetadataAttributeContainer",

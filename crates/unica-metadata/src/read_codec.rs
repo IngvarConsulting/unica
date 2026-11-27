@@ -55,6 +55,9 @@ pub trait MetadataReadCodec: Send + Sync {
     /// Код языка из дескриптора `Language`.
     fn language_code(&self, descriptor: &[u8]) -> Result<String, String>;
 
+    /// Коды страниц встроенной справки из дескриптора `Help.xml`.
+    fn help_pages(&self, descriptor: &[u8]) -> Result<Vec<String>, String>;
+
     /// Состав и режим функциональной опции `name`.
     fn functional_option(
         &self,

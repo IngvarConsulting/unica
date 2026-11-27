@@ -18,6 +18,9 @@ use unica_source_contract::route::RouteClass;
 /// вне модульного маршрута профиля. Ответ `Some` не доказывает существование
 /// узла; наличие и форму адреса проверяет читатель своего маршрута.
 pub fn classify_route(address: &QualifiedAddress, profile: PlatformProfile) -> Option<RouteClass> {
+    if unica_metadata::embedded_help::scope(address.segments()).is_some() {
+        return Some(RouteClass::Metadata);
+    }
     if address.form_metadata_owner().is_some() {
         return Some(RouteClass::Metadata);
     }

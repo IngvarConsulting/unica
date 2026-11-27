@@ -66,6 +66,7 @@ metadata_operations!(
     RelationRemove => ("relation.remove", MetadataRelations, Values),
     RelationReplace => ("relation.replace", MetadataRelations, Values),
     HelpCreate => ("help.create", MetadataWithHelp, Values),
+    HelpReplace => ("help.replace", MetadataHelpPage, Values),
     AttributeAdd => ("attribute.add", MetadataAttributeContainer, Items),
     AttributeSet => ("attribute.set", MetadataAttribute, Values),
     AttributeRemove => ("attribute.remove", MetadataAttribute, Target),
@@ -161,6 +162,7 @@ impl MetadataOperation {
             | Self::RelationRemove
             | Self::RelationReplace
             | Self::HelpCreate
+            | Self::HelpReplace
             | Self::TemplateAdd
             | Self::TemplateSet
             | Self::TemplateRemove
@@ -227,6 +229,7 @@ impl MetadataOperation {
             Self::TemplateSet => crate::contracts::metadata_template_set(),
             Self::TemplateRemove => crate::contracts::metadata_template_remove(),
             Self::HelpCreate => crate::contracts::metadata_help_create(),
+            Self::HelpReplace => crate::contracts::metadata_help_replace(),
             Self::PredefinedItemRemove => crate::contracts::metadata_predefined_remove(),
             Self::PredefinedItemAdd => crate::contracts::metadata_predefined_add(owner),
             Self::PredefinedItemSet => crate::contracts::metadata_predefined_set(owner),

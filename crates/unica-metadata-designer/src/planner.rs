@@ -476,6 +476,18 @@ pub fn plan_metadata_batch<R: MetadataPlanningRead>(
                 )?;
                 continue;
             }
+            MetadataPlanKind::HelpReplace { target, lang, html } => {
+                stage_help_replace(
+                    staged,
+                    authority,
+                    target,
+                    lang,
+                    html,
+                    op_index,
+                    &mut provisional,
+                )?;
+                continue;
+            }
         };
         let relative =
             metadata_descriptor_relative(target, authority.source_kind()).map_err(|message| {
@@ -3743,6 +3755,85 @@ fn stage_help_create<R: MetadataPlanningRead>(
     }
     provisional.push(ProvisionalApplyEffect::spanning(
         touched,
+        DomainEvent::new(
+            DomainEventKind::MetadataChanged,
+            target.as_str().to_string(),
+        ),
+        op_index,
+    ));
+    Ok(())
+}
+
+fn stage_help_replace(
+    staged: &mut ApplyProposal<'_>,
+    authority: &dyn ApplySourceAuthority,
+    target: &MetadataAddress,
+    lang: &str,
+    html: &str,
+    op_index: usize,
+    provisional: &mut Vec<ProvisionalApplyEffect>,
+) -> Result<(), ApplyPlanError> {
+    let path = format!("ops[{op_index}].args.at");
+    let invalid_source =
+        |message| ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message).at_path(&path);
+    let not_found =
+        |message| ApplyPlanError::new(ApplyPlanErrorKind::NotFound, message).at_path(&path);
+    let source_kind = authority.source_kind();
+    let configuration = Path::new("Configuration.xml");
+    let registered = staged
+        .read(configuration)
+        .map_err(|error| ApplyPlanError::staging(error, &path))?
+        .ok_or_else(|| not_found("configuration descriptor was not found"))?;
+    let registered = unica_source_designer::owner::prove_already_read_source_set_owner(
+        configuration,
+        &registered,
+        source_kind,
+    )
+    .map_err(|error| invalid_source(error.message))?;
+    prove_registered_root_reference(
+        staged,
+        source_kind,
+        &registered,
+        target,
+        target.as_str(),
+        &path,
+    )?;
+
+    let manifest =
+        unica_source_designer::layout::attached_resource_relative(target, "Help.xml", source_kind)
+            .map_err(invalid_source)?;
+    let limit = unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES;
+    let bytes = staged
+        .read_bounded(&manifest, limit)
+        .map_err(|error| ApplyPlanError::staging(error, &path))?
+        .ok_or_else(|| not_found("embedded help descriptor was not found"))?;
+    staged
+        .require_exact_path_spelling(&manifest)
+        .map_err(|error| ApplyPlanError::staging(error, &path))?;
+    let pages = crate::help::registered_pages(&bytes).map_err(invalid_source)?;
+    if !pages.iter().any(|page| page == lang) {
+        return Err(not_found("help language is not registered in Help.xml"));
+    }
+    let filename = unica_metadata::embedded_help::page_file_name(lang)
+        .map_err(|message| invalid_source(message.to_string()))?;
+    let relative = manifest.with_file_name("Help").join(filename);
+    let current = staged
+        .read_bounded(&relative, limit)
+        .map_err(|error| ApplyPlanError::staging(error, &path))?
+        .ok_or_else(|| not_found("registered help HTML was not found"))?;
+    staged
+        .require_exact_path_spelling(&relative)
+        .map_err(|error| ApplyPlanError::staging(error, &path))?;
+    std::str::from_utf8(&current)
+        .map_err(|error| invalid_source(format!("help HTML is not UTF-8: {error}")))?;
+    if current == html.as_bytes() {
+        return Ok(());
+    }
+    staged
+        .replace(&relative, &current, html.as_bytes().to_vec())
+        .map_err(|error| ApplyPlanError::staging(error, &path))?;
+    provisional.push(ProvisionalApplyEffect::spanning(
+        vec![relative],
         DomainEvent::new(
             DomainEventKind::MetadataChanged,
             target.as_str().to_string(),

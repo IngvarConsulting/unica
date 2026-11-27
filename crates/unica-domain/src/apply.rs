@@ -541,6 +541,7 @@ operation_descriptors!(
     (unica_metadata::apply_operations::MetadataOperation::RelationRemove),
     (unica_metadata::apply_operations::MetadataOperation::RelationReplace),
     (unica_metadata::apply_operations::MetadataOperation::HelpCreate),
+    (unica_metadata::apply_operations::MetadataOperation::HelpReplace),
     (unica_metadata::apply_operations::MetadataOperation::AttributeAdd),
     (unica_metadata::apply_operations::MetadataOperation::AttributeSet),
     (unica_metadata::apply_operations::MetadataOperation::AttributeRemove),
@@ -1453,6 +1454,7 @@ mod tests {
             "relation.remove",
             "relation.replace",
             "help.create",
+            "help.replace",
             "attribute.add",
             "attribute.set",
             "attribute.remove",
@@ -1578,7 +1580,7 @@ mod tests {
             "event.implement",
         ];
         let registry = crate::apply::operation_registry();
-        assert_eq!(expected.len(), 136);
+        assert_eq!(expected.len(), 137);
         assert_eq!(registry.names(), expected);
         // Семейство одноимённых операций выбирается по каноническому адресу.
         const SHARED_NAMES: &[(&str, OperationFamily, OperationFamily)] = &[
@@ -1621,7 +1623,7 @@ mod tests {
         }
         assert_eq!(
             unica_metadata::apply_operations::MetadataOperation::ALL.len(),
-            41
+            42
         );
         assert_eq!(
             registry
