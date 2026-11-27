@@ -108,6 +108,8 @@ pub enum RefusalCode {
     AmbiguousSourceFormat,
     /// `rollback_incomplete`
     RollbackIncomplete,
+    /// `infobase_restore_mode_mismatch`
+    InfobaseRestoreModeMismatch,
     /// `invalid_state`
     InvalidState,
     /// `provider_unavailable`
@@ -170,6 +172,7 @@ impl RefusalCode {
             Self::PostconditionFailed => "postcondition_failed",
             Self::AmbiguousSourceFormat => "ambiguous_source_format",
             Self::RollbackIncomplete => "rollback_incomplete",
+            Self::InfobaseRestoreModeMismatch => "infobase_restore_mode_mismatch",
             Self::InvalidState => "invalid_state",
             Self::ProviderUnavailable => "provider_unavailable",
             Self::TaskBackendFailed => "task_backend_failed",
@@ -227,6 +230,7 @@ impl RefusalCode {
             Self::PostconditionFailed => Outcome::FixSource,
             Self::AmbiguousSourceFormat => Outcome::NeedsHuman,
             Self::RollbackIncomplete => Outcome::NeedsHuman,
+            Self::InfobaseRestoreModeMismatch => Outcome::FixCall,
             Self::InvalidState => Outcome::NeedsHuman,
             Self::ProviderUnavailable => Outcome::NeedsHuman,
             Self::TaskBackendFailed => Outcome::NeedsHuman,
@@ -251,7 +255,7 @@ impl RefusalCode {
     }
 
     /// Весь словарь — для проверок полноты и порождения ведомостей.
-    pub const ALL: [Self; 43] = [
+    pub const ALL: [Self; 44] = [
         Self::ConcurrentChange,
         Self::Conflict,
         Self::SourceSelectionChanged,
@@ -282,6 +286,7 @@ impl RefusalCode {
         Self::PostconditionFailed,
         Self::AmbiguousSourceFormat,
         Self::RollbackIncomplete,
+        Self::InfobaseRestoreModeMismatch,
         Self::InvalidState,
         Self::ProviderUnavailable,
         Self::TaskBackendFailed,

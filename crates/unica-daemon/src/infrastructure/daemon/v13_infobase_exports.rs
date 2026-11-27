@@ -935,20 +935,7 @@ fn invoke_runner(
             ));
         }
     };
-    // `mode: create` над базой, которая уже есть: выбрать замену её данных
-    // может только человек. Спрашивает только исполнение: превью отдаёт
-    // прежний отказ.
-    let target_exists = !dry_run
-        && prepared.operation == ExportOperation::Restore
-        && prepared.arguments.restore_mode == Some(RestoreMode::Create)
-        && !output.status_success
-        && restore_target_exists(&output.stdout);
-    parse_runner_output(prepared.operation, output, dry_run).map_err(|mut rejection| {
-        if target_exists {
-            rejection.human_choice = Some(Box::new(restore_exists_choice(prepared)));
-        }
-        rejection
-    })
+    parse_runner_output(prepared, output, dry_run)
 }
 
 /// Код вопроса о замене данных базы: по нему клиент рисует свой экран.
@@ -956,21 +943,45 @@ const RESTORE_REPLACE_CODE: &str = "infobase.restore_replace";
 /// Код вопроса о загрузке с `mode: create` в базу, которая уже есть.
 const RESTORE_EXISTS_CODE: &str = "infobase.restore_exists";
 
-/// Устойчивая часть отказа раннера 0.15 на `infobase restore --create`, когда
-/// база уже есть. Кода у этого отказа нет: это ошибка проверки
-/// `invalid_argument`, и опознаётся она по этой части текста, как
-/// предупреждение о базе другой копии. Тест на конверте раннера упадёт, если
-/// раннер сменит прозу.
-const RESTORE_TARGET_EXISTS_FRAGMENT: &str =
-    "--create was requested but the target infobase already exists";
+/// Раннер сообщает о несовпадении режима и состояния базы общим кодом
+/// проверки. Устойчивая часть сообщения уточняет причину, а конверт
+/// подтверждает запрошенный режим.
+fn restore_mode_mismatch(mode: Option<RestoreMode>, envelope: &Value) -> Option<RestoreMode> {
+    let mode = mode?;
+    if envelope["error"]["code"] != "invalid_argument"
+        || envelope["data"]["target_mode"] != mode.as_str()
+    {
+        return None;
+    }
+    let runner_message = match mode {
+        RestoreMode::Create => "--create was requested but the target infobase already exists",
+        RestoreMode::Replace => "--replace was requested but the target infobase does not exist",
+    };
+    envelope["error"]["message"]
+        .as_str()?
+        .starts_with(runner_message)
+        .then_some(mode)
+}
 
-fn restore_target_exists(stdout: &str) -> bool {
-    serde_json::from_str::<Value>(stdout).is_ok_and(|envelope| {
-        envelope["error"]["code"] == "invalid_argument"
-            && envelope["error"]["message"]
-                .as_str()
-                .is_some_and(|message| message.contains(RESTORE_TARGET_EXISTS_FRAGMENT))
-    })
+fn file_restore_mode_refusal(mode: RestoreMode, envelope: &Value) -> DomainResult {
+    let (target_state, message) = match mode {
+        RestoreMode::Create => (
+            "present",
+            "mode=create requires an absent infobase. The target already exists. To replace its data, use mode=replace.",
+        ),
+        RestoreMode::Replace => (
+            "absent",
+            "mode=replace requires an existing infobase. The target does not exist. To create it, use mode=create.",
+        ),
+    };
+    let mut refusal = reject(
+        ExportOperation::Restore,
+        RefusalCode::InfobaseRestoreModeMismatch,
+        message,
+    );
+    refusal.data = Some(json!({"mode": mode.as_str(), "targetState": target_state}));
+    note_config_warnings(&mut refusal, envelope);
+    refusal
 }
 
 /// Имя DT без пути: в тексте вопроса путей проекта нет.
@@ -1057,10 +1068,11 @@ fn restore_exists_choice(prepared: &PreparedInfobaseExport) -> HumanChoice {
 }
 
 fn parse_runner_output(
-    operation: ExportOperation,
+    prepared: &PreparedInfobaseExport,
     output: ProcessOutput,
     dry_run: bool,
 ) -> Result<Value, DomainResult> {
+    let operation = prepared.operation;
     if output.cancelled {
         return Err(reject(
             operation,
@@ -1107,22 +1119,41 @@ fn parse_runner_output(
                 "failed v8-runner preview did not prove that no provider was dispatched",
             ));
         }
-        let code = envelope["error"]["code"]
-            .as_str()
-            .unwrap_or("provider_failed");
-        let message = envelope["error"]["message"]
-            .as_str()
-            .map(redactor)
-            .unwrap_or_else(|| "v8-runner failed without a typed message".to_string());
-        return Err(runner_envelope_refusal(
-            runner_rejection(
-                Some(operation.name().to_string()),
-                code,
-                envelope["error"]["layer"].as_str(),
-                message,
-            ),
-            &envelope,
-        ));
+        let mismatch = restore_mode_mismatch(prepared.arguments.restore_mode, &envelope);
+        let mut refusal = match mismatch {
+            // Для кластера раннер предполагает, что база уже есть. Состояние
+            // в нашем отказе можно назвать по наблюдению только файловой базы.
+            Some(mode)
+                if matches!(
+                    super::runner::origin_kind(&prepared.context.workspace_root),
+                    Ok(super::runner::OriginKind::File)
+                ) =>
+            {
+                file_restore_mode_refusal(mode, &envelope)
+            }
+            _ => {
+                let code = envelope["error"]["code"]
+                    .as_str()
+                    .unwrap_or("provider_failed");
+                let message = envelope["error"]["message"]
+                    .as_str()
+                    .map(redactor)
+                    .unwrap_or_else(|| "v8-runner failed without a typed message".to_string());
+                runner_envelope_refusal(
+                    runner_rejection(
+                        Some(operation.name().to_string()),
+                        code,
+                        envelope["error"]["layer"].as_str(),
+                        message,
+                    ),
+                    &envelope,
+                )
+            }
+        };
+        if !dry_run && mismatch == Some(RestoreMode::Create) {
+            refusal.human_choice = Some(Box::new(restore_exists_choice(prepared)));
+        }
+        return Err(refusal);
     }
     Ok(envelope)
 }
@@ -3514,13 +3545,13 @@ infobase:
             } else {
                 apply_envelope(&output)
             };
-            parse_runner_output(prepared.operation, process(envelope.clone()), dry_run)
+            parse_runner_output(&prepared, process(envelope.clone()), dry_run)
                 .expect("the requested runner command is accepted");
             for other_command in ["infobase.dump", "cf.export"] {
                 let mut foreign = envelope.clone();
                 foreign["command"] = json!(other_command);
                 let rejection =
-                    parse_runner_output(prepared.operation, process(foreign), dry_run).unwrap_err();
+                    parse_runner_output(&prepared, process(foreign), dry_run).unwrap_err();
                 assert_eq!(
                     rejection.diagnostics[0]["code"], "invalid_result",
                     "foreign command {other_command}, dry_run={dry_run}"
@@ -3697,26 +3728,207 @@ infobase:
         .unwrap()
     }
 
-    /// Отказ раннера 0.15 на `infobase restore --create`, когда база уже есть:
-    /// код проверки и проза, по которой Unica его опознаёт.
-    fn restore_target_exists_envelope(dry_run: bool) -> Value {
+    /// Отказы закреплённого раннера после проверки наличия файловой базы.
+    fn restore_mode_mismatch_envelope(mode: RestoreMode, dry_run: bool) -> Value {
+        let message = match mode {
+            RestoreMode::Create => {
+                "--create was requested but the target infobase already exists; pass --replace to discard its data"
+            }
+            RestoreMode::Replace => {
+                "--replace was requested but the target infobase does not exist; pass --create to create it"
+            }
+        };
         json!({
+            "ok": false,
             "command": "infobase.restore",
             "data": {
                 "mode": if dry_run { "preview" } else { "apply" },
                 "provider_dispatched": if dry_run { json!(false) } else { Value::Null },
-                "subject": "infobase",
+                "subject": {"kind": "infobase"},
                 "artifact_kind": "dt",
-                "target_mode": "create",
+                "target_mode": mode.as_str(),
                 "restored": false,
                 "target_state": "unchanged",
                 "execution": {"status": "failed"}
             },
             "error": {
                 "code": "invalid_argument",
-                "message": "--create was requested but the target infobase already exists; pass --replace to discard its data"
+                "kind": "validation",
+                "message": message
             }
         })
+    }
+
+    fn file_restore_workspace() -> tempfile::TempDir {
+        let root = restore_workspace();
+        fs::write(
+            root.path().join("v8project.local.yaml"),
+            "infobases:\n  origin:\n    connection: 'File=target'\n",
+        )
+        .unwrap();
+        root
+    }
+
+    /// rule: INV.RUNTIME.INFOBASE-IMPORT-MODE
+    #[test]
+    fn restore_mode_mismatch_has_a_public_refusal_in_preview_and_execution() {
+        let root = file_restore_workspace();
+        let tool = BundledTool {
+            program: root.path().join("v8-runner"),
+            warnings: Vec::new(),
+            missing: None,
+        };
+
+        for (mode, target_state, message) in [
+            (
+                RestoreMode::Create,
+                "present",
+                "mode=create requires an absent infobase. The target already exists. To replace its data, use mode=replace.",
+            ),
+            (
+                RestoreMode::Replace,
+                "absent",
+                "mode=replace requires an existing infobase. The target does not exist. To create it, use mode=create.",
+            ),
+        ] {
+            for dry_run in [true, false] {
+                let prepared = prepared_restore(root.path(), dry_run, mode);
+                let mut envelope = restore_mode_mismatch_envelope(mode, dry_run);
+                // Сопутствующая подсказка раннера не меняет причину отказа
+                // и не превращается в вопрос о перезапуске сервера.
+                envelope["error"]["next"]["command"] = json!("standalone restart");
+                envelope["warnings"] = json!([
+                    "`build:` in v8project.yaml is a one-cycle synonym for `push:`; rename the key"
+                ]);
+                let mut responses = Vec::new();
+                if !dry_run {
+                    responses.push(failed_process(restore_mode_mismatch_envelope(mode, true)));
+                }
+                responses.push(failed_process(envelope));
+                let runner = SequenceRunner::new(responses);
+                let result = execute_with_resolved_runner(
+                    &prepared,
+                    &runner,
+                    CancellationToken::new(),
+                    &tool,
+                    VERSION,
+                );
+                assert!(!result.ok, "{mode:?}, dry_run={dry_run}");
+                assert_eq!(result.summary, message);
+                assert_eq!(result.diagnostics[0]["code"], "infobase_restore_mode_mismatch");
+                assert_eq!(result.diagnostics[0]["outcome"], "fixCall");
+                assert_eq!(result.diagnostics[0]["message"], message);
+                assert_eq!(
+                    result.data,
+                    Some(json!({"mode": mode.as_str(), "targetState": target_state}))
+                );
+                assert!(result.changed.is_empty() && result.artifacts.is_empty());
+                assert_eq!(
+                    result.human_choice.as_deref().map(|choice| choice.code.as_str()),
+                    (!dry_run && mode == RestoreMode::Create).then_some("infobase.restore_exists")
+                );
+                assert_eq!(result.warnings[0]["code"], CONFIG_SYNONYM_WARNING_CODE);
+            }
+        }
+    }
+
+    #[test]
+    fn restore_mode_mismatch_requires_a_failed_runner_answer_for_this_request() {
+        let root = file_restore_workspace();
+        let tool = BundledTool {
+            program: root.path().join("v8-runner"),
+            warnings: Vec::new(),
+            missing: None,
+        };
+        let envelope = restore_mode_mismatch_envelope(RestoreMode::Create, true);
+        let mut dispatched = envelope;
+        dispatched["data"]["provider_dispatched"] = json!(true);
+        let envelope = restore_mode_mismatch_envelope(RestoreMode::Create, false);
+        let mut foreign = envelope.clone();
+        foreign["command"] = json!("infobase.dump");
+        let mut other_mode = envelope.clone();
+        other_mode["data"]["target_mode"] = json!("replace");
+        let mut other_error = envelope.clone();
+        other_error["error"]["code"] = json!("platform_failure");
+        let mut cancelled = failed_process(envelope.clone());
+        cancelled.cancelled = true;
+        let mut timeout = failed_process(envelope.clone());
+        timeout.timed_out = true;
+        let mut truncated = failed_process(envelope);
+        truncated.stdout_truncated = true;
+
+        for (dry_run, output, code) in [
+            (true, failed_process(dispatched), "invalid_result"),
+            (false, failed_process(foreign), "invalid_result"),
+            (false, failed_process(other_mode), "bad_value"),
+            (false, failed_process(other_error), "provider_unavailable"),
+            (false, cancelled, "cancelled"),
+            (false, timeout, "deadline_exceeded"),
+            (false, truncated, "invalid_result"),
+        ] {
+            let result = invoke_runner(
+                &prepared_restore(root.path(), dry_run, RestoreMode::Create),
+                &tool,
+                &SequenceRunner::new(vec![output]),
+                &CancellationToken::new(),
+                dry_run,
+            )
+            .unwrap_err();
+            assert_eq!(result.diagnostics[0]["code"], code, "{result:?}");
+            assert!(result.human_choice.is_none(), "{result:?}");
+        }
+
+        let result = invoke_runner(
+            &prepared_restore(root.path(), false, RestoreMode::Create),
+            &tool,
+            &SequenceRunner::new(vec![failed_process(restore_mode_mismatch_envelope(
+                RestoreMode::Replace,
+                false,
+            ))]),
+            &CancellationToken::new(),
+            false,
+        )
+        .unwrap_err();
+        assert_eq!(result.diagnostics[0]["code"], "bad_value", "{result:?}");
+        assert!(result.human_choice.is_none(), "{result:?}");
+    }
+
+    /// rule: INV.RUNTIME.INFOBASE-IMPORT-MODE
+    #[test]
+    fn restore_does_not_publish_an_assumed_cluster_target_state() {
+        let root = restore_workspace();
+        fs::write(
+            root.path().join("v8project.local.yaml"),
+            "infobases:\n  origin:\n    connection: 'Srvr=cluster;Ref=base'\n",
+        )
+        .unwrap();
+        let tool = BundledTool {
+            program: root.path().join("v8-runner"),
+            warnings: Vec::new(),
+            missing: None,
+        };
+        let mode = RestoreMode::Create;
+
+        for dry_run in [true, false] {
+            let result = execute_with_resolved_runner(
+                &prepared_restore(root.path(), dry_run, mode),
+                &SequenceRunner::new(vec![failed_process(restore_mode_mismatch_envelope(
+                    mode, dry_run,
+                ))]),
+                CancellationToken::new(),
+                &tool,
+                VERSION,
+            );
+            assert_eq!(result.diagnostics[0]["code"], "bad_value", "{result:?}");
+            assert!(result.data.is_none(), "{result:?}");
+            assert_eq!(
+                result
+                    .human_choice
+                    .as_deref()
+                    .map(|choice| choice.code.as_str()),
+                (!dry_run).then_some("infobase.restore_exists")
+            );
+        }
     }
 
     /// Исполняемый `infobase.restore` с `mode: replace` идёт только с согласия
@@ -3811,8 +4023,10 @@ infobase:
         };
         {
             let prepared = prepared_restore(root.path(), false, RestoreMode::Create);
-            let runner =
-                SequenceRunner::new(vec![failed_process(restore_target_exists_envelope(false))]);
+            let runner = SequenceRunner::new(vec![failed_process(restore_mode_mismatch_envelope(
+                RestoreMode::Create,
+                false,
+            ))]);
             let result = execute_with_resolved_runner(
                 &prepared,
                 &runner,
@@ -3859,19 +4073,8 @@ infobase:
             .expect("the chosen call is admitted without a second question");
         }
 
-        // Превью спрашивать не может: оно отдаёт прежний отказ.
-        let preview = execute_with_resolved_runner(
-            &prepared_restore(root.path(), true, RestoreMode::Create),
-            &SequenceRunner::new(vec![failed_process(restore_target_exists_envelope(true))]),
-            CancellationToken::new(),
-            &tool,
-            VERSION,
-        );
-        assert!(!preview.ok);
-        assert!(preview.human_choice.is_none(), "{preview:?}");
-
         let prepared = prepared_restore(root.path(), false, RestoreMode::Create);
-        let mut other = restore_target_exists_envelope(false);
+        let mut other = restore_mode_mismatch_envelope(RestoreMode::Create, false);
         other["error"]["message"] =
             json!("--input 'transfer/base.dt' is not a non-empty regular file");
         let runner = SequenceRunner::new(vec![failed_process(other)]);
