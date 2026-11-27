@@ -1,6 +1,6 @@
 {
   "name": "@ingvarconsulting/unica",
-  "version": "0.17.0",
+  "version": "0.17.0-alpha.12",
   "private": true,
   "description": "Practical 1C:Enterprise development workflows: the unica MCP server and the Unica skills.",
   "type": "module",
