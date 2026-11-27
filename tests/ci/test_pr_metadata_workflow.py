@@ -11,6 +11,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import yaml
 
@@ -294,8 +295,7 @@ class CheckStepTests(unittest.TestCase):
         self.assertIn("Номер PR не определён", completed.stdout)
 
 
-OWNER_GH = """#!{python}
-import json, os, sys
+OWNER_GH = """import json, os, sys
 args = " ".join(sys.argv[1:])
 fixture = json.load(open(os.environ["FAKE_FIXTURE"], encoding="utf-8"))
 with open(os.environ["FAKE_ARGS"], "a", encoding="utf-8") as calls:
@@ -329,22 +329,46 @@ class OwnerReviewTests(unittest.TestCase):
         python = Path(sys.executable).as_posix()
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            gh_script = root / "owner-gh.py"
+            gh_script.write_text(OWNER_GH, encoding="utf-8", newline="\n")
             gh = root / "gh"
-            gh.write_text(OWNER_GH.format(python=python), encoding="utf-8", newline="\n")
+            gh.write_text('#!/usr/bin/env bash\nexec python3 "$FAKE_GH_SCRIPT" "$@"\n',
+                          encoding="utf-8", newline="\n")
             gh.chmod(gh.stat().st_mode | stat.S_IEXEC)
             shim = root / "python3"
-            shim.write_text(f'#!/usr/bin/env bash\nexec "{python}" "$@"\n', encoding="utf-8", newline="\n")
+            shim.write_text('#!/usr/bin/env bash\nexec "$FAKE_PYTHON" "$@"\n', encoding="utf-8", newline="\n")
             shim.chmod(0o755)
             fixture = root / "fixture.json"
             fixture.write_text(json.dumps({"author": author, "head": HEAD, "codeowners": CODEOWNERS,
                                            "files": list(files), "reviews": [list(review) for review in reviews]}), encoding="utf-8")
             environment = {**os.environ, "PATH": f"{root}{os.pathsep}{os.environ['PATH']}", "GITHUB_REPOSITORY": "o/r",
                            "PR_NUMBER": "7", "CODE_OWNER": self.step["env"]["CODE_OWNER"], "FAKE_FIXTURE": str(fixture),
+                           "FAKE_PYTHON": python, "FAKE_GH_SCRIPT": str(gh_script),
                            "FAKE_ARGS": str(root / "calls"), **variables}
             completed = subprocess.run([bash, "-c", self.step["run"].replace("\r\n", "\n")], cwd=root, env=environment,
                                        capture_output=True, text=True, encoding="utf-8")
             calls = (root / "calls").read_text(encoding="utf-8") if (root / "calls").exists() else ""
         return completed, calls
+
+    def assert_api_calls(self, calls: str, *endpoints: str) -> None:
+        commands = [call.split(maxsplit=2)[:2] for call in calls.splitlines()]
+        self.assertEqual(commands, [["api", f"repos/o/r/{endpoint}"] for endpoint in endpoints])
+
+    def assert_review_verdict(self, completed, calls: str, path: str, *, approved=False, number=7) -> None:
+        self.assertEqual(completed.returncode, 0 if approved else 1, completed.stdout + completed.stderr)
+        if approved:
+            self.assertIn(f"PR #{number}: {OWNER} одобрил {HEAD[:7]}", completed.stdout.splitlines())
+        else:
+            self.assertIn(
+                f"::error::PR #{number} от pasha меняет пути из CODEOWNERS; "
+                f"нужен одобряющий отзыв {OWNER} на {HEAD[:7]}:",
+                completed.stdout.splitlines(),
+            )
+            self.assertIn(f"::error::  {path}", completed.stdout.splitlines())
+        self.assert_api_calls(
+            calls, f"pulls/{number}", "contents/.github/CODEOWNERS?ref=main",
+            f"pulls/{number}/files?per_page=100", f"pulls/{number}/reviews?per_page=100",
+        )
 
     def test_the_step_runs_after_a_refused_milestone_and_reads_owners_from_main(self) -> None:
         self.assertEqual(self.step["if"], "${{ !cancelled() }}")
@@ -354,40 +378,59 @@ class OwnerReviewTests(unittest.TestCase):
     def test_a_pr_by_the_owner_passes_without_asking_for_files_or_reviews(self) -> None:
         completed, calls = self.run_check(OWNER, [".github/workflows/ci.yml"])
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
-        self.assertNotIn("/files", calls)
+        self.assertIn(f"PR #7 от {OWNER}: одобрение не требуется", completed.stdout.splitlines())
+        self.assert_api_calls(calls, "pulls/7")
 
     def test_a_pr_that_touches_no_owned_path_passes_without_a_review(self) -> None:
         completed, calls = self.run_check("pasha", ["crates/unica-coder/src/lib.rs", "docs/other.md"])
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
-        self.assertNotIn("/reviews", calls)
+        self.assertIn("PR #7 не меняет путей из CODEOWNERS", completed.stdout.splitlines())
+        self.assert_api_calls(calls, "pulls/7", "contents/.github/CODEOWNERS?ref=main", "pulls/7/files?per_page=100")
 
     def test_an_owned_path_needs_the_owners_approval_of_the_current_head(self) -> None:
         for path in (".github/workflows/ci.yml", "docs/release-runbook.md", "arch/rules/core/x.md"):
             with self.subTest(path=path):
-                completed, _ = self.run_check("pasha", ["src/a.rs", path])
-                self.assertEqual(completed.returncode, 1)
-                self.assertIn("нужен одобряющий отзыв zeegin", completed.stdout)
-                self.assertIn(path, completed.stdout)
-                completed, _ = self.run_check("pasha", [path], [(OWNER, "APPROVED", HEAD)])
-                self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+                completed, calls = self.run_check("pasha", ["src/a.rs", path])
+                self.assert_review_verdict(completed, calls, path)
+                completed, calls = self.run_check("pasha", [path], [(OWNER, "APPROVED", HEAD)])
+                self.assert_review_verdict(completed, calls, path, approved=True)
 
     def test_an_approval_of_an_older_head_by_someone_else_or_withdrawn_does_not_count(self) -> None:
         for reviews in ([(OWNER, "APPROVED", "b" * 40)], [("viktor", "APPROVED", HEAD)],
                         [(OWNER, "APPROVED", HEAD), (OWNER, "CHANGES_REQUESTED", HEAD)],
                         [(OWNER, "APPROVED", HEAD), (OWNER, "DISMISSED", HEAD)]):
             with self.subTest(reviews=reviews):
-                completed, _ = self.run_check("pasha", [".github/CODEOWNERS"], reviews)
-                self.assertEqual(completed.returncode, 1)
+                path = ".github/CODEOWNERS"
+                completed, calls = self.run_check("pasha", [path], reviews)
+                self.assert_review_verdict(completed, calls, path)
 
     def test_a_comment_after_the_approval_keeps_it(self) -> None:
-        completed, _ = self.run_check("pasha", [".github/CODEOWNERS"], [(OWNER, "APPROVED", HEAD), (OWNER, "COMMENTED", HEAD)])
-        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        path = ".github/CODEOWNERS"
+        completed, calls = self.run_check("pasha", [path], [(OWNER, "APPROVED", HEAD), (OWNER, "COMMENTED", HEAD)])
+        self.assert_review_verdict(completed, calls, path, approved=True)
+
+    def test_the_owner_review_step_runs_python_from_a_path_with_spaces(self) -> None:
+        path = ".github/CODEOWNERS"
+        interpreter = Path(sys.executable).as_posix()
+        with tempfile.TemporaryDirectory(prefix="python with spaces ") as directory:
+            launcher = Path(directory) / "python"
+            launcher.write_text(
+                '#!/usr/bin/env bash\nexec "$FAKE_REAL_PYTHON" "$@"\n',
+                encoding="utf-8", newline="\n",
+            )
+            launcher.chmod(0o755)
+            with patch.object(sys, "executable", str(launcher)):
+                completed, calls = self.run_check(
+                    "pasha", [path], [(OWNER, "APPROVED", HEAD)],
+                    FAKE_REAL_PYTHON=interpreter,
+                )
+        self.assert_review_verdict(completed, calls, path, approved=True)
 
     def test_the_queue_checks_again_with_the_number_from_its_ref(self) -> None:
         ref = "refs/heads/gh-readonly-queue/main/pr-2494-b8d576dca6e9ffa40b9b10fe006472736fcc5a23"
-        completed, calls = self.run_check("pasha", [".github/CODEOWNERS"], GITHUB_REF=ref, PR_NUMBER="")
-        self.assertEqual(completed.returncode, 1)
-        self.assertIn("pulls/2494", calls)
+        path = ".github/CODEOWNERS"
+        completed, calls = self.run_check("pasha", [path], GITHUB_REF=ref, PR_NUMBER="")
+        self.assert_review_verdict(completed, calls, path, number=2494)
 
     def test_the_runbook_is_owned(self) -> None:
         self.assertIn("/docs/release-runbook.md @zeegin", (ROOT / ".github/CODEOWNERS").read_text(encoding="utf-8"))
