@@ -2633,7 +2633,6 @@ pub(super) fn preflight_apply_operations_observed(
                 if descriptor.family() == unica_operations::OperationFamily::Code {
                     if let Some(branch) = crate::infrastructure::v13_read::module_branch_for_parent(
                         operation.at(),
-                        crate::domain::apply::source_classification_profile(source),
                         source.kind(),
                     ) {
                         refusal.next.push(json!({
@@ -2645,11 +2644,9 @@ pub(super) fn preflight_apply_operations_observed(
                 }
                 // Узел, который читается, показывает свой словарь; адрес,
                 // которого нет ни в одном дереве, ведёт к корню набора.
-                let readable = crate::infrastructure::logical_tree::route_logical_address(
-                    operation.at(),
-                    crate::domain::apply::source_classification_profile(source),
-                )
-                .is_ok();
+                let readable =
+                    crate::infrastructure::logical_tree::route_logical_address(operation.at())
+                        .is_ok();
                 if readable {
                     with_node_dictionary(refusal, &operation.at().to_string())
                 } else {

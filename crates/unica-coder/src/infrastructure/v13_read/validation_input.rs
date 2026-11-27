@@ -24,7 +24,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
         }
         let admitted = self.snapshot(at)?;
         let canonical = self.canonical_address(at, &admitted)?;
-        let route = route_logical_address(&canonical, self.profile)
+        let route = route_logical_address(&canonical)
             .map_err(|error| ViewError::new(RefusalCode::BadValue, error.to_string()))?;
         let target = route
             .reader_metadata_path()
@@ -51,7 +51,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
     ) -> Result<crate::application::v13::check::NativeCheckOutcome, ViewError> {
         let admitted = self.snapshot(at)?;
         let canonical = self.canonical_address(at, &admitted)?;
-        let route = route_logical_address(&canonical, self.profile)
+        let route = route_logical_address(&canonical)
             .map_err(|error| ViewError::new(RefusalCode::BadValue, error.to_string()))?;
         let target = route.reader_metadata_path().ok_or_else(|| {
             ViewError::new(RefusalCode::BadValue, "subsystem check has no descriptor")

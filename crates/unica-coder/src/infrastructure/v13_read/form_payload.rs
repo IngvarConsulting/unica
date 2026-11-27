@@ -1,6 +1,7 @@
 //! Данные, привязки и представление форм.
 
 use super::*;
+use unica_bsl::module_capabilities::module_capability;
 use unica_bsl::projection::EventState;
 
 fn form_event_projections(
@@ -147,7 +148,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
             QualifiedAddress::parse(&format!("{form_at}.Module.Form")).map_err(|error| {
                 ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
             })?;
-        let capability = self.profile.module_capability(&module_at).ok_or_else(|| {
+        let capability = module_capability(&module_at).ok_or_else(|| {
             ViewError::detailed(
                 RefusalDetail::ProviderAbsent,
                 "form module capability is absent from the platform profile",

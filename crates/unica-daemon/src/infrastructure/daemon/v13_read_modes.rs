@@ -1,6 +1,7 @@
 use serde_json::{json, Map, Value};
 use std::fmt;
 use unica_address::address::{NodeKind, QualifiedAddress};
+use unica_bsl::module_capabilities::module_capability;
 use unica_forms::{FormItemRole, FormObservation};
 use unica_metadata::style_color::StyleItemPropertiesObservation;
 type StyleItemPropertiesLookup<'a> =
@@ -639,10 +640,7 @@ pub(super) fn search_scope_route(
             "search scope has no logical segments",
         ));
     };
-    let module = unica_bsl::profile::PlatformProfile::v8_3_27()
-        .module_capability(scope)
-        .is_some()
-        .then(|| scope.clone());
+    let module = module_capability(scope).is_some().then(|| scope.clone());
     if module.is_none() && scope.segments().len() != 1 {
         return Err(ReadModeError::unsupported_scope(
             "text search accepts the Configuration, one metadata branch or owner, or one module",

@@ -8,7 +8,8 @@ use crate::projection::{
 use std::fmt;
 use unica_address::address::QualifiedAddress;
 use unica_bsl::event_text::RequiredEventDirective;
-use unica_bsl::profile::{ModuleCapability, PlatformProfile};
+use unica_bsl::module_capabilities::{module_capability, ModuleCapability};
+use unica_bsl::profile::PlatformProfile;
 use unica_bsl::projection::{EventProjection, EventState, MethodKind, ModuleProjectionSet};
 use unica_forms::event_targets::{PropertyEventOwner, PropertyEventOwnerKind};
 use unica_forms::events::{form_event_handler_signature, FormDefinitionKind, FormElementKind};
@@ -147,8 +148,7 @@ pub fn project_property_event_implementation(
     validate_owner_chain(owner_chain, &inputs)?;
     // Линия набора уже установлена в контексте формы: профиль берётся по ней.
     let platform = PlatformProfile::for_line_or_base(evidence.context.platform_line);
-    let capability = platform
-        .module_capability(module_at)
+    let capability = module_capability(module_at)
         .ok_or_else(|| EventProjectionError::unavailable("form module capability is absent"))?;
     let module = project_module(ModuleProjectionRequest {
         at: module_at,
@@ -390,8 +390,7 @@ pub fn project_property_events(
     let module_at = QualifiedAddress::parse(&format!("{form_at}.Module.Form"))
         .map_err(|error| EventProjectionError::unavailable(error.to_string()))?;
     let platform = PlatformProfile::for_line_or_base(evidence.context.platform_line);
-    let capability = platform
-        .module_capability(&module_at)
+    let capability = module_capability(&module_at)
         .ok_or_else(|| EventProjectionError::unavailable("form module capability is absent"))?;
     let inputs = form_semantic_inputs(&form_at.to_string(), evidence);
     let module = project_module(ModuleProjectionRequest {

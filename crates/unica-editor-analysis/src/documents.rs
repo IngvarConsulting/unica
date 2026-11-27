@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use unica_address::address::QualifiedAddress;
 use unica_address::source_target::MetadataAddress;
-use unica_bsl::profile::PlatformProfile;
+use unica_bsl::module_capabilities::module_capability;
 use unica_execution_contract::view_error::ViewError;
 use unica_source_contract::SourceSetKind;
 use unica_source_designer::module_layout::{module_relative, module_source_address};
@@ -28,7 +28,6 @@ pub struct SourceSetLayout {
     pub name: String,
     pub kind: SourceSetKind,
     pub root: PathBuf,
-    pub profile: PlatformProfile,
 }
 
 /// A read of one source set of a space, for one session.
@@ -241,7 +240,7 @@ impl LspDocuments {
             return Err(LspDocumentError::UnknownSourceSet(location.source_set));
         }
         let at = module_of_body(&location.document)?;
-        let target = module_target(&at, layout).ok_or(LspDocumentError::NotAModule)?;
+        let target = module_target(&at).ok_or(LspDocumentError::NotAModule)?;
         read.module_source(&target).map_err(LspDocumentError::Read)
     }
 
@@ -260,7 +259,7 @@ impl LspDocuments {
             return Err(LspDocumentError::UnknownSourceSet(location.source_set));
         }
         let at = module_of_body(&location.document)?;
-        module_target(&at, layout).ok_or(LspDocumentError::NotAModule)
+        module_target(&at).ok_or(LspDocumentError::NotAModule)
     }
 
     /// The `unica://` URIs to refresh after `apply` published `relatives`
@@ -324,11 +323,8 @@ fn module_of_body(document: &DocumentUri) -> Result<QualifiedAddress, LspDocumen
         .map_err(|error| LspDocumentError::Uri(UriError::Address(error.to_string())))
 }
 
-fn module_target(
-    at: &QualifiedAddress,
-    layout: &SourceSetLayout,
-) -> Option<unica_address::source_target::MetadataAddress> {
-    let capability = layout.profile.module_capability(at)?;
+fn module_target(at: &QualifiedAddress) -> Option<MetadataAddress> {
+    let capability = module_capability(at)?;
     module_source_address(
         at,
         capability.owner_kind(),
@@ -340,7 +336,7 @@ fn module_target(
 
 /// The module file of a logical module address, relative to its source set.
 fn module_file(at: &QualifiedAddress, layout: &SourceSetLayout) -> Option<PathBuf> {
-    module_relative(&module_target(at, layout)?, layout.kind).ok()
+    module_relative(&module_target(at)?, layout.kind).ok()
 }
 
 #[cfg(test)]

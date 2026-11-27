@@ -1,8 +1,8 @@
 //! Existing real immutable catalogue and form event-context oracles.
 mod tests {
-
     use unica_address::address::NodeKind;
     use unica_bsl::event_catalog::module_event_catalog;
+    use unica_bsl::module_capabilities::{module_capability, supports_direct_module_role};
     use unica_bsl::projection::MethodParameter;
     use unica_forms::events::test_support::{NO_EVENTS, OBJECT_RECORD_FORM_EVENTS};
     use unica_forms::events::*;
@@ -1003,7 +1003,7 @@ mod tests {
         let profile = PlatformProfile::v8_3_27();
         for (raw, expected) in cases {
             let at = QualifiedAddress::parse(raw).unwrap();
-            let capability = profile.module_capability(&at).unwrap();
+            let capability = module_capability(&at).unwrap();
             let actual = module_event_catalog(profile, capability)
                 .iter()
                 .map(|event| event.event_id.as_str())
@@ -1036,17 +1036,16 @@ mod tests {
             ModuleRole::ValueManager,
         ];
         for (line, id) in DESCRIBED_PLATFORM_LINES {
-            let profile = PlatformProfile::for_line(*line)
+            PlatformProfile::for_line(*line)
                 .unwrap_or_else(|| panic!("described line {id} has no profile"));
             let mut expected = NodeKind::metadata_kinds()
                 .iter()
                 .filter(|owner| metadata_kind_exists(Some(*line), owner.as_str()))
                 .flat_map(|owner| direct_roles.iter().map(move |role| (*owner, *role)))
-                .filter(|(owner, role)| profile.supports_direct_module_role(*owner, *role))
+                .filter(|(owner, role)| supports_direct_module_role(*owner, *role))
                 .map(|(owner, role)| (owner.as_str(), role.as_str()))
                 .collect::<std::collections::BTreeSet<_>>();
-            let nested = profile
-                .module_capability(&recalculation)
+            let nested = module_capability(&recalculation)
                 .unwrap_or_else(|| panic!("line {id} has no capability for {recalculation}"));
             assert!(expected.insert((nested.owner_kind().as_str(), nested.role().as_str())));
             let actual = platform_event_catalog_fixture_for_line(Some(*line))
@@ -1099,7 +1098,7 @@ mod tests {
             let profile = PlatformProfile::for_line(*line).unwrap();
             for (raw, owner, route, contexts) in cases {
                 let at = QualifiedAddress::parse(raw).unwrap();
-                let capability = profile.module_capability(&at).unwrap();
+                let capability = module_capability(&at).unwrap();
                 assert_eq!(capability.owner_kind(), owner, "line {id}, {at}");
                 assert_eq!(capability.role(), ModuleRole::RecordSet, "line {id}, {at}");
                 assert_eq!(capability.route_kind(), route, "line {id}, {at}");

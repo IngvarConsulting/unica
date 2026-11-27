@@ -13,7 +13,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
         at: &QualifiedAddress,
         admitted: &ViewSourceSnapshot,
     ) -> Result<(String, ResolvedLines), ViewError> {
-        let route = route_logical_address(at, self.profile)
+        let route = route_logical_address(at)
             .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
         let capability = route
             .module()
@@ -22,7 +22,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
             let projected = self.read_exact(at, admitted)?;
             return Ok((projected.kind().to_string(), ResolvedLines::NotLineBased));
         };
-        let (module_at, prefix_len) = module_prefix(at, self.profile, capability)?;
+        let (module_at, prefix_len) = module_prefix(at, capability)?;
         let suffix = &at.segments()[prefix_len..];
         let is_named =
             |segment: &AddressSegment, kind| segment.kind() == kind && segment.name().is_some();
@@ -140,7 +140,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
     ) -> Result<T, ViewError> {
         self.read_checkpoint()?;
         let admitted = self.snapshot(module)?;
-        let route = route_logical_address(module, self.profile)
+        let route = route_logical_address(module)
             .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
         let capability = route.module().ok_or_else(|| {
             ViewError::new(
@@ -148,7 +148,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 "the address does not name a BSL module",
             )
         })?;
-        let (module_at, _) = module_prefix(module, self.profile, capability)?;
+        let (module_at, _) = module_prefix(module, capability)?;
         self.verify_module_owner(&module_at, capability, &admitted)?;
         let projections = self.module_projection(&module_at, capability, &admitted)?;
         let result = inspect(&module_at, &projections)?;
@@ -212,7 +212,6 @@ impl<'a> LogicalViewReadAuthority<'a> {
         crate::infrastructure::event_sources::module_address_for_relative(
             self.read.source_set(),
             self.read.source_set_kind(),
-            self.profile,
             std::path::Path::new(path),
         )
     }
@@ -257,13 +256,11 @@ impl<'a> LogicalViewReadAuthority<'a> {
     ) -> Option<unica_code_intelligence::symbols::NamedModules> {
         let source_set = self.read.source_set().to_string();
         let kind = self.read.source_set_kind();
-        let profile = self.profile;
         let modules: crate::infrastructure::name_index::ModulePaths =
             std::sync::Arc::new(move |path: &std::path::Path| {
                 crate::infrastructure::event_sources::module_address_for_relative(
                     &source_set,
                     kind,
-                    profile,
                     path,
                 )
                 .is_some()
@@ -286,7 +283,6 @@ impl<'a> LogicalViewReadAuthority<'a> {
         crate::infrastructure::event_sources::module_address_for_relative(
             self.read.source_set(),
             self.read.source_set_kind(),
-            self.profile,
             &path,
         )
     }
@@ -325,7 +321,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
         let Some(capability) = route.module() else {
             return self.module_branch_view(route.at(), admitted);
         };
-        let (module_at, prefix_len) = module_prefix(route.at(), self.profile, capability)?;
+        let (module_at, prefix_len) = module_prefix(route.at(), capability)?;
         self.verify_module_owner(&module_at, capability, admitted)?;
         if self.read.source_set_kind() == SourceSetKind::Configuration
             && route.at().segments().last().is_some_and(|segment| {
@@ -532,7 +528,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
         if let Some(owner) = module_branch_owner(branch)? {
             self.verify_registered_module_owner(&owner, admitted)?;
         }
-        project_module_branch(branch, self.profile)
+        project_module_branch(branch)
     }
 
     pub(super) fn verify_module_owner(

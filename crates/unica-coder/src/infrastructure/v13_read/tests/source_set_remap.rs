@@ -79,7 +79,6 @@ fn actor_owned_configuration_support_and_home_page_sidecars_are_retained() {
     );
     let route = route_logical_address(
         &QualifiedAddress::parse("main:Configuration").unwrap(),
-        PlatformProfile::v8_3_27(),
     )
     .unwrap();
     let admitted = authority.typed_payload(&route).unwrap();

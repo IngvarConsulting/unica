@@ -2,6 +2,7 @@ pub mod applicability;
 
 pub mod operations;
 
+pub mod module_capabilities;
 pub mod outline;
 pub mod profile;
 pub mod projection;

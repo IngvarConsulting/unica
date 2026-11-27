@@ -254,7 +254,6 @@ fn the_module_address_mcp_gives_a_file_with_body_is_its_document_address() {
         let module = crate::infrastructure::event_sources::module_address_for_relative(
             "main",
             unica_source_contract::SourceSetKind::Configuration,
-            unica_bsl::profile::PlatformProfile::v8_3_27(),
             Path::new(relative),
         )
         .unwrap();

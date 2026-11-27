@@ -12,7 +12,8 @@ use std::collections::HashMap;
 use unica_address::address::{NodeKind, QualifiedAddress};
 use unica_address::module_routes::ModuleRole;
 use unica_bsl::event_catalog::module_event_catalog;
-use unica_bsl::profile::{ModuleCapability, PlatformProfile};
+use unica_bsl::module_capabilities::ModuleCapability;
+use unica_bsl::profile::PlatformProfile;
 use unica_bsl_parser::{
     parse as parse_bsl_syntax, AnnotationFact, CodeOutlineMethodKind, ExtensionAnnotationKind,
     ParsedModule,

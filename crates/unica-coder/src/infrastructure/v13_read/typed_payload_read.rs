@@ -21,7 +21,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
         };
         let admitted = self.snapshot(at)?;
         let canonical = self.canonical_address(at, &admitted)?;
-        let route = route_logical_address(&canonical, self.profile)
+        let route = route_logical_address(&canonical)
             .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
         let Some(target) = route.reader_metadata_path() else {
             return Ok(None);

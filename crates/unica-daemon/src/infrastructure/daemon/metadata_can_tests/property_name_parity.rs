@@ -53,7 +53,6 @@ use crate::infrastructure::v13_read_projection::structured_properties::{
     self, PropertyRole, WriteTarget,
 };
 use unica_address::address::QualifiedAddress;
-use unica_bsl::profile::PlatformProfile;
 
 fn profile_mismatches(
     at: &str,
@@ -64,7 +63,7 @@ fn profile_mismatches(
     let reader = if props["format"] == "DataCompositionSchema" {
         LogicalReader::Dcs
     } else {
-        route_logical_address(&address, PlatformProfile::v8_3_27())
+        route_logical_address(&address)
             .unwrap()
             .reader()
     };

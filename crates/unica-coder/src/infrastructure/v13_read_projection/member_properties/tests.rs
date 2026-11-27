@@ -2,7 +2,6 @@ use super::super::{project_typed_payload, project_typed_payload_for_source};
 use crate::infrastructure::logical_tree::route_logical_address;
 use serde_json::{json, Value};
 use unica_address::address::QualifiedAddress;
-use unica_bsl::profile::PlatformProfile;
 use unica_source_contract::SourceSetKind;
 
 mod catalog_attribute;
@@ -33,7 +32,7 @@ fn provider_payload(properties: Value) -> Value {
 
 fn project(at: &str, payload: Value, source_kind: Option<SourceSetKind>) -> Value {
     let address = QualifiedAddress::parse(at).unwrap();
-    let route = route_logical_address(&address, PlatformProfile::v8_3_27()).unwrap();
+    let route = route_logical_address(&address).unwrap();
     let projected = match source_kind {
         Some(kind) => project_typed_payload_for_source(&route, payload, kind),
         None => project_typed_payload(&route, payload),

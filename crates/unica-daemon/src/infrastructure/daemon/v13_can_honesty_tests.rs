@@ -515,7 +515,7 @@ fn dangling_reference(
 
 /// Форма адреса: маршрут и виды сегментов с признаком имени.
 fn shape_key(address: &QualifiedAddress) -> String {
-    let route = classify_route(address, PlatformProfile::v8_3_27());
+    let route = classify_route(address);
     let segments = address
         .segments()
         .iter()
@@ -719,7 +719,7 @@ fn check_fixture(name: &str) -> (BTreeSet<RouteClass>, BTreeSet<(RouteClass, Str
         unroutable.extend(walked.unroutable);
         for at in walked.nodes {
             let address = QualifiedAddress::parse(&at).unwrap();
-            let Some(route) = classify_route(&address, PlatformProfile::v8_3_27()) else {
+            let Some(route) = classify_route(&address) else {
                 continue;
             };
             let terminal = address.segments().last().unwrap().kind().as_str();
@@ -750,7 +750,7 @@ fn check_fixture(name: &str) -> (BTreeSet<RouteClass>, BTreeSet<(RouteClass, Str
                 .nth(1)
                 .is_some_and(|parent| parent.kind() == terminal.kind());
             let pair = (
-                classify_route(&address, PlatformProfile::v8_3_27()),
+                classify_route(&address),
                 terminal.kind().as_str(),
                 terminal.name().is_some(),
                 nested,
@@ -1100,7 +1100,7 @@ fn check_node(checked: &Checked<'_>, at: &str, plan_writes: bool, mismatches: &m
         .map(|entry| entry["op"].as_str().unwrap().to_string())
         .collect::<BTreeSet<_>>();
     let address = QualifiedAddress::parse(at).unwrap();
-    let route = classify_route(&address, PlatformProfile::v8_3_27()).unwrap();
+    let route = classify_route(&address).unwrap();
     let terminal = address.segments().last().unwrap().kind().as_str();
     let template = terminal == NodeKind::Template.as_str();
     // Роль элемента формы — фильтр словаря поверх места, как формат макета.

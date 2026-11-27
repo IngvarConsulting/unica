@@ -792,18 +792,14 @@ fn cfe_validate_module_layouts(
 ) -> Result<Vec<(PathBuf, &'static str)>, String> {
     use unica_address::address::QualifiedAddress;
     use unica_address::module_routes::ModuleRouteKind;
-    use unica_bsl::profile::PlatformProfile;
+    use unica_bsl::module_capabilities::{module_capability, module_children};
     use unica_source_designer::module_layout::module_source_address;
     let owner = QualifiedAddress::parse(&format!("extension:{kind}.{name}"))
         .map_err(|error| error.to_string())?;
     let branch =
         QualifiedAddress::parse(&format!("{owner}.Module")).map_err(|error| error.to_string())?;
-    // Состав модулей владельца задают маршруты модулей, а они от линии
-    // не зависят: линии 8.5 держат таблицы модулей и ролей 8.3.27.
-    let profile = PlatformProfile::for_line_or_base(None);
-    let children = profile.module_children(&branch);
-    let candidates = profile
-        .module_capability(&owner)
+    let children = module_children(&branch);
+    let candidates = module_capability(&owner)
         .map(|capability| (&owner, capability))
         .into_iter()
         .chain(

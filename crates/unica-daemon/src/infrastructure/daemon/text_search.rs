@@ -1510,10 +1510,9 @@ impl<'a> Collector<'a> {
             source.source_profile(),
         ) {
             None => Err("unsupported_source_profile"),
-            Some(profile) => match module_address_for_relative(
+            Some(_) => match module_address_for_relative(
                 source.source_set_name(),
                 source.source_kind(),
-                profile,
                 &current.relative,
             ) {
                 None => Err("outside_module_layout"),
@@ -1585,17 +1584,14 @@ impl<'a> Collector<'a> {
         let Some(logical) = proof.binding.logical_path(relative) else {
             return Ok(Err("outside_module_layout"));
         };
-        let Some(profile) =
-            crate::domain::source_capabilities::bsl_profile_for_source(source.source_profile())
-        else {
+        if crate::domain::source_capabilities::bsl_profile_for_source(source.source_profile())
+            .is_none()
+        {
             return Ok(Err("unsupported_source_profile"));
-        };
-        let Some(at) = module_address_for_relative(
-            source.source_set_name(),
-            source.source_kind(),
-            profile,
-            &logical,
-        ) else {
+        }
+        let Some(at) =
+            module_address_for_relative(source.source_set_name(), source.source_kind(), &logical)
+        else {
             return Ok(Err("outside_module_layout"));
         };
         Ok(Ok(ModuleOf {

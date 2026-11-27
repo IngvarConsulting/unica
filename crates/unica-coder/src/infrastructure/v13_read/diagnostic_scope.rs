@@ -1,6 +1,7 @@
 //! Сопоставление диагностик с узлами и модулями.
 
 use super::*;
+use unica_bsl::module_capabilities::module_prefix_capability;
 
 impl<'a> LogicalViewReadAuthority<'a> {
     pub fn diagnostic_mapping(
@@ -11,16 +12,13 @@ impl<'a> LogicalViewReadAuthority<'a> {
         use unica_address::source_target::TargetKind;
         let admitted = self.snapshot(at)?;
         let canonical = self.canonical_address(at, &admitted)?;
-        let capability = self
-            .profile
-            .module_prefix_capability(&canonical)
-            .ok_or_else(|| {
-                ViewError::new(
-                    RefusalCode::BadValue,
-                    "BSL diagnostics requires a module or its body",
-                )
-            })?;
-        let (module_at, _) = shared_module_prefix(&canonical, self.profile, capability)
+        let capability = module_prefix_capability(&canonical).ok_or_else(|| {
+            ViewError::new(
+                RefusalCode::BadValue,
+                "BSL diagnostics requires a module or its body",
+            )
+        })?;
+        let (module_at, _) = shared_module_prefix(&canonical, capability)
             .map_err(|error| ViewError::new(RefusalCode::BadValue, error))?;
         // Registration, owner identity, format and module containment are proved
         // by the same reader as view, using this invocation's retained root.
@@ -46,7 +44,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
         use unica_address::source_target::TargetKind;
         let admitted = self.snapshot(at)?;
         let canonical = self.canonical_address(at, &admitted)?;
-        let route = route_logical_address(&canonical, self.profile)
+        let route = route_logical_address(&canonical)
             .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
         let (target, kind) = match (route.reader(), canonical.segments()) {
             (LogicalReader::Configuration, [_]) => (None, TargetKind::SourceRoot),

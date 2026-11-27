@@ -30,7 +30,6 @@ fn layout(name: &str, root: &Path) -> SpaceLayout {
             name: "main".to_owned(),
             kind: SourceSetKind::Configuration,
             root: root.join("src"),
-            profile: PlatformProfile::v8_3_27(),
         }],
     }
 }

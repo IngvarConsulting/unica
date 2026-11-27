@@ -3,7 +3,10 @@ use std::path::{Path, PathBuf};
 use unica_address::address::{AddressSegment, NodeKind, QualifiedAddress};
 use unica_address::module_routes::ModuleRole;
 use unica_address::source_target::MetadataAddress;
-use unica_bsl::profile::{ModuleCapability, PlatformProfile};
+use unica_bsl::module_capabilities::{
+    module_capability, module_prefix_capability, ModuleCapability,
+};
+use unica_bsl::profile::PlatformProfile;
 use unica_forms::event_targets::{PropertyEventOwner, PropertyEventOwnerKind};
 use unica_refusal::RefusalCode;
 use unica_source_contract::SourceSetKind;
@@ -92,7 +95,7 @@ pub(crate) fn resolve_event_source(
         ));
     }
 
-    if let Some(capability) = profile.module_prefix_capability(event_at) {
+    if let Some(capability) = module_prefix_capability(event_at) {
         if source_set_kind == SourceSetKind::Extension {
             return Err(EventSourceError::unavailable(
                 "extension Platform-event interception is not proved",
@@ -113,7 +116,7 @@ pub(crate) fn resolve_event_source(
             )));
         }
         let (module_at, _) =
-            module_prefix(event_at, profile, capability).map_err(EventSourceError::unavailable)?;
+            module_prefix(event_at, capability).map_err(EventSourceError::unavailable)?;
         let module_target = module_source_address(
             &module_at,
             capability.owner_kind(),
@@ -162,7 +165,7 @@ pub(in crate::infrastructure) fn resolve_event_source_for_form_evidence(
             "event address belongs to another admitted source set",
         ));
     }
-    if profile.module_prefix_capability(event_at).is_some() {
+    if module_prefix_capability(event_at).is_some() {
         return Err(EventSourceError::unavailable(
             "property evidence resolver does not accept Platform events",
         ));
@@ -249,12 +252,11 @@ fn resolve_property_event_source(
 
 pub(crate) fn module_prefix(
     address: &QualifiedAddress,
-    profile: PlatformProfile,
     capability: ModuleCapability,
 ) -> Result<(QualifiedAddress, usize), String> {
     for length in 1..=address.segments().len() {
         let prefix = qualified_prefix(address, length)?;
-        if profile.module_capability(&prefix) == Some(capability) {
+        if module_capability(&prefix) == Some(capability) {
             return Ok((prefix, length));
         }
     }
@@ -289,7 +291,6 @@ fn render_segments(segments: &[AddressSegment]) -> String {
 pub fn module_address_for_relative(
     source_set: &str,
     source_set_kind: SourceSetKind,
-    profile: PlatformProfile,
     relative: &Path,
 ) -> Option<QualifiedAddress> {
     let metadata = if matches!(
@@ -306,7 +307,7 @@ pub fn module_address_for_relative(
     };
     let logical = logical_module_from_metadata(&metadata)?;
     let at = QualifiedAddress::parse(&format!("{source_set}:{logical}")).ok()?;
-    let capability = profile.module_capability(&at)?;
+    let capability = module_capability(&at)?;
     let target = module_source_address(
         &at,
         capability.owner_kind(),

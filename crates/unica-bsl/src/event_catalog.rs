@@ -1,5 +1,6 @@
 //! Module capability selects its records from the catalogue of its line.
-use crate::profile::{ModuleCapability, PlatformProfile};
+use crate::module_capabilities::ModuleCapability;
+use crate::profile::PlatformProfile;
 use unica_metadata::event_catalog::{platform_event_catalog_fixture_for_line, PlatformEventSpec};
 
 /// Возможные события роли модуля у её владельца в наборе линии `platform`.

@@ -1,6 +1,7 @@
 //! Обратные ссылки на места создания описания оповещения.
 
 use super::*;
+use unica_bsl::module_capabilities::module_capability;
 use unica_bsl::projection::MethodKind;
 use unica_bsl_parser::symbols::{name_key, LineIndex};
 use unica_source_contract::read::module_text_revision;
@@ -181,7 +182,7 @@ impl LogicalViewReadAuthority<'_> {
                 unreadable += 1;
                 continue;
             };
-            let Some(capability) = self.profile.module_capability(&at) else {
+            let Some(capability) = module_capability(&at) else {
                 unreadable += 1;
                 continue;
             };
