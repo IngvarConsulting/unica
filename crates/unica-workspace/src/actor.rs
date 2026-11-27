@@ -11,8 +11,8 @@ use crate::compile_transaction::CompileTransaction;
 use crate::deadline_lock::{DeadlineLock, DeadlineLockError, DeadlineLockErrorKind, FailClosed};
 use crate::paths::{normalize_path_identity, GENERATED_DIR_NAME};
 use crate::platform::filesystem::{
-    path_starts_with_host_root, stable_path_identity_bytes, strip_windows_extended_length_prefix,
-    RetainedChildCapability, RetainedDirectoryCapability,
+    host_path_relative_to, path_starts_with_host_root, stable_path_identity_bytes,
+    strip_windows_extended_length_prefix, RetainedChildCapability, RetainedDirectoryCapability,
 };
 use crate::policy_evidence::{
     RetainedSupportPolicyEvidence, SupportPolicyEvidenceError, SupportPolicyEvidenceErrorKind,
@@ -467,6 +467,12 @@ pub(crate) fn apply_writer_authority_for_test() -> ApplyWriterAuthority {
 /// token is compared only after the concrete plan has been prepared.
 #[derive(Debug)]
 pub enum ApplyAdmissionError {
+    OverlappingSourceRoots {
+        destination: String,
+        destination_path: Option<String>,
+        dependency: String,
+        dependency_path: Option<String>,
+    },
     Other(String),
 }
 
@@ -485,6 +491,9 @@ impl From<ApplyAdmissionError> for String {
 impl std::fmt::Display for ApplyAdmissionError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::OverlappingSourceRoots { .. } => {
+                formatter.write_str("apply source-set roots overlap")
+            }
             Self::Other(message) => message.fmt(formatter),
         }
     }
@@ -1966,9 +1975,23 @@ impl<R, C> WorkspaceActor<R, C> {
                     .path()
                     .starts_with(parent.source_root.path())
             {
-                return Err(ApplyAdmissionError::Other(
-                    "borrow parent must be a separate non-overlapping source root".to_string(),
-                ));
+                let workspace_relative = |source: &ProviderRootBinding| {
+                    let relative = host_path_relative_to(
+                        source.source_root(),
+                        self.identity.workspace_root(),
+                    )?;
+                    if relative.as_os_str().is_empty() {
+                        return Some(".".to_string());
+                    }
+                    relative.to_str()?;
+                    Some(relative.portable().to_string())
+                };
+                return Err(ApplyAdmissionError::OverlappingSourceRoots {
+                    destination: binding.source_set_name().to_string(),
+                    destination_path: workspace_relative(binding),
+                    dependency: parent.source_set_name().to_string(),
+                    dependency_path: workspace_relative(&parent),
+                });
             }
             // Any writable format: the platform loads a parent and an
             // extension of different formats of its line together. Besides a

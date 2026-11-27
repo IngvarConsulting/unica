@@ -1,0 +1,138 @@
+{
+  "id": "S-3104-borrow-overlapping-roots",
+  "issue": 3104,
+  "area": "Расширения конфигурации",
+  "task": "Прочитать условие непересечения корней в Can. Получить отказ заимствования с обоими относительными путями и указанием, как перенести расширение. Проверить исходные байты обоих наборов.",
+  "workspace": "tests/fixtures/acceptance/workspace-borrow-overlap",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "parentAddress": {
+          "pointer": "/data/at"
+        },
+        "parentRoot": {
+          "kind": "sha256",
+          "file": "src/cf/Configuration.xml"
+        },
+        "parentObject": {
+          "kind": "sha256",
+          "file": "src/cf/Catalogs/Items.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "ext:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "extensionAddress": {
+          "pointer": "/data/at"
+        },
+        "extensionRoot": {
+          "kind": "sha256",
+          "file": "src/cf/extension-project/Configuration.xml"
+        },
+        "workspaceConfig": {
+          "kind": "sha256",
+          "file": "v8project.yaml"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "ext:Configuration.Can.object.borrow"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/op",
+          "eq": "object.borrow"
+        },
+        {
+          "pointer": "/data/props/contract/notes",
+          "contains": "non-overlapping"
+        },
+        {
+          "pointer": "/data/props/contract/notes",
+          "contains": "neither directory may contain the other"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.extensionAddress",
+        "ops": [
+          {
+            "op": "object.borrow",
+            "args": {
+              "from": "$capture.parentAddress"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "provider"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/message",
+          "eq": "The source-set roots for \"ext\" (\"src/cf/extension-project\") and \"main\" (\"src/cf\") overlap. Use distinct parent and extension source sets. Move the extension to a directory that neither contains nor is inside the parent root and update its source-set path in v8project.yaml. When the parent uses the workspace root, first place its sources in a separate directory inside the workspace."
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "provider_unavailable"
+        },
+        {
+          "pointer": "/diagnostics/0/outcome",
+          "eq": "needsHuman"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/cf/Configuration.xml",
+          "eq": "$capture.parentRoot"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/cf/Catalogs/Items.xml",
+          "eq": "$capture.parentObject"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/cf/extension-project/Configuration.xml",
+          "eq": "$capture.extensionRoot"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "$capture.workspaceConfig"
+        },
+        {
+          "kind": "exists",
+          "path": "src/cf/extension-project/Catalogs/Items.xml",
+          "eq": false
+        }
+      ]
+    }
+  ]
+}
