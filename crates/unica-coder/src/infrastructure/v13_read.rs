@@ -399,6 +399,17 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 ));
             }
         }
+        if route.is_common_picture_resource() {
+            let target = route.reader_metadata_path().ok_or_else(|| {
+                ViewError::new(RefusalCode::NotFound, "picture route has no target")
+            })?;
+            if !self.read.attached_resource_exists(target, "Picture.xml")? {
+                return Err(ViewError::new(
+                    RefusalCode::NotFound,
+                    "the local Picture.xml source file does not exist",
+                ));
+            }
+        }
         if requested_path.is_some_and(|requested| requested != path) {
             return Err(ViewError::new(
                 RefusalCode::NotFound,
@@ -598,6 +609,9 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         let target_depth = target.as_str().split('.').count().div_ceil(2);
         let is_detail = at.segments().len() > target_depth;
         let path = match route.reader() {
+            LogicalReader::Metadata if route.is_common_picture_resource() => self
+                .read
+                .attached_resource_export_path(target, "Picture.xml")?,
             LogicalReader::Metadata
                 if matches!(at.segments(), [owner, definition]
                 if owner.kind() == NodeKind::WsReference && definition.kind() == NodeKind::Definition) =>
@@ -675,6 +689,20 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         let inherited = self.inherited_route_part(&route, admitted)?;
         let projected = if let Some((borrowing, resource)) = &inherited {
             project_inherited_part(&route, borrowing, resource)?
+        } else if route.is_common_picture_resource() {
+            let target = route.reader_metadata_path().ok_or_else(|| {
+                ViewError::new(RefusalCode::NotFound, "picture route has no target")
+            })?;
+            self.verify_registered_owner(target, admitted)?;
+            let props = self
+                .read
+                .common_picture(target, &mut || self.read_checkpoint())?;
+            NodeViewData::Node(NodeView::new(
+                at.to_string(),
+                NodeKind::Picture.as_str(),
+                "Common picture preview",
+                props,
+            ))
         } else if route.reader() == LogicalReader::Module {
             self.module_view(&route, admitted)?
         } else if route.reader() == LogicalReader::Configuration

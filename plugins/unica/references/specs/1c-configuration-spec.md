@@ -556,6 +556,47 @@ hex-хеш фиксированной длины, его нельзя счита
 | `AvailabilityForChoice` | `xs:boolean` | Доступность для выбора в интерфейсе |
 | `AvailabilityForAppearance` | `xs:boolean` | Доступность для оформления |
 
+Карточка `unica.view` для именованной `CommonPicture` содержит адрес ветви
+`Picture` в `branches[].at`. Передайте выданный адрес в `unica.view`.
+Ответ имеет `data.kind = "Picture"` и следующие `data.props` (JSON Schema):
+
+```json
+{
+  "type": "object",
+  "oneOf": [
+    {
+      "properties": {
+        "state": { "const": "available" },
+        "mediaType": { "const": "image/png" },
+        "encoding": { "const": "base64" },
+        "data": { "type": "string", "contentEncoding": "base64", "contentMediaType": "image/png" }
+      },
+      "required": ["state", "mediaType", "encoding", "data"],
+      "additionalProperties": false
+    },
+    {
+      "properties": {
+        "state": { "enum": ["missing", "damaged", "unsupported"] }
+      },
+      "required": ["state"],
+      "additionalProperties": false
+    }
+  ]
+}
+```
+
+`available` передаёт исходные байты PNG в стандартном Base64. В выгрузке
+Designer 2.20 файл `Ext/Picture.xml` объявляет `xr:Abs` со значением
+`Picture.png`. Unica читает `Ext/Picture/Picture.png` зарегистрированного
+владельца в его наборе и проверяет декодируемость PNG. `missing` означает,
+что описание или объявленный ресурс отсутствует. `damaged` означает ошибку
+разбора XML или декодирования PNG. `unsupported` означает другое представление,
+включая `Picture.zip`, APNG и платформенную маску прозрачности, либо
+превышение размера, рассчитанного по бюджету результата с учётом Base64
+и полей ответа (6 242 304 байта на файл), или предела декодера. Для этих состояний клиент использует стандартную иконку.
+Ссылки с путями и переходы по файловым ссылкам отклоняются. Чтение карточки
+доступно независимо от исхода ветви.
+
 ### 6.2. CommonTemplate — общий макет
 
 Каталог: `CommonTemplates/`. Файлы: `<Имя>.xml` (метаданные) + `<Имя>/Ext/Template.xml` (содержимое).

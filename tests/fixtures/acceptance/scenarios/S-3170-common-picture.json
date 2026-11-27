@@ -1,0 +1,474 @@
+{
+  "id": "S-3170-common-picture",
+  "issue": 3170,
+  "area": "Метаданные",
+  "workspace": "tests/fixtures/acceptance/workspace-common-picture",
+  "task": "Прочитать ссылку подсистемы, карточку общей картинки и полученный из неё адрес ресурса. Проверить байты PNG, исходы для стандартной иконки, границы набора и побайтную сохранность исходников.",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "unchanged0": {
+          "file": "other/CommonPictures/Foreign.xml",
+          "kind": "sha256"
+        },
+        "unchanged1": {
+          "file": "other/CommonPictures/Foreign/Ext/Picture.xml",
+          "kind": "sha256"
+        },
+        "unchanged2": {
+          "file": "other/CommonPictures/Foreign/Ext/Picture/Picture.png",
+          "kind": "sha256"
+        },
+        "unchanged3": {
+          "file": "other/Configuration.xml",
+          "kind": "sha256"
+        },
+        "unchanged4": {
+          "file": "src/CommonPictures/Archive.xml",
+          "kind": "sha256"
+        },
+        "unchanged5": {
+          "file": "src/CommonPictures/Archive/Ext/Picture.xml",
+          "kind": "sha256"
+        },
+        "unchanged6": {
+          "file": "src/CommonPictures/Archive/Ext/Picture/Picture.zip",
+          "kind": "sha256"
+        },
+        "unchanged7": {
+          "file": "src/CommonPictures/Damaged.xml",
+          "kind": "sha256"
+        },
+        "unchanged8": {
+          "file": "src/CommonPictures/Damaged/Ext/Picture.xml",
+          "kind": "sha256"
+        },
+        "unchanged9": {
+          "file": "src/CommonPictures/Damaged/Ext/Picture/Picture.png",
+          "kind": "sha256"
+        },
+        "unchanged10": {
+          "file": "src/CommonPictures/Escape.xml",
+          "kind": "sha256"
+        },
+        "unchanged11": {
+          "file": "src/CommonPictures/Escape/Ext/Picture.xml",
+          "kind": "sha256"
+        },
+        "unchanged12": {
+          "file": "src/CommonPictures/Foreign.xml",
+          "kind": "sha256"
+        },
+        "unchanged13": {
+          "file": "src/CommonPictures/Foreign/Ext/Picture.xml",
+          "kind": "sha256"
+        },
+        "unchanged14": {
+          "file": "src/CommonPictures/Foreign/Ext/Picture/Picture.png",
+          "kind": "sha256"
+        },
+        "unchanged15": {
+          "file": "src/CommonPictures/Missing.xml",
+          "kind": "sha256"
+        },
+        "unchanged16": {
+          "file": "src/CommonPictures/Missing/Ext/Picture.xml",
+          "kind": "sha256"
+        },
+        "unchanged17": {
+          "file": "src/CommonPictures/Probe.xml",
+          "kind": "sha256"
+        },
+        "unchanged18": {
+          "file": "src/CommonPictures/Probe/Ext/Picture.xml",
+          "kind": "sha256"
+        },
+        "unchanged19": {
+          "file": "src/CommonPictures/Probe/Ext/Picture/Picture.png",
+          "kind": "sha256"
+        },
+        "unchanged20": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "unchanged21": {
+          "file": "src/Subsystems/СтандартныеПодсистемы.xml",
+          "kind": "sha256"
+        },
+        "unchanged22": {
+          "file": "v8project.yaml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Subsystem.СтандартныеПодсистемы"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Picture",
+          "eq": "CommonPicture.Probe"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonPicture.Probe"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "CommonPicture"
+        },
+        {
+          "pointer": "/data/title",
+          "eq": "Probe"
+        },
+        {
+          "pointer": "/data/branches/0/at",
+          "eq": "main:CommonPicture.Probe.Picture"
+        }
+      ],
+      "captures": {
+        "picture": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.picture"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:CommonPicture.Probe.Picture"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Picture"
+        },
+        {
+          "pointer": "/data/props",
+          "eq": {
+            "state": "available",
+            "mediaType": "image/png",
+            "encoding": "base64",
+            "data": "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"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "at": "$capture.picture"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/path",
+          "eq": "CommonPictures/Probe/Ext/Picture.xml"
+        }
+      ],
+      "captures": {
+        "pictureXml": {
+          "pointer": "/data/path"
+        }
+      }
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "$capture.pictureXml"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:CommonPicture.Probe.Picture"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonPicture.Missing.Picture"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props",
+          "eq": {
+            "state": "missing"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonPicture.Damaged.Picture"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props",
+          "eq": {
+            "state": "damaged"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonPicture.Archive.Picture"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props",
+          "eq": {
+            "state": "unsupported"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonPicture.Escape.Picture"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: CommonPicture contains an invalid resource reference"
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonPicture.Foreign.Picture"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: metadata owner `CommonPicture.Foreign` is not registered"
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "other:CommonPicture.Probe.Picture"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: metadata owner `CommonPicture.Probe` is not registered"
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "other:CommonPicture.Foreign.Picture"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/data",
+          "eq": "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"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Subsystem.СтандартныеПодсистемы.Picture"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: logical address `main:Subsystem.СтандартныеПодсистемы.Picture` is not available in the platform profile"
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonPicture.Probe.Body"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: metadata has no Body collection"
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonPicture.Probe.Picture./etc/passwd"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: invalid logical address; expected <sourceSet>:<Kind>[.<Name>...]: `Picture` has no application name; `/etc/passwd` cannot follow it"
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonPicture.Probe"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0/at",
+          "eq": "main:CommonPicture.Probe.Picture"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "other/CommonPictures/Foreign.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged0"
+        },
+        {
+          "path": "other/CommonPictures/Foreign/Ext/Picture.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged1"
+        },
+        {
+          "path": "other/CommonPictures/Foreign/Ext/Picture/Picture.png",
+          "kind": "sha256",
+          "eq": "$capture.unchanged2"
+        },
+        {
+          "path": "other/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged3"
+        },
+        {
+          "path": "src/CommonPictures/Archive.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged4"
+        },
+        {
+          "path": "src/CommonPictures/Archive/Ext/Picture.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged5"
+        },
+        {
+          "path": "src/CommonPictures/Archive/Ext/Picture/Picture.zip",
+          "kind": "sha256",
+          "eq": "$capture.unchanged6"
+        },
+        {
+          "path": "src/CommonPictures/Damaged.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged7"
+        },
+        {
+          "path": "src/CommonPictures/Damaged/Ext/Picture.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged8"
+        },
+        {
+          "path": "src/CommonPictures/Damaged/Ext/Picture/Picture.png",
+          "kind": "sha256",
+          "eq": "$capture.unchanged9"
+        },
+        {
+          "path": "src/CommonPictures/Escape.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged10"
+        },
+        {
+          "path": "src/CommonPictures/Escape/Ext/Picture.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged11"
+        },
+        {
+          "path": "src/CommonPictures/Foreign.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged12"
+        },
+        {
+          "path": "src/CommonPictures/Foreign/Ext/Picture.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged13"
+        },
+        {
+          "path": "src/CommonPictures/Foreign/Ext/Picture/Picture.png",
+          "kind": "sha256",
+          "eq": "$capture.unchanged14"
+        },
+        {
+          "path": "src/CommonPictures/Missing.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged15"
+        },
+        {
+          "path": "src/CommonPictures/Missing/Ext/Picture.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged16"
+        },
+        {
+          "path": "src/CommonPictures/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged17"
+        },
+        {
+          "path": "src/CommonPictures/Probe/Ext/Picture.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged18"
+        },
+        {
+          "path": "src/CommonPictures/Probe/Ext/Picture/Picture.png",
+          "kind": "sha256",
+          "eq": "$capture.unchanged19"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged20"
+        },
+        {
+          "path": "src/Subsystems/СтандартныеПодсистемы.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged21"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged22"
+        }
+      ]
+    }
+  ]
+}

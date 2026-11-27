@@ -139,6 +139,7 @@ enum AttachedPathResource {
     RoleModule,
     WsDefinition,
     JobSchedule,
+    CommonPicture,
 }
 
 impl AttachedPathResource {
@@ -160,6 +161,7 @@ impl AttachedPathResource {
             ["websocketclients", _, "ext", "module.bsl"] => Some(Self::RoleModule),
             ["wsreferences", _, "ext", "wsdefinition.xml"] => Some(Self::WsDefinition),
             ["scheduledjobs", _, "ext", "schedule.xml"] => Some(Self::JobSchedule),
+            ["commonpictures", _, "ext", "picture.xml"] => Some(Self::CommonPicture),
             ["commonforms", _, "ext", "form.xml"] => Some(Self::Form),
             ["commonforms", _, "ext", "form", "module.bsl"] => Some(Self::FormModule),
             [_, _, "forms", _, "ext", "form.xml"] => Some(Self::Form),
@@ -1041,13 +1043,16 @@ impl WorkspaceFindDirectoryBuilder {
                 (".Definition", "/Ext/WSDefinition.xml", "Definition")
             }
             AttachedPathResource::JobSchedule => (".Schedule", "/Ext/Schedule.xml", "Schedule"),
+            AttachedPathResource::CommonPicture => (".Picture", "/Ext/Picture.xml", "Picture"),
             AttachedPathResource::Form => ("", "/Ext/Form.xml", "Form"),
             AttachedPathResource::FormModule => (".Module.Form", "/Ext/Form/Module.bsl", "Module"),
             AttachedPathResource::RoleModule => unreachable!("ветка обработана выше"),
         };
         let uses_descriptor_owner = matches!(
             resource,
-            AttachedPathResource::WsDefinition | AttachedPathResource::JobSchedule
+            AttachedPathResource::WsDefinition
+                | AttachedPathResource::JobSchedule
+                | AttachedPathResource::CommonPicture
         );
         let descriptor_parts = match source.kind {
             SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport => 3,
