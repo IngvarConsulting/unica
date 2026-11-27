@@ -1,6 +1,6 @@
 //! Existing canonical spreadsheet proposal planning and area observation.
 use crate::mxl_cells::{self, CellText, MxlEditError};
-use unica_address::address::member_address;
+use unica_address::address::{member_address, NodeKind};
 use unica_address::source_target::MetadataAddress;
 use unica_source_contract::events::{DomainEvent, DomainEventKind};
 use unica_source_contract::proposal::{
@@ -58,6 +58,7 @@ pub fn stage_mxl_edit(
         .at_path(at_path.clone())
     })?;
     let original = text.clone();
+    let can_add_area = edit.template.segments().next() != Some(NodeKind::CommonTemplate.as_str());
     let written = match edit.operation {
         MxlOperation::Set => {
             mxl_cells::set_area_cells(&mut text, &edit.area, edit.columns, &edit.cells)
@@ -67,14 +68,13 @@ pub fn stage_mxl_edit(
         }
     };
     written.map_err(|error| match error {
-        MxlEditError::AreaMissing => ApplyPlanError::new(
-            ApplyPlanErrorKind::NotFound,
-            format!(
-                "the template has no area `{}`; create it with area.add at `{}`",
-                edit.area, edit.template_at
-            ),
-        )
-        .at_path(at_path.clone()),
+        MxlEditError::AreaMissing => {
+            let mut message = format!("the template has no area `{}`", edit.area);
+            if can_add_area {
+                message.push_str(&format!("; create it with area.add at `{}`", edit.template_at));
+            }
+            ApplyPlanError::new(ApplyPlanErrorKind::NotFound, message).at_path(at_path.clone())
+        }
         MxlEditError::AreaSpelling(existing) => ApplyPlanError::new(
             ApplyPlanErrorKind::NotFound,
             format!(
@@ -92,14 +92,17 @@ pub fn stage_mxl_edit(
             ),
         )
         .at_path(format!("{values_path}.name")),
-        MxlEditError::RowOutsideArea { key, rows } => ApplyPlanError::new(
-            ApplyPlanErrorKind::BadValue,
-            format!(
-                "`{key}` is below area `{}` of {rows} rows; an area grows only when it is the last one and no row below it is used, add a new area with area.add at `{}`",
-                edit.area, edit.template_at
-            ),
-        )
-        .at_path(format!("{values_path}.cells.{key}")),
+        MxlEditError::RowOutsideArea { key, rows } => {
+            let mut message = format!(
+                "`{key}` is below area `{}` of {rows} rows; an area grows only when it is the last one and no row below it is used",
+                edit.area
+            );
+            if can_add_area {
+                message.push_str(&format!(", add a new area with area.add at `{}`", edit.template_at));
+            }
+            ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message)
+                .at_path(format!("{values_path}.cells.{key}"))
+        }
         MxlEditError::Cell { key, message } => {
             ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message)
                 .at_path(format!("{values_path}.cells.{key}"))

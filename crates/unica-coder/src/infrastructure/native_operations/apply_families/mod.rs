@@ -1212,6 +1212,13 @@ fn writable_profile_owner_chain(
         NodeKind::Role => Some("Rights.xml"),
         NodeKind::Subsystem => Some("CommandInterface.xml"),
         NodeKind::CommonForm => Some("Form.xml"),
+        NodeKind::CommonTemplate
+            if segments
+                .get(1)
+                .is_some_and(|area| area.kind() == NodeKind::Area && area.name().is_some()) =>
+        {
+            Some("Template.xml")
+        }
         _ => None,
     };
     if let Some(resource) = owner_resource {

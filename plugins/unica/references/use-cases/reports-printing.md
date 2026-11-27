@@ -243,11 +243,12 @@ labels. A tabular document's `ПолучитьОбласть` can combine a row 
 column area by their names; this does not make column areas editable.
 
 For exact arguments, read `<Template>.Area.<name>.Can.mxl.set` at an
-existing area, `<Template>.Can.area.add` at the Template or
-`<owner>.Can.template.add` at its owner. `mxl.set` writes only an existing
-area: a missing area is refused with `not_found`, and `next` leads to the
-Template, where `area.add` creates new areas with their initial cells. An area
-argument at the Template is refused with the area's address in `next`.
+existing Rows area. Use `CommonTemplate.<name>.Area.<area>.Can.mxl.set`
+for a common template. A missing area returns `not_found`. For a template
+nested under a metadata owner, `next` leads to the template, where
+`<Template>.Can.area.add` describes how to create an area with initial cells.
+Use `<owner>.Can.template.add` to read the contract for creating a nested template.
+An area argument at the Template is refused with the area's address in `next`.
 Creation must be executed before the new Template is addressed. An addressed parameter or text-template cell becomes
 ordinary text when written. Unaddressed neighbors should be verified after
 publication. Width can grow but the operation does not shrink it.
@@ -257,8 +258,8 @@ The writer changes only the addressed cells, rows and areas of
 column sets, translations and the bytes around the edit stay as they were.
 New cells have no own format, so they take the row and column formatting.
 `area.add` appends the area after every used row. A written row below an
-area grows it only when nothing follows the area; otherwise create another
-area with `area.add`. Some addressed nodes still refuse before writing: a
+area grows it only when nothing follows the area. In a nested template,
+`area.add` can append another area. Some addressed nodes still refuse before writing: a
 non-Rows area, an area without rows, a cell inside a merge that does not
 start there, a cell holding a value or control, and a cell that takes a
 parameter or template fill from its row, column, column-set or document
