@@ -14,6 +14,9 @@ use unica_source_contract::proposal::{
 use unica_source_designer::registration::{
     owner_descriptor_relative, read_required, utf8_body, with_bom,
 };
+
+mod dynamic_list;
+
 const UTF8_BOM: &[u8] = b"\xef\xbb\xbf";
 #[derive(Debug, Clone)]
 pub enum FormEditStep {
@@ -1945,6 +1948,7 @@ pub fn stage_form_edit(
         result.map_err(|message| {
             ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(args_path.clone())
         })?;
+        dynamic_list::prove_bindings(staged, authority, definition, op_index)?;
     }
     // An unchanged root-property edit also preserves whether the source had a BOM.
     if definitions.iter().all(|step| {

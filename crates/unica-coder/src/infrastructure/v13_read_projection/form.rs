@@ -362,6 +362,7 @@ fn form_node(
                                 .as_array()
                                 .is_some_and(|fields| fields.iter().all(Value::is_string))
                     }
+                    "filter" => value.is_array(),
                     _ => false,
                 };
                 if typed {

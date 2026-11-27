@@ -1,6 +1,6 @@
 //! Existing form read/edit/compile facts, independent of XML or filesystem implementations.
 use crate::events::*;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::ops::Range;
 use unica_execution_contract::mutation::MutationData;
@@ -186,7 +186,23 @@ pub struct FormInfoDynamicList {
     pub key_fields: Option<Vec<String>>,
     /// Whether MainTable permits use of KeyFields, not the effective runtime key.
     pub key_fields_applicable: Option<bool>,
+    /// Filter slots whose right operand is assigned by form code at runtime.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filter: Option<Vec<DynamicListFilter>>,
     pub limits: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DynamicListFilter {
+    pub field: String,
+    pub value: DynamicListFilterValue,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(tag = "kind", rename_all = "lowercase", deny_unknown_fields)]
+pub enum DynamicListFilterValue {
+    Runtime {},
 }
 
 #[derive(Debug, Serialize)]

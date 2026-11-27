@@ -3316,7 +3316,7 @@ pub fn form_add_content_xml_with_variant(
             &mut settings,
             &Map::from_iter([("mainTable".to_string(), Value::String(main_table))]),
             "\t\t\t",
-        );
+        )?;
         let settings: String = settings.iter().map(|line| format!("{line}\r\n")).collect();
         return Ok(format!(
             concat!(
@@ -6352,6 +6352,20 @@ pub fn emit_form_edit_attribute_item(
             "{inner}<FillCheck>{}</FillCheck>",
             unica_xml_format::text::escape_xml(fill_checking)
         ));
+    }
+    if let Some(settings) = attr.get("settings") {
+        if attr.get("type").and_then(Value::as_str) != Some("DynamicList") {
+            return Err("settings can only be written for a DynamicList attribute".into());
+        }
+        let settings = settings
+            .as_object()
+            .ok_or("DynamicList settings must be an object")?;
+        let table = settings
+            .get("mainTable")
+            .and_then(Value::as_str)
+            .ok_or("DynamicList settings.mainTable is required")?;
+        dynamic_list::validate_main_table(table)?;
+        emit_form_dynamic_list_attribute_settings(lines, settings, &inner)?;
     }
     emit_form_attribute_columns(lines, attr.get("columns"), &inner, lang)?;
     lines.push(format!("{indent}</Attribute>"));
@@ -9428,7 +9442,7 @@ pub fn emit_form_attributes(
         }
         if object.get("type").and_then(Value::as_str) == Some("DynamicList") {
             if let Some(settings) = object.get("settings").and_then(Value::as_object) {
-                emit_form_dynamic_list_attribute_settings(lines, settings, &inner);
+                emit_form_dynamic_list_attribute_settings(lines, settings, &inner)?;
             }
         }
         emit_form_compile_attribute_columns(lines, object.get("columns"), &inner, ids, lang)?;
@@ -9508,7 +9522,7 @@ pub fn emit_form_dynamic_list_attribute_settings(
     lines: &mut Vec<String>,
     settings: &Map<String, Value>,
     indent: &str,
-) {
+) -> Result<(), String> {
     const CANON_FILTER_ID: &str = "dfcece9d-5077-440b-b6b3-45a5cb4538eb";
     const CANON_ORDER_ID: &str = "88619765-ccb3-46c6-ac52-38e9c992ebd4";
     const CANON_CA_ID: &str = "b75fecce-942b-4aed-abc9-e6a02e460fb3";
@@ -9529,6 +9543,19 @@ pub fn emit_form_dynamic_list_attribute_settings(
     } else {
         "false"
     };
+    let main_table = settings.get("mainTable").and_then(Value::as_str);
+    let slots = settings
+        .get("filter")
+        .map(|value| {
+            let table =
+                main_table.ok_or("DynamicList settings.mainTable is required with filter")?;
+            dynamic_list::validate_main_table(table)?;
+            if manual_query == "true" {
+                return Err("DynamicList settings.filter requires automatic query".into());
+            }
+            dynamic_list::filter_from_definition(value)
+        })
+        .transpose()?;
 
     lines.push(format!("{indent}<Settings xsi:type=\"DynamicList\">"));
     lines.push(format!(
@@ -9537,7 +9564,7 @@ pub fn emit_form_dynamic_list_attribute_settings(
     lines.push(format!(
         "{indent}\t<DynamicDataRead>{dynamic_data_read}</DynamicDataRead>"
     ));
-    if let Some(main_table) = settings.get("mainTable").and_then(Value::as_str) {
+    if let Some(main_table) = main_table {
         lines.push(format!(
             "{indent}\t<MainTable>{}</MainTable>",
             unica_xml_format::text::escape_xml(main_table)
@@ -9545,6 +9572,26 @@ pub fn emit_form_dynamic_list_attribute_settings(
     }
     lines.push(format!("{indent}\t<ListSettings>"));
     lines.push(format!("{indent}\t\t<dcsset:filter>"));
+    for slot in slots.iter().flatten() {
+        let inner = format!("{indent}\t\t\t");
+        let field = &slot.field;
+        lines.push(format!(
+            "{inner}<dcsset:item xsi:type=\"dcsset:FilterItemComparison\">"
+        ));
+        lines.push(format!(
+            "{inner}\t<dcsset:left xsi:type=\"dcscor:Field\">{field}</dcsset:left>"
+        ));
+        lines.push(format!(
+            "{inner}\t<dcsset:comparisonType>Equal</dcsset:comparisonType>"
+        ));
+        lines.push(format!(
+            "{inner}\t<dcsset:right xsi:type=\"dcscor:Field\"/>"
+        ));
+        lines.push(format!(
+            "{inner}\t<dcsset:viewMode>Inaccessible</dcsset:viewMode>"
+        ));
+        lines.push(format!("{inner}</dcsset:item>"));
+    }
     lines.push(format!(
         "{indent}\t\t\t<dcsset:viewMode>Normal</dcsset:viewMode>"
     ));
@@ -9576,6 +9623,7 @@ pub fn emit_form_dynamic_list_attribute_settings(
     ));
     lines.push(format!("{indent}\t</ListSettings>"));
     lines.push(format!("{indent}</Settings>"));
+    Ok(())
 }
 
 pub fn emit_form_parameters(

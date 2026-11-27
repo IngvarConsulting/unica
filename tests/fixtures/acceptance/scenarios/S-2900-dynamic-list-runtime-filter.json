@@ -1,0 +1,430 @@
+{
+  "id": "S-2900-dynamic-list-runtime-filter",
+  "name": "publish-two-dynamic-lists-with-runtime-filter-slots",
+  "issue": 2900,
+  "area": "Формы",
+  "task": "Добавить в одну форму два динамических списка с основной таблицей и отдельными отборами для серверного обработчика. Привязать две таблицы с колонками и перечитать настройки.",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.attribute.add"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/op",
+          "eq": "attribute.add"
+        }
+      ],
+      "captures": {
+        "before": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+        "ops": [
+          {
+            "op": "attribute.add",
+            "args": {
+              "items": [
+                {
+                  "name": "AcceptanceRefused",
+                  "type": "DynamicList",
+                  "settings": {
+                    "mainTable": "Catalog.DoesNotExist"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "eq": "$capture.before"
+        }
+      ],
+      "refusal": "bad_value: DynamicList main table `Catalog.DoesNotExist` is not registered with this exact name in the source set"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+        "ops": [
+          {
+            "op": "attribute.add",
+            "args": {
+              "items": [
+                {
+                  "name": "AcceptanceRefused",
+                  "type": "DynamicList",
+                  "settings": {
+                    "mainTable": "Catalog.Валюты",
+                    "filter": [
+                      {
+                        "field": "DoesNotExist",
+                        "value": {
+                          "kind": "runtime"
+                        }
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "eq": "$capture.before"
+        }
+      ],
+      "refusal": "bad_value: DynamicList filter field `DoesNotExist` is not a supported direct field of `Catalog.Валюты`"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+        "ops": [
+          {
+            "op": "attribute.add",
+            "args": {
+              "items": [
+                {
+                  "name": "AcceptanceRowsA",
+                  "type": "DynamicList",
+                  "settings": {
+                    "mainTable": "Catalog.Валюты",
+                    "filter": [
+                      {
+                        "field": "Ссылка",
+                        "value": {
+                          "kind": "runtime"
+                        }
+                      }
+                    ]
+                  }
+                },
+                {
+                  "name": "AcceptanceRowsB",
+                  "type": "DynamicList",
+                  "settings": {
+                    "mainTable": "Catalog.Валюты",
+                    "filter": [
+                      {
+                        "field": "Код",
+                        "value": {
+                          "kind": "runtime"
+                        }
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "op": "item.add",
+            "args": {
+              "items": [
+                {
+                  "name": "AcceptanceTableA",
+                  "type": "Table",
+                  "path": "AcceptanceRowsA",
+                  "_dynList": true
+                },
+                {
+                  "name": "AcceptanceTableB",
+                  "type": "Table",
+                  "path": "AcceptanceRowsB",
+                  "_dynList": true
+                }
+              ]
+            }
+          },
+          {
+            "op": "item.add",
+            "args": {
+              "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.AcceptanceTableA",
+              "items": [
+                {
+                  "name": "AcceptanceNameA",
+                  "type": "InputField",
+                  "path": "AcceptanceRowsA.Description",
+                  "titleLocation": "None"
+                }
+              ]
+            }
+          },
+          {
+            "op": "item.add",
+            "args": {
+              "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.AcceptanceTableB",
+              "items": [
+                {
+                  "name": "AcceptanceNameB",
+                  "type": "InputField",
+                  "path": "AcceptanceRowsB.Description",
+                  "titleLocation": "None"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "token": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.diff",
+      "args": {
+        "executionToken": "$capture.token",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "xml",
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "select": ".//{http://v8.1c.ru/8.3/xcf/logform}Attribute[@name=\"AcceptanceRowsA\"]/{http://v8.1c.ru/8.3/xcf/logform}Settings/{http://v8.1c.ru/8.3/xcf/logform}MainTable",
+          "eq": [
+            "Catalog.Валюты"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "select": ".//{http://v8.1c.ru/8.3/xcf/logform}Attribute[@name=\"AcceptanceRowsA\"]/{http://v8.1c.ru/8.3/xcf/logform}Settings/{http://v8.1c.ru/8.3/xcf/logform}ListSettings/{http://v8.1c.ru/8.1/data-composition-system/settings}filter/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}left",
+          "eq": [
+            "Ссылка"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "select": ".//{http://v8.1c.ru/8.3/xcf/logform}Attribute[@name=\"AcceptanceRowsA\"]/{http://v8.1c.ru/8.3/xcf/logform}Settings/{http://v8.1c.ru/8.3/xcf/logform}ListSettings/{http://v8.1c.ru/8.1/data-composition-system/settings}filter/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}comparisonType",
+          "eq": [
+            "Equal"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "select": ".//{http://v8.1c.ru/8.3/xcf/logform}Attribute[@name=\"AcceptanceRowsA\"]/{http://v8.1c.ru/8.3/xcf/logform}Settings/{http://v8.1c.ru/8.3/xcf/logform}ListSettings/{http://v8.1c.ru/8.1/data-composition-system/settings}filter/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}viewMode",
+          "eq": [
+            "Inaccessible"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "select": ".//{http://v8.1c.ru/8.3/xcf/logform}Table[@name=\"AcceptanceTableA\"]/{http://v8.1c.ru/8.3/xcf/logform}DataPath",
+          "eq": [
+            "AcceptanceRowsA"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "select": ".//{http://v8.1c.ru/8.3/xcf/logform}Table[@name=\"AcceptanceTableA\"]/{http://v8.1c.ru/8.3/xcf/logform}ChildItems/{http://v8.1c.ru/8.3/xcf/logform}InputField[@name=\"AcceptanceNameA\"]/{http://v8.1c.ru/8.3/xcf/logform}DataPath",
+          "eq": [
+            "AcceptanceRowsA.Description"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "select": ".//{http://v8.1c.ru/8.3/xcf/logform}Attribute[@name=\"AcceptanceRowsB\"]/{http://v8.1c.ru/8.3/xcf/logform}Settings/{http://v8.1c.ru/8.3/xcf/logform}MainTable",
+          "eq": [
+            "Catalog.Валюты"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "select": ".//{http://v8.1c.ru/8.3/xcf/logform}Attribute[@name=\"AcceptanceRowsB\"]/{http://v8.1c.ru/8.3/xcf/logform}Settings/{http://v8.1c.ru/8.3/xcf/logform}ListSettings/{http://v8.1c.ru/8.1/data-composition-system/settings}filter/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}left",
+          "eq": [
+            "Код"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "select": ".//{http://v8.1c.ru/8.3/xcf/logform}Attribute[@name=\"AcceptanceRowsB\"]/{http://v8.1c.ru/8.3/xcf/logform}Settings/{http://v8.1c.ru/8.3/xcf/logform}ListSettings/{http://v8.1c.ru/8.1/data-composition-system/settings}filter/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}comparisonType",
+          "eq": [
+            "Equal"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "select": ".//{http://v8.1c.ru/8.3/xcf/logform}Attribute[@name=\"AcceptanceRowsB\"]/{http://v8.1c.ru/8.3/xcf/logform}Settings/{http://v8.1c.ru/8.3/xcf/logform}ListSettings/{http://v8.1c.ru/8.1/data-composition-system/settings}filter/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}viewMode",
+          "eq": [
+            "Inaccessible"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "select": ".//{http://v8.1c.ru/8.3/xcf/logform}Table[@name=\"AcceptanceTableB\"]/{http://v8.1c.ru/8.3/xcf/logform}DataPath",
+          "eq": [
+            "AcceptanceRowsB"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "select": ".//{http://v8.1c.ru/8.3/xcf/logform}Table[@name=\"AcceptanceTableB\"]/{http://v8.1c.ru/8.3/xcf/logform}ChildItems/{http://v8.1c.ru/8.3/xcf/logform}InputField[@name=\"AcceptanceNameB\"]/{http://v8.1c.ru/8.3/xcf/logform}DataPath",
+          "eq": [
+            "AcceptanceRowsB.Description"
+          ]
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "notEq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Attribute.AcceptanceRowsA"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/mainTable",
+          "eq": "Catalog.Валюты"
+        },
+        {
+          "pointer": "/data/props/filter",
+          "eq": [
+            {
+              "field": "Ссылка",
+              "value": {
+                "kind": "runtime"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Attribute.AcceptanceRowsB"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/mainTable",
+          "eq": "Catalog.Валюты"
+        },
+        {
+          "pointer": "/data/props/filter",
+          "eq": [
+            {
+              "field": "Код",
+              "value": {
+                "kind": "runtime"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "validators": [
+        "form"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/diagnosticCount",
+          "eq": 0
+        }
+      ]
+    }
+  ]
+}

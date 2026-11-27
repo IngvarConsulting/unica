@@ -565,6 +565,29 @@ fn attribute_item_schema() -> Value {
                 json!({"type":"array","minItems":1,"items":column_item_schema(),
                 "description":"Columns of a ValueTable or ValueTree attribute."}),
             ),
+            (
+                "settings",
+                object(
+                    &[
+                        (
+                            "mainTable",
+                            json!({"type":"string","pattern":r"\S",
+                            "description":"DynamicList only. Qualified name of its main metadata table, e.g. Catalog.Relations."}),
+                        ),
+                        (
+                            "filter",
+                            json!({"type":"array","minItems":1,"items":object(
+                            &[
+                                ("field", text(true)),
+                                ("value", object(&[("kind", json!({"type":"string","enum":["runtime"]}))], &["kind"])),
+                            ],
+                            &["field", "value"],
+                        ),"description":"Equal comparisons. A server-side form handler fills each right operand before the list reads data."}),
+                        ),
+                    ],
+                    &["mainTable"],
+                ),
+            ),
         ],
         &["name"],
     )
@@ -1265,7 +1288,6 @@ mod tests {
             "save",
             "fillCheck",
             "valueType",
-            "settings",
             "chart",
             "planner",
             "additionalColumns",
@@ -1290,5 +1312,23 @@ mod tests {
                 "args"
             )
             .is_ok());
+    }
+
+    #[test]
+    fn form_attribute_add_describes_the_runtime_filter_and_refuses_extra_keys() {
+        let contract = crate::operations::FormOperation::AttributeAdd.contract();
+        let mut input = json!({"items":[{
+            "name":"Rows",
+            "type":"DynamicList",
+            "settings":{
+                "mainTable":"Catalog.Relations",
+                "filter":[{"field":"Owner","value":{"kind":"runtime"}}]
+            }
+        }]});
+        assert!(contract.normalize(&input, "args").is_ok());
+
+        input["items"][0]["settings"]["filter"][0]["value"]["text"] = json!("<arbitrary/>");
+        let error = contract.normalize(&input, "args").unwrap_err();
+        assert_eq!(error.path, "args.items[0].settings.filter[0].value.text");
     }
 }

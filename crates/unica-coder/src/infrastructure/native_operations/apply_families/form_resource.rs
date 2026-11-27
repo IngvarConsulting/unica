@@ -499,7 +499,6 @@ mod tests {
             ("save", json!(true)),
             ("fillCheck", json!(true)),
             ("valueType", json!("String")),
-            ("settings", json!({})),
             ("chart", json!({})),
             ("planner", json!({})),
             ("additionalColumns", json!([])),
@@ -518,6 +517,23 @@ mod tests {
             assert_eq!(error.path(), Some(path.as_str()), "{key}");
         }
         let mut lines = Vec::new();
+        let invalid =
+            json!({"name": "A", "type": "xs:string", "settings": {"mainTable": "Document.First"}});
+        let error = unica_forms_designer::codec::emit_form_edit_attribute_item(
+            &mut lines,
+            invalid.as_object().unwrap(),
+            "A",
+            1,
+            "\t\t",
+            unica_forms_designer::codec::FormTextMode::NStr(Some("ru")),
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("only be written for a DynamicList attribute"),
+            "{error}"
+        );
+
+        lines.clear();
         unica_forms_designer::codec::emit_form_edit_attribute_item(
             &mut lines,
             json!({"name": "A", "type": "xs:string", "savedData": true, "fillChecking": "ShowError"})

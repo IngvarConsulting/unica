@@ -1,19 +1,28 @@
 //! Observed design-time settings; absence never supplies a runtime default.
 use roxmltree::Node;
-use unica_forms::facts::FormInfoDynamicList;
+use serde_json::Value;
+use std::collections::HashSet;
+use unica_forms::facts::{DynamicListFilter, DynamicListFilterValue, FormInfoDynamicList};
+use unica_metadata::{identifier::is_1c_identifier, MetadataKind};
 
 use crate::root::FORM_LOGFORM_NS as FORM;
 const XSI: &str = "http://www.w3.org/2001/XMLSchema-instance";
+const SETTINGS: &str = "http://v8.1c.ru/8.1/data-composition-system/settings";
+const CORE: &str = "http://v8.1c.ru/8.1/data-composition-system/core";
 
 type Read<T> = Result<T, String>;
 
-fn one<'a, 'i>(parent: Node<'a, 'i>, name: &str) -> Read<Option<Node<'a, 'i>>> {
-    let mut nodes = parent.children().filter(|n| n.has_tag_name((FORM, name)));
+fn one_in<'a, 'i>(parent: Node<'a, 'i>, ns: &str, name: &str) -> Read<Option<Node<'a, 'i>>> {
+    let mut nodes = parent.children().filter(|n| n.has_tag_name((ns, name)));
     let first = nodes.next();
     if nodes.next().is_some() {
         return Err(format!("DynamicList {name}: duplicate setting"));
     }
     Ok(first)
+}
+
+fn one<'a, 'i>(parent: Node<'a, 'i>, name: &str) -> Read<Option<Node<'a, 'i>>> {
+    one_in(parent, FORM, name)
 }
 
 fn text(node: Node<'_, '_>) -> Read<String> {
@@ -94,13 +103,7 @@ pub(super) fn read(attribute: Node<'_, '_>) -> FormInfoDynamicList {
             return out;
         }
     };
-    let valid_type = settings.attribute((XSI, "type")).is_some_and(|raw| {
-        let (prefix, local) = raw
-            .split_once(':')
-            .map_or((None, raw), |(p, n)| (Some(p), n));
-        local == "DynamicList" && settings.lookup_namespace_uri(prefix) == Some(FORM)
-    });
-    if !valid_type {
+    if !has_type(settings, FORM, "DynamicList") {
         out.limits
             .push("DynamicList Settings: missing or unsupported xsi:type".into());
         return out;
@@ -136,7 +139,121 @@ pub(super) fn read(attribute: Node<'_, '_>) -> FormInfoDynamicList {
         fields.map(|fields| (!fields.is_empty()).then_some(fields)),
         &mut out.limits,
     );
+    out.filter = observed(read_filter(settings), &mut out.limits);
     out
+}
+
+fn has_type(node: Node<'_, '_>, ns: &str, name: &str) -> bool {
+    node.attribute((XSI, "type")).is_some_and(|value| {
+        let (prefix, local) = value
+            .split_once(':')
+            .map_or((None, value), |(prefix, name)| (Some(prefix), name));
+        local == name && node.lookup_namespace_uri(prefix) == Some(ns)
+    })
+}
+
+fn filter_operand(node: Node<'_, '_>) -> Read<String> {
+    if has_type(node, CORE, "Field")
+        && node.attributes().len() == 1
+        && !node.children().any(|n| n.is_element())
+    {
+        Ok(node
+            .children()
+            .filter(Node::is_text)
+            .filter_map(|n| n.text())
+            .collect())
+    } else {
+        Err("DynamicList filter: unsupported operand".into())
+    }
+}
+
+fn read_slot(item: Node<'_, '_>) -> Read<DynamicListFilter> {
+    let unsupported = || "DynamicList filter: unsupported comparison".to_string();
+    if !has_type(item, SETTINGS, "FilterItemComparison") || item.attributes().len() != 1 {
+        return Err(unsupported());
+    }
+    let mut children = item.children().filter(Node::is_element);
+    let mut child = |name| {
+        children
+            .next()
+            .filter(|n| n.has_tag_name((SETTINGS, name)))
+            .ok_or_else(unsupported)
+    };
+    let field = filter_operand(child("left")?)?;
+    if !is_1c_identifier(&field)
+        || text(child("comparisonType")?)? != "Equal"
+        || !filter_operand(child("right")?)?.is_empty()
+        || text(child("viewMode")?)? != "Inaccessible"
+        || children.next().is_some()
+    {
+        return Err(unsupported());
+    }
+    Ok(DynamicListFilter {
+        field,
+        value: DynamicListFilterValue::Runtime {},
+    })
+}
+
+fn read_filter(settings: Node<'_, '_>) -> Read<Option<Vec<DynamicListFilter>>> {
+    let Some(list) = one(settings, "ListSettings")? else {
+        return Ok(None);
+    };
+    let Some(filter) = one_in(list, SETTINGS, "filter")? else {
+        return Ok(None);
+    };
+    let slots = filter
+        .children()
+        .filter(|n| n.has_tag_name((SETTINGS, "item")))
+        .map(read_slot)
+        .collect::<Read<Vec<_>>>()?;
+    Ok((!slots.is_empty()).then_some(slots))
+}
+
+pub(super) fn validate_main_table(table: &str) -> Read<()> {
+    use MetadataKind::*;
+
+    let valid = table.split_once('.').is_some_and(|(kind, name)| {
+        is_1c_identifier(name)
+            && matches!(
+                MetadataKind::parse(kind),
+                Ok(Catalog
+                    | Document
+                    | Enum
+                    | InformationRegister
+                    | AccumulationRegister
+                    | AccountingRegister
+                    | ChartOfAccounts
+                    | ChartOfCharacteristicTypes
+                    | ChartOfCalculationTypes
+                    | BusinessProcess
+                    | Task
+                    | ExchangePlan
+                    | DocumentJournal)
+            )
+    });
+    if valid {
+        Ok(())
+    } else {
+        Err("DynamicList settings.mainTable must be a qualified metadata table, e.g. Catalog.Relations".into())
+    }
+}
+
+pub(super) fn filter_from_definition(value: &Value) -> Read<Vec<DynamicListFilter>> {
+    let slots: Vec<DynamicListFilter> = serde_json::from_value(value.clone())
+        .map_err(|error| format!("DynamicList settings.filter: {error}"))?;
+    if slots.is_empty() {
+        return Err("DynamicList settings.filter must contain a comparison".into());
+    }
+    let mut fields = HashSet::new();
+    for slot in &slots {
+        if !is_1c_identifier(&slot.field) || !fields.insert(slot.field.to_lowercase()) {
+            return Err(format!(
+                "DynamicList settings.filter: invalid or repeated field '{}'",
+                slot.field
+            ));
+        }
+    }
+    Ok(slots)
 }
 
 #[cfg(test)]
@@ -145,10 +262,49 @@ mod tests {
 
     fn parse(settings: &str) -> FormInfoDynamicList {
         let xml = format!(
-            r#"<Attribute xmlns="{FORM}" xmlns:xsi="{XSI}" xmlns:f="{FORM}" xmlns:other="urn:other">{settings}</Attribute>"#
+            r#"<Attribute xmlns="{FORM}" xmlns:xsi="{XSI}" xmlns:f="{FORM}" xmlns:s="{SETTINGS}" xmlns:c="{CORE}" xmlns:other="urn:other">{settings}</Attribute>"#
         );
         let doc = roxmltree::Document::parse(&xml).unwrap();
         read(doc.root_element())
+    }
+
+    #[test]
+    fn reads_only_complete_runtime_filter_comparisons() {
+        let item = concat!(
+            r#"<s:item xsi:type="s:FilterItemComparison"><s:left xsi:type="c:Field">Владелец</s:left>"#,
+            r#"<s:comparisonType>Equal</s:comparisonType><s:right xsi:type="c:Field"/>"#,
+            r#"<s:viewMode>Inaccessible</s:viewMode></s:item>"#
+        );
+        let settings = |items: &str| {
+            format!(
+            "<Settings xsi:type=\"DynamicList\"><MainTable>Catalog.Items</MainTable><ListSettings><s:filter>{items}</s:filter></ListSettings></Settings>"
+        )
+        };
+        let known = parse(&settings(item));
+        let filter = serde_json::to_value(known.filter).unwrap();
+        assert_eq!(
+            filter,
+            serde_json::json!([{"field":"Владелец","value":{"kind":"runtime"}}])
+        );
+        assert!(known.limits.is_empty());
+
+        for changed in [
+            item.replace("c:Field", "other:Field"),
+            item.replace("Inaccessible", "Normal"),
+            item.replace("<s:left", "<other:left")
+                .replace("</s:left", "</other:left"),
+            item.replace(
+                r#"<s:right xsi:type="c:Field"/>"#,
+                r#"<s:right xsi:type="c:Field">OtherField</s:right>"#,
+            ),
+        ] {
+            let mixed = format!("{item}{changed}");
+            let observed = parse(&settings(&mixed));
+            assert!(observed.filter.is_none());
+            assert_eq!(observed.main_table.as_deref(), Some("Catalog.Items"));
+            assert_eq!(observed.limits.len(), 1);
+        }
+        assert!(parse(&settings("")).filter.is_none());
     }
 
     #[test]
