@@ -26,6 +26,7 @@ fn plan_events(
         .expect("actor admission did not produce a plannable staged state");
     let effects = plan_event_implement_batch(
         &mut state.proposal(),
+        Some(admission),
         "main",
         unica_source_contract::SourceSetKind::Configuration,
         PlatformProfile::v8_3_27(),

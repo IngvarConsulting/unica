@@ -1,4 +1,5 @@
-#[cfg(any(test, feature = "test-support"))]
+use std::collections::HashSet;
+
 use crate::infrastructure::event_sources::PropertyEventSource;
 use crate::infrastructure::event_sources::{
     resolve_event_source, resolve_event_source_for_form_evidence, LogicalEventSource,
@@ -16,6 +17,7 @@ use unica_bsl::profile::PlatformProfile;
 use unica_bsl::projection::EventState;
 use unica_forms_designer::codec::parse_form_event_evidence_xml;
 use unica_forms_designer::event_patch::patch_form_event;
+use unica_metadata::event::FormCallType;
 use unica_metadata::event_input::EventImplementArgs;
 
 use unica_source_contract::events::{DomainEvent, DomainEventKind};
@@ -23,8 +25,9 @@ use unica_source_contract::proposal::{
     ApplyPlanError, ApplyPlanErrorKind, ApplyProposal, ApplyStagingError, PlannedApplyEffects,
 };
 use unica_source_contract::SourceSetKind;
-use unica_source_designer::event_owner::prove_owner_plan;
+use unica_source_designer::event_owner::{prove_owner_plan, prove_owner_plan_from};
 use unica_source_designer::owner::owner_evidence_plan;
+use unica_workspace::actor::ApplyAdmission;
 
 fn invalid_source(message: impl Into<String>) -> ApplyPlanError {
     ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
@@ -36,6 +39,7 @@ fn effect(kind: DomainEventKind, artifact: impl Into<String>) -> DomainEvent {
 
 pub(crate) fn plan_event_implement_batch(
     staged: &mut ApplyProposal<'_>,
+    admission: Option<&ApplyAdmission>,
     source_set: &str,
     source_set_kind: SourceSetKind,
     profile: PlatformProfile,
@@ -47,6 +51,7 @@ pub(crate) fn plan_event_implement_batch(
         plan_one_event(
             staged,
             &mut effects,
+            admission,
             source_set,
             source_set_kind,
             profile,
@@ -66,6 +71,7 @@ pub(crate) fn plan_event_implement_batch(
 fn plan_one_event(
     staged: &mut ApplyProposal<'_>,
     effects: &mut PlannedApplyEffects,
+    admission: Option<&ApplyAdmission>,
     source_set: &str,
     source_set_kind: SourceSetKind,
     profile: PlatformProfile,
@@ -159,8 +165,9 @@ fn plan_one_event(
             .map_err(projection_error)?;
     let module_before = staged.read(&source.module_relative).map_err(staging)?;
     let module_text = optional_utf8_module(module_before.as_deref())?;
-    let shape = project_property_event_implementation(&source, form_text, module_text.as_deref())
-        .map_err(projection_error)?;
+    let mut shape =
+        project_property_event_implementation(&source, form_text, module_text.as_deref())
+            .map_err(projection_error)?;
     require_plannable_state(&shape)?;
     let evidence =
         parse_form_event_evidence_xml(form_text, Some(profile.line())).map_err(invalid_source)?;
@@ -170,6 +177,27 @@ fn plan_one_event(
         evidence.context.direct_part_writable,
         args.call_type,
     )?;
+    if effective_call_type == Some(FormCallType::After) {
+        let admission = admission.ok_or_else(unproven_parent_form)?;
+        let mut reserved = base_form_method_names(staged, admission, &source)?;
+        reserved.extend(method_names(module_text.as_deref().unwrap_or_default())?);
+        if reserved.contains(&shape.handler.to_lowercase()) {
+            if shape.projection.state == EventState::Missing {
+                return Err(ApplyPlanError::new(
+                    ApplyPlanErrorKind::InvalidState,
+                    format!("the existing After binding names handler `{}`, which conflicts with a form method", shape.handler),
+                ));
+            }
+            let stem = format!("{}После", shape.handler);
+            let handler = std::iter::once(stem.clone())
+                .chain((2..=reserved.len() + 1).map(|suffix| format!("{stem}{suffix}")))
+                .find(|candidate| !reserved.contains(&candidate.to_lowercase()))
+                .expect("there are more candidate names than reserved names");
+            shape = shape
+                .with_handler(&source.module_at, handler)
+                .map_err(projection_error)?;
+        }
+    }
     let form_after = if shape.projection.state == EventState::Available {
         {
             let source = &source;
@@ -226,6 +254,114 @@ fn plan_one_event(
         vec![source.module_relative.clone()],
     );
     Ok(())
+}
+
+fn unproven_parent_form() -> ApplyPlanError {
+    ApplyPlanError::new(
+        ApplyPlanErrorKind::InvalidState,
+        "cannot choose an After handler: the borrowed form must match exactly one base configuration by descriptor UUID",
+    )
+}
+
+fn base_form_method_names(
+    staged: &mut ApplyProposal<'_>,
+    admission: &ApplyAdmission,
+    source: &PropertyEventSource,
+) -> Result<HashSet<String>, ApplyPlanError> {
+    if !admission.all_source_sets_of_kind_admitted(SourceSetKind::Configuration) {
+        return Err(unproven_parent_form());
+    }
+    let mut parents = Vec::new();
+    for path in &source.descriptor_requirements {
+        let local = staged
+            .read(path)
+            .map_err(staging)?
+            .ok_or_else(unproven_parent_form)?;
+        let borrowing = crate::infrastructure::family_codecs::metadata_read_codec()
+            .borrowing(&local)
+            .map_err(invalid_source)?;
+        let parent = borrowing
+            .extends
+            .as_deref()
+            .and_then(|id| uuid::Uuid::parse_str(id).ok())
+            .filter(|id| !id.is_nil())
+            .ok_or_else(unproven_parent_form)?;
+        parents.push((path, parent));
+    }
+    let (form_path, form_uuid) = parents.pop().ok_or_else(unproven_parent_form)?;
+
+    let mut parent = None;
+    for (name, kind) in admission.read_dependency_sets() {
+        if kind != SourceSetKind::Configuration {
+            continue;
+        }
+        let Some(descriptor) = admission.read_optional_apply_dependency(name, form_path)? else {
+            continue;
+        };
+        if descriptor_uuid(&descriptor)? != form_uuid {
+            continue;
+        }
+        if parent.replace(name).is_some() {
+            return Err(unproven_parent_form());
+        }
+    }
+    let parent = parent.ok_or_else(unproven_parent_form)?;
+    let base_plan = owner_evidence_plan(
+        SourceSetKind::Configuration,
+        &source.form_target,
+        &source.descriptor_requirements,
+    )
+    .map_err(provider_unavailable)?;
+    prove_owner_plan_from(&base_plan, |path| {
+        admission.read_apply_dependency(parent, path)
+    })?;
+    for (path, expected) in parents {
+        if descriptor_uuid(&admission.read_apply_dependency(parent, path)?)? != expected {
+            return Err(unproven_parent_form());
+        }
+    }
+    let base_form = admission.read_apply_dependency(parent, &source.form_xml_relative)?;
+    let base_xml = utf8_source(&base_form, "base Form.xml")?;
+    let base_evidence = parse_form_event_evidence_xml(base_xml, None).map_err(invalid_source)?;
+    if base_evidence.context.definition != unica_forms::events::FormDefinitionKind::Regular {
+        return Err(unproven_parent_form());
+    }
+    let module = admission.read_optional_apply_dependency(parent, &source.module_relative)?;
+    method_names(
+        module
+            .as_deref()
+            .map(utf8_module)
+            .transpose()?
+            .unwrap_or_default(),
+    )
+}
+
+fn descriptor_uuid(bytes: &[u8]) -> Result<uuid::Uuid, ApplyPlanError> {
+    let (_, document) =
+        unica_xml_format::read::parse_metadata_image(bytes).map_err(invalid_source)?;
+    document
+        .root_element()
+        .children()
+        .find(roxmltree::Node::is_element)
+        .and_then(|object| object.attribute("uuid"))
+        .and_then(|id| uuid::Uuid::parse_str(id).ok())
+        .filter(|id| !id.is_nil())
+        .ok_or_else(|| invalid_source("base form or owner descriptor has no valid UUID"))
+}
+
+fn method_names(text: &str) -> Result<HashSet<String>, ApplyPlanError> {
+    let module = unica_bsl_parser::parse(text);
+    if !module.errors().is_empty() {
+        return Err(invalid_source(
+            "cannot verify After handler names in a form module with BSL syntax errors",
+        ));
+    }
+    Ok(module
+        .methods()
+        .into_iter()
+        .filter_map(|method| method.name)
+        .map(|name| name.to_lowercase())
+        .collect())
 }
 
 fn stage_postimage(
@@ -291,6 +427,7 @@ pub(crate) fn plan_event_implement_batch_owned_for_test(
 > {
     let effects = plan_event_implement_batch(
         &mut staged.proposal(),
+        None,
         source_set,
         source_set_kind,
         profile,

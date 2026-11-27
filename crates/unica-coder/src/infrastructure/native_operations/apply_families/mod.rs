@@ -2319,6 +2319,7 @@ fn plan_apply(
                 let planned =
                     crate::infrastructure::native_operations::event_implementation::plan_event_implement_batch(
                         &mut staged.proposal(),
+                        Some(admission),
                         authority.source_set_name(),
                         authority.source_kind(),
                         crate::domain::source_capabilities::bsl_profile_for_source(

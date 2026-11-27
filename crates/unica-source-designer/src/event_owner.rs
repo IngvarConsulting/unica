@@ -2,12 +2,32 @@ use crate::owner::{
     prove_already_read_metadata_owner, prove_already_read_source_set_owner,
     EventOwnerDescriptorProof, EventOwnerEvidencePlan, PlatformXmlSourceSetOwnerEvidence,
 };
+use std::path::Path;
 use unica_source_contract::portable_path::PortablePathExt;
 use unica_source_contract::proposal::{ApplyPlanError, ApplyPlanErrorKind, ApplyProposal};
 use unica_source_contract::SourceSetKind;
 pub fn prove_owner_plan(
     staged: &mut ApplyProposal<'_>,
     plan: &EventOwnerEvidencePlan,
+) -> Result<(), ApplyPlanError> {
+    prove_owner_plan_from(plan, |path| {
+        staged
+            .read(path)
+            .map_err(|error| {
+                ApplyPlanError::new(ApplyPlanErrorKind::Staging(error.kind()), error.to_string())
+            })?
+            .ok_or_else(|| {
+                ApplyPlanError::new(
+                    ApplyPlanErrorKind::ProviderUnavailable,
+                    format!("proved owner descriptor `{}` is absent", path.portable()),
+                )
+            })
+    })
+}
+
+pub fn prove_owner_plan_from(
+    plan: &EventOwnerEvidencePlan,
+    mut read: impl FnMut(&Path) -> Result<Vec<u8>, ApplyPlanError>,
 ) -> Result<(), ApplyPlanError> {
     let mut evidence = Vec::<PlatformXmlSourceSetOwnerEvidence>::new();
     for (index, step) in plan.descriptors.iter().enumerate() {
@@ -35,20 +55,7 @@ pub fn prove_owner_plan(
                 ));
             }
         }
-        let bytes = staged
-            .read(&step.relative)
-            .map_err(|error| {
-                ApplyPlanError::new(ApplyPlanErrorKind::Staging(error.kind()), error.to_string())
-            })?
-            .ok_or_else(|| {
-                ApplyPlanError::new(
-                    ApplyPlanErrorKind::ProviderUnavailable,
-                    format!(
-                        "proved owner descriptor `{}` is absent",
-                        step.relative.portable()
-                    ),
-                )
-            })?;
+        let bytes = read(&step.relative)?;
         let actual = match step.proof {
             EventOwnerDescriptorProof::SourceSet => {
                 prove_already_read_source_set_owner(&step.relative, &bytes, plan.source_set_kind)

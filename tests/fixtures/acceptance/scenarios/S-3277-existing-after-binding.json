@@ -1,0 +1,115 @@
+{
+  "id": "S-3277-existing-after-binding",
+  "issue": 3277,
+  "area": "Формы",
+  "task": "Отказать при реализации существующей привязки After к имени метода основной формы. Сохранить исходные байты привязки и модуля расширения.",
+  "workspace": "tests/fixtures/acceptance/native-cfe-ownership-2.20",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "ext:Catalog.CorpusCatalog.Form.CorpusForm.Event.OnCreateAtServer",
+        "ops": [
+          {
+            "op": "event.bind",
+            "args": {
+              "values": {
+                "handler": "ПриСозданииНаСервере",
+                "callType": "After"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "adopted/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/xcf/logform}Events/{http://v8.1c.ru/8.3/xcf/logform}Event[@name='OnCreateAtServer'][@callType='After']",
+          "eq": [
+            "ПриСозданииНаСервере"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "ext:Catalog.CorpusCatalog.Form.CorpusForm.Event.OnCreateAtServer"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/state",
+          "eq": "missing"
+        },
+        {
+          "pointer": "/data/props/callType",
+          "eq": "After"
+        }
+      ],
+      "captures": {
+        "formBefore": {
+          "file": "adopted/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form.xml",
+          "kind": "sha256"
+        },
+        "moduleBefore": {
+          "file": "adopted/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form/Module.bsl",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "ext:Catalog.CorpusCatalog.Form.CorpusForm.Event.OnCreateAtServer",
+        "ops": [
+          {
+            "op": "event.implement",
+            "args": {}
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_state: the existing After binding names handler `ПриСозданииНаСервере`, which conflicts with a form method",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "invalid_state"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "adopted/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.formBefore"
+        },
+        {
+          "path": "adopted/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.moduleBefore"
+        }
+      ]
+    }
+  ]
+}
