@@ -48,6 +48,34 @@ fn diagnostic_module_scope_preserves_exact_common_module_and_catalog_roles() {
 }
 
 #[test]
+fn diagnostic_module_scope_distinguishes_absent_empty_and_unreadable_sources() {
+    use unica_refusal::RefusalDetail;
+
+    let fixture = RealReaderFixture::new();
+    let authority = fixture.read_authority();
+    let at = QualifiedAddress::parse("main:Catalog.Items.Module.Manager").unwrap();
+    let path = fixture.source.join("Catalogs/Items/Ext/ManagerModule.bsl");
+
+    let absent = authority
+        .diagnostic_mapping(&at, &fixture.context)
+        .err()
+        .expect("an absent BSL file cannot provide a diagnostic scope");
+    assert_eq!(absent.code(), RefusalCode::NotFound);
+
+    fs::write(&path, "").unwrap();
+    let mapping = authority.diagnostic_mapping(&at, &fixture.context).unwrap();
+    assert_eq!(mapping.module_scope().unwrap().module_path, path);
+
+    fs::remove_file(&path).unwrap();
+    fs::create_dir(&path).unwrap();
+    let unreadable = authority
+        .diagnostic_mapping(&at, &fixture.context)
+        .err()
+        .expect("a directory cannot provide a diagnostic scope");
+    assert_eq!(unreadable.detail(), Some(RefusalDetail::SourceUnreadable));
+}
+
+#[test]
 fn diagnostic_module_scope_refuses_foreign_source_object_and_unregistered_module() {
     let fixture = RealReaderFixture::new();
     write(

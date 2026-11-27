@@ -1,0 +1,61 @@
+{
+  "id": "S-3319-check-missing-bsl-module",
+  "issue": 3319,
+  "area": "Код BSL",
+  "task": "Проверить модуль менеджера зарегистрированного справочника с отсутствующим файлом BSL. Логический узел доступен для просмотра, а проверка и разрешение пути сообщают об отсутствии файла.",
+  "workspace": "tests/fixtures/acceptance/workspace-standard-attributes",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Module.Manager"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Module"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "at": "main:Catalog.Items.Module.Manager"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: the BSL module source file does not exist"
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:Catalog.Items.Module.Manager"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: the BSL module source file does not exist",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "main:Catalog.Items.Module.Manager"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items/Ext/ManagerModule.bsl",
+          "kind": "exists",
+          "eq": false
+        }
+      ]
+    }
+  ]
+}
