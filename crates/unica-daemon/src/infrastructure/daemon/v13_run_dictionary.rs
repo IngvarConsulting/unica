@@ -172,6 +172,34 @@ mod runner_one_tests {
     use super::*;
     /// rule: INV.RUNTIME.RUNNER-ONE-CAPABILITIES
     #[test]
+    fn runner_019_does_not_offer_debug_server_prepare() {
+        let dictionary = run_dictionary_result();
+        let operations = dictionary.data.as_ref().unwrap()["operations"]
+            .as_array()
+            .unwrap();
+        assert!(!operations
+            .iter()
+            .any(|op| op["op"] == "debug-server.prepare"));
+        for name in ["debug-server.start", "debug-server.stop"] {
+            assert!(operations.iter().any(|op| op["op"] == name));
+        }
+        for dry_run in [true, false] {
+            let request = InvocationRequest::new(
+                ToolIdentity::Run,
+                json!({"op":"debug-server.prepare","args":{"ownerPid":42},"dryRun":dry_run}),
+                "/workspace-does-not-exist",
+                7000,
+            )
+            .unwrap();
+            let result =
+                execute_run_dictionary(&request).expect("refused before workspace admission");
+            assert_eq!(result.diagnostics[0]["code"], "unsupported_operation");
+            assert!(result.summary.contains("v8-runner"), "{}", result.summary);
+        }
+    }
+
+    /// rule: INV.RUNTIME.RUNNER-ONE-CAPABILITIES
+    #[test]
     fn development_cycle_admits_the_explicit_compatibility_subset() {
         for (op, args) in [
             ("push", json!({"force":true,"full":true})),

@@ -53,6 +53,7 @@ pub enum RunIntent {
     InfobaseImport,
     ClientRun,
     WebPublish,
+    DebugServerPrepare,
     DebugServerStart,
     DebugServerStop,
     ExtensionList,
@@ -64,6 +65,9 @@ pub enum RunIntent {
 /// Why `upload`, `apply` and `reset` are unavailable with the pinned runner and
 /// what remains: the gap issue names the acceptance criteria.
 const RUNNER_LOAD_GAP: &str = "unavailable with the pinned v8-runner adapter: the runner has push --no-apply, apply and reset, but the adapter does not run them yet, and the runner's upload of a CF/CFE file still applies the database configuration. Sources go through push, which applies the database configuration. Gap: https://github.com/IngvarConsulting/unica/issues/1246";
+
+/// v8-runner 0.19.0 has neither debug-server prepare nor its release receipt.
+pub const RUNNER_SUPPORTS_DEBUG_SERVER_PREPARE: bool = false;
 
 #[derive(Debug)]
 pub struct RunOperation {
@@ -88,6 +92,7 @@ impl RunOperation {
             RunIntent::InfobaseImport => "infobase.restore",
             RunIntent::ClientRun => "launch",
             RunIntent::WebPublish => "web.publish",
+            RunIntent::DebugServerPrepare => "debug-server.prepare",
             RunIntent::DebugServerStart => "debug-server.start",
             RunIntent::DebugServerStop => "debug-server.stop",
             RunIntent::ExtensionList => "extensions.list",
@@ -133,6 +138,7 @@ impl RunOperation {
             RunIntent::ConfigurationReset => "Discard pending configuration changes in the infobase, restoring its database configuration.",
             RunIntent::ClientRun => "Launch an interactive 1C client session.",
             RunIntent::WebPublish => "Prepare or verify a web publication for HTTP debugging before launching the browser.",
+            RunIntent::DebugServerPrepare => "Prepare the debugger for the origin infobase. The result identifies the server URL, infobase alias and confirmed debugging scope. If this session owns a resource, release it using the returned operation.",
             RunIntent::DebugServerStart => "Start an owned ready local debug server for the project file infobase.",
             RunIntent::DebugServerStop => "Release the owned debug server of this working copy by session identifier.",
         }
@@ -140,6 +146,9 @@ impl RunOperation {
 
     pub const fn support_reason(&self) -> Option<&'static str> {
         match self.intent {
+            RunIntent::DebugServerPrepare if !self.implemented => {
+                Some("the pinned v8-runner does not support debug-server prepare")
+            }
             RunIntent::CfImport | RunIntent::ConfigurationApply | RunIntent::ConfigurationReset => {
                 Some(RUNNER_LOAD_GAP)
             }
@@ -151,11 +160,10 @@ impl RunOperation {
     }
 
     pub const fn execution(&self) -> &'static str {
-        match self.intent {
-            RunIntent::ClientRun | RunIntent::DebugServerStart | RunIntent::DebugServerStop => {
-                "terminal"
-            }
-            _ => "previewApply",
+        if self.terminal {
+            "terminal"
+        } else {
+            "previewApply"
         }
     }
 
@@ -172,7 +180,9 @@ impl RunOperation {
             | RunIntent::InfobaseImport => &["infobase"],
             RunIntent::ClientRun => &["clientSession"],
             RunIntent::WebPublish => &["webPublication"],
-            RunIntent::DebugServerStart | RunIntent::DebugServerStop => &["debugServerSession"],
+            RunIntent::DebugServerPrepare
+            | RunIntent::DebugServerStart
+            | RunIntent::DebugServerStop => &["debugServerSession"],
             RunIntent::InfobaseCheck | RunIntent::ExtensionList => &["infobaseRead"],
             RunIntent::ExtensionActivate
             | RunIntent::ConfigurationApply
@@ -263,6 +273,11 @@ impl RunOperation {
             RunIntent::WebPublish => Some(json!({
                 "type":"object","additionalProperties":false,"required":["prepareDebug"],
                 "properties":{"prepareDebug":{"type":"string","pattern":"^http://(?:127[.]0[.]0[.]1|localhost):[0-9]+/?$","description":"IDE HTTP debugger endpoint with an explicit port. The receipt separately names the address for the web client."}}
+            })),
+            RunIntent::DebugServerPrepare => Some(json!({
+                "type":"object","additionalProperties":false,"required":["ownerPid"],
+                "properties":{"ownerPid":{"type":"integer","minimum":1,"maximum":u32::MAX,
+                    "description":"Process ID of the long-lived IDE that owns any local debug server created for this session."}}
             })),
             RunIntent::DebugServerStart => Some(json!({
                 "type":"object","additionalProperties":false,"required":["ownerPid"],
@@ -559,6 +574,7 @@ fn run_dictionary() -> Vec<RunOperation> {
         RunIntent::InfobaseImport,
         RunIntent::ClientRun,
         RunIntent::WebPublish,
+        RunIntent::DebugServerPrepare,
         RunIntent::DebugServerStart,
         RunIntent::DebugServerStop,
         RunIntent::ExtensionList,
@@ -567,23 +583,26 @@ fn run_dictionary() -> Vec<RunOperation> {
         RunIntent::ConfigurationReset,
     ]
     .into_iter()
-    .map(|intent| RunOperation {
-        intent,
-        terminal: matches!(
+    .map(|intent| {
+        let terminal = matches!(
             intent,
-            RunIntent::ClientRun | RunIntent::DebugServerStart | RunIntent::DebugServerStop
-        ),
-        rejects_sessions: matches!(
+            RunIntent::ClientRun
+                | RunIntent::DebugServerPrepare
+                | RunIntent::DebugServerStart
+                | RunIntent::DebugServerStop
+        );
+        RunOperation {
             intent,
-            RunIntent::ClientRun | RunIntent::DebugServerStart | RunIntent::DebugServerStop
-        ),
-        // The pinned runner has push --no-apply, apply and reset, but its upload still applies
-        // the database configuration and the adapter does not run apply or reset yet
-        // (#1246): these are not listed, and their call is refused with that reason.
-        implemented: !matches!(
-            intent,
-            RunIntent::CfImport | RunIntent::ConfigurationApply | RunIntent::ConfigurationReset
-        ),
+            terminal,
+            rejects_sessions: terminal,
+            implemented: match intent {
+                RunIntent::DebugServerPrepare => RUNNER_SUPPORTS_DEBUG_SERVER_PREPARE,
+                RunIntent::CfImport
+                | RunIntent::ConfigurationApply
+                | RunIntent::ConfigurationReset => false,
+                _ => true,
+            },
+        }
     })
     .collect()
 }
@@ -675,6 +694,7 @@ mod tests {
                 "infobase.restore",
                 "launch",
                 "web.publish",
+                "debug-server.prepare",
                 "debug-server.start",
                 "debug-server.stop",
                 "extensions.list",
@@ -816,6 +836,35 @@ mod tests {
             assert!(op.implemented);
             assert_eq!(op.execution(), "previewApply");
             assert_eq!(op.args_schema().unwrap()["additionalProperties"], false);
+        }
+    }
+
+    /// rule: INV.RUNTIME.RUNNER-ONE-CAPABILITIES
+    #[test]
+    fn debug_server_prepare_accepts_only_the_session_owner() {
+        let catalog = catalog_for(SurfaceRelease::V13).unwrap();
+        let op = catalog
+            .run_dictionary
+            .iter()
+            .find(|op| op.intent == RunIntent::DebugServerPrepare)
+            .unwrap();
+        assert_eq!(op.execution(), "terminal");
+        assert_eq!(op.effects(), &["debugServerSession"]);
+        let schema = op.args_schema().unwrap();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        for owner in [1, u32::MAX] {
+            assert!(validator.is_valid(&json!({"ownerPid": owner})));
+        }
+        for args in [
+            json!({}),
+            json!({"ownerPid": 0}),
+            json!({"ownerPid": u64::from(u32::MAX) + 1}),
+            json!({"ownerPid": "1"}),
+            json!({"ownerPid": 1, "mode": "client"}),
+            json!({"ownerPid": 1, "debugServerUrl": "http://localhost:1550"}),
+            json!({"ownerPid": 1, "port": 1550}),
+        ] {
+            assert!(!validator.is_valid(&args), "{args}");
         }
     }
 
@@ -1109,6 +1158,7 @@ mod tests {
                 RunIntent::InfobaseImport,
                 RunIntent::ClientRun,
                 RunIntent::WebPublish,
+                RunIntent::DebugServerPrepare,
                 RunIntent::DebugServerStart,
                 RunIntent::DebugServerStop,
                 RunIntent::ExtensionList,
@@ -1272,6 +1322,7 @@ mod tests {
                 "infobase.restore",
                 "launch",
                 "web.publish",
+                "debug-server.prepare",
                 "debug-server.start",
                 "debug-server.stop",
                 "extensions.list",

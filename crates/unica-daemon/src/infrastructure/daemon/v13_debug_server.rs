@@ -7,6 +7,7 @@ use super::v13_infobase_exports::{
     runner_envelope_refusal, runner_rejection, runner_start_rejection, CONFIG_NAME,
     RUNNER_OUTPUT_LIMIT,
 };
+use crate::application::v13::tool_catalog::RUNNER_SUPPORTS_DEBUG_SERVER_PREPARE;
 use crate::infrastructure::workspace::discover_workspace;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -18,13 +19,17 @@ use unica_refusal::{RefusalCode, RefusalDetail};
 use unica_source_contract::workspace::WorkspaceContext;
 use unica_work_control::cancellation::CancellationToken;
 
+mod prepare;
+
 pub(super) const START: &str = "debug-server.start";
 pub(super) const STOP: &str = "debug-server.stop";
+pub(super) const PREPARE: &str = "debug-server.prepare";
 
 #[derive(Debug)]
 enum Request {
     Start { owner_pid: u32, port: Option<u16> },
     Stop { session: String },
+    Prepare { owner_pid: u32 },
 }
 
 #[derive(Debug)]
@@ -53,40 +58,56 @@ impl PreparedDebugServer {
             .get("args")
             .and_then(Value::as_object)
             .ok_or_else(|| reject("run args must be an object"))?;
-        let request = if operation == START {
-            if args
-                .keys()
-                .any(|key| !matches!(key.as_str(), "ownerPid" | "port"))
-            {
-                return Err(reject("debug-server.start accepts only ownerPid and port"));
-            }
-            let owner_pid = args
-                .get("ownerPid")
+        let owner_pid = || {
+            args.get("ownerPid")
                 .and_then(positive_u32)
-                .ok_or_else(|| reject("ownerPid must be a positive process ID"))?;
-            let port = args
-                .get("port")
-                .map(|value| {
-                    positive_u32(value)
-                        .and_then(|port| u16::try_from(port).ok())
-                        .ok_or_else(|| reject("port must be between 1 and 65535"))
-                })
-                .transpose()?;
-            Request::Start { owner_pid, port }
-        } else {
-            if args.len() != 1 {
-                return Err(reject("debug-server.stop accepts only session"));
+                .ok_or_else(|| reject("ownerPid must be a positive process ID"))
+        };
+        let request = match operation {
+            PREPARE => {
+                if args.keys().any(|key| key != "ownerPid") {
+                    return Err(reject("debug-server.prepare accepts only ownerPid"));
+                }
+                Request::Prepare {
+                    owner_pid: owner_pid()?,
+                }
             }
-            let session = args
-                .get("session")
-                .and_then(Value::as_str)
-                .filter(|s| valid_session(s))
-                .ok_or_else(|| {
-                    reject("session must be the lowercase hexadecimal token from start")
-                })?;
-            Request::Stop {
-                session: session.to_owned(),
+            START => {
+                if args
+                    .keys()
+                    .any(|key| !matches!(key.as_str(), "ownerPid" | "port"))
+                {
+                    return Err(reject("debug-server.start accepts only ownerPid and port"));
+                }
+                let port = args
+                    .get("port")
+                    .map(|value| {
+                        positive_u32(value)
+                            .and_then(|port| u16::try_from(port).ok())
+                            .ok_or_else(|| reject("port must be between 1 and 65535"))
+                    })
+                    .transpose()?;
+                Request::Start {
+                    owner_pid: owner_pid()?,
+                    port,
+                }
             }
+            STOP => {
+                if args.len() != 1 {
+                    return Err(reject("debug-server.stop accepts only session"));
+                }
+                let session = args
+                    .get("session")
+                    .and_then(Value::as_str)
+                    .filter(|s| valid_session(s))
+                    .ok_or_else(|| {
+                        reject("session must be the lowercase hexadecimal token from start")
+                    })?;
+                Request::Stop {
+                    session: session.to_owned(),
+                }
+            }
+            _ => return Err(reject("unknown debug server operation")),
         };
         let context = discover_workspace(Some(PathBuf::from(invocation.workspace_hint())))
             .map_err(|_| {
@@ -107,6 +128,7 @@ impl PreparedDebugServer {
         match self.request {
             Request::Start { .. } => START,
             Request::Stop { .. } => STOP,
+            Request::Prepare { .. } => PREPARE,
         }
     }
 
@@ -150,11 +172,21 @@ impl PreparedDebugServer {
                     );
                 }
                 match &self.request {
+                    Request::Prepare { owner_pid } => {
+                        self.prepare(&tool, runner, &cancellation, *owner_pid)
+                    }
                     Request::Start { owner_pid, port } => {
                         self.start(&tool, runner, &cancellation, *owner_pid, *port)
                     }
                     Request::Stop { session } => {
-                        let result = self.stop(&tool, runner, session, self.dry_run, &cancellation);
+                        let result = self.stop(
+                            &tool,
+                            runner,
+                            session,
+                            self.dry_run,
+                            RUNNER_SUPPORTS_DEBUG_SERVER_PREPARE,
+                            &cancellation,
+                        );
                         if !self.dry_run && result.ok {
                             // A returned stop receipt is factual even if cancellation raced the stop.
                             cancellation.record_answered_interrupt();
@@ -180,7 +212,7 @@ impl PreparedDebugServer {
         }
         // Do not interrupt the runner between starting its supervised process
         // and returning the session token needed to stop it safely.
-        let data = match self.invoke(tool, runner, "start", args, self.dry_run, cancellation) {
+        let data = match self.invoke(tool, runner, START, args, self.dry_run, cancellation) {
             Ok(data) => data,
             Err(result) => return result,
         };
@@ -223,7 +255,14 @@ impl PreparedDebugServer {
                 return result;
             }
             if started_here {
-                let stopped = self.stop(tool, runner, session, false, &CancellationToken::new());
+                let stopped = self.stop(
+                    tool,
+                    runner,
+                    session,
+                    false,
+                    false,
+                    &CancellationToken::new(),
+                );
                 if !stopped.ok {
                     let mut failure = failure(START, RefusalCode::ProviderFailed,
                         "debug server start was not handed off and its cleanup did not confirm release");
@@ -255,12 +294,13 @@ impl PreparedDebugServer {
         runner: &dyn ProcessRunner,
         session: &str,
         dry_run: bool,
+        accepts_lease_release: bool,
         cancellation: &CancellationToken,
     ) -> DomainResult {
         let data = match self.invoke(
             tool,
             runner,
-            "stop",
+            STOP,
             vec![session.to_owned()],
             dry_run,
             cancellation,
@@ -269,16 +309,26 @@ impl PreparedDebugServer {
             Err(result) => return result,
         };
         let action = data["action"].as_str();
+        let fresh = data.get("stale_record").is_none_or(|stale| stale == false);
         let owned_stop = action == Some("stopped")
             && !dry_run
             && data["owner"] == "runner"
             && data["known_session"] == true
+            && (!accepts_lease_release || fresh)
             && positive_u32(&data["stopped_pid"]).is_some();
-        let no_effect =
-            matches!(action, Some("nothing_to_stop")) || (dry_run && action == Some("planned"));
+        let released = accepts_lease_release
+            && !dry_run
+            && action == Some("released")
+            && data["known_session"] == true
+            && data["stopped_pid"].is_null()
+            && data.get("owner").is_none_or(|owner| owner == "runner")
+            && fresh;
+        let no_effect = (matches!(action, Some("nothing_to_stop"))
+            || (dry_run && action == Some("planned")))
+            && (!accepts_lease_release || data["stopped_pid"].is_null());
         if data["session"] != session
             || !data["known_session"].is_boolean()
-            || (!owned_stop && !no_effect)
+            || (!owned_stop && !released && !no_effect)
         {
             return failure(
                 STOP,
@@ -304,12 +354,14 @@ impl PreparedDebugServer {
         &self,
         tool: &BundledTool,
         runner: &dyn ProcessRunner,
-        subcommand: &str,
+        operation: &'static str,
         args: Vec<String>,
         dry_run: bool,
         cancellation: &CancellationToken,
     ) -> Result<Value, DomainResult> {
-        let operation = if subcommand == "start" { START } else { STOP };
+        let subcommand = operation
+            .strip_prefix("debug-server.")
+            .expect("debug server operation");
         let mut command = vec![
             "--config".to_owned(),
             self.context
@@ -317,13 +369,19 @@ impl PreparedDebugServer {
                 .join(CONFIG_NAME)
                 .display()
                 .to_string(),
-            "--json-message".to_owned(),
         ];
-        if dry_run {
+        if operation == PREPARE {
+            command.extend(["--infobase".to_owned(), "origin".to_owned()]);
+        }
+        command.push("--json-message".to_owned());
+        if dry_run && operation != PREPARE {
             command.push("--dry-run".to_owned());
         }
         command.extend(["debug-server".to_owned(), subcommand.to_owned()]);
         command.extend(args);
+        if dry_run && operation == PREPARE {
+            command.push("--dry-run".to_owned());
+        }
         let command = ProcessCommand {
             program: tool.program.clone(),
             args: command,
@@ -337,7 +395,7 @@ impl PreparedDebugServer {
         // On Windows a console process group on the launcher can keep dbgs
         // alive after --ownerPID exits. This protected start already waits
         // for its receipt and cleans up if cancellation wins at handoff.
-        let output = if subcommand == "start" && !dry_run {
+        let output = if matches!(operation, START | PREPARE) && !dry_run {
             runner.run_staged_without_windows_interrupt(&command)
         } else {
             runner.run_staged(&command)
@@ -358,6 +416,25 @@ impl PreparedDebugServer {
             return Err(invalid());
         }
         if !output.status_success || envelope["ok"] != true {
+            if operation == PREPARE {
+                if envelope["ok"] != false || output.status_success {
+                    return Err(invalid());
+                }
+                if let Some(
+                    code @ ("debug_server_external_unavailable"
+                    | "debug_server_external_target_unverified"),
+                ) = envelope["error"]["code"].as_str()
+                {
+                    let message = if code == "debug_server_external_unavailable" {
+                        "the configured debug server is unavailable"
+                    } else {
+                        "the configured debug server did not confirm the selected infobase"
+                    };
+                    let mut result = failure(PREPARE, RefusalCode::ProviderUnavailable, message);
+                    result.data = Some(json!({"runnerCode":code}));
+                    return Err(result);
+                }
+            }
             let message = match self.request {
                 Request::Start {
                     port: Some(port), ..
@@ -384,7 +461,14 @@ impl PreparedDebugServer {
                 &envelope,
             ));
         }
-        if envelope["data"]["ok"] != true {
+        if operation == PREPARE {
+            if !envelope["error"].is_null()
+                || !envelope["data"].is_object()
+                || envelope["data"].get("ok").is_some_and(|ok| ok != true)
+            {
+                return Err(invalid());
+            }
+        } else if envelope["data"]["ok"] != true {
             return Err(invalid());
         }
         Ok(envelope["data"].clone())
@@ -434,7 +518,11 @@ mod tests {
                 .borrow_mut()
                 .push((command.args.clone(), without_windows_interrupt));
             let value = self.results.borrow_mut().remove(0);
-            if command.args.iter().any(|arg| arg == "start") {
+            if command
+                .args
+                .iter()
+                .any(|arg| arg == "start" || arg == "prepare")
+            {
                 if let Some(cancellation) = &self.cancel_during_reply {
                     cancellation.cancel();
                 }
@@ -507,6 +595,8 @@ mod tests {
         };
         (prepared, tool)
     }
+
+    mod prepare;
 
     #[test]
     fn debug_server_handoff_uses_reported_port_and_rolls_back_on_cancel() {
@@ -709,7 +799,14 @@ mod tests {
             results: RefCell::new(vec![stop_data("ffffffffffffffffffffffffffffffff")]),
             cancel_during_reply: None,
         };
-        let result = prepared.stop(&tool, &runner, SESSION, false, &CancellationToken::new());
+        let result = prepared.stop(
+            &tool,
+            &runner,
+            SESSION,
+            false,
+            false,
+            &CancellationToken::new(),
+        );
         assert_eq!(result.diagnostics[0]["code"], "invalid_result");
         assert!(!runner.calls.borrow()[0].1);
     }
