@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "pluginVersion": "0.8.0",
+  "pluginVersion": "workspace",
   "development": true,
   "source": {
     "repository": "https://github.com/IngvarConsulting/unica",

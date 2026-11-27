@@ -1246,10 +1246,9 @@ class PackageUnicaPluginTests(unittest.TestCase):
         """
         module = load_package_module()
         repo_root = Path(__file__).resolve().parents[2]
-        # Packaging requires the release tag to match the packaged version, so
-        # the fixture reads it rather than pinning a literal that every release
-        # would have to come back and edit.
-        version = module.read_release_version(repo_root / "plugins" / "unica")
+        # The host manifest names the expected release independently of the packager.
+        host_manifest = repo_root / "plugins/unica/.codex-plugin/plugin.json"
+        version = json.loads(host_manifest.read_text(encoding="utf-8"))["version"]
         release_tag = f"v{version}"
         target_triples = {
             "darwin-arm64": "aarch64-apple-darwin",
@@ -1417,6 +1416,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
                 (plugin / "runtime-manifest.json").read_text(encoding="utf-8")
             )
             self.assertFalse(runtime_manifest["development"])
+            self.assertEqual(runtime_manifest["pluginVersion"], version)
             self.assertEqual(runtime_manifest["source"]["commit"], "a" * 40)
             self.assertEqual(runtime_manifest["release"]["tag"], release_tag)
             self.assertEqual(

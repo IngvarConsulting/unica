@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib.util
 import json
 import re
+import subprocess
+import sys
 import tempfile
 import tomllib
 import unittest
@@ -97,6 +99,41 @@ class VersionContractTests(unittest.TestCase):
                 module.validate_version_contract(values),
                 [f"zcode-plugin version 0.0.1 != expected {values['workspace']}"],
             )
+
+    def test_version_gate_distinguishes_development_manifest_from_release_labels(self) -> None:
+        manifest_path = Path("plugins/unica/runtime-manifest.json")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for relative in (
+                "Cargo.toml",
+                "plugins/unica/.codex-plugin/plugin.json",
+                "plugins/unica/.claude-plugin/plugin.json",
+                "plugins/unica/.zcode-plugin/plugin.json",
+                "plugins/unica/package.json",
+                "plugins/unica/third-party/tools.lock.json",
+            ):
+                target = root / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes((REPO_ROOT / relative).read_bytes())
+            release_version = load_module().read_version_contract(root)["workspace"]
+            development = json.loads((REPO_ROOT / manifest_path).read_text(encoding="utf-8"))
+            development["pluginVersion"] = "workspace"
+
+            for manifest, expected in (
+                (development, 0),
+                ({**development, "pluginVersion": release_version}, 1),
+                ({**development, "development": False}, 1),
+                (None, 1),
+            ):
+                with self.subTest(manifest=manifest):
+                    (root / manifest_path).write_text(json.dumps(manifest), encoding="utf-8")
+                    result = subprocess.run(
+                        [sys.executable, str(SCRIPT), "--repo-root", str(root)],
+                        capture_output=True, text=True, check=False,
+                    )
+                    self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+                    if expected:
+                        self.assertIn(manifest_path.name, result.stderr)
 
     def test_meta_surface_delivery_is_versioned_across_the_017_line(self) -> None:
         module = load_module()
