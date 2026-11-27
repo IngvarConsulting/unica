@@ -495,7 +495,12 @@ fn fetch_exports_the_named_extension_to_a_separate_snapshot() {
         args.contains(&format!("pull {name} --force --publication-stdio")),
         "{args}"
     );
-    assert!(args.ends_with(&format!("--extension {name}")), "{args}");
+    assert!(
+        args.ends_with(&format!(
+            "--extension {name} --snapshot-only --snapshot-platform-from-sources"
+        )),
+        "{args}"
+    );
     let data = result.data.unwrap();
     assert_eq!(data["extension"], name);
     assert_eq!(data["sourceSet"], name);
