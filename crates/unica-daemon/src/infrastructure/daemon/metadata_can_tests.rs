@@ -25,7 +25,6 @@ fn props_set_common_module_can_is_contextual_and_previews_without_writes() {
     assert_eq!(
         crate::domain::logical_route::classify_route(
             &unica_address::address::QualifiedAddress::parse(at).unwrap(),
-            unica_bsl::profile::PlatformProfile::v8_3_27(),
         ),
         Some(unica_source_contract::route::RouteClass::Module)
     );

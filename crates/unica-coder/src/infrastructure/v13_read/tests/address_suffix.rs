@@ -239,7 +239,7 @@ fn every_reader_rejects_an_extra_unconsumed_address_tail() {
     ];
     for (at, payload) in cases {
         let address = QualifiedAddress::parse(at).unwrap();
-        let route = route_logical_address(&address, PlatformProfile::v8_3_27()).unwrap();
+        let route = route_logical_address(&address).unwrap();
         let error = project_typed_payload(&route, payload).unwrap_err();
         assert_eq!(error.code().as_str(), "not_found", "{at}");
     }

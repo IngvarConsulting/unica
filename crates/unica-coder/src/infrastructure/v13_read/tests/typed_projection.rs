@@ -4,7 +4,7 @@ use super::*;
 fn typed_projection_keeps_summary_compact_and_content_address_selected() {
     let summary =
         QualifiedAddress::parse("main:Report.Продажи.Template.Схема.DataSet.Продажи").unwrap();
-    let route = route_logical_address(&summary, PlatformProfile::v8_3_27()).unwrap();
+    let route = route_logical_address(&summary).unwrap();
     let payload = json!({
         "support": {"state": "Editable"},
         "dataSets": [{"name": "Продажи", "kind": "Query", "query": "SELECT\n  *"}],
@@ -37,7 +37,7 @@ fn typed_projection_keeps_summary_compact_and_content_address_selected() {
 #[test]
 fn typed_projection_never_leaks_provider_or_physical_slots() {
     let at = QualifiedAddress::parse("main:Subsystem.Продажи").unwrap();
-    let route = route_logical_address(&at, PlatformProfile::v8_3_27()).unwrap();
+    let route = route_logical_address(&at).unwrap();
     let view = serde_json::to_value(
         project_typed_payload(
             &route,
@@ -83,7 +83,7 @@ fn typed_projection_rejects_unknown_provider_payload_instead_of_dumping_it() {
         "main:CommonForm.Test",
     ] {
         let at = QualifiedAddress::parse(raw).unwrap();
-        let route = route_logical_address(&at, PlatformProfile::v8_3_27()).unwrap();
+        let route = route_logical_address(&at).unwrap();
 
         let error = project_typed_payload(
             &route,

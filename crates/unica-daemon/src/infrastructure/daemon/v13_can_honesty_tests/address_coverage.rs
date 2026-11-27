@@ -300,7 +300,6 @@ fn check_branches(
                 .strip_prefix(seed)
                 .is_some_and(|tail| tail.starts_with('.'))
     };
-    let profile = PlatformProfile::v8_3_27();
     let mut queue = VecDeque::from([seed.to_string()]);
     let mut opened = BTreeSet::new();
     let mut edges = Edges::new();
@@ -309,7 +308,7 @@ fn check_branches(
             continue;
         }
         let owner = parsed(&at);
-        assert!(classify_route(&owner, profile).is_some(), "{at}");
+        assert!(classify_route(&owner).is_some(), "{at}");
         let (view, items) = read_view(runtime, workspace, &at);
         record_branches(&owner, &view, &contains, &mut queue, &mut edges);
         for item in items {

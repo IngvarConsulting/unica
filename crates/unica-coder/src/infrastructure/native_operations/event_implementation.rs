@@ -12,6 +12,7 @@ use unica_bindings::events::{
     require_postcondition, EventProjectionError, EventProjectionErrorKind,
 };
 use unica_bsl::event_text::emit_event_module_with_variant;
+use unica_bsl::module_capabilities::{module_capability, module_prefix_capability};
 use unica_bsl::profile::PlatformProfile;
 use unica_bsl::projection::EventState;
 use unica_forms_designer::codec::parse_form_event_evidence_xml;
@@ -71,7 +72,7 @@ fn plan_one_event(
     profile: PlatformProfile,
     args: &EventImplementArgs,
 ) -> Result<(), ApplyPlanError> {
-    if profile.module_prefix_capability(&args.at).is_some() {
+    if module_prefix_capability(&args.at).is_some() {
         let source = resolve_event_source(source_set, source_set_kind, profile, &args.at)
             .map_err(|error| provider_unavailable(error.to_string()))?;
         let LogicalEventSource::Platform(source) = source else {
@@ -94,8 +95,7 @@ fn plan_one_event(
         prove_owner_plan(staged, &owner_plan)?;
         let module_before = staged.read(&source.module_relative).map_err(staging)?;
         let module_text = optional_utf8_module(module_before.as_deref())?;
-        let capability = profile
-            .module_capability(&source.module_at)
+        let capability = module_capability(&source.module_at)
             .ok_or_else(|| provider_unavailable("Platform module capability disappeared"))?;
         let shape = project_platform_event_implementation(
             &source.event_at,

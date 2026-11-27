@@ -129,11 +129,11 @@ impl LspWorkspaces for ProductLspWorkspaces {
         let source_sets = bindings
             .iter()
             .map(|binding| {
+                bsl_profile_for_source(binding.source_profile())?;
                 Some(SourceSetLayout {
                     name: binding.source_set_name().to_owned(),
                     kind: binding.source_kind(),
                     root: binding.source_root().to_path_buf(),
-                    profile: bsl_profile_for_source(binding.source_profile())?,
                 })
             })
             .collect::<Option<Vec<_>>>()?;

@@ -44,7 +44,8 @@ use unica_address::module_routes::ModuleRouteKind;
 use unica_address::source_target::MetadataAddress;
 #[cfg(any(test, feature = "test-support"))]
 use unica_address::source_target::SourceTarget;
-use unica_bsl::profile::{ModuleCapability, PlatformProfile};
+use unica_bsl::module_capabilities::{module_children, ModuleCapability};
+use unica_bsl::profile::PlatformProfile;
 use unica_forms::facts::{FormEventEvidence, FormInfoData};
 use unica_refusal::{RefusalCode, RefusalDetail};
 #[cfg(any(test, feature = "test-support"))]
@@ -301,7 +302,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
         at: &QualifiedAddress,
     ) -> Result<String, ViewError> {
         let snapshot = self.snapshot(at)?;
-        let route = route_logical_address(at, self.profile)
+        let route = route_logical_address(at)
             .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
         let target = route
             .reader_metadata_path()
@@ -338,13 +339,13 @@ impl<'a> LogicalViewReadAuthority<'a> {
         requested_path: Option<&str>,
     ) -> Result<String, ViewError> {
         self.read_checkpoint()?;
-        let route = route_logical_address(at, self.profile)
+        let route = route_logical_address(at)
             .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
         if route.reader() == LogicalReader::Module {
             let capability = route.module().ok_or_else(|| {
                 ViewError::new(RefusalCode::NotFound, "the logical node has no BSL module")
             })?;
-            let (module_at, _) = module_prefix(at, self.profile, capability)?;
+            let (module_at, _) = module_prefix(at, capability)?;
             let target = module_source_address(&module_at, capability)?;
             if !self.read.module_source_exists(&target)? {
                 return Err(ViewError::new(
@@ -459,7 +460,7 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         at: &QualifiedAddress,
         admitted: &ViewSourceSnapshot,
     ) -> Result<Option<ModuleTextObservation>, ViewError> {
-        let route = route_logical_address(at, self.profile)
+        let route = route_logical_address(at)
             .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
         if route.reader() != LogicalReader::Module {
             return Ok(None);
@@ -467,7 +468,7 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         let Some(capability) = route.module() else {
             return Ok(None);
         };
-        let (module_at, prefix_len) = module_prefix(at, self.profile, capability)?;
+        let (module_at, prefix_len) = module_prefix(at, capability)?;
         let suffix = &at.segments()[prefix_len..];
         if !matches!(suffix, [body] if body.kind() == NodeKind::Body && body.name().is_none()) {
             return Ok(None);
@@ -499,7 +500,7 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                 "logical address belongs to another actor-owned source set",
             ));
         }
-        route_logical_address(at, self.profile)
+        route_logical_address(at)
             .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
         Ok(ViewSourceSnapshot {
             source_set_identity: self.read.source_set_identity().to_string(),
@@ -520,7 +521,7 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                 "source revision changed before canonical address resolution",
             ));
         }
-        let route = route_logical_address(at, self.profile)
+        let route = route_logical_address(at)
             .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
         if route.reader() != LogicalReader::Role {
             return Ok(at.clone());
@@ -551,7 +552,7 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                 "logical address belongs to another actor-owned source set",
             ));
         }
-        let route = route_logical_address(at, self.profile)
+        let route = route_logical_address(at)
             .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
         if let [interface] = at.segments() {
             if interface.kind() == NodeKind::OrdinaryInterface {
@@ -580,7 +581,7 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                     "module capability is missing",
                 )
             })?;
-            let (module_at, _) = module_prefix(at, self.profile, capability)?;
+            let (module_at, _) = module_prefix(at, capability)?;
             let target = module_source_address(&module_at, capability)?;
             return self.read.module_export_path(&target).map(Some);
         }
@@ -650,7 +651,7 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                 "source revision changed before the typed read",
             ));
         }
-        let route = route_logical_address(at, self.profile)
+        let route = route_logical_address(at)
             .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
         if let [interface] = at.segments() {
             if interface.kind() == NodeKind::OrdinaryInterface {
@@ -1157,9 +1158,7 @@ impl LogicalViewReadAuthority<'_> {
         parent: &QualifiedAddress,
         admitted: &ViewSourceSnapshot,
     ) -> Result<NodeViewData, ViewError> {
-        let Some(branch) =
-            module_branch_for_parent(parent, self.profile, self.read.source_set_kind())
-        else {
+        let Some(branch) = module_branch_for_parent(parent, self.read.source_set_kind()) else {
             return Ok(projected);
         };
         if let Some(owner) = module_branch_owner_address(parent)? {
@@ -1309,12 +1308,11 @@ fn module_owner_address(
         .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()))
 }
 
-/// Ветка `Module` узла, которому профиль платформы даёт модули. Корень
-/// конфигурации и расширения ведёт к модулям приложения; у корня внешней
-/// обработки и отчёта их нет.
+/// Ветка `Module` узла с допустимыми ролями модулей. Корень конфигурации
+/// или расширения ведёт к модулям приложения. Корни внешней обработки
+/// и отчёта не содержат модулей приложения.
 pub fn module_branch_for_parent(
     parent: &QualifiedAddress,
-    profile: PlatformProfile,
     source_kind: SourceSetKind,
 ) -> Option<BranchRef> {
     let branch = if matches!(parent.segments(), [root] if root.kind() == NodeKind::Configuration) {
@@ -1329,18 +1327,15 @@ pub fn module_branch_for_parent(
         QualifiedAddress::parse(&format!("{parent}.Module")).ok()
     };
     let branch = branch?;
-    let count = profile.module_children(&branch).len();
+    let count = module_children(&branch).len();
     if count == 0 {
         return None;
     }
     Some(BranchRef::new(branch.to_string(), count))
 }
 
-pub(crate) fn project_module_branch(
-    branch: &QualifiedAddress,
-    profile: PlatformProfile,
-) -> Result<NodeViewData, ViewError> {
-    let children = profile.module_children(branch);
+pub(crate) fn project_module_branch(branch: &QualifiedAddress) -> Result<NodeViewData, ViewError> {
+    let children = module_children(branch);
     if children.is_empty() {
         return Err(ViewError::new(
             RefusalCode::NotFound,
@@ -1396,10 +1391,9 @@ fn mxl_content_requested(route: &LogicalTreeRoute) -> bool {
 
 fn module_prefix(
     address: &QualifiedAddress,
-    profile: PlatformProfile,
     capability: ModuleCapability,
 ) -> Result<(QualifiedAddress, usize), ViewError> {
-    shared_module_prefix(address, profile, capability)
+    shared_module_prefix(address, capability)
         .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error))
 }
 

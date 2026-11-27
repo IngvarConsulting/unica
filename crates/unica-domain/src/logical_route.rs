@@ -9,21 +9,19 @@
 //! `apply`, поэтому второго классификатора быть не может.
 
 use unica_address::address::{NodeKind, QualifiedAddress};
-use unica_bsl::profile::PlatformProfile;
+use unica_bsl::module_capabilities::{module_children, module_prefix_capability};
 use unica_source_contract::route::RouteClass;
 
-/// Класс маршрута по сегментам адреса и профилю платформы.
+/// Класс маршрута по сегментам адреса.
 ///
 /// `None` — адрес не может существовать ни в одном дереве: сегмент `Module`
-/// вне модульного маршрута профиля. Ответ `Some` не доказывает существование
+/// вне допустимого модульного маршрута. Ответ `Some` не доказывает существование
 /// узла; наличие и форму адреса проверяет читатель своего маршрута.
-pub fn classify_route(address: &QualifiedAddress, profile: PlatformProfile) -> Option<RouteClass> {
+pub fn classify_route(address: &QualifiedAddress) -> Option<RouteClass> {
     if address.form_metadata_owner().is_some() {
         return Some(RouteClass::Metadata);
     }
-    if profile.module_prefix_capability(address).is_some()
-        || !profile.module_children(address).is_empty()
-    {
+    if module_prefix_capability(address).is_some() || !module_children(address).is_empty() {
         return Some(RouteClass::Module);
     }
     let segments = address.segments();
@@ -101,13 +99,9 @@ pub fn classify_route(address: &QualifiedAddress, profile: PlatformProfile) -> O
 mod tests {
     use super::{classify_route, RouteClass};
     use unica_address::address::QualifiedAddress;
-    use unica_bsl::profile::PlatformProfile;
 
     fn route(raw: &str) -> Option<RouteClass> {
-        classify_route(
-            &QualifiedAddress::parse(raw).unwrap(),
-            PlatformProfile::v8_3_27(),
-        )
+        classify_route(&QualifiedAddress::parse(raw).unwrap())
     }
 
     /// Один вид сегмента в разных деревьях даёт разные маршруты: решает адрес

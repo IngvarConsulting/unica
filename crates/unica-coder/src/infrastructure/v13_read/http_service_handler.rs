@@ -89,7 +89,7 @@ impl LogicalViewReadAuthority<'_> {
                 ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
             })?;
             let prove = || -> Result<Option<String>, ViewError> {
-                let route = route_logical_address(&module, self.profile).map_err(|error| {
+                let route = route_logical_address(&module).map_err(|error| {
                     ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
                 })?;
                 let capability = route.module().ok_or_else(|| {

@@ -12,6 +12,7 @@ use std::fs;
 use std::path::PathBuf;
 use unica_address::source_target::ResolvedTarget;
 use unica_bsl::input::*;
+use unica_bsl::module_capabilities::module_capability;
 #[cfg(any(test, feature = "test-support"))]
 use unica_bsl::text::test_support::arguments;
 use unica_bsl::text::*;
@@ -153,7 +154,7 @@ fn plan_one_code_operation(
     }
     let capability =
         crate::domain::source_capabilities::bsl_profile_for_source(authority.source_profile())
-            .and_then(|profile| profile.module_capability(&module_at))
+            .and_then(|_| module_capability(&module_at))
             .ok_or_else(|| {
                 ApplyPlanError::new(
                     ApplyPlanErrorKind::InvalidSource,

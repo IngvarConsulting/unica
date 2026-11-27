@@ -8,6 +8,7 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use unica_address::address::NodeKind;
 use unica_address::kinds::{nested_place, DECLARED_ROOT_KINDS, METADATA_LAYOUTS};
+use unica_bsl::module_capabilities::{module_capability, module_children};
 use unica_source_contract::format_identity::{
     export_format_line, metadata_kind_exists, metadata_kind_since, PlatformLine,
     DESCRIBED_PLATFORM_LINES,
@@ -252,7 +253,7 @@ fn read(authority: &LogicalViewReadAuthority<'_>, address: &str) -> Value {
         address,
         "published address must be canonical"
     );
-    route_logical_address(&at, authority.platform_profile())
+    route_logical_address(&at)
         .unwrap_or_else(|error| panic!("{address}: {error}"));
     let admitted = authority
         .snapshot(&at)
@@ -477,7 +478,7 @@ fn native_configuration_root_address_table_matches_published_branches() {
             );
             let address = QualifiedAddress::parse(at).unwrap();
             assert_eq!(
-                route_logical_address(&address, profile).unwrap().reader(),
+                route_logical_address(&address).unwrap().reader(),
                 LogicalReader::Module
             );
             assert_eq!(read(&authority, at)["kind"], "Module", "{line}: {at}");
@@ -1578,7 +1579,7 @@ fn check_native_recalculation_modules(format: &str, evidence: &mut EvidenceRows)
         );
         let at = QualifiedAddress::parse(&role).unwrap();
         assert_eq!(
-            route_logical_address(&at, profile).unwrap().reader(),
+            route_logical_address(&at).unwrap().reader(),
             LogicalReader::Module
         );
         let module = read(&authority, &role);
@@ -1687,7 +1688,7 @@ fn native_metadata_address_table_matches_declared_and_observed_child_branches() 
         check_native_job_schedule_roundtrip(&source, xml, profile, &cancellation, &mut evidence);
         for (kind, name) in registrations {
             let at = QualifiedAddress::parse(&format!("main:{kind}.{name}")).unwrap();
-            let route = route_logical_address(&at, profile).unwrap();
+            let route = route_logical_address(&at).unwrap();
             if route.reader() == LogicalReader::Metadata {
                 check_metadata_owner(&authority, &source, &at, &mut verified, &mut evidence);
             } else if route.reader() == LogicalReader::Xdto && name == "EnterpriseData_1_17_3" {
@@ -1748,7 +1749,7 @@ fn record_required_metadata_children(
             continue;
         };
         let owner = QualifiedAddress::parse(&format!("main:{kind}.{name}")).unwrap();
-        if route_logical_address(&owner, profile).unwrap().reader() != LogicalReader::Metadata {
+        if route_logical_address(&owner).unwrap().reader() != LogicalReader::Metadata {
             continue;
         }
         assert!(
@@ -3921,7 +3922,7 @@ fn check_metadata_owner(
     evidence: &mut EvidenceRows,
 ) {
     let profile = authority.platform_profile();
-    let route = route_logical_address(owner, profile).unwrap();
+    let route = route_logical_address(owner).unwrap();
     let kind = owner.segments().last().unwrap().kind().as_str();
     let descriptor = source.join(authority.existing_export_path(owner, None).unwrap());
     let xml = read_fixture_descriptor(&descriptor);
@@ -5366,7 +5367,6 @@ fn check_native_child_registrations(
 fn published_metadata_branches(
     owner: &QualifiedAddress,
     published: &Value,
-    profile: PlatformProfile,
 ) -> Vec<(String, u64)> {
     published["branches"]
         .as_array()
@@ -5376,7 +5376,7 @@ fn published_metadata_branches(
             let at = row["at"].as_str().unwrap();
             let parsed = QualifiedAddress::parse(at).unwrap();
             assert_eq!(parsed.to_string(), at);
-            let route = route_logical_address(&parsed, profile).unwrap_or_else(|error| {
+            let route = route_logical_address(&parsed).unwrap_or_else(|error| {
                 panic!("{owner} published unreachable branch {at}: {error}")
             });
             match route.reader() {
@@ -5399,7 +5399,7 @@ fn check_metadata_child_branches(
     evidence: &mut EvidenceRows,
 ) {
     let profile = authority.platform_profile();
-    let actual = published_metadata_branches(owner, published, profile);
+    let actual = published_metadata_branches(owner, published);
     let expected: Vec<_> = facts
         .iter()
         .map(|fact| (format!("{owner}.{}", fact.kind.as_str()), fact.count as u64))
@@ -5436,7 +5436,7 @@ fn check_metadata_child_branches(
                 .iter()
                 .find(|row| row["at"].as_str() == Some(item_at.as_str()))
                 .unwrap_or_else(|| panic!("{at}: typed member {name} has no address row"));
-            let route = route_logical_address(&item, profile).unwrap();
+            let route = route_logical_address(&item).unwrap();
             if route.reader() != LogicalReader::Metadata {
                 continue;
             }
@@ -5452,8 +5452,8 @@ fn check_metadata_child_branches(
             let branches = item_facts(member);
             let view = read(authority, &item_at);
             assert_eq!(
-                published_metadata_branches(&item, row, profile),
-                published_metadata_branches(&item, &view, profile),
+                published_metadata_branches(&item, row),
+                published_metadata_branches(&item, &view),
                 "{item}: collection row and direct view disagree"
             );
             check_metadata_child_branches(
@@ -6081,9 +6081,7 @@ fn check_native_modules_without_bsl(
             .map(|role| branch.member(role).unwrap().to_string())
             .collect()
     } else {
-        authority
-            .platform_profile()
-            .module_children(&branch)
+        module_children(&branch)
             .iter()
             .map(|entry| entry.at().to_string())
             .collect()
@@ -6607,7 +6605,7 @@ fn check_native_named_module_samples(
             );
             let at = QualifiedAddress::parse(&owner).unwrap();
             assert_eq!(
-                profile.module_capability(&at).unwrap().role().as_str(),
+                module_capability(&at).unwrap().role().as_str(),
                 role
             );
             assert_eq!(read(authority, &owner)["kind"], "Module");

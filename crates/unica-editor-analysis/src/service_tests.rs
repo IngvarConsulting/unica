@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 use unica_address::source_target::MetadataAddress;
-use unica_bsl::profile::PlatformProfile;
+
 use unica_execution_contract::view_error::ViewError;
 use unica_lsp_contract::host::{LspCallContext, LspClientChannel, LspHost};
 use unica_lsp_contract::protocol::{
@@ -95,7 +95,6 @@ impl LspWorkspaces for DiskWorkspaces {
                 name: "main".to_owned(),
                 kind: SourceSetKind::Configuration,
                 root: binding.source_root().to_path_buf(),
-                profile: PlatformProfile::v8_3_27(),
             }],
             reads: Box::new(DiskReads {
                 actor: Arc::downgrade(&actor),

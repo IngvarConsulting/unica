@@ -251,7 +251,7 @@ fn catalog_standard_attribute_empty_translations_read_as_absence_while_empty_tex
 #[test]
 fn standard_attribute_projection_keeps_the_closed_property_profile_and_byte_limit() {
     let at = QualifiedAddress::parse("main:Catalog.Items.StandardAttribute.Code").unwrap();
-    let route = route_logical_address(&at, PlatformProfile::v8_3_27()).unwrap();
+    let route = route_logical_address(&at).unwrap();
     let view = project_typed_payload(&route, json!({
         "collections": {},
         "declarations": {"standardAttributes": [{"name":"Code", "properties":[
@@ -266,7 +266,7 @@ fn standard_attribute_projection_keeps_the_closed_property_profile_and_byte_limi
     assert_eq!(data["props"]["FillChecking"], "ShowError");
 
     let at = QualifiedAddress::parse("main:Catalog.Items.Attribute.Code").unwrap();
-    let route = route_logical_address(&at, PlatformProfile::v8_3_27()).unwrap();
+    let route = route_logical_address(&at).unwrap();
     let view = project_typed_payload(&route, json!({
         "collections":{"attributes":[{"name":"Code", "properties":[{"name":"FillChecking", "value":{"kind":"text","value":"ShowError"}}]}]}
     })).unwrap();
@@ -295,7 +295,7 @@ fn metadata_type_compact_limit_counts_utf8_bytes_and_explains_only_oversize() {
             ("main:Catalog.Items.Attribute.Long", false),
         ] {
             let address = QualifiedAddress::parse(at).unwrap();
-            let route = route_logical_address(&address, PlatformProfile::v8_3_27()).unwrap();
+            let route = route_logical_address(&address).unwrap();
             let projected =
                 serde_json::to_value(project_typed_payload(&route, payload.clone()).unwrap())
                     .unwrap();
@@ -330,7 +330,7 @@ fn metadata_type_compact_limit_counts_utf8_bytes_and_explains_only_oversize() {
             item["type"] = value;
         }
         let at = QualifiedAddress::parse("main:Catalog.Items.Attribute.Long").unwrap();
-        let route = route_logical_address(&at, PlatformProfile::v8_3_27()).unwrap();
+        let route = route_logical_address(&at).unwrap();
         let projected = serde_json::to_value(
             project_typed_payload(&route, json!({"collections":{"attributes":[item]}})).unwrap(),
         )

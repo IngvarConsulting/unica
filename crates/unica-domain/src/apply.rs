@@ -362,13 +362,9 @@ pub fn source_set_traits_for_read(
     SourceSetTraits::from_profiles(kind, Some(profile), profile)
 }
 
-pub fn source_classification_profile(source: SourceSetTraits) -> PlatformProfile {
-    PlatformProfile::for_line_or_base(source.classification_profile().semantic_line())
-}
-
 /// The sole semantic classifier binds pure source facts to a logical address.
 pub fn operation_site(at: &QualifiedAddress, source: SourceSetTraits) -> Option<OperationSite<'_>> {
-    let route = classify_route(at, source_classification_profile(source))?;
+    let route = classify_route(at)?;
     Some(OperationSite::from_route(at, source, route))
 }
 

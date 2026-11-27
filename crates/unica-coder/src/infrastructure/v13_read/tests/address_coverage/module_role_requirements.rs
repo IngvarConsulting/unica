@@ -16,7 +16,6 @@ fn cross_line_module_roles() -> Vec<Value> {
     let mut rows = Vec::new();
     for version in ["2.20", "2.21", "2.22"] {
         let line = export_format_line(version).unwrap();
-        let profile = PlatformProfile::for_line(line).unwrap();
         let source = fixture_path(&format!("formats/platform_xml/{version}/all_kinds/src"));
         let registrations = root_registrations(&source, version);
         for (kind, name, directory, role, terminal) in [
@@ -50,7 +49,7 @@ fn cross_line_module_roles() -> Vec<Value> {
                 )
             };
             assert_eq!(
-                profile.module_capability(&address).unwrap().role().as_str(),
+                module_capability(&address).unwrap().role().as_str(),
                 role
             );
             let module = source.join(directory).join(name).join("Ext").join(terminal);

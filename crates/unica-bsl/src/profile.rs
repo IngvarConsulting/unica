@@ -1,8 +1,3 @@
-use unica_address::address::{NodeKind, QualifiedAddress};
-use unica_address::module_routes::{
-    has_direct_module_route, has_nested_module_route, module_prefix_route, module_route,
-    ModuleRole, ModuleRoute, ModuleRouteKind,
-};
 use unica_source_contract::format_identity::PlatformLine;
 
 pub const PLATFORM_PROFILE_8_3_27: &str = "8.3.27";
@@ -13,41 +8,6 @@ pub struct PlatformProfile {
     line: PlatformLine,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ModuleCapability {
-    route: ModuleRoute,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ModuleAddressCapability {
-    at: QualifiedAddress,
-    capability: ModuleCapability,
-}
-
-impl ModuleAddressCapability {
-    pub const fn at(&self) -> &QualifiedAddress {
-        &self.at
-    }
-
-    pub const fn capability(&self) -> ModuleCapability {
-        self.capability
-    }
-}
-
-impl ModuleCapability {
-    pub const fn role(self) -> ModuleRole {
-        self.route.role()
-    }
-
-    pub const fn owner_kind(self) -> NodeKind {
-        self.route.owner_kind()
-    }
-
-    pub const fn route_kind(self) -> ModuleRouteKind {
-        self.route.kind()
-    }
-}
-
 impl PlatformProfile {
     pub const fn v8_3_27() -> Self {
         Self {
@@ -56,33 +16,17 @@ impl PlatformProfile {
         }
     }
 
-    /// The semantic profile of a platform line: which modules, events and
-    /// roles exist (axis 2 of the source profile). `None` for a line whose
-    /// capabilities are not described yet.
+    /// The semantic profile of a described platform line.
     pub fn for_line(line: PlatformLine) -> Option<Self> {
-        // 8.5.1 and 8.5.4 keep the module and role tables of 8.3.27. Their
-        // event tables do not: the vendor help of 8.5.1 adds `Click` to the
-        // extension of a usual form group, and 8.5.4 adds two more events on
-        // the queue manager. Until those owners enter the catalog, every line
-        // is still served the 8.3.27 event tables, so an 8.5 set is answered
-        // about events the way 8.3.27 is.
         unica_source_contract::format_identity::DESCRIBED_PLATFORM_LINES
             .iter()
             .find(|(described, _)| *described == line)
             .map(|(line, id)| Self { id, line: *line })
     }
 
-    /// Профиль линии набора, а при неизвестной или неописанной линии — профиль
-    /// младшей описанной линии. Рабочий код берёт профиль здесь: имя линии
-    /// названо один раз, в самом профиле, и не расходится по вызовам
-    /// (#2980).
-    ///
-    /// Подстановка младшей линии относится к **таблицам профиля** — модулям,
-    /// ролям и маршрутам, — где линии 8.5 законно держат таблицы 8.3.27,
-    /// и это измерено. К **каталогу событий** она не относится: у каждой
-    /// описанной линии каталог свой, подстановки там нет
-    /// (`INV.PLATFORM.MODULE-EVENT-CATALOG`). Не читайте эту функцию как
-    /// разрешение обслужить набор чужими событиями.
+    /// Профиль описанной линии или младшей описанной линии, когда линия
+    /// неизвестна или не описана. Форма выбирает каталог своих событий отдельно, по исходной
+    /// линии из контекста (`INV.PLATFORM.MODULE-EVENT-CATALOG`).
     pub fn for_line_or_base(line: Option<PlatformLine>) -> Self {
         line.and_then(Self::for_line).unwrap_or_else(Self::v8_3_27)
     }
@@ -94,78 +38,11 @@ impl PlatformProfile {
     pub const fn id(self) -> &'static str {
         self.id
     }
-
-    pub fn module_capability(self, address: &QualifiedAddress) -> Option<ModuleCapability> {
-        module_route(address).map(|route| ModuleCapability { route })
-    }
-
-    pub fn module_prefix_capability(self, address: &QualifiedAddress) -> Option<ModuleCapability> {
-        module_prefix_route(address).map(|route| ModuleCapability { route })
-    }
-
-    /// Enumerates the canonical module nodes owned by one addressable `Module`
-    /// branch. This is the sole profile-owned role list used by logical view
-    /// and find; projections do not restate module-role matrices.
-    pub fn module_children(self, branch: &QualifiedAddress) -> Vec<ModuleAddressCapability> {
-        let segments = branch.segments();
-        if !matches!(segments.last(), Some(module) if module.kind() == NodeKind::Module && module.name().is_none())
-        {
-            return Vec::new();
-        }
-        ModuleRole::ALL
-            .into_iter()
-            .filter_map(|role| {
-                let at = QualifiedAddress::parse(&format!("{branch}.{}", role.as_str())).ok()?;
-                let capability = self.module_capability(&at)?;
-                Some(ModuleAddressCapability { at, capability })
-            })
-            .collect()
-    }
-
-    pub fn supports_owner_kind(self, raw: &str) -> bool {
-        NodeKind::parse(raw)
-            .ok()
-            .is_some_and(|kind| kind.is_metadata_kind())
-    }
-
-    pub fn supports_direct_module_role(self, owner_kind: NodeKind, role: ModuleRole) -> bool {
-        has_direct_module_route(owner_kind, role)
-    }
-
-    pub fn supports_nested_form_or_command(self, owner_kind: NodeKind) -> bool {
-        has_nested_module_route(owner_kind)
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ModuleRole, PlatformLine, PlatformProfile};
-    use serde::Deserialize;
-    use std::collections::HashSet;
-    use unica_address::address::{NodeKind, QualifiedAddress};
-
-    #[derive(Debug, Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct ProfileFixture {
-        profile: String,
-        module_capabilities: Vec<ModuleCase>,
-    }
-
-    #[derive(Debug, Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct ModuleCase {
-        case: String,
-        at: String,
-        exists: bool,
-        role: Option<String>,
-    }
-
-    fn fixture() -> ProfileFixture {
-        serde_json::from_str(include_str!(
-            "../../../tests/fixtures/v013/address-profile-8.3.27.json"
-        ))
-        .expect("the checked platform profile fixture must be valid JSON")
-    }
+    use super::{PlatformLine, PlatformProfile};
 
     #[test]
     fn every_described_platform_line_has_a_semantic_profile() {
@@ -184,160 +61,5 @@ mod tests {
         for line in [PlatformLine::new(8, 3, 26), PlatformLine::new(8, 5, 2)] {
             assert_eq!(PlatformProfile::for_line(line), None, "{line}");
         }
-    }
-
-    #[test]
-    fn every_approved_module_role_is_a_closed_8_3_27_capability() {
-        let fixture = fixture();
-        assert_eq!(fixture.profile, "8.3.27");
-        let profile = PlatformProfile::v8_3_27();
-
-        for case in fixture.module_capabilities {
-            let address = QualifiedAddress::parse(&case.at).unwrap();
-            let capability = profile.module_capability(&address);
-            assert_eq!(capability.is_some(), case.exists, "{}", case.case);
-            if let Some(expected_role) = case.role {
-                assert_eq!(
-                    capability
-                        .expect("expected module capability")
-                        .role()
-                        .as_str(),
-                    expected_role,
-                    "{}",
-                    case.case
-                );
-            }
-        }
-    }
-
-    /// rule: INV.SOURCE.PLATFORM-CAPABILITY-EXISTENCE
-    #[test]
-    fn service_bot_websocket_and_absent_grpc_capabilities_are_not_conflated() {
-        let profile = PlatformProfile::v8_3_27();
-        let expected = [
-            (
-                "main:HTTPService.API.Module.HTTPService",
-                ModuleRole::HttpService,
-            ),
-            (
-                "main:WebService.Обмен.Module.WebService",
-                ModuleRole::WebService,
-            ),
-            (
-                "main:IntegrationService.Шина.Module.IntegrationService",
-                ModuleRole::IntegrationService,
-            ),
-            ("main:Bot.Помощник.Module.Bot", ModuleRole::Bot),
-            (
-                "main:WebSocketClient.Телефония.Module.WebSocketClient",
-                ModuleRole::WebSocketClient,
-            ),
-        ];
-        for (raw, role) in expected {
-            let address = QualifiedAddress::parse(raw).unwrap();
-            assert_eq!(profile.module_capability(&address).unwrap().role(), role);
-        }
-
-        assert!(!profile.supports_owner_kind("GRPCService"));
-        assert!(QualifiedAddress::parse("main:GRPCService.API.Module.GRPCService").is_err());
-    }
-
-    #[test]
-    fn external_epf_erf_object_form_and_command_roles_are_capabilities() {
-        let profile = PlatformProfile::v8_3_27();
-        let expected = [
-            (
-                "epf:ExternalDataProcessor.Импорт.Module.Object",
-                ModuleRole::Object,
-            ),
-            (
-                "epf:ExternalDataProcessor.Импорт.Form.Основная.Module.Form",
-                ModuleRole::Form,
-            ),
-            (
-                "epf:ExternalDataProcessor.Импорт.Command.Выполнить.Module.Command",
-                ModuleRole::Command,
-            ),
-            (
-                "erf:ExternalReport.Продажи.Module.Object",
-                ModuleRole::Object,
-            ),
-            (
-                "erf:ExternalReport.Продажи.Form.Основная.Module.Form",
-                ModuleRole::Form,
-            ),
-            (
-                "erf:ExternalReport.Продажи.Command.Сформировать.Module.Command",
-                ModuleRole::Command,
-            ),
-        ];
-
-        for (raw, role) in expected {
-            let address = QualifiedAddress::parse(raw).unwrap();
-            assert_eq!(
-                profile
-                    .module_capability(&address)
-                    .map(|value| value.role()),
-                Some(role),
-                "{raw}"
-            );
-        }
-    }
-
-    #[test]
-    fn every_module_capability_is_owned_by_one_canonical_parent_branch() {
-        let profile = PlatformProfile::v8_3_27();
-        let mut reached = HashSet::new();
-        for case in fixture().module_capabilities {
-            let address = QualifiedAddress::parse(&case.at).unwrap();
-            if !case.exists {
-                continue;
-            }
-            if matches!(address.segments(), [owner] if owner.kind() == NodeKind::CommonModule) {
-                assert!(
-                    profile.module_capability(&address).is_some(),
-                    "{}",
-                    case.case
-                );
-                assert!(reached.insert(address.to_string()), "{}", case.case);
-                continue;
-            }
-            let module_index = address
-                .segments()
-                .iter()
-                .position(|segment| segment.kind() == NodeKind::Module)
-                .expect("approved module address has a Module segment");
-            let mut branch = case
-                .at
-                .split('.')
-                .take(module_index * 2 + 1)
-                .collect::<Vec<_>>()
-                .join(".");
-            if module_index == 0 {
-                branch = format!("{}:Module", address.source_set());
-            }
-            let branch = QualifiedAddress::parse(&branch).unwrap();
-            let children = profile.module_children(&branch);
-            assert_eq!(
-                children
-                    .iter()
-                    .filter(|child| child.at() == &address)
-                    .count(),
-                1,
-                "{} must be reachable once from {branch}: {children:?}",
-                case.case,
-            );
-            assert!(reached.insert(address.to_string()), "{}", case.case);
-        }
-        for address in [
-            "main:Sequence.Probe.Module.RecordSet",
-            "main:CalculationRegister.Начисления.Recalculation.Перерасчет1.Module.RecordSet",
-        ] {
-            assert!(
-                reached.contains(address),
-                "missing profile address {address}"
-            );
-        }
-        assert_eq!(reached.len(), 27);
     }
 }

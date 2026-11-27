@@ -1844,12 +1844,7 @@ pub fn staged_node_existence(
         // (`Rights.xml`, `Form.xml`), а не узла.
         return Some(true);
     }
-    let route = crate::domain::logical_route::classify_route(
-        at,
-        unica_bsl::profile::PlatformProfile::for_line_or_base(
-            binding.source_profile().semantic_line(),
-        ),
-    )?;
+    let route = crate::domain::logical_route::classify_route(at)?;
     // Запись прав роли и область макета живут в присоединённом файле: их
     // создаёт операция родителя (`right.add`, `area.add`, #1354).
     use unica_address::address::NodeKind;
@@ -1904,11 +1899,8 @@ pub fn staged_node_existence(
                     },
                 )
                 .ok()?;
-            let profile = crate::domain::source_capabilities::bsl_profile_for_source(
-                binding.source_profile(),
-            )?;
-            let logical =
-                crate::infrastructure::logical_tree::route_logical_address(at, profile).ok()?;
+            crate::domain::source_capabilities::bsl_profile_for_source(binding.source_profile())?;
+            let logical = crate::infrastructure::logical_tree::route_logical_address(at).ok()?;
             match crate::infrastructure::v13_read_projection::project_typed_payload_for_source(
                 &logical,
                 serde_json::to_value(facts).ok()?,

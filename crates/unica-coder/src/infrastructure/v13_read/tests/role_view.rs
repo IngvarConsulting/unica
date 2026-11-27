@@ -74,7 +74,7 @@ fn role_merges_access_by_canonical_object_and_keeps_rls_under_that_right() {
 #[test]
 fn role_right_projection_never_serializes_an_unbounded_rights_array_into_props() {
     let at = QualifiedAddress::parse("main:Role.Test.Right.Products").unwrap();
-    let route = route_logical_address(&at, PlatformProfile::v8_3_27()).unwrap();
+    let route = route_logical_address(&at).unwrap();
     let rights = (0..500)
         .map(|index| json!({"name": format!("Right{index}"), "restricted": false}))
         .collect::<Vec<_>>();
@@ -112,7 +112,7 @@ fn ambiguous_short_role_alias_is_rejected_and_canonical_aliases_work() {
         "denied": []
     });
     let short = QualifiedAddress::parse("main:Role.SalesReader.Right.Orders").unwrap();
-    let route = route_logical_address(&short, PlatformProfile::v8_3_27()).unwrap();
+    let route = route_logical_address(&short).unwrap();
     let error = project_typed_payload(&route, payload.clone()).unwrap_err();
     assert_eq!(error.code().as_str(), "bad_value");
     assert!(error.to_string().contains("Catalog_Orders"));
@@ -121,7 +121,7 @@ fn ambiguous_short_role_alias_is_rejected_and_canonical_aliases_work() {
     for canonical in ["Catalog_Orders", "Document_Orders"] {
         let at =
             QualifiedAddress::parse(&format!("main:Role.SalesReader.Right.{canonical}")).unwrap();
-        let route = route_logical_address(&at, PlatformProfile::v8_3_27()).unwrap();
+        let route = route_logical_address(&at).unwrap();
         let projected = project_typed_payload(&route, payload.clone()).unwrap();
         assert_eq!(
             projected.at(),

@@ -10,7 +10,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use unica_address::address::{NodeKind, QualifiedAddress};
-use unica_bsl::profile::PlatformProfile;
+use unica_bsl::module_capabilities::{module_capability, module_children};
 use unica_refusal::{RefusalCode, RefusalDetail};
 use unica_source_contract::read::{
     FileIdentity, SourceDirectory, SourceEntry, SourceFile, SOURCE_TREE_TRAVERSAL_MAX_DEPTH,
@@ -1076,12 +1076,7 @@ impl WorkspaceFindDirectoryBuilder {
         };
         let at = format!("{owner_address}{address_suffix}");
         let address = QualifiedAddress::parse(&at).map_err(|_| unsafe_layout_entry())?;
-        // Вопрос к маршрутам модулей, а не к событиям: от линии не зависит.
-        if resource == AttachedPathResource::FormModule
-            && unica_bsl::profile::PlatformProfile::for_line_or_base(None)
-                .module_capability(&address)
-                .is_none()
-        {
+        if resource == AttachedPathResource::FormModule && module_capability(&address).is_none() {
             return Ok(());
         }
         let descriptor = owner.placed_path().ok_or_else(unsafe_layout_entry)?;
@@ -1171,11 +1166,8 @@ impl WorkspaceFindDirectoryBuilder {
             format!("{owner_address}.Module")
         };
         let branch = QualifiedAddress::parse(&branch).map_err(|_| unsafe_layout_entry())?;
-        // Состав модулей ветки — маршруты модулей, от линии не зависят.
-        let profile = PlatformProfile::for_line_or_base(None);
         let requested = tail.join("/");
-        let Some((expected, relative)) = profile
-            .module_children(&branch)
+        let Some((expected, relative)) = module_children(&branch)
             .into_iter()
             .filter_map(|child| {
                 let target = module_source_address(
@@ -1203,8 +1195,7 @@ impl WorkspaceFindDirectoryBuilder {
                 .ok_or_else(unsafe_layout_entry)?,
             None => relative.clone(),
         };
-        let Some(address) =
-            module_address_for_relative(source.name, source.kind, profile, &canonical)
+        let Some(address) = module_address_for_relative(source.name, source.kind, &canonical)
         else {
             return Err(unsafe_layout_entry());
         };

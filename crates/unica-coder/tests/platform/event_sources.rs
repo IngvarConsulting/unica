@@ -2,13 +2,7 @@ use super::*;
 use crate::infrastructure::logical_tree::{route_logical_address, LogicalReader};
 
 fn address(source_set: &str, kind: SourceSetKind, relative: &str) -> Option<String> {
-    module_address_for_relative(
-        source_set,
-        kind,
-        PlatformProfile::v8_3_27(),
-        Path::new(relative),
-    )
-    .map(|at| at.to_string())
+    module_address_for_relative(source_set, kind, Path::new(relative)).map(|at| at.to_string())
 }
 
 /// Search hits name the module that `view` reads at the same path: every
@@ -173,7 +167,7 @@ fn module_paths_map_to_the_logical_module_view_reads() {
         let found = address(source_set, kind, relative);
         assert_eq!(found.as_deref(), Some(expected), "{relative}");
         let at = QualifiedAddress::parse(expected).unwrap();
-        let route = route_logical_address(&at, PlatformProfile::v8_3_27()).unwrap();
+        let route = route_logical_address(&at).unwrap();
         assert_eq!(route.reader(), LogicalReader::Module, "{expected}");
         assert!(route.module().is_some(), "{expected}");
     }

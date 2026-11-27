@@ -3,7 +3,8 @@ use crate::projection::{
     project_module, DeclarativeBinding, ModuleProjectionRequest, PlatformEventWriteCapability,
 };
 use unica_address::address::QualifiedAddress;
-use unica_bsl::profile::{ModuleCapability, PlatformProfile};
+use unica_bsl::module_capabilities::{module_capability, ModuleCapability};
+use unica_bsl::profile::PlatformProfile;
 use unica_bsl::projection::{CommonModuleProperties, ModuleProjectionSet};
 
 pub fn evaluate_guard(guard: &str, context: &str) -> bool {
@@ -29,8 +30,7 @@ pub fn project_declarative_binding(
     };
     let at = QualifiedAddress::parse(module_at).map_err(|error| error.to_string())?;
     let platform = PlatformProfile::v8_3_27();
-    let capability = platform
-        .module_capability(&at)
+    let capability = module_capability(&at)
         .ok_or_else(|| format!("service module `{module_at}` is not in profile 8.3.27"))?;
     project_module(ModuleProjectionRequest {
         at: &at,

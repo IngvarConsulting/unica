@@ -1,6 +1,7 @@
 //! `unica.search`: текст, имена и роли.
 
 use super::*;
+use unica_bsl::module_capabilities::module_capability;
 
 impl CanonicalV13ReadService {
     pub(super) fn execute_search(
@@ -735,9 +736,7 @@ impl CanonicalV13ReadService {
                         "sourceSet".to_string(),
                         Value::String(address.source_set().to_string()),
                     );
-                    let owner = if let Some(capability) =
-                        unica_bsl::profile::PlatformProfile::v8_3_27().module_capability(&address)
-                    {
+                    let owner = if let Some(capability) = module_capability(&address) {
                         match unica_source_designer::module_layout::module_source_address(
                             &address,
                             capability.owner_kind(),

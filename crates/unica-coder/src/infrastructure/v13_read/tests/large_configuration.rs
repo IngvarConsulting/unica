@@ -56,13 +56,11 @@ fn large_configuration_root_keeps_legacy_duplicate_and_namespace_semantics() {
         .unwrap();
     let route = route_logical_address(
         &QualifiedAddress::parse("main:Configuration").unwrap(),
-        PlatformProfile::v8_3_27(),
     )
     .unwrap();
     let legacy = project_typed_payload(&route, legacy_payload.as_ref().clone()).unwrap();
     let module_branch = super::super::module_branch_for_parent(
         route.at(),
-        PlatformProfile::v8_3_27(),
         SourceSetKind::Configuration,
     )
     .expect("Configuration has a profile module branch");

@@ -901,11 +901,7 @@ fn root_branches(
         let admitted = unica_source_contract::format_identity::metadata_kind_exists(line, kind)
             && QualifiedAddress::parse(&at).is_ok_and(|branch| {
                 is_root_branch_kind(&branch)
-                    && crate::infrastructure::logical_tree::route_logical_address(
-                        &branch,
-                        unica_bsl::profile::PlatformProfile::for_line_or_base(line),
-                    )
-                    .is_ok()
+                    && crate::infrastructure::logical_tree::route_logical_address(&branch).is_ok()
             });
         if count > 0 || admitted {
             branches.push(BranchRef::new(at, count));

@@ -506,7 +506,7 @@ fn projection_matches_canonical_segments_and_exact_xml_property_aliases() {
         ),
     ] {
         let address = QualifiedAddress::parse(branch).unwrap();
-        let route = route_logical_address(&address, PlatformProfile::v8_3_27()).unwrap();
+        let route = route_logical_address(&address).unwrap();
         for (field, should_refuse) in [
             (canonical.to_string(), true),
             (format!("{canonical}.name"), true),

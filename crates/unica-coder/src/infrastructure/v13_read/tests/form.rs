@@ -1,4 +1,5 @@
 use super::*;
+use unica_bsl::module_capabilities::module_prefix_capability;
 
 #[test]
 fn form_table_column_event_consumes_arbitrary_depth_and_preserves_owner_address() {
@@ -365,7 +366,7 @@ fn pure_event_projectors_match_physical_view_service_event_nodes() {
         else {
             panic!("platform event must resolve to a module source")
         };
-        let capability = profile.module_prefix_capability(&platform_at).unwrap();
+        let capability = module_prefix_capability(&platform_at).unwrap();
         let pure = project_platform_event(
             &resolved.event_at,
             &resolved.module_at,
@@ -846,7 +847,7 @@ fn production_form_empty_handlers_are_invalid_for_every_property_owner() {
 #[test]
 fn form_projection_uses_a_positive_nested_scalar_allowlist() {
     let at = QualifiedAddress::parse("main:CommonForm.Test.Item.Secret").unwrap();
-    let route = route_logical_address(&at, PlatformProfile::v8_3_27()).unwrap();
+    let route = route_logical_address(&at).unwrap();
     let view = project_typed_payload(
         &route,
         json!({
@@ -1660,7 +1661,7 @@ fn dynamic_list_profile_rejects_unknown_and_wrongly_typed_backend_facts() {
             if kind == "Column" { ".Column.Code" } else { "" }
         ))
         .unwrap();
-        let route = route_logical_address(&at, PlatformProfile::v8_3_27()).unwrap();
+        let route = route_logical_address(&at).unwrap();
         let list = json!({"manualQuery":true,"queryText":{"raw":"must-not-leak"},"keyFields":["Code", {"raw":"must-not-leak"}],"unknown":"must-not-leak"});
         let item = json!({"name":"Rows","type":type_name,"dynamicList":list,"columns":[{"name":"Code","type":"DynamicList","dynamicList":list}]});
         let view =

@@ -11,7 +11,7 @@ use std::fmt;
 use std::path::PathBuf;
 use unica_address::address::{NodeKind, QualifiedAddress};
 use unica_address::source_target::MetadataAddress;
-use unica_bsl::profile::{ModuleCapability, PlatformProfile};
+use unica_bsl::module_capabilities::{module_prefix_capability, ModuleCapability};
 
 /// Читатель маршрута — общий класс маршрута: классификатор один,
 /// маршрутизатор лишь проверяет форму адреса и находит цель читателя.
@@ -59,9 +59,8 @@ impl LogicalTreeRoute {
 
 pub fn route_logical_address(
     address: &QualifiedAddress,
-    profile: PlatformProfile,
 ) -> Result<LogicalTreeRoute, LogicalTreeError> {
-    let class = classify_route(address, profile).ok_or_else(|| not_found(address))?;
+    let class = classify_route(address).ok_or_else(|| not_found(address))?;
     let segments = address.segments();
     if segments
         .iter()
@@ -83,7 +82,7 @@ pub fn route_logical_address(
     }
     match class {
         LogicalReader::Module => {
-            let module = profile.module_prefix_capability(address);
+            let module = module_prefix_capability(address);
             if let Some(module) = module {
                 let _logical_route_kind = module.route_kind();
             }
@@ -214,7 +213,6 @@ mod tests {
     use super::{route_logical_address, LogicalReader, LogicalTreeErrorCode};
     use serde::Deserialize;
     use unica_address::address::QualifiedAddress;
-    use unica_bsl::profile::PlatformProfile;
 
     #[derive(Debug, Deserialize)]
     #[serde(rename_all = "camelCase")]
@@ -248,10 +246,9 @@ mod tests {
 
     #[test]
     fn logical_tree_routes_branches_to_existing_typed_readers() {
-        let profile = PlatformProfile::v8_3_27();
         for case in fixture().valid_addresses {
             let address = QualifiedAddress::parse(&case.input).unwrap();
-            let route = route_logical_address(&address, profile)
+            let route = route_logical_address(&address)
                 .unwrap_or_else(|error| panic!("{}: {error}", case.case));
             assert_eq!(route.reader(), case.route, "{}", case.case);
             assert_eq!(route.at().to_string(), address.to_string(), "{}", case.case);
@@ -262,10 +259,9 @@ mod tests {
     /// rule: INV.SOURCE.PLATFORM-CAPABILITY-EXISTENCE
     #[test]
     fn platform_capability_controls_logical_existence_without_filesystem_evidence() {
-        let profile = PlatformProfile::v8_3_27();
         for case in fixture().module_capabilities {
             let address = QualifiedAddress::parse(&case.at).unwrap();
-            match route_logical_address(&address, profile) {
+            match route_logical_address(&address) {
                 Ok(route) => {
                     assert!(case.exists, "{} unexpectedly exists", case.case);
                     assert_eq!(route.reader(), LogicalReader::Module, "{}", case.case);
@@ -291,13 +287,12 @@ mod tests {
         )
         .unwrap();
 
-        let error = route_logical_address(&address, PlatformProfile::v8_3_27()).unwrap_err();
+        let error = route_logical_address(&address).unwrap_err();
         assert_eq!(error.code(), LogicalTreeErrorCode::NotFound);
     }
 
     #[test]
     fn logical_tree_delegates_representative_addresses_to_current_typed_reader_adapters() {
-        let profile = PlatformProfile::v8_3_27();
         let cases = [
             (
                 "main:Document.Заказ.Attribute.Контрагент",
@@ -328,7 +323,7 @@ mod tests {
 
         for (raw, reader, expected_target) in cases {
             let address = QualifiedAddress::parse(raw).unwrap();
-            let route = route_logical_address(&address, profile).unwrap();
+            let route = route_logical_address(&address).unwrap();
             assert_eq!(route.reader(), reader, "{raw}");
             assert_eq!(
                 route.reader_metadata_path().map(|target| target.as_str()),
@@ -340,7 +335,6 @@ mod tests {
 
     #[test]
     fn task14_profiles_route_to_their_real_typed_readers_without_skips() {
-        let profile = PlatformProfile::v8_3_27();
         let cases = [
             ("main:Configuration", LogicalReader::Configuration),
             (
@@ -371,8 +365,8 @@ mod tests {
 
         for (raw, expected) in cases {
             let address = QualifiedAddress::parse(raw).unwrap();
-            let route = route_logical_address(&address, profile)
-                .unwrap_or_else(|error| panic!("{raw}: {error}"));
+            let route =
+                route_logical_address(&address).unwrap_or_else(|error| panic!("{raw}: {error}"));
             assert_eq!(route.reader(), expected, "{raw}");
             assert!(route.diagnostic_file().is_none(), "{raw}");
         }
@@ -384,7 +378,6 @@ mod skill_address_guard {
     use super::route_logical_address;
     use std::path::Path;
     use unica_address::address::QualifiedAddress;
-    use unica_bsl::profile::PlatformProfile;
 
     /// Всякий логический адрес из примера скилла разбирается и маршрутизируется.
     ///
@@ -398,7 +391,6 @@ mod skill_address_guard {
     #[test]
     fn every_skill_example_address_is_routable() {
         let skills = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/unica/skills");
-        let profile = PlatformProfile::v8_3_27();
         let mut checked = 0usize;
         let mut offenders = Vec::new();
         let mut entries = std::fs::read_dir(&skills)
@@ -425,11 +417,8 @@ mod skill_address_guard {
                         continue;
                     }
                 };
-                if route_logical_address(&address, profile).is_err() {
-                    offenders.push(format!(
-                        "{}: `{raw}` не маршрутизируется профилем платформы",
-                        skill.display()
-                    ));
+                if route_logical_address(&address).is_err() {
+                    offenders.push(format!("{}: `{raw}` не маршрутизируется", skill.display()));
                 }
             }
         }

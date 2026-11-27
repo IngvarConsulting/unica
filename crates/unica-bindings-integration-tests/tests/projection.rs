@@ -16,6 +16,7 @@ mod tests {
     use serde::Deserialize;
     use serde_json::json;
     use unica_address::address::{NodeKind, QualifiedAddress};
+    use unica_bsl::module_capabilities::module_capability;
     use unica_bsl::profile::PlatformProfile;
     use unica_bsl_parser::parse as parse_bsl_syntax;
     use unica_forms::events::{FormDefinitionKind, FormElementKind};
@@ -176,7 +177,7 @@ mod tests {
     fn project(at: &str, source: Option<&str>) -> unica_bsl::projection::ModuleProjectionSet {
         let at = QualifiedAddress::parse(at).unwrap();
         let profile = PlatformProfile::v8_3_27();
-        let capability = profile.module_capability(&at).unwrap();
+        let capability = module_capability(&at).unwrap();
         let common_module = (capability.role() == unica_address::module_routes::ModuleRole::Common)
             .then(|| unica_bsl::projection::CommonModuleProperties {
                 global: Some(false),
@@ -1552,7 +1553,7 @@ mod tests {
         };
         let at = QualifiedAddress::parse("ext:CommonModule.Probe").unwrap();
         let profile = PlatformProfile::v8_3_27();
-        let capability = profile.module_capability(&at).unwrap();
+        let capability = module_capability(&at).unwrap();
         for missing in 0..5 {
             let mut props = known.clone();
             match missing {
@@ -1588,7 +1589,7 @@ mod tests {
         let error = project_module(ModuleProjectionRequest {
             platform: profile,
             at: &at,
-            capability: profile.module_capability(&at).unwrap(),
+            capability: module_capability(&at).unwrap(),
             title: "Общий модуль".to_string(),
             rev: "fixture-rev",
             source: Some(""),
@@ -1627,7 +1628,7 @@ mod tests {
         let projection = project_module(ModuleProjectionRequest {
             platform: profile,
             at: &at,
-            capability: profile.module_capability(&at).unwrap(),
+            capability: module_capability(&at).unwrap(),
             title: "Модуль формы".to_string(),
             rev: "fixture-rev",
             source: Some(COMPLEX),
@@ -1864,7 +1865,7 @@ mod tests {
         let projection = project_module(ModuleProjectionRequest {
             platform: profile,
             at: &at,
-            capability: profile.module_capability(&at).unwrap(),
+            capability: module_capability(&at).unwrap(),
             title: "Расширение".to_string(),
             rev: "fixture-rev",
             source: Some(EXTENSION),
