@@ -310,17 +310,23 @@ fn read_manifest(plugin_root: &Path) -> Option<BundledManifest> {
 /// The core manifest names the binary. A cold bootstrap installation also
 /// needs an exact order for this binary in its release manifest.
 pub enum DeclaredTool {
-    Installed { tool: BundledTool, sha256: String },
+    Installed { program: PathBuf, sha256: String },
     AwaitingDelivery,
 }
 
 impl DeclaredTool {
     pub fn verified_tool(self) -> Option<BundledTool> {
-        let Self::Installed { tool, sha256 } = self else {
+        let Self::Installed { program, sha256 } = self else {
             return None;
         };
-        let checksum = sha256_file(&tool.program).ok()?;
-        checksum.eq_ignore_ascii_case(&sha256).then_some(tool)
+        let checksum = sha256_file(&program).ok()?;
+        checksum
+            .eq_ignore_ascii_case(&sha256)
+            .then_some(BundledTool {
+                program,
+                warnings: Vec::new(),
+                missing: None,
+            })
     }
 
     pub fn available(self) -> bool {
@@ -372,7 +378,7 @@ fn declared_tool_at_version_in(
     let installed = resolve_bundled_tool_in(plugin_root, cache, tool_name, target, false).ok()?;
     if installed.warnings.is_empty() && installed.missing.is_none() {
         return Some(DeclaredTool::Installed {
-            tool: installed,
+            program: installed.program,
             sha256: binary.sha256,
         });
     }
