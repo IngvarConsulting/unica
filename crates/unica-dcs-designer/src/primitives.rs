@@ -1486,20 +1486,35 @@ fn add_data_set(
     {
         return Err("query takes text, not @file".into());
     }
-    let mut body = simple("name", &item.name, S);
+    let text_element = |tag: &str, value: &str| {
+        format!(
+            "<{tag}>{}</{tag}>",
+            unica_xml_format::text::escape_xml(value)
+        )
+    };
+    let mut body = text_element("name", &item.name);
     if item.kind != DataSetKind::Union {
         let source = item.data_source.as_deref().unwrap_or("");
         named(root, S, "dataSource", "name", source)?;
-        body += &simple("dataSource", source, S);
+        body += &text_element("dataSource", source);
     }
     match item.kind {
-        DataSetKind::Query => body += &simple("query", item.query.as_deref().unwrap_or(""), S),
+        DataSetKind::Query => body += &text_element("query", item.query.as_deref().unwrap_or("")),
         DataSetKind::Object => {
-            body += &simple("objectName", item.object_name.as_deref().unwrap_or(""), S)
+            body += &text_element("objectName", item.object_name.as_deref().unwrap_or(""))
         }
         DataSetKind::Union => {}
     }
-    let fragment = typed(tag, &format!("DataSet{}", item.kind.as_str()), &body, S);
+
+    // The elements and the unprefixed DataSet type share the schema default.
+    // An item of a Union inherits from that Union, which may shadow the root.
+    let namespaces = [(None, "xmlns", S), (Some("xsi"), "xmlns:xsi", X)]
+        .into_iter()
+        .filter(|(prefix, _, uri)| parent.lookup_namespace_uri(*prefix) != Some(*uri))
+        .map(|(_, declaration, uri)| format!(" {declaration}=\"{uri}\""))
+        .collect::<String>();
+    let kind = item.kind.as_str();
+    let fragment = format!("<{tag} xsi:type=\"DataSet{kind}\"{namespaces}>{body}</{tag}>");
     Ok(insert(
         xml_text,
         parent.range(),

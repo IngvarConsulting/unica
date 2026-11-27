@@ -335,6 +335,72 @@ fn field_alias_normalization_and_query_derived_type_reach_the_writer() {
 }
 
 #[test]
+fn data_set_add_inherits_schema_and_instance_namespaces() {
+    let mut xml = schema("<dataSource><name>Local</name></dataSource>");
+    let query = "SELECT \"A & B < C\" AS Amount";
+    run(
+        &mut xml,
+        Primitive::DataSetAdd,
+        json!({"items":[{"name":"Added","kind":"Query","dataSource":"Local","query":query}]}),
+        &target(&[], ""),
+    )
+    .unwrap();
+
+    let doc = Document::parse(&xml).unwrap();
+    let dataset = direct(doc.root_element(), S, "dataSet");
+    assert_value_qname(dataset, S, "DataSetQuery");
+    assert_eq!(direct_text(dataset, S, "name"), "Added");
+    assert_eq!(direct_text(dataset, S, "dataSource"), "Local");
+    assert_eq!(direct_text(dataset, S, "query"), query);
+    assert!(!xml[dataset.range()].contains(" xmlns"), "{xml}");
+}
+
+#[test]
+fn data_set_add_restores_only_bindings_shadowed_on_the_union() {
+    let mut xml = schema(&format!(
+        r#"<dataSource><name>Local</name></dataSource>
+<s:dataSet xmlns="urn:local-default" xmlns:xsi="urn:local-instance" xmlns:i="{X}" i:type="s:DataSetUnion">
+    <s:name>Union</s:name>
+    <s:item xmlns:q="{S}" i:type="q:DataSetQuery">
+        <q:name>Previous</q:name><q:dataSource>Local</q:dataSource><q:query>SELECT 1</q:query>
+    </s:item>
+</s:dataSet>"#
+    ));
+    let before = xml.clone();
+    run(
+        &mut xml,
+        Primitive::DataSetAdd,
+        json!({"items":[{"name":"Added","kind":"Object","dataSource":"Local","objectName":"Objects"}]}),
+        &target(&["Union"], ""),
+    )
+    .unwrap();
+
+    let doc = Document::parse(&xml).unwrap();
+    let union = direct(doc.root_element(), S, "dataSet");
+    let dataset = named(union, S, "item", "name", "Added");
+    assert_value_qname(union, S, "DataSetUnion");
+    assert_value_qname(
+        named(union, S, "item", "name", "Previous"),
+        S,
+        "DataSetQuery",
+    );
+    assert_value_qname(dataset, S, "DataSetObject");
+    assert_eq!(direct_text(dataset, S, "dataSource"), "Local");
+    assert_eq!(direct_text(dataset, S, "objectName"), "Objects");
+
+    let fragment = &xml[dataset.range()];
+    let (opening, children) = fragment.split_once('>').unwrap();
+    assert!(opening.contains(&format!(" xmlns=\"{S}\"")), "{fragment}");
+    assert!(
+        opening.contains(&format!(" xmlns:xsi=\"{X}\"")),
+        "{fragment}"
+    );
+    assert_eq!(opening.matches(" xmlns").count(), 2, "{fragment}");
+    assert!(!children.contains(" xmlns"), "{fragment}");
+    assert_eq!(xml.replacen(fragment, "", 1), before);
+}
+
+#[test]
 fn object_and_union_field_types_have_platform_qualifiers_and_order() {
     for kind in ["Object", "Union"] {
         let payload = if kind == "Object" {
