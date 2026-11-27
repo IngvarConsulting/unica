@@ -75,9 +75,14 @@ const PROFILE: &[(&str, &[(&str, Fact)])] = &[
             ("Representation", REPRESENTATION),
             ("ToolTip", Fact::Localized),
             ("Picture", Fact::Picture),
+            ("IncludeHelpInContents", Fact::Boolean),
             ("CommandParameterType", Fact::Type),
             ("ParameterUseMode", PARAMETER_USE_MODE),
             ("ModifiesData", Fact::Boolean),
+            (
+                "OnMainServerUnavalableBehavior",
+                Fact::Enum(&["Auto", "MakeDisable", "DontChangeBehavior"]),
+            ),
         ],
     ),
     (
@@ -522,6 +527,71 @@ mod tests {
             property(&reference_only, "Picture"),
             Some(&json!({"Ref": "StdPicture.Print"}))
         );
+    }
+
+    /// rule: INV.SOURCE.METADATA-NODE-PROPERTIES
+    #[test]
+    fn common_command_reads_help_and_server_unavailability_settings() {
+        for (behavior, include_help) in [
+            ("Auto", false),
+            ("MakeDisable", true),
+            ("DontChangeBehavior", false),
+        ] {
+            let payload = read(
+                "CommonCommand",
+                &format!(
+                    "<IncludeHelpInContents>{include_help}</IncludeHelpInContents>\
+                     <OnMainServerUnavalableBehavior>{behavior}</OnMainServerUnavalableBehavior>"
+                ),
+            );
+            assert_eq!(
+                property(&payload, "IncludeHelpInContents"),
+                Some(&json!({"kind": "boolean", "value": include_help}))
+            );
+            assert_eq!(
+                property(&payload, "OnMainServerUnavalableBehavior"),
+                Some(&json!({"kind": "text", "value": behavior}))
+            );
+            assert!(unreadable(&payload).is_empty(), "{payload}");
+        }
+    }
+
+    #[test]
+    fn malformed_command_help_and_server_settings_are_independent() {
+        for help in [
+            "<IncludeHelpInContents/>",
+            "<IncludeHelpInContents>yes</IncludeHelpInContents>",
+            "<v8:IncludeHelpInContents>true</v8:IncludeHelpInContents>",
+        ] {
+            let payload = read(
+                "CommonCommand",
+                &format!("{help}<OnMainServerUnavalableBehavior>MakeDisable</OnMainServerUnavalableBehavior>"),
+            );
+            assert_eq!(unreadable(&payload), ["properties.IncludeHelpInContents"]);
+            assert_eq!(property(&payload, "IncludeHelpInContents"), None);
+            assert_eq!(
+                property(&payload, "OnMainServerUnavalableBehavior"),
+                Some(&json!({"kind": "text", "value": "MakeDisable"}))
+            );
+        }
+
+        for behavior in [
+            "<OnMainServerUnavalableBehavior/>",
+            "<OnMainServerUnavalableBehavior>Disable</OnMainServerUnavalableBehavior>",
+            "<OnMainServerUnavalableBehavior>Auto</OnMainServerUnavalableBehavior>\
+             <OnMainServerUnavalableBehavior>MakeDisable</OnMainServerUnavalableBehavior>",
+        ] {
+            let payload = read(
+                "CommonCommand",
+                &format!("<IncludeHelpInContents>true</IncludeHelpInContents>{behavior}"),
+            );
+            assert_eq!(unreadable(&payload), ["properties.OnMainServerUnavalableBehavior"]);
+            assert_eq!(property(&payload, "OnMainServerUnavalableBehavior"), None);
+            assert_eq!(
+                property(&payload, "IncludeHelpInContents"),
+                Some(&json!({"kind": "boolean", "value": true}))
+            );
+        }
     }
 
     #[test]
