@@ -3526,6 +3526,15 @@ use std::io::{self, BufRead, Write};
 fn main() {
     let marker = std::path::PathBuf::from(std::env::var("UNICA_TEST_PROVIDER_MARKER_DIR").unwrap());
     let args = std::env::args().collect::<Vec<_>>();
+    if args.windows(2).any(|pair| pair == ["debug-server", "start"]) {
+        assert!(args.iter().any(|argument| argument == "--dry-run"));
+        assert!(args.windows(2).any(|pair| pair == ["--infobase", "origin"]));
+        assert!(args.windows(2).any(|pair| pair[0] == "--owner-pid" && pair[1].parse::<u32>().is_ok_and(|pid| pid > 0)));
+        let mut first_start = std::fs::File::create_new(marker.join("debug-start")).unwrap();
+        write!(first_start, "{}", std::env::current_exe().unwrap().display()).unwrap();
+        println!("{}", r#"{"ok":true,"command":"debug-server start","data":{"action":"planned"}}"#);
+        return;
+    }
     if args.iter().any(|argument| argument == "push") {
         assert!(args.iter().any(|argument| argument == "--dry-run"));
         assert!(args.iter().any(|argument| argument == "main"));
@@ -3648,6 +3657,73 @@ fn main() {
         .with_delivery_downloader_for_test(downloader.clone());
         assert!(!cache.join("v8-runner").exists());
         assert!(!cache.join("bsl-analyzer").exists());
+
+        // rule: INV.RUNTIME.RUNNER-ONE-CAPABILITIES
+        let supports_start =
+            crate::application::v13::tool_catalog::PINNED_RUNNER.debug_server_start_v2;
+        let dictionary = submit_canonical(
+            &runtime,
+            &workspace,
+            ToolIdentity::Run,
+            serde_json::json!({}),
+        );
+        let operations = dictionary.data.as_ref().unwrap()["operations"]
+            .as_array()
+            .unwrap();
+        let start = operations
+            .iter()
+            .find(|row| row["op"] == "debug-server.start");
+        assert_eq!(start.is_some(), supports_start);
+        if let Some(start) = start {
+            assert_eq!(start["contractVersion"], 2);
+        }
+        assert_eq!(
+            operations
+                .iter()
+                .any(|row| row["op"] == "debug-server.stop"),
+            supports_start
+        );
+        assert_eq!(downloader.1.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(
+            !cache.join("v8-runner").exists(),
+            "discovery installed the runner"
+        );
+        let request = InvocationRequest::new(
+            ToolIdentity::Run,
+            serde_json::json!({"op":"debug-server.start","args":{"ownerPid":std::process::id()},"dryRun":true}),
+            workspace.display().to_string(),
+            7_000,
+        ).unwrap();
+        if supports_start {
+            let start = runtime
+                .bind(request)
+                .unwrap()
+                .prepare()
+                .unwrap()
+                .execute(CancellationToken::new())
+                .unwrap();
+            assert!(start.ok, "{start:?}");
+            let data = start.data.as_ref().unwrap();
+            assert_eq!(data["op"], "debug-server.start");
+            assert_eq!(data["contractVersion"], 2);
+            assert_eq!(data["action"], "planned");
+            let program = cache
+                .join("v8-runner")
+                .join(format!("{RUNNER_VERSION}--{digest}"))
+                .join(target)
+                .join(format!("bin/{target}/v8-runner{suffix}"));
+            let executed = std::fs::read_to_string(root.join("debug-start")).unwrap();
+            assert_eq!(
+                std::fs::canonicalize(executed).unwrap(),
+                std::fs::canonicalize(program).unwrap()
+            );
+            assert_eq!(downloader.1.load(std::sync::atomic::Ordering::SeqCst), 1);
+        } else {
+            let start = direct_v5(&runtime, request).unwrap();
+            assert_eq!(start.diagnostics[0]["code"], "unsupported_operation");
+            assert!(!root.join("debug-start").exists());
+            assert_eq!(downloader.1.load(std::sync::atomic::Ordering::SeqCst), 0);
+        }
 
         let request = InvocationRequest::new(
             ToolIdentity::Run,
