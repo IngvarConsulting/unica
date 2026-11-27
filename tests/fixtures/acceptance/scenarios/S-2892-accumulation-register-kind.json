@@ -1,0 +1,715 @@
+{
+  "id": "S-2892-accumulation-register-kind",
+  "issue": 2892,
+  "area": "Метаданные",
+  "workspace": "tests/fixtures/acceptance/workspace-metadata-values",
+  "task": "Создать регистр с измерением, числовым ресурсом и документом-регистратором. Проверить порядок стандартных реквизитов при смене вида, побайтовый возврат к Balance и повтор Turnovers без изменения файлов.",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "configInitial": {
+          "kind": "sha256",
+          "file": "src/Configuration.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "object.create",
+            "args": {
+              "values": {
+                "kind": "Document",
+                "name": "ProbeRegistrar"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executable",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configInitial"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "captures": {
+        "configAfterDoc": {
+          "kind": "sha256",
+          "file": "src/Configuration.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "object.create",
+            "args": {
+              "values": {
+                "kind": "AccumulationRegister",
+                "name": "ProbeRegister"
+              }
+            }
+          },
+          {
+            "op": "dimension.add",
+            "args": {
+              "at": "main:AccumulationRegister.ProbeRegister",
+              "items": [
+                {
+                  "name": "Location",
+                  "type": {
+                    "variants": [
+                      {
+                        "kind": "string",
+                        "length": 15,
+                        "allowedLength": "variable"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "op": "resource.add",
+            "args": {
+              "at": "main:AccumulationRegister.ProbeRegister",
+              "items": [
+                {
+                  "name": "Quantity",
+                  "type": {
+                    "variants": [
+                      {
+                        "kind": "number",
+                        "digits": 10,
+                        "fraction": 2,
+                        "sign": "any"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "op": "props.set",
+            "args": {
+              "at": "main:AccumulationRegister.ProbeRegister",
+              "values": {
+                "Comment": "Preserve this setting",
+                "EnableTotalsSplitting": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executable",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configAfterDoc"
+        },
+        {
+          "path": "src/AccumulationRegisters/ProbeRegister.xml",
+          "kind": "exists",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/AccumulationRegisters/ProbeRegister.xml",
+          "kind": "xmlTags",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}AccumulationRegister/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}StandardAttributes/{http://v8.1c.ru/8.3/xcf/readable}StandardAttribute",
+          "eq": [
+            "StandardAttribute",
+            "StandardAttribute",
+            "StandardAttribute",
+            "StandardAttribute",
+            "StandardAttribute"
+          ]
+        },
+        {
+          "path": "src/AccumulationRegisters/ProbeRegister.xml",
+          "kind": "xmlTags",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}AccumulationRegister/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}StandardAttributes/{http://v8.1c.ru/8.3/xcf/readable}StandardAttribute[1][@name=\"RecordType\"]",
+          "eq": [
+            "StandardAttribute"
+          ]
+        },
+        {
+          "path": "src/AccumulationRegisters/ProbeRegister.xml",
+          "kind": "xmlTags",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}AccumulationRegister/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}StandardAttributes/{http://v8.1c.ru/8.3/xcf/readable}StandardAttribute[2][@name=\"Active\"]",
+          "eq": [
+            "StandardAttribute"
+          ]
+        },
+        {
+          "path": "src/AccumulationRegisters/ProbeRegister.xml",
+          "kind": "xmlTags",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}AccumulationRegister/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}StandardAttributes/{http://v8.1c.ru/8.3/xcf/readable}StandardAttribute[3][@name=\"LineNumber\"]",
+          "eq": [
+            "StandardAttribute"
+          ]
+        },
+        {
+          "path": "src/AccumulationRegisters/ProbeRegister.xml",
+          "kind": "xmlTags",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}AccumulationRegister/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}StandardAttributes/{http://v8.1c.ru/8.3/xcf/readable}StandardAttribute[4][@name=\"Recorder\"]",
+          "eq": [
+            "StandardAttribute"
+          ]
+        },
+        {
+          "path": "src/AccumulationRegisters/ProbeRegister.xml",
+          "kind": "xmlTags",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}AccumulationRegister/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}StandardAttributes/{http://v8.1c.ru/8.3/xcf/readable}StandardAttribute[5][@name=\"Period\"]",
+          "eq": [
+            "StandardAttribute"
+          ]
+        }
+      ],
+      "captures": {
+        "balance": {
+          "kind": "sha256",
+          "file": "src/AccumulationRegisters/ProbeRegister.xml"
+        },
+        "config": {
+          "kind": "sha256",
+          "file": "src/Configuration.xml"
+        },
+        "documentBeforeRelation": {
+          "kind": "sha256",
+          "file": "src/Documents/ProbeRegistrar.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.ProbeRegistrar",
+        "ops": [
+          {
+            "op": "relation.replace",
+            "args": {
+              "values": {
+                "relation": "registerRecords",
+                "targets": [
+                  {
+                    "metadataPath": "AccumulationRegister.ProbeRegister"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executable",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/ProbeRegistrar.xml",
+          "kind": "sha256",
+          "eq": "$capture.documentBeforeRelation"
+        },
+        {
+          "path": "src/AccumulationRegisters/ProbeRegister.xml",
+          "kind": "sha256",
+          "eq": "$capture.balance"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "captures": {
+        "document": {
+          "kind": "sha256",
+          "file": "src/Documents/ProbeRegistrar.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:AccumulationRegister.ProbeRegister.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:AccumulationRegister.ProbeRegister",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "RegisterType": "Turnovers"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executable",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/AccumulationRegisters/ProbeRegister.xml",
+          "kind": "sha256",
+          "eq": "$capture.balance"
+        },
+        {
+          "path": "src/Documents/ProbeRegistrar.xml",
+          "kind": "sha256",
+          "eq": "$capture.document"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.config"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/AccumulationRegisters/ProbeRegister.xml",
+          "kind": "xmlTags",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}AccumulationRegister/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}StandardAttributes/{http://v8.1c.ru/8.3/xcf/readable}StandardAttribute",
+          "eq": [
+            "StandardAttribute",
+            "StandardAttribute",
+            "StandardAttribute",
+            "StandardAttribute"
+          ]
+        },
+        {
+          "path": "src/AccumulationRegisters/ProbeRegister.xml",
+          "kind": "xmlTags",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}AccumulationRegister/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}StandardAttributes/{http://v8.1c.ru/8.3/xcf/readable}StandardAttribute[1][@name=\"Active\"]",
+          "eq": [
+            "StandardAttribute"
+          ]
+        },
+        {
+          "path": "src/AccumulationRegisters/ProbeRegister.xml",
+          "kind": "xmlTags",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}AccumulationRegister/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}StandardAttributes/{http://v8.1c.ru/8.3/xcf/readable}StandardAttribute[2][@name=\"LineNumber\"]",
+          "eq": [
+            "StandardAttribute"
+          ]
+        },
+        {
+          "path": "src/AccumulationRegisters/ProbeRegister.xml",
+          "kind": "xmlTags",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}AccumulationRegister/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}StandardAttributes/{http://v8.1c.ru/8.3/xcf/readable}StandardAttribute[3][@name=\"Recorder\"]",
+          "eq": [
+            "StandardAttribute"
+          ]
+        },
+        {
+          "path": "src/AccumulationRegisters/ProbeRegister.xml",
+          "kind": "xmlTags",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}AccumulationRegister/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}StandardAttributes/{http://v8.1c.ru/8.3/xcf/readable}StandardAttribute[4][@name=\"Period\"]",
+          "eq": [
+            "StandardAttribute"
+          ]
+        },
+        {
+          "path": "src/Documents/ProbeRegistrar.xml",
+          "kind": "sha256",
+          "eq": "$capture.document"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.config"
+        }
+      ],
+      "captures": {
+        "turnovers": {
+          "kind": "sha256",
+          "file": "src/AccumulationRegisters/ProbeRegister.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:AccumulationRegister.ProbeRegister"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/RegisterType",
+          "eq": "Turnovers"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:AccumulationRegister.ProbeRegister.StandardAttribute"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/total",
+          "eq": 4
+        },
+        {
+          "pointer": "/data/items/0/title",
+          "eq": "Active"
+        },
+        {
+          "pointer": "/data/items/1/title",
+          "eq": "LineNumber"
+        },
+        {
+          "pointer": "/data/items/2/title",
+          "eq": "Recorder"
+        },
+        {
+          "pointer": "/data/items/3/title",
+          "eq": "Period"
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:AccumulationRegister.ProbeRegister"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "validators": [
+        "meta"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/diagnostics",
+          "noneMatches": {
+            "field": "standardAttributes"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:AccumulationRegister.ProbeRegister",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "RegisterType": "Turnovers"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executable",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/AccumulationRegisters/ProbeRegister.xml",
+          "kind": "sha256",
+          "eq": "$capture.turnovers"
+        },
+        {
+          "path": "src/Documents/ProbeRegistrar.xml",
+          "kind": "sha256",
+          "eq": "$capture.document"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.config"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/AccumulationRegisters/ProbeRegister.xml",
+          "kind": "sha256",
+          "eq": "$capture.turnovers"
+        },
+        {
+          "path": "src/Documents/ProbeRegistrar.xml",
+          "kind": "sha256",
+          "eq": "$capture.document"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.config"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:AccumulationRegister.ProbeRegister",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "RegisterType": "Balance"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executable",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/AccumulationRegisters/ProbeRegister.xml",
+          "kind": "sha256",
+          "eq": "$capture.turnovers"
+        },
+        {
+          "path": "src/Documents/ProbeRegistrar.xml",
+          "kind": "sha256",
+          "eq": "$capture.document"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.config"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/AccumulationRegisters/ProbeRegister.xml",
+          "kind": "sha256",
+          "eq": "$capture.balance"
+        },
+        {
+          "path": "src/Documents/ProbeRegistrar.xml",
+          "kind": "sha256",
+          "eq": "$capture.document"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.config"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:AccumulationRegister.ProbeRegister"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/RegisterType",
+          "eq": "Balance"
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:AccumulationRegister.ProbeRegister"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "validators": [
+        "meta"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/diagnostics",
+          "noneMatches": {
+            "field": "standardAttributes"
+          }
+        }
+      ]
+    }
+  ]
+}

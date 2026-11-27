@@ -1691,7 +1691,15 @@ pub fn apply_typed_properties(
             }
             node
         } else {
-            unica_xml_format::read::child_element(properties, tag).ok_or_else(|| {
+            let property = if *key == MetaPropertyKey::RegisterType {
+                super::info_projection::direct_meta_info_property(properties, kind.as_str(), tag)
+                    .map_err(|error| {
+                        typed_diagnostic(error.code, error.message, Some("values.RegisterType"))
+                    })?
+            } else {
+                unica_xml_format::read::child_element(properties, tag)
+            };
+            property.ok_or_else(|| {
                 typed_diagnostic(
                     MetaDiagnosticCode::InvalidArguments,
                     format!("property `{tag}` is not present on this metadata object"),
@@ -1839,6 +1847,16 @@ pub fn apply_typed_properties(
                 continue;
             }
         }
+        if let (MetaPropertyKey::RegisterType, MetaPropertyValue::String(value)) = (key, value) {
+            if let Some((attributes, replacement)) =
+                accumulation_register_attributes_for_type(parsed_body, properties, value)
+            {
+                replacements.push((
+                    attributes.start - range.start..attributes.end - range.start,
+                    replacement,
+                ));
+            }
+        }
         // The written element keeps the owner's qualified name and its own
         // namespace declarations, so a prefixed descriptor stays in MDClasses.
         let (opening, qname) = scalar_element_shell(&parsed_body[property.range()]);
@@ -1956,6 +1974,85 @@ pub fn apply_typed_properties(
     xml_text.replace_range(range.start + prefix_len..range.end + prefix_len, &text);
     Ok(())
 }
+
+fn accumulation_register_attributes_for_type(
+    xml: &str,
+    properties: roxmltree::Node<'_, '_>,
+    register_type: &str,
+) -> Option<(std::ops::Range<usize>, String)> {
+    use crate::validation_context::READABLE_NS;
+    use unica_xml_format::read::{child_element_in_namespace, child_elements_in_namespace};
+
+    // An omitted collection delegates standard attributes to the platform.
+    let attributes = child_element_in_namespace(properties, "StandardAttributes", MD_CLASSES_NS)?;
+    let members = child_elements_in_namespace(attributes, "StandardAttribute", READABLE_NS);
+    let record_types = members
+        .iter()
+        .filter(|member| member.attribute("name") == Some("RecordType"))
+        .collect::<Vec<_>>();
+    let range = attributes.range();
+    if register_type == "Turnovers" && !record_types.is_empty() {
+        let mut text = xml[range.clone()].to_owned();
+        for member in record_types.into_iter().rev() {
+            let member = member.range();
+            let mut local = member.start - range.start..member.end - range.start;
+            // Remove the padding only when the element occupies its own line.
+            if let Some(separator) = standard_attribute_line_separator(&text, local.start) {
+                let tail = text[local.end..].trim_start_matches([' ', '\t']);
+                if tail.starts_with(['\r', '\n']) {
+                    local.start -= separator.trim_start_matches(['\r', '\n']).len();
+                    local.end =
+                        text.len() - tail.len() + if tail.starts_with("\r\n") { 2 } else { 1 };
+                }
+            }
+            text.replace_range(local, "");
+        }
+        return Some((range, text));
+    }
+    if register_type != "Balance" || !record_types.is_empty() {
+        return None;
+    }
+
+    let offset = members.first()?.range().start;
+    let separator = standard_attribute_line_separator(xml, offset).unwrap_or_default();
+    let indent = separator.trim_start_matches(['\r', '\n']);
+    let mut lines = Vec::new();
+    emit_meta_standard_attribute(&mut lines, indent, "AccumulationRegister", "RecordType");
+    for (prefix, uri) in [
+        ("xr", READABLE_NS),
+        ("xsi", "http://www.w3.org/2001/XMLSchema-instance"),
+    ] {
+        if attributes.lookup_namespace_uri(Some(prefix)) != Some(uri) {
+            let opening = &mut lines[0];
+            opening.insert_str(opening.len() - 1, &format!(r#" xmlns:{prefix}="{uri}""#));
+        }
+    }
+    let insertion = if separator.is_empty() {
+        lines.iter().map(|line| line.trim_start()).collect()
+    } else {
+        let newline = separator.trim_end_matches([' ', '\t']);
+        format!("{}{separator}", lines.join(newline).trim_start())
+    };
+    let mut text = xml[range.clone()].to_owned();
+    text.insert_str(offset - range.start, &insertion);
+    Some((range, text))
+}
+
+fn standard_attribute_line_separator(xml: &str, offset: usize) -> Option<&str> {
+    let before = &xml[..offset];
+    let line_end = before.rfind(['\r', '\n'])?;
+    let indent = &before[line_end + 1..];
+    if !indent.bytes().all(|byte| matches!(byte, b' ' | b'\t')) {
+        return None;
+    }
+    let newline_width = if before[..=line_end].ends_with("\r\n") {
+        2
+    } else {
+        1
+    };
+    Some(&before[line_end + 1 - newline_width..])
+}
+
 /// Closes the `Properties` of a new `tag` child with the properties the
 /// export format of its object adds (INV.SOURCE.WRITABLE-PROFILE).
 fn append_format_child_properties(object_xml: &str, tag: &str, lines: &mut Vec<String>) {
@@ -4663,6 +4760,74 @@ mod prefixed_property_writer_tests {
         super::meta_edit_set_mltext_values(&mut edited, "Synonym", "\t", &items, namespaces)
             .unwrap();
         assert_eq!(edited, saved);
+    }
+
+    /// rule: INV.SOURCE.OBSERVED-BYTES
+    #[test]
+    fn balance_restores_record_type_with_bound_namespaces_and_local_layout() {
+        use crate::validation_context::READABLE_NS;
+        let kind = MetadataKind::AccumulationRegister;
+        let (source, _) =
+            crate::template_catalog::minimal_metadata_xml_for_tests(kind, "Probe").unwrap();
+        let changes = |mode: &str| {
+            MetaPropertyChanges::convert(
+                kind,
+                vec![MetaPropertyInput::new(
+                    "RegisterType",
+                    MetaPropertyValue::String(mode.into()),
+                )],
+            )
+            .unwrap()
+        };
+        let mut xml = prefixed(&source);
+        apply_typed_properties(&mut xml, &changes("Turnovers"), "ru").unwrap();
+        xml = xml
+            .replace("xmlns:xr=", "xmlns:r=")
+            .replace("<xr:", "<r:")
+            .replace("</xr:", "</r:")
+            .replace("xmlns:xsi=", "xmlns:schema=")
+            .replace("xsi:nil=", "schema:nil=");
+        let lf = xml.replace("\r\n", "\n");
+        let inline = lf.replacen(
+            "<md:StandardAttributes>\n\t\t\t\t",
+            "<md:StandardAttributes>",
+            1,
+        );
+        assert_ne!(inline, lf);
+        for (mode, turnovers) in [
+            ("inline", inline),
+            ("CRLF", lf.replace('\n', "\r\n")),
+            ("CR", lf.replace('\n', "\r")),
+        ] {
+            let mut xml = turnovers.clone();
+
+            apply_typed_properties(&mut xml, &changes("Balance"), "ru").unwrap();
+            if mode != "inline" {
+                assert!(!xml.replace("\r\n", "").contains('\n'), "{mode}");
+            }
+            let document = roxmltree::Document::parse(xml.trim_start_matches('\u{feff}')).unwrap();
+            let record_type = document
+                .descendants()
+                .find(|node| {
+                    node.has_tag_name((READABLE_NS, "StandardAttribute"))
+                        && node.attribute("name") == Some("RecordType")
+                })
+                .unwrap();
+            let fill_value = record_type
+                .children()
+                .find(|node| node.has_tag_name((READABLE_NS, "FillValue")))
+                .unwrap();
+            assert_eq!(
+                fill_value.attribute(("http://www.w3.org/2001/XMLSchema-instance", "nil")),
+                Some("true")
+            );
+
+            apply_typed_properties(&mut xml, &changes("Turnovers"), "ru").unwrap();
+            assert!(
+                xml == turnovers,
+                "round trip changed bytes in {mode} layout"
+            );
+        }
     }
 
     /// Every typed property writes the same change into a prefixed descriptor

@@ -1633,20 +1633,19 @@ pub(crate) mod tests {
         )
         .unwrap();
 
-        assert_eq!(
-            xml,
-            before.replacen(
-                "<RegisterType>Balance</RegisterType>",
-                "<RegisterType>Turnovers</RegisterType>",
-                1,
-            )
-        );
         // Root property sequence of every turnover register in the 8.3.27
         // vendor dump (format 2.20).
         let document = roxmltree::Document::parse(xml.trim_start_matches('\u{feff}')).unwrap();
         let object = unica_metadata_designer::edit::meta_edit_object_node(&document).unwrap();
-        let order = unica_xml_format::read::child_element(object, "Properties")
+        let properties = unica_xml_format::read::child_element(object, "Properties").unwrap();
+        let names = unica_xml_format::read::child_element(properties, "StandardAttributes")
             .unwrap()
+            .children()
+            .filter(|node| node.is_element())
+            .map(|node| node.attribute("name").unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["Active", "LineNumber", "Recorder", "Period"]);
+        let order = properties
             .children()
             .filter(|node| node.is_element())
             .map(|node| node.tag_name().name())
@@ -1680,6 +1679,21 @@ pub(crate) mod tests {
             counts.effects[0].after,
             Some(serde_json::json!({"RegisterType": "Turnovers"}))
         );
+
+        let changes = MetaPropertyChanges::convert(
+            kind,
+            vec![MetaPropertyInput::new(
+                "RegisterType",
+                MetaPropertyValue::String("Balance".into()),
+            )],
+        )
+        .unwrap();
+        apply_typed_operations(
+            &mut xml,
+            &[MetaEditOperation::SetProperties { values: changes }],
+        )
+        .unwrap();
+        assert_eq!(xml, before);
     }
 
     #[test]
