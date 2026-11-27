@@ -18,6 +18,12 @@ struct KnownSource {
     unmatched: HashSet<DebugFrameModule>,
 }
 
+enum NamedMatch {
+    Found(String),
+    Missing,
+    NeedsLookup,
+}
+
 impl Modules {
     pub fn new(resolve: ResolveDebugModules) -> Self {
         Self {
@@ -154,25 +160,29 @@ impl Modules {
         Ok(addresses)
     }
 
-    fn named_address(&mut self, id: &DebugModuleId, module: &DebugFrameModule) -> Option<String> {
-        let address = match self.search(DebugModuleQuery::Frame { module, id }) {
+    fn named_address(&mut self, id: &DebugModuleId, module: &DebugFrameModule) -> NamedMatch {
+        let result = match self.search(DebugModuleQuery::Frame { module, id }) {
             Ok(found) => match found.as_slice() {
-                [source] if source.runtime_id == *id => Some(source.address.to_string()),
-                _ => None,
+                [source] if source.runtime_id == *id => {
+                    NamedMatch::Found(source.address.to_string())
+                }
+                [] => NamedMatch::Missing,
+                _ => NamedMatch::NeedsLookup,
             },
             Err(error) => {
                 eprintln!("unica dap: cannot resolve frame presentation: {error}");
-                None
+                NamedMatch::NeedsLookup
             }
         };
         // New evidence about this owner takes precedence over a previous ID-only lookup.
-        if self.known.get(id).is_some_and(|known| match &address {
-            Some(at) => at != &known.address,
-            None => !known.unmatched.contains(module),
+        if self.known.get(id).is_some_and(|known| match &result {
+            NamedMatch::Found(at) => at != &known.address,
+            NamedMatch::Missing => !known.unmatched.contains(module),
+            NamedMatch::NeedsLookup => true,
         }) {
             self.known.remove(id);
         }
-        address
+        result
     }
 
     /// Ordinary and exception stops use the same saved frame evidence. A qualified
@@ -189,10 +199,13 @@ impl Modules {
         let mut addresses = Vec::with_capacity(frames.len());
         for &(id, ref hint, hit) in &frames {
             let source = match (id, hint, hit) {
-                (Some(id), Some(module), _) => named
+                (Some(id), Some(module), _) => match named
                     .entry((id, module))
                     .or_insert_with(|| self.named_address(id, module))
-                    .clone(),
+                {
+                    NamedMatch::Found(at) => Some(at.clone()),
+                    NamedMatch::Missing | NamedMatch::NeedsLookup => None,
+                },
                 (Some(id), None, Some(at))
                     if self.saved_id(at).ok().flatten().as_ref() == Some(id) =>
                 {
@@ -207,8 +220,10 @@ impl Modules {
         }
         let ids: Vec<_> = unresolved.into_iter().collect();
         let fallback = self.available_addresses(&ids);
-        for ((id, module), address) in named {
-            if address.is_none() && fallback.get(id).is_some_and(Option::is_some) {
+        for ((id, module), result) in named {
+            if matches!(result, NamedMatch::Missing)
+                && fallback.get(id).is_some_and(Option::is_some)
+            {
                 if let Some(known) = self.known.get_mut(id) {
                     known.unmatched.insert(module.clone());
                 }
@@ -274,6 +289,7 @@ mod tests {
         revision: u64,
         fail_next_reverse: bool,
         fail_next_address: bool,
+        fail_next_frame: bool,
         forward: Vec<String>,
         named: Vec<DebugModuleId>,
     }
@@ -301,6 +317,9 @@ mod tests {
             }
             if let DebugModuleQuery::Frame { id, .. } = query {
                 ws.named.push(id.clone());
+                if std::mem::take(&mut ws.fail_next_frame) {
+                    return Err("frame lookup failed".into());
+                }
             }
             let modules = ws
                 .sources
@@ -309,14 +328,9 @@ mod tests {
                     DebugModuleQuery::Address(requested) => *at == requested,
                     DebugModuleQuery::Runtime(ids) => ids.contains(id),
                     DebugModuleQuery::Frame { module, id: wanted } => {
-                        let presentation = match *at {
-                            FIRST => FIRST_NAME,
-                            OTHER => OTHER_NAME,
-                            _ => "",
-                        };
+                        let address = QualifiedAddress::parse(at).unwrap();
                         id == wanted
-                            && DebugFrameModule::from_presentation(presentation).as_ref()
-                                == Some(module)
+                            && module.in_source_set(address.source_set()).unwrap() == address
                     }
                 })
                 .map(|(id, at)| DebugModuleSource {
@@ -579,6 +593,45 @@ mod tests {
             modules.frame_addresses([(Some(&id), "", None)].into_iter()),
             [None]
         );
+        assert_eq!(workspace.borrow().reverse, [vec![id.clone()], vec![id]]);
+    }
+
+    #[test]
+    fn a_previous_named_miss_does_not_mask_two_new_matches_in_existing_source_sets() {
+        let (mut modules, workspace) = setup();
+        workspace
+            .borrow_mut()
+            .sources
+            .push((id(3), "copy:CommonModule.Existing"));
+        let id = id(1);
+        let frame = [(Some(&id), OTHER_NAME, None)];
+        assert_eq!(
+            modules.frame_addresses(frame.into_iter()),
+            [Some(FIRST.to_owned())]
+        );
+        workspace.borrow_mut().sources.extend([
+            (id.clone(), OTHER),
+            (id.clone(), "copy:Document.Other.Form.Main.Module.Form"),
+        ]);
+        assert_eq!(modules.frame_addresses(frame.into_iter()), [None]);
+        assert_eq!(workspace.borrow().reverse, [vec![id.clone()], vec![id]]);
+    }
+
+    #[test]
+    fn a_frame_lookup_error_after_a_named_miss_requires_fresh_runtime_evidence() {
+        let (mut modules, workspace) = setup();
+        let id = id(1);
+        let frame = [(Some(&id), OTHER_NAME, None)];
+        assert_eq!(
+            modules.frame_addresses(frame.into_iter()),
+            [Some(FIRST.to_owned())]
+        );
+        {
+            let mut ws = workspace.borrow_mut();
+            ws.sources.push((id.clone(), "main:CommonModule.Duplicate"));
+            ws.fail_next_frame = true;
+        }
+        assert_eq!(modules.frame_addresses(frame.into_iter()), [None]);
         assert_eq!(workspace.borrow().reverse, [vec![id.clone()], vec![id]]);
     }
 }
