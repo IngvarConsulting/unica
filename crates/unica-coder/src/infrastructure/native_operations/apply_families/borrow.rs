@@ -1075,8 +1075,8 @@ mod tests {
         let own = r#"<EnumValue uuid="10000000-0000-4000-8000-000000000019"><Properties><Name>Local</Name><Comment>keep local</Comment></Properties></EnumValue>"#;
         let local = text
             .replace(
-                "<Comment/>\n\t\t\t\t\t<ExtendedConfigurationObject>10000000-0000-4000-8000-000000000012</ExtendedConfigurationObject>",
-                "<Comment>local borrowed comment</Comment>\n\t\t\t\t\t<ExtendedConfigurationObject>10000000-0000-4000-8000-000000000012</ExtendedConfigurationObject>",
+                "<Comment/>\r\n\t\t\t\t\t<ExtendedConfigurationObject>10000000-0000-4000-8000-000000000012</ExtendedConfigurationObject>",
+                "<Comment>local borrowed comment</Comment>\r\n\t\t\t\t\t<ExtendedConfigurationObject>10000000-0000-4000-8000-000000000012</ExtendedConfigurationObject>",
             )
             .replace("</ChildObjects>", &format!("{own}</ChildObjects>"));
         assert!(local.contains("local borrowed comment"));
@@ -1166,9 +1166,9 @@ mod tests {
             .run_from("main:Enum.Operations", false, Some(owner.rev()), None)
             .unwrap();
         let path = fixture.dst.join("Enums/Operations.xml");
-        let damaged = std::fs::read_to_string(&path)
-            .unwrap()
-            .replace("\n\t\t<ChildObjects/>", "");
+        let text = std::fs::read_to_string(&path).unwrap();
+        let damaged = text.replace("\r\n\t\t<ChildObjects/>", "");
+        assert_ne!(damaged, text);
         std::fs::write(&path, damaged).unwrap();
         let before = unica_workspace::test_support::tree_snapshot(&fixture.dst);
 
