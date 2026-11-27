@@ -1,0 +1,170 @@
+{
+  "id": "S-2337-xdto-upper-bound",
+  "issue": 2337,
+  "area": "XDTO и обмены",
+  "task": "Отклонить upperBound за пределами i64 с указанием аргумента, увидеть точное целое i64::MAX в предпросмотре XDTO и проверить исходный XML пакета без публикации",
+  "workspace": "tests/fixtures/acceptance/workspace-xdto-rename",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.Пример.Type.Товар.Can.property.add"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/$defs/xdtoProperty/properties/upperBound/type",
+          "eq": "integer"
+        }
+      ],
+      "captures": {
+        "before": {
+          "file": "src/XDTOPackages/Пример/Ext/Package.bin",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.Пример.Type.Товар",
+        "ops": [
+          {
+            "op": "property.add",
+            "args": {
+              "values": {
+                "property": {
+                  "name": "Probe",
+                  "type": "xs:string",
+                  "upperBound": 9.223372036854776e+18
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: upperBound must be -1 or a positive integer",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values.property.upperBound"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/Пример/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.Пример.Type.Товар",
+        "ops": [
+          {
+            "op": "property.add",
+            "args": {
+              "values": {
+                "property": {
+                  "name": "Probe",
+                  "type": "xs:string",
+                  "upperBound": 9223372036854775808
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: upperBound must be -1 or a positive integer",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values.property.upperBound"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/Пример/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.Пример.Type.Товар",
+        "ops": [
+          {
+            "op": "property.add",
+            "args": {
+              "values": {
+                "property": {
+                  "name": "Probe",
+                  "type": "xs:string",
+                  "upperBound": 9223372036854775807
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/Пример/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.diff",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/chunks/1/content",
+          "contains": "name=\"Probe\" type=\"xs:string\" upperBound=\"9223372036854775807\""
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/Пример/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    }
+  ]
+}

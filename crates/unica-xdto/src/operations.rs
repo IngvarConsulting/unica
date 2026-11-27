@@ -797,13 +797,15 @@ impl<'a> ArgumentReader<'a> {
 
     fn max_occurs(&mut self, key: &str) -> Result<Option<i64>, ContractError> {
         self.read(key, |value, shape, path| {
-            // An integral decimal or exponent spelling denotes the same integer;
-            // the conversion is exact or the value is refused.
             let parsed = value.as_i64().or_else(|| {
-                value.as_f64().and_then(|number| {
-                    let integer = number as i64;
-                    (number.fract() == 0.0 && integer as f64 == number).then_some(integer)
-                })
+                // i64::MAX rounds to 2^63 as f64, the first excluded value.
+                let range = i64::MIN as f64..i64::MAX as f64;
+                value
+                    .as_number()
+                    .filter(|number| number.is_f64())
+                    .and_then(serde_json::Number::as_f64)
+                    .filter(|number| range.contains(number) && number.fract() == 0.0)
+                    .map(|number| number as i64)
             });
             match parsed {
                 Some(parsed) if parsed == -1 || parsed >= 1 => {
@@ -1302,6 +1304,55 @@ mod tests {
                 .path,
             "ops[0].args.values.property.upperBound"
         );
+    }
+
+    #[test]
+    fn xdto_upper_bound_refuses_out_of_range_numbers_without_saturation() {
+        let operation = XdtoOperation::AddProperty;
+        let mut args = json!({
+            "at": "main:XDTOPackage.Sample.Type.Target",
+            "values": {"property": {"name": "Probe", "type": "xs:string"}}
+        });
+        let rejected = [
+            "9223372036854775808.0",
+            "9.223372036854775808e18",
+            "9223372036854775808",
+            "1e19",
+            "0",
+            "-2",
+            "1.5",
+            r#""2""#,
+            "true",
+            "null",
+        ];
+        let mut unexpected = Vec::new();
+        for literal in rejected {
+            args["values"]["property"]["upperBound"] = serde_json::from_str(literal).unwrap();
+            let result = operation.decode(&args, "args", "main");
+            if !matches!(&result, Err(error)
+                if error.path == "args.values.property.upperBound" && !error.enum_value)
+            {
+                unexpected.push((literal, result));
+            }
+        }
+        assert!(unexpected.is_empty(), "{unexpected:?}");
+
+        for (literal, expected) in [
+            ("9223372036854775807", i64::MAX),
+            ("9223372036854774784.0", 9_223_372_036_854_774_784),
+            ("-1", -1),
+            ("1", 1),
+            ("2.0", 2),
+            ("2e0", 2),
+        ] {
+            args["values"]["property"]["upperBound"] = serde_json::from_str(literal).unwrap();
+            let XdtoPlanOperation::AddProperty(args) =
+                operation.decode(&args, "args", "main").unwrap()
+            else {
+                panic!("property.add keeps its typed intent");
+            };
+            assert_eq!(args.property.max_occurs, Some(expected), "{literal}");
+        }
     }
 
     #[test]
