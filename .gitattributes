@@ -52,6 +52,9 @@ plugins/unica/skills/form-patterns/SKILL.md whitespace=cr-at-eol
 # Narrower rules below that also drop whitespace checks override it.
 tests/fixtures/acceptance/** -text whitespace=cr-at-eol
 
+# The independent StyleItem XML is compared byte for byte with acceptance fixtures.
+/tests/fixtures/styleitem_values/*.xml -text
+
 # Incomplete borrowed descriptors and MCP checks preserve platform-export bytes.
 tests/fixtures/formats/platform_xml/2.20/incomplete_borrowed/** -text whitespace=cr-at-eol
 
