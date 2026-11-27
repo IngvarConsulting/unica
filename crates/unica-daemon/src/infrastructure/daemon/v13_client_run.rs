@@ -30,7 +30,7 @@ use unica_execution_contract::invocation::{DomainResult, SafeIdentityHash};
 use unica_process::runner::{ProcessCommand, ProcessOutput, ProcessRunner, ProcessStreamFailure};
 use unica_process::PendingProcessHandoff;
 use unica_refusal::RefusalCode;
-use unica_source_contract::workspace::WorkspaceContext;
+use unica_source_contract::{debug_source::DebugServerUrl, workspace::WorkspaceContext};
 use unica_work_control::cancellation::{CancellationToken, CANCELLED_PREFIX};
 
 pub(super) const OPERATION: &str = "launch";
@@ -251,17 +251,17 @@ fn parse_launch_arguments(
                 "launch clientMode must be one of designer, thin, thick, ordinary",
             )
         })?;
-    let debug_url = match args.get("debugUrl") {
-        None => None,
-        Some(Value::String(url)) if mode == ClientMode::Thin && debug_port(url).is_some() => {
-            Some(url.clone())
-        }
-        Some(_) => {
+    let debug_url = if let Some(value) = args.get("debugUrl") {
+        let endpoint = value.as_str().and_then(DebugServerUrl::parse);
+        let Some(endpoint) = endpoint.filter(|_| mode == ClientMode::Thin) else {
             return Err(reject(
                 RefusalCode::BadValue,
-                "launch debugUrl requires clientMode thin and http://127.0.0.1:<port>",
-            ))
-        }
+                "launch debugUrl requires clientMode thin and a canonical http://host:port address",
+            ));
+        };
+        Some(endpoint.to_string())
+    } else {
+        None
     };
     let application_parameter =
         match args.get("applicationParameter") {
@@ -403,12 +403,6 @@ fn parse_launch_arguments(
         application_parameter,
         wait_timeout_ms: if wait_for_exit { wait_timeout_ms } else { None },
     })
-}
-
-fn debug_port(url: &str) -> Option<u16> {
-    let text = url.strip_prefix("http://127.0.0.1:")?;
-    let port = text.parse::<u16>().ok()?;
-    (port != 0 && text == port.to_string()).then_some(port)
 }
 
 fn execute_with_runner(
@@ -1733,6 +1727,49 @@ fn main() {
             runner.discarded.load(std::sync::atomic::Ordering::Relaxed),
             1
         );
+    }
+
+    /// rule: INV.WIRE.TERMINAL-RUN-HAS-NO-FENCE
+    #[test]
+    fn thin_launch_previews_and_dispatches_the_exact_external_debug_server() {
+        let root = workspace();
+        let url = "http://dbgs.example.test:80";
+        for dry_run in [true, false] {
+            let prepared = prepared(
+                root.path(),
+                json!({"clientMode":"thin", "debugUrl":url}),
+                dry_run,
+            );
+            let mut receipt = if dry_run {
+                preview_envelope("thin", None)
+            } else {
+                launched_envelope("thin", 131, None)
+            };
+            receipt["data"]["debug"] = json!({"url":url});
+            let runner = SequenceRunner::new(vec![process(receipt, true)]);
+            let result = execute_with_resolved_runner(
+                &prepared,
+                &runner,
+                CancellationToken::new(),
+                &tool(root.path()),
+            );
+            assert!(result.ok, "{:?}", result.diagnostics);
+            let calls = runner.calls.lock().unwrap();
+            assert_eq!(calls.len(), 1);
+            assert!(calls[0]
+                .args
+                .windows(2)
+                .any(|pair| pair == ["--debug", url]));
+            let data = result.data.unwrap();
+            assert_eq!(data["debugUrl"], url);
+            assert_eq!(data["providerDispatched"], !dry_run);
+            if dry_run {
+                assert_eq!(result.next[0]["args"]["args"]["debugUrl"], url);
+            } else {
+                assert_eq!(data["pid"], 131);
+                assert_eq!(data["debugState"], "requested");
+            }
+        }
     }
 
     /// rule: INV.WIRE.TERMINAL-RUN-HAS-NO-FENCE
