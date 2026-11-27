@@ -12,6 +12,7 @@ from __future__ import annotations
 import importlib.util
 import re
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -67,7 +68,7 @@ def write_harness(root: Path, source: str = "", scanned: dict[str, str] | None =
 
 def run_guard(root: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["python3", str(SCRIPT_PATH), "--root", str(root)],
+        [sys.executable, str(SCRIPT_PATH), "--root", str(root)],
         text=True,
         capture_output=True,
         check=False,

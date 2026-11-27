@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -67,7 +68,7 @@ def write_tree(root: Path, overrides: dict[Path, str] | None = None) -> None:
 
 def run_guard(root: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["python3", str(SCRIPT_PATH), "--root", str(root)],
+        [sys.executable, str(SCRIPT_PATH), "--root", str(root)],
         text=True,
         capture_output=True,
         check=False,
