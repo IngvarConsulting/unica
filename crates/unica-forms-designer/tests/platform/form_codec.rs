@@ -2979,6 +2979,16 @@ fn text_document_binding_uses_the_qname_namespace_and_requires_a_path() {
     )
     .is_ok());
 
+    let repeated = xml.replace(
+        "</Type>",
+        "<v8:Type xmlns:doc=\"http://v8.1c.ru/8.1/data/txtedt\">doc:TextDocument</v8:Type></Type>",
+    );
+    let repeated = Document::parse(&repeated).unwrap();
+    assert!(
+        form_validate_requested_text_document_bindings(repeated.root_element(), &definition)
+            .is_ok()
+    );
+
     let without_path = json!({"elements":[{"textDoc":"Field"}]});
     let error =
         form_validate_requested_text_document_bindings(document.root_element(), &without_path)
@@ -2993,7 +3003,7 @@ fn text_document_binding_uses_the_qname_namespace_and_requires_a_path() {
     let error = form_validate_requested_text_document_bindings(union.root_element(), &definition)
         .unwrap_err();
     assert!(
-        error.contains("requires a TextDocument attribute"),
+        error.contains("requires a String or TextDocument attribute"),
         "{error}"
     );
 
@@ -3006,9 +3016,61 @@ fn text_document_binding_uses_the_qname_namespace_and_requires_a_path() {
         form_validate_requested_text_document_bindings(wrong_namespace.root_element(), &definition)
             .unwrap_err();
     assert!(
-        error.contains("requires a TextDocument attribute"),
+        error.contains("requires a String or TextDocument attribute"),
         "{error}"
     );
+}
+
+#[test]
+fn text_document_field_accepts_only_the_string_qname_from_xml_schema() {
+    let definition = json!({"elements":[{"textDoc":"Editor","path":"Formula"}]});
+    let xml = format!(
+        r#"<Form xmlns="{FORM_LOGFORM_NS}" xmlns:v8="{FORM_V8_NS}"><Attributes><Attribute name="Formula"><Type><v8:Type xmlns:schema="http://www.w3.org/2001/XMLSchema">schema:string</v8:Type></Type></Attribute></Attributes></Form>"#
+    );
+    let document = Document::parse(&xml).unwrap();
+    assert_eq!(
+        form_validate_requested_text_document_bindings(document.root_element(), &definition),
+        Ok(())
+    );
+
+    for invalid in [
+        xml.replace("schema:string", "schema:boolean"),
+        xml.replace("http://www.w3.org/2001/XMLSchema", "urn:custom-type"),
+    ] {
+        let document = Document::parse(&invalid).unwrap();
+        assert!(form_validate_requested_text_document_bindings(
+            document.root_element(),
+            &definition
+        )
+        .is_err());
+    }
+}
+
+#[test]
+fn text_document_field_refuses_a_string_with_other_type_atoms() {
+    let definition = json!({"elements":[{"textDoc":"Editor","path":"Formula"}]});
+    let cases = [
+        ("String | AnyRef", "<v8:TypeSet>cfg:AnyRef</v8:TypeSet>"),
+        (
+            "String | typeid:11111111-2222-4333-8444-555555555555",
+            "<v8:TypeId>11111111-2222-4333-8444-555555555555</v8:TypeId>",
+        ),
+    ];
+    let accepted = cases.map(|(description, atom)| {
+        let mut lines = Vec::new();
+        emit_form_type(&mut lines, description, "").unwrap();
+        let declared = lines.join("\n");
+        assert!(declared.contains("<v8:Type>xs:string</v8:Type>"));
+        assert!(declared.contains(atom));
+        assert!(declared.contains("<v8:StringQualifiers>"));
+        let xml = format!(
+            r#"<Form xmlns="{FORM_LOGFORM_NS}" xmlns:v8="{FORM_V8_NS}" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config"><Attributes><Attribute name="Formula">{declared}</Attribute></Attributes></Form>"#
+        );
+        let document = Document::parse(&xml).unwrap();
+        form_validate_requested_text_document_bindings(document.root_element(), &definition)
+            .is_ok()
+    });
+    assert_eq!(accepted, [false, false], "TypeSet and TypeId variants");
 }
 
 #[test]

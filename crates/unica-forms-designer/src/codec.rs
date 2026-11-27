@@ -6697,7 +6697,7 @@ fn form_validate_requested_text_document_bindings(
             .filter(|path| !path.is_empty())
             .ok_or_else(|| {
                 format!(
-                    "TextDocumentField '{name}' requires non-empty path bound to a TextDocument attribute"
+                    "TextDocumentField '{name}' requires non-empty path bound to a String or TextDocument attribute"
                 )
             })?;
         let path = strip_form_binding_prefixes(path);
@@ -6743,24 +6743,32 @@ fn form_validate_requested_text_document_bindings(
         let valid = attribute
             .and_then(|node| form_child(node, "Type"))
             .is_some_and(|type_node| {
-                let types = type_node
-                    .descendants()
-                    .filter(|node| node.has_tag_name((FORM_V8_NS, "Type")))
-                    .collect::<Vec<_>>();
-                !types.is_empty()
-                    && types.iter().all(|node| {
-                        node.text()
-                            .and_then(|value| value.trim().split_once(':'))
-                            .is_some_and(|(prefix, local)| {
-                                local == "TextDocument"
-                                    && node.lookup_namespace_uri(Some(prefix))
-                                        == Some("http://v8.1c.ru/8.1/data/txtedt")
-                            })
+                let mut atoms = type_node
+                    .children()
+                    .filter(|node| {
+                        node.tag_name().namespace() == Some(FORM_V8_NS)
+                            && matches!(node.tag_name().name(), "Type" | "TypeSet" | "TypeId")
                     })
+                    .map(|node| {
+                        if node.tag_name().name() != "Type" {
+                            return None;
+                        }
+                        let (prefix, local) = node.text()?.trim().split_once(':')?;
+                        let namespace = node.lookup_namespace_uri(Some(prefix))?;
+                        Some((namespace, local))
+                    });
+                let binding_type = atoms.next().flatten();
+                matches!(
+                    binding_type,
+                    Some(
+                        ("http://www.w3.org/2001/XMLSchema", "string")
+                            | ("http://v8.1c.ru/8.1/data/txtedt", "TextDocument")
+                    )
+                ) && atoms.all(|other| other == binding_type)
             });
         if !valid {
             return Err(format!(
-                "TextDocumentField '{name}' path '{path}' requires a TextDocument attribute"
+                "TextDocumentField '{name}' path '{path}' requires a String or TextDocument attribute"
             ));
         }
     }
