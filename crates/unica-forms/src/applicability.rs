@@ -53,14 +53,9 @@ impl OperationApplicability {
             Self::FormItem => site
                 .form_items(segments)
                 .is_some_and(|items| !items.is_empty()),
-            Self::FormEvent => match segments {
-                [path @ .., event] => {
-                    event.kind() == NodeKind::Event
-                        && event.name().is_some()
-                        && site.form_items(path).is_some()
-                }
-                [] => false,
-            },
+            Self::FormEvent => {
+                form_event_parts(segments).is_some_and(|_| site.route() == RouteClass::Form)
+            }
         }
     }
 }
@@ -72,21 +67,26 @@ impl SiteExt for OperationSite<'_> {
     /// даёт сегменты `Item` после формы (пустые у самой формы). `None` —
     /// `segments` не такой адрес или маршрут не формы.
     fn form_items<'s>(&self, segments: &'s [AddressSegment]) -> Option<&'s [AddressSegment]> {
-        match segments {
-            [owner, form, items @ ..]
-                if self.route() == RouteClass::Form
-                    && owner.name().is_some()
-                    && form.kind() == NodeKind::Form
-                    && form.name().is_some()
-                    && metadata_collection_matches(owner.kind(), MetaCollection::Forms)
-                    && items
-                        .iter()
-                        .all(|item| item.kind() == NodeKind::Item && item.name().is_some()) =>
-            {
-                Some(items)
-            }
-            _ => None,
+        (self.route() == RouteClass::Form)
+            .then(|| owned_form_items(segments))
+            .flatten()
+    }
+}
+
+fn owned_form_items(segments: &[AddressSegment]) -> Option<&[AddressSegment]> {
+    match segments {
+        [owner, form, items @ ..]
+            if owner.name().is_some()
+                && metadata_collection_matches(owner.kind(), MetaCollection::Forms)
+                && form.kind() == NodeKind::Form
+                && form.name().is_some()
+                && items
+                    .iter()
+                    .all(|item| item.kind() == NodeKind::Item && item.name().is_some()) =>
+        {
+            Some(items)
         }
+        _ => None,
     }
 }
 
@@ -146,4 +146,14 @@ mod tests {
             assert!(!OperationApplicability::FormAttribute.matches(&other_route));
         }
     }
+}
+
+/// Split an owned form event into its form/item path and exact event ID.
+pub fn form_event_parts(segments: &[AddressSegment]) -> Option<(&[AddressSegment], &str)> {
+    let (event, path) = segments.split_last()?;
+    if event.kind() != NodeKind::Event {
+        return None;
+    }
+    owned_form_items(path)?;
+    Some((path, event.name()?))
 }

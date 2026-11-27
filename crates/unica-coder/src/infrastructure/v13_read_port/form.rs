@@ -48,6 +48,10 @@ impl ProviderReadAuthority {
             .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))
     }
 
+    pub(crate) fn form_xml(&self, target: &MetadataAddress) -> Result<Vec<u8>, ViewError> {
+        self.read_relative_whole(&self.attached_resource_relative(target, "Form.xml")?)
+    }
+
     pub(crate) fn form_data(
         &self,
         target: &MetadataAddress,
@@ -64,8 +68,7 @@ impl ProviderReadAuthority {
                 self.source_set(), target.as_str(),
             )));
         }
-        let relative = self.attached_resource_relative(target, "Form.xml")?;
-        let bytes = self.read_relative_whole(&relative)?;
+        let bytes = self.form_xml(target)?;
         let text = std::str::from_utf8(&bytes).map_err(|_| {
             ViewError::detailed(RefusalDetail::SourceUnreadable, "Form.xml is not UTF-8")
         })?;

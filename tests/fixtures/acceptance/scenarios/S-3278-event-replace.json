@@ -1,0 +1,428 @@
+{
+  "id": "S-3278-event-replace",
+  "issue": 3278,
+  "area": "Формы",
+  "task": "Заменить обработчик After в заимствованной форме, сохранив callType, соседнее событие и остальные байты исходников.",
+  "workspace": "tests/fixtures/acceptance/native-cfe-ownership-2.20",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.CorpusCatalog.Form.CorpusForm.Event.OnCreateAtServer"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/state",
+          "eq": "implemented"
+        },
+        {
+          "pointer": "/data/props/callType",
+          "eq": null
+        },
+        {
+          "pointer": "/data/props/handler",
+          "eq": "ПриСозданииНаСервере"
+        }
+      ],
+      "captures": {
+        "baseForm": {
+          "kind": "sha256",
+          "file": "cf/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form.xml"
+        },
+        "baseModule": {
+          "kind": "sha256",
+          "file": "cf/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form/Module.bsl"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "ext:Catalog.CorpusCatalog.Form.CorpusForm.Module.Form",
+        "ops": [
+          {
+            "op": "code.insert",
+            "args": {
+              "text": "&НаСервере\nПроцедура НовыйОбработчик(Отказ, СтандартнаяОбработка)\nКонецПроцедуры\n"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "ext:Catalog.CorpusCatalog.Form.CorpusForm.Event.OnCreateAtServer"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/state",
+          "eq": "available"
+        },
+        {
+          "pointer": "/data/props/callType",
+          "eq": null
+        },
+        {
+          "pointer": "/data/can",
+          "noneMatches": {
+            "op": "event.replace"
+          }
+        },
+        {
+          "pointer": "/data/can",
+          "noneMatches": {
+            "op": "event.unbind"
+          }
+        }
+      ],
+      "captures": {
+        "event": {
+          "pointer": "/data/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "ext:Catalog.CorpusCatalog.Form.CorpusForm",
+        "ops": [
+          {
+            "op": "event.bind",
+            "args": {
+              "at": "$capture.event",
+              "values": {
+                "handler": "СтарыйОбработчик",
+                "callType": "After"
+              }
+            }
+          },
+          {
+            "op": "event.bind",
+            "args": {
+              "at": "ext:Catalog.CorpusCatalog.Form.CorpusForm.Event.OnOpen",
+              "values": {
+                "handler": "ОткрытиеПосле",
+                "callType": "After"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.event"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/state",
+          "eq": "missing"
+        },
+        {
+          "pointer": "/data/props/callType",
+          "eq": "After"
+        },
+        {
+          "pointer": "/data/props/handler",
+          "eq": "СтарыйОбработчик"
+        },
+        {
+          "pointer": "/data/can",
+          "contains": {
+            "op": "event.replace",
+            "args": "values"
+          }
+        },
+        {
+          "pointer": "/data/can",
+          "contains": {
+            "op": "event.unbind",
+            "args": "at"
+          }
+        }
+      ],
+      "captures": {
+        "localForm": {
+          "kind": "sha256",
+          "file": "adopted/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form.xml"
+        },
+        "localModule": {
+          "kind": "sha256",
+          "file": "adopted/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form/Module.bsl"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "ext:Catalog.CorpusCatalog.Form.CorpusForm.Event.OnCreateAtServer.Can.event.replace"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/op",
+          "eq": "event.replace"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.event",
+        "ops": [
+          {
+            "op": "event.replace",
+            "args": {
+              "values": {
+                "handler": "НовыйОбработчик"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executable",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "cf/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.baseForm"
+        },
+        {
+          "path": "cf/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.baseModule"
+        },
+        {
+          "path": "adopted/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.localModule"
+        },
+        {
+          "path": "adopted/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.localForm"
+        }
+      ]
+    },
+    {
+      "tool": "unica.diff",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/chunks/0/content",
+          "contains": "<Event name=\"OnCreateAtServer\" callType=\"After\">СтарыйОбработчик</Event>"
+        },
+        {
+          "pointer": "/data/chunks/1/content",
+          "contains": "<Event name=\"OnCreateAtServer\" callType=\"After\">НовыйОбработчик</Event>"
+        },
+        {
+          "pointer": "/data/chunks/0/path",
+          "eq": "Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form.xml"
+        },
+        {
+          "pointer": "/data/chunks/0/side",
+          "eq": "before"
+        },
+        {
+          "pointer": "/data/chunks/1/path",
+          "eq": "Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form.xml"
+        },
+        {
+          "pointer": "/data/chunks/1/side",
+          "eq": "after"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "cf/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.baseForm"
+        },
+        {
+          "path": "cf/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.baseModule"
+        },
+        {
+          "path": "adopted/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.localModule"
+        },
+        {
+          "path": "adopted/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.localForm"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "cf/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.baseForm"
+        },
+        {
+          "path": "cf/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.baseModule"
+        },
+        {
+          "path": "adopted/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.localModule"
+        },
+        {
+          "path": "adopted/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/xcf/logform}Events/{http://v8.1c.ru/8.3/xcf/logform}Event[@name='OnCreateAtServer'][@callType='After']",
+          "eq": [
+            "НовыйОбработчик"
+          ]
+        },
+        {
+          "path": "adopted/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "65205f27aa46364163b667f9277ef8e4434b72030655442d6a6641b024d7a6ec"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.event"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/state",
+          "eq": "implemented"
+        },
+        {
+          "pointer": "/data/props/callType",
+          "eq": "After"
+        },
+        {
+          "pointer": "/data/props/handler",
+          "eq": "НовыйОбработчик"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "ext:Catalog.CorpusCatalog.Form.CorpusForm.Event.OnOpen"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/state",
+          "eq": "missing"
+        },
+        {
+          "pointer": "/data/props/callType",
+          "eq": "After"
+        },
+        {
+          "pointer": "/data/props/handler",
+          "eq": "ОткрытиеПосле"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.CorpusCatalog.Form.CorpusForm.Event.OnCreateAtServer"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/state",
+          "eq": "implemented"
+        },
+        {
+          "pointer": "/data/props/callType",
+          "eq": null
+        },
+        {
+          "pointer": "/data/props/handler",
+          "eq": "ПриСозданииНаСервере"
+        }
+      ]
+    }
+  ]
+}

@@ -1,4 +1,7 @@
 //! Existing managed form XML root and lexical opening-tag rules.
+use roxmltree::Node;
+use std::ops::Range;
+
 pub const FORM_LOGFORM_NS: &str = "http://v8.1c.ru/8.3/xcf/logform";
 
 pub fn require_form_root(root: roxmltree::Node<'_, '_>) -> Result<(), String> {
@@ -45,4 +48,17 @@ pub fn declared_platform_line(
     let root = document.root_element();
     require_form_root(root).ok()?;
     unica_source_contract::format_identity::export_format_line(root.attribute("version")?)
+}
+
+pub(crate) fn element_with_leading_space(xml: &str, node: Node<'_, '_>) -> Range<usize> {
+    let mut range = node.range();
+    if let Some(previous) = node.prev_sibling().filter(|node| node.is_text()) {
+        let preceding = &xml[previous.range()];
+        // Formatting belongs to the following element; meaningful text and
+        // comments outside the subtree stay in their original container.
+        if preceding.bytes().all(|b| b.is_ascii_whitespace()) {
+            range.start = previous.range().start;
+        }
+    }
+    range
 }

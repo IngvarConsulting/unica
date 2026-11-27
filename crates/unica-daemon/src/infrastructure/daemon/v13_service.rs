@@ -44,7 +44,8 @@ use super::v13_call_graph::{
     unready_branch_result, CallGraphFetchError, CallGraphSummary, CompleteBranchError,
 };
 use super::v13_read_modes::{
-    attach_can_with_color, operation_node_with, search_scope_route, source_backed, SearchScopeRoute,
+    attach_can_with_observations, operation_node_with, search_scope_route, source_backed,
+    SearchScopeRoute,
 };
 use crate::application::tool_contracts::SurfaceRelease;
 use crate::application::v13::apply::parse_request as parse_apply_request;

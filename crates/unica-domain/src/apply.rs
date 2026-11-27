@@ -580,6 +580,8 @@ operation_descriptors!(
     (FormOperation::ColumnAdd),
     (FormOperation::CommandAdd),
     (FormOperation::EventBind),
+    (FormOperation::EventReplace),
+    (FormOperation::EventUnbind),
     (FormOperation::PropsSet),
     (RoleOperation::Create),
     (RoleOperation::RightAdd),
@@ -832,6 +834,8 @@ mod tests {
             ("right.add", Some("Rights.xml")),
             ("item.add", Some("Form.xml")),
             ("event.bind", Some("Form.xml")),
+            ("event.replace", Some("Form.xml")),
+            ("event.unbind", Some("Form.xml")),
             ("event.implement", Some("Form.xml")),
             ("code.insert", Some("Form.xml")),
             ("mxl.set", Some("Template.xml")),
@@ -1400,6 +1404,8 @@ mod tests {
             FormOperation::descriptor(FormOperation::ColumnAdd),
             FormOperation::descriptor(FormOperation::CommandAdd),
             FormOperation::descriptor(FormOperation::EventBind),
+            FormOperation::descriptor(FormOperation::EventReplace),
+            FormOperation::descriptor(FormOperation::EventUnbind),
         ];
         for valid in metadata.chain(forms) {
             assert!(typed_registration_is_consistent(valid));
@@ -1492,6 +1498,8 @@ mod tests {
             "column.add",
             "command.add",
             "event.bind",
+            "event.replace",
+            "event.unbind",
             "props.set",
             "role.create",
             "right.add",
@@ -1578,7 +1586,7 @@ mod tests {
             "event.implement",
         ];
         let registry = crate::apply::operation_registry();
-        assert_eq!(expected.len(), 136);
+        assert_eq!(expected.len(), 138);
         assert_eq!(registry.names(), expected);
         // Семейство одноимённых операций выбирается по каноническому адресу.
         const SHARED_NAMES: &[(&str, OperationFamily, OperationFamily)] = &[

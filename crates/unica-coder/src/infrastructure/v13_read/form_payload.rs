@@ -16,6 +16,43 @@ fn form_event_projections(
 }
 
 impl<'a> LogicalViewReadAuthority<'a> {
+    /// Discover edit operations using the same exact XML slot as apply preflight.
+    pub fn has_local_form_event_binding(&self, at: &QualifiedAddress) -> Result<bool, ViewError> {
+        if unica_forms::applicability::form_event_parts(at.segments()).is_none() {
+            return Ok(false);
+        }
+        let admitted = self.snapshot(at)?;
+        let canonical = self.canonical_address(at, &admitted)?;
+        let Some((path, event)) =
+            unica_forms::applicability::form_event_parts(canonical.segments())
+        else {
+            return Ok(false);
+        };
+        let form = MetadataAddress::parse_logical(&canonical.prefix(2).logical_path()).map_err(
+            |error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()),
+        )?;
+        if self.read.inherited_resource(&form, "Form.xml")?.is_some() {
+            return Ok(false);
+        }
+        let bytes = self.read.form_xml(&form)?;
+        let text = std::str::from_utf8(&bytes).map_err(|error| {
+            ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+        })?;
+        let has_local_binding = unica_forms_designer::event_patch::has_local_event_binding(
+            text,
+            path[2..].iter().filter_map(AddressSegment::name),
+            event,
+        );
+        self.read_checkpoint()?;
+        if admitted.revision != self.exact_revision()? {
+            return Err(ViewError::new(
+                RefusalCode::StaleRevision,
+                "source revision changed during form event observation",
+            ));
+        }
+        Ok(has_local_binding)
+    }
+
     pub(super) fn form_method_bindings(
         &self,
         module_at: &QualifiedAddress,

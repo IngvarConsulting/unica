@@ -1,8 +1,12 @@
 //! Byte-preserving direct Form event slots over exact typed owner chains.
+use crate::root::{form_edit_opening_tag_end, require_form_root, FORM_LOGFORM_NS};
 use roxmltree::{Document, Node};
 use std::ops::Range;
+use unica_address::address::{AddressSegment, NodeKind};
 use unica_forms::event_targets::{PropertyEventOwner, PropertyEventOwnerKind};
+use unica_forms::events::{validate_event, FormElementKind, FormEventBinding, FormEventTarget};
 use unica_metadata::event::FormCallType;
+use unica_source_contract::format_identity::PlatformLine;
 use unica_source_contract::proposal::{ApplyPlanError, ApplyPlanErrorKind};
 use unica_xml_format::text::{
     event_line_start, event_local_line_ending, reject_event_lone_cr, LineEnding, LineEndingProfile,
@@ -318,41 +322,209 @@ fn resolve_form_owner<'a, 'input>(
             ))),
         };
     }
-    let mut current = root;
-    for expected in &owners[1..] {
-        let child_items = exactly_one_direct(current, "ChildItems", namespace)?;
-        let name = expected
-            .at
-            .segments()
-            .last()
-            .and_then(unica_address::address::AddressSegment::name)
-            .ok_or_else(|| invalid_source("typed Item owner has no exact name"))?;
-        let named = child_items
-            .children()
-            .filter(Node::is_element)
-            .filter(|node| node.attribute("name") == Some(name))
-            .collect::<Vec<_>>();
-        if named
+    let names = owners[1..]
+        .iter()
+        .map(|owner| {
+            owner
+                .at
+                .segments()
+                .last()
+                .and_then(AddressSegment::name)
+                .ok_or_else(|| invalid_source("typed Item owner has no exact name"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    resolve_item_chain(root, names)
+}
+
+fn resolve_item_chain<'a, 'input, 'name>(
+    root: Node<'a, 'input>,
+    names: impl IntoIterator<Item = &'name str>,
+) -> Result<Node<'a, 'input>, ApplyPlanError> {
+    let mut owner = root;
+    for name in names {
+        let sections = exact_direct_children(owner, "ChildItems", FORM_LOGFORM_NS)?;
+        if sections.len() > 1 {
+            return Err(invalid_source("direct ChildItems section is duplicated"));
+        }
+        let bars = exact_direct_children(owner, "AutoCommandBar", FORM_LOGFORM_NS)?;
+        let mut named = sections
             .iter()
-            .any(|node| node.tag_name().namespace() != Some(namespace))
-        {
+            .flat_map(|section| section.children())
+            .chain(bars)
+            .filter(|node| node.is_element() && node.attribute("name") == Some(name));
+        let item = named.next().ok_or_else(|| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::NotFound,
+                format!("form Item '{name}' is absent from the exact owner chain"),
+            )
+        })?;
+        if named.next().is_some() || item.tag_name().namespace() != Some(FORM_LOGFORM_NS) {
             return Err(invalid_source(format!(
-                "Form.xml contains a namespace lookalike for Item `{name}`"
+                "Form.xml contains an ambiguous Item '{name}'"
             )));
         }
-        let matches = named;
-        current = match matches.as_slice() {
-            [node] => *node,
-            [] => {
-                return Err(ApplyPlanError::new(
-                    ApplyPlanErrorKind::NotFound,
-                    format!("form Item `{name}` is absent from the exact owner chain"),
-                ))
-            }
-            _ => return Err(invalid_source(format!("form Item `{name}` is duplicated"))),
-        };
+        owner = item;
     }
-    Ok(current)
+    Ok(owner)
+}
+
+#[derive(Debug, Clone)]
+pub enum LocalEventEdit {
+    Replace {
+        handler: String,
+        call_type: Option<FormCallType>,
+    },
+    Unbind,
+}
+
+fn local_event_slot<'a, 'input>(
+    owner: Node<'a, 'input>,
+    event_id: &str,
+) -> Result<(Node<'a, 'input>, Node<'a, 'input>), ApplyPlanError> {
+    let events = exactly_one_direct(owner, "Events", FORM_LOGFORM_NS)?;
+    let slots = exact_direct_children(events, "Event", FORM_LOGFORM_NS)?;
+    let mut matching = slots
+        .into_iter()
+        .filter(|slot| slot.attribute("name") == Some(event_id));
+    let slot = matching.next().ok_or_else(|| {
+        ApplyPlanError::new(
+            ApplyPlanErrorKind::NotFound,
+            format!("the local binding for form event '{event_id}' is absent"),
+        )
+    })?;
+    if matching.next().is_some() {
+        return Err(invalid_source(format!(
+            "local form event '{event_id}' is duplicated"
+        )));
+    }
+    Ok((events, slot))
+}
+
+pub fn has_local_event_binding<'a>(
+    xml: &str,
+    items: impl IntoIterator<Item = &'a str>,
+    event_id: &str,
+) -> bool {
+    let Ok(document) = Document::parse(xml.trim_start_matches('\u{feff}')) else {
+        return false;
+    };
+    let root = document.root_element();
+    require_form_root(root).is_ok()
+        && resolve_item_chain(root, items)
+            .and_then(|owner| local_event_slot(owner, event_id))
+            .is_ok()
+}
+
+pub fn edit_local_event(
+    xml: &mut String,
+    items: &[String],
+    event_id: &str,
+    edit: &LocalEventEdit,
+    metadata_owner: Option<NodeKind>,
+    platform_line: Option<PlatformLine>,
+) -> Result<(), ApplyPlanError> {
+    let document = Document::parse(xml).map_err(|error| invalid_source(error.to_string()))?;
+    let root = document.root_element();
+    require_form_root(root).map_err(invalid_source)?;
+    let owner = resolve_item_chain(root, items.iter().map(String::as_str))?;
+    let (events, slot) = local_event_slot(owner, event_id)?;
+
+    match edit {
+        LocalEventEdit::Replace { handler, call_type } => {
+            let mut context = crate::event_context::context_from_root(root, platform_line);
+            context.metadata_owner = metadata_owner;
+            let target = if owner == root {
+                FormEventTarget::Form
+            } else {
+                let kind =
+                    FormElementKind::from_xml_tag(owner.tag_name().name()).ok_or_else(|| {
+                        invalid_source("the event owner has an unsupported element type")
+                    })?;
+                FormEventTarget::Element(kind)
+            };
+            let effective_call_type = call_type
+                .map(FormCallType::as_str)
+                .or_else(|| slot.attribute("callType"));
+            let data_path = crate::codec::form_child_text(owner, "DataPath");
+            let binding = FormEventBinding {
+                name: event_id,
+                handler,
+                call_type: effective_call_type,
+                data_path: data_path.as_deref(),
+            };
+            crate::codec::validate_event_owner_node(owner, target, &binding)
+                .and_then(|_| validate_event(&context, target, &binding))
+                .map_err(|error| {
+                    ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.to_string())
+                })?;
+
+            let range = slot.range();
+            let replacement = replace_event_xml(xml, slot, handler, *call_type)?;
+            xml.replace_range(range, &replacement);
+        }
+        LocalEventEdit::Unbind => {
+            // The platform omits an empty Events section. Keep any comments
+            // and attributes on the existing section.
+            let remove_section = events.attributes().len() == 0
+                && events.children().all(|node| {
+                    node == slot
+                        || node.is_text() && node.text().is_some_and(|text| text.trim().is_empty())
+                });
+            let target = if remove_section { events } else { slot };
+            let range = crate::root::element_with_leading_space(xml, target);
+            xml.replace_range(range, "");
+        }
+    }
+    Ok(())
+}
+
+fn replace_event_xml(
+    xml: &str,
+    slot: Node<'_, '_>,
+    handler: &str,
+    call_type: Option<FormCallType>,
+) -> Result<String, ApplyPlanError> {
+    let range = slot.range();
+    let opening_end = form_edit_opening_tag_end(xml, range.start)
+        .ok_or_else(|| invalid_source("form event has no complete opening tag"))?;
+    let mut edited = xml[range.clone()].to_string();
+    let relative_end = opening_end - range.start;
+    let self_closing = edited.ends_with("/>");
+    if slot.text().unwrap_or("") != handler {
+        if slot.children().any(|node| !node.is_text()) {
+            return Err(invalid_source("form event handler must be plain text"));
+        }
+        if self_closing {
+            let tag = edited[1..]
+                .split(|c: char| c.is_whitespace() || c == '/')
+                .next()
+                .expect("parsed event has a qualified tag name");
+            let closing = format!(">{}</{tag}>", escape_xml(handler));
+            edited.replace_range(relative_end - 1.., &closing);
+        } else {
+            let closing_start = edited
+                .rfind("</")
+                .ok_or_else(|| invalid_source("form event has no closing tag"))?;
+            edited.replace_range(relative_end + 1..closing_start, &escape_xml(handler));
+        }
+    }
+    if let Some(desired) = call_type {
+        match slot.attribute_node("callType") {
+            Some(attribute) if attribute.value() != desired.as_str() => {
+                let attr = attribute.range_value();
+                edited.replace_range(
+                    attr.start - range.start..attr.end - range.start,
+                    desired.as_str(),
+                );
+            }
+            None => {
+                let insertion = relative_end - usize::from(self_closing);
+                edited.insert_str(insertion, &format!(" callType=\"{}\"", desired.as_str()));
+            }
+            _ => {}
+        }
+    }
+    Ok(edited)
 }
 
 fn plan_property_event(
@@ -647,4 +819,109 @@ fn escape_xml(value: &str) -> String {
 
 fn invalid_source(message: impl Into<String>) -> ApplyPlanError {
     ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explicit_call_type_changes_only_the_target_binding() {
+        let before = concat!(
+            "<Form xmlns='http://v8.1c.ru/8.3/xcf/logform' version='2.20'>\r\n",
+            "\t<Events>\r\n",
+            "\t\t<Event callType = 'After' name='OnCreateAtServer'> Old </Event>\r\n",
+            "\t\t<Event name='OnOpen' callType='After'>Other</Event>\r\n",
+            "\t</Events>\r\n",
+            "\t<BaseForm version='2.20'><Events>",
+            "<Event name='OnCreateAtServer'>Regular</Event>",
+            "</Events></BaseForm>\r\n",
+            "</Form>",
+        );
+        let mut xml = before.to_string();
+        edit_local_event(
+            &mut xml,
+            &[],
+            "OnCreateAtServer",
+            &LocalEventEdit::Replace {
+                handler: "Old".to_string(),
+                call_type: Some(FormCallType::Before),
+            },
+            Some(NodeKind::Catalog),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            xml,
+            before
+                .replacen("callType = 'After'", "callType = 'Before'", 1)
+                .replacen("> Old <", ">Old<", 1)
+        );
+    }
+
+    #[test]
+    fn unbind_reaches_a_nested_item_and_keeps_the_base_form() {
+        let target = "<Events><Event name='OnChange' callType='After'>Local</Event></Events>";
+        let items = format!(
+            "<ChildItems><InputField name='Field' id='4'>{target}</InputField></ChildItems>"
+        );
+        let base = "<BaseForm version='2.20'><ChildItems><InputField name='Field' id='4'>\
+                    <Events><Event name='OnChange'>Base</Event></Events>\
+                    </InputField></ChildItems></BaseForm>";
+        let before = format!(
+            "<Form xmlns='{FORM_LOGFORM_NS}' version='2.20'><ChildItems>\
+             <UsualGroup name='Group' id='3'>{items}</UsualGroup></ChildItems>{base}</Form>"
+        );
+        let mut xml = before.clone();
+        assert!(has_local_event_binding(
+            &xml,
+            ["Group", "Field"],
+            "OnChange"
+        ));
+
+        edit_local_event(
+            &mut xml,
+            &["Group".to_string(), "Field".to_string()],
+            "OnChange",
+            &LocalEventEdit::Unbind,
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(xml, before.replace(target, ""));
+        assert!(!has_local_event_binding(
+            &xml,
+            ["Group", "Field"],
+            "OnChange"
+        ));
+        assert!(!has_local_event_binding(&xml, ["Field"], "OnChange"));
+    }
+    #[test]
+    fn ambiguous_or_foreign_slots_are_neither_observed_nor_edited() {
+        for sections in [
+            "<Events/><Events><Event name='OnOpen'>Handler</Event></Events>",
+            "<Events><foreign:Event name='OnOpen'>Handler</foreign:Event></Events>",
+            "<Events><Event name='OnOpen'>First</Event><Event name='OnOpen'>Second</Event></Events>",
+        ] {
+            let before = format!(
+                "<Form xmlns='{FORM_LOGFORM_NS}' xmlns:foreign='urn:foreign' version='2.20'>{sections}</Form>"
+            );
+            let mut xml = before.clone();
+            assert!(!has_local_event_binding(&xml, [], "OnOpen"));
+
+            let error = edit_local_event(
+                &mut xml,
+                &[],
+                "OnOpen",
+                &LocalEventEdit::Unbind,
+                None,
+                None,
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidSource);
+            assert_eq!(xml, before);
+        }
+    }
 }

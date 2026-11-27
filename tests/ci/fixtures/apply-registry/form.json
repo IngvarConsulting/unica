@@ -68,6 +68,18 @@
       "skeleton": "Values"
     },
     {
+      "variant": "EventReplace",
+      "operation": "event.replace",
+      "applicability": "FormEvent",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "EventUnbind",
+      "operation": "event.unbind",
+      "applicability": "FormEvent",
+      "skeleton": "Target"
+    },
+    {
       "variant": "PropsSet",
       "operation": "props.set",
       "applicability": "FormProperties",

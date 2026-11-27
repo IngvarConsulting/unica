@@ -858,16 +858,31 @@ pub fn form(operation: FormOperation) -> OperationContract {
             "No arguments. Main and inherited attributes are protected. Remove BSL uses beforehand; the operation checks XML bindings, report attribute slots and typed conditional-appearance field references, not all BSL uses. An opaque binding prevents proving safe removal and is refused.",
             json!({}),
         ),
-        FormOperation::EventBind => (
+        FormOperation::EventBind | FormOperation::EventReplace => (
             object(&[at(), ("values", object(&[
                 ("handler",json!({"type":"string","pattern":r"\S","description":"Handler procedure in the form module."})),
                 ("callType",json!({"type":"string","enum":FormCallType::ALL.map(FormCallType::as_str),
                     "description":"Only in an extension form."})),
             ], &["handler"]))], &["values"]),
             "An event of the form or its item: <source-set>:<Kind>.<Name>.Form.<Form>[.Item.<Element>…].Event.<Event>, as view lists it.",
-            "Bind the handler to the addressed event. The module procedure is not written; event.implement writes both.",
-            "The event and its item are named by the address.",
+            if operation == FormOperation::EventReplace {
+                "Replace the handler of the existing local event binding in Form.xml."
+            } else {
+                "Bind the handler to the addressed event. The module procedure is not written; event.implement writes both."
+            },
+            if operation == FormOperation::EventReplace {
+                "The plan requires a single existing local binding. Omit callType to preserve it. The handler procedure stays in the form module."
+            } else {
+                "The event and its item are named by the address."
+            },
             json!({"values":{"handler":"Sample"}}),
+        ),
+        FormOperation::EventUnbind => (
+            object(&[at()], &[]),
+            "An event of the form or its item: <source-set>:<Kind>.<Name>.Form.<Form>[.Item.<Element>…].Event.<Event>, as view lists it.",
+            "Remove the addressed local event binding from Form.xml.",
+            "The plan requires a single existing local binding. The handler procedure and the base form binding are preserved.",
+            json!({}),
         ),
         FormOperation::PropsSet => return form_props_set(),
         FormOperation::ItemMove => return form_move(),

@@ -95,6 +95,7 @@ pub(super) fn configuration_context() -> CanContext {
 fn node_site(
     data: &Map<String, Value>,
     context: CanContext,
+    local_event_binding: bool,
 ) -> Option<(
     QualifiedAddress,
     Option<TemplateFormat>,
@@ -113,6 +114,8 @@ fn node_site(
         prop("type").and_then(FormObservation::from_attribute_type)
     } else if unica_forms::applicability::is_form_column(at.segments()) {
         prop("parentType").and_then(FormObservation::from_column_parent_type)
+    } else if local_event_binding {
+        Some(FormObservation::LocalEventBinding)
     } else {
         prop("tag")
             .map(FormItemRole::from_tag)
@@ -140,8 +143,9 @@ fn computed_can_entries(
     data: &Map<String, Value>,
     context: CanContext,
     color: StyleItemPropertiesLookup<'_>,
+    local_event_binding: bool,
 ) -> Option<Vec<Value>> {
-    let (at, format, item) = node_site(data, context)?;
+    let (at, format, item) = node_site(data, context, local_event_binding)?;
     let site = crate::domain::apply::operation_site(&at, context)?;
     // Содержимое заимствованного узла без своего файла принадлежит
     // родителю: операции, которые пишут это содержимое, `apply` отвергнет,
@@ -176,17 +180,18 @@ fn computed_can_entries(
 /// what `apply` accepts here is part of the answer, not a separate question.
 #[cfg(test)]
 pub(super) fn attach_can(data: &mut Value, context: CanContext) {
-    attach_can_with_color(data, context, &|_| None);
+    attach_can_with_observations(data, context, &|_| None, false);
 }
-pub(super) fn attach_can_with_color(
+pub(super) fn attach_can_with_observations(
     data: &mut Value,
     context: CanContext,
     color: StyleItemPropertiesLookup<'_>,
+    local_event_binding: bool,
 ) {
     let Some(node) = data.as_object_mut() else {
         return;
     };
-    if let Some(entries) = computed_can_entries(node, context, color) {
+    if let Some(entries) = computed_can_entries(node, context, color, local_event_binding) {
         node.insert("can".to_string(), Value::Array(entries));
     }
 }
@@ -201,7 +206,7 @@ pub(super) fn operation_node(
     at: &str,
     context: CanContext,
 ) -> Result<Value, ReadModeError> {
-    operation_node_with(data, operation, at, context, &|_| None)
+    operation_node_with(data, operation, at, context, &|_| None, false)
 }
 
 /// The same with the style item properties the caller reads.
@@ -211,11 +216,12 @@ pub(super) fn operation_node_with(
     at: &str,
     context: CanContext,
     color: StyleItemPropertiesLookup<'_>,
+    local_event_binding: bool,
 ) -> Result<Value, ReadModeError> {
     let data = data
         .as_object()
         .ok_or_else(|| ReadModeError::bad_value("operation details require object node data"))?;
-    let (owner, format, item) = node_site(data, context).ok_or_else(|| {
+    let (owner, format, item) = node_site(data, context, local_event_binding).ok_or_else(|| {
         let kind = data.get("kind").and_then(Value::as_str).unwrap_or_default();
         ReadModeError::unsupported_section(format!(
             "the operation dictionary is not computed for kind `{kind}` yet"

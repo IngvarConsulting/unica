@@ -59,6 +59,8 @@ form_operations!(
     ColumnAdd => ("column.add", FormAttribute, Items),
     CommandAdd => ("command.add", Form, Items),
     EventBind => ("event.bind", FormEvent, Values),
+    EventReplace => ("event.replace", FormEvent, Values),
+    EventUnbind => ("event.unbind", FormEvent, Target),
     PropsSet => ("props.set", FormProperties, Values),
 );
 
@@ -89,6 +91,8 @@ impl FormOperation {
             | Self::ColumnAdd
             | Self::CommandAdd
             | Self::EventBind
+            | Self::EventReplace
+            | Self::EventUnbind
             | Self::PropsSet => Some("Form.xml"),
         }
     }
@@ -105,6 +109,8 @@ impl FormOperation {
             | Self::ColumnAdd
             | Self::CommandAdd
             | Self::EventBind
+            | Self::EventReplace
+            | Self::EventUnbind
             | Self::PropsSet => true,
         }
     }
@@ -171,7 +177,7 @@ impl unica_operations::FamilyOperation for FormOperation {
         site: Option<&unica_source_contract::context::OperationSite<'_>>,
     ) -> bool {
         match self {
-            Self::ColumnAdd => true,
+            Self::ColumnAdd | Self::EventReplace | Self::EventUnbind => true,
             // Only a data column needs the observed ValueTable parent; without
             // a site props.set keeps its role-independent context admission.
             Self::PropsSet => {
@@ -185,6 +191,8 @@ impl unica_operations::FamilyOperation for FormOperation {
     fn admits_observation(self, observation: Option<&Self::Observation>) -> bool {
         if self == Self::ColumnAdd {
             observation == Some(&crate::FormObservation::ValueTableAttribute)
+        } else if matches!(self, Self::EventReplace | Self::EventUnbind) {
+            observation == Some(&crate::FormObservation::LocalEventBinding)
         } else if self == Self::PropsSet {
             observation == Some(&crate::FormObservation::ValueTableColumn)
         } else {
@@ -275,6 +283,18 @@ mod tests {
                 "event.bind",
                 OperationApplicability::FormEvent,
                 OperationSkeleton::Values,
+            ),
+            (
+                FormOperation::EventReplace,
+                "event.replace",
+                OperationApplicability::FormEvent,
+                OperationSkeleton::Values,
+            ),
+            (
+                FormOperation::EventUnbind,
+                "event.unbind",
+                OperationApplicability::FormEvent,
+                OperationSkeleton::Target,
             ),
             (
                 FormOperation::PropsSet,

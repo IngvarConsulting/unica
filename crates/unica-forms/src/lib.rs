@@ -208,6 +208,7 @@ pub enum FormObservation {
     Item(FormItemRole),
     ValueTableAttribute,
     ValueTableColumn,
+    LocalEventBinding,
 }
 impl FormObservation {
     pub fn from_attribute_type(type_name: &str) -> Option<Self> {
@@ -219,7 +220,7 @@ impl FormObservation {
     pub fn item_role(self) -> Option<FormItemRole> {
         match self {
             Self::Item(role) => Some(role),
-            Self::ValueTableAttribute | Self::ValueTableColumn => None,
+            Self::ValueTableAttribute | Self::ValueTableColumn | Self::LocalEventBinding => None,
         }
     }
 }

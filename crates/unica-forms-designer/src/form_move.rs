@@ -4,7 +4,7 @@
 use roxmltree::{Document, Node};
 use std::ops::Range;
 
-use crate::root::FORM_LOGFORM_NS as NS;
+use crate::root::{element_with_leading_space, FORM_LOGFORM_NS as NS};
 
 #[derive(Debug, Clone)]
 pub enum FormMoveDestination {
@@ -208,19 +208,6 @@ fn portable_fragment(
     fragment
 }
 
-fn cut_range(xml: &str, node: Node<'_, '_>) -> Range<usize> {
-    let mut range = node.range();
-    if let Some(previous) = node.prev_sibling().filter(|node| node.is_text()) {
-        let preceding = &xml[previous.range()];
-        // Formatting belongs to the following element; meaningful text and
-        // comments outside the subtree stay in their original container.
-        if preceding.bytes().all(|b| b.is_ascii_whitespace()) {
-            range.start = previous.range().start;
-        }
-    }
-    range
-}
-
 /// Последний перенесённый элемент не оставляет секцию, которую платформа
 /// сама удаляет. Если `ChildItems` был единственным содержимым владельца,
 /// удаляем и оба пробельных узла: иначе отступ закрывающего тега переживёт
@@ -411,8 +398,8 @@ pub fn move_item(xml: &str, request: &FormItemMove) -> Result<String, MoveError>
             return Ok(xml.to_string());
         }
     }
-    let cut =
-        emptied_child_items_range(source_items, source).unwrap_or_else(|| cut_range(xml, source));
+    let cut = emptied_child_items_range(source_items, source)
+        .unwrap_or_else(|| element_with_leading_space(xml, source));
     let namespace_parent = target_items.unwrap_or(destination);
     let destination_prefix = target_items
         .map(|items| child_prefix(xml, items))
