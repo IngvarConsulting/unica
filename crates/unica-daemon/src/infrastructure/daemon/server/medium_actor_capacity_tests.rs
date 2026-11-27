@@ -12422,20 +12422,17 @@ fn symbol_port_answers_in_unica_places_with_a_substituted_provider() {
     assert_eq!(references["complete"], true);
     // An exported one is looked for in other modules by the set's name
     // index: built in the background, not ready on the first request.
-    let export = ask(None, "Run()", SymbolOperation::References);
+    let (export, index_build) =
+        crate::infrastructure::name_index::capture_name_index_build_for_test(|| {
+            ask(None, "Run()", SymbolOperation::References)
+        });
     assert_eq!(export["value"].as_array().unwrap().len(), 1);
     assert_eq!(
         export["reasons"],
         serde_json::json!([{"kind": "namesNotIndexed"}]),
     );
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    let export = loop {
-        let answer = ask(None, "Run()", SymbolOperation::References);
-        if answer["complete"] == true || std::time::Instant::now() > deadline {
-            break answer;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    };
+    index_build.join().expect("name index worker panicked");
+    let export = ask(None, "Run()", SymbolOperation::References);
     assert_eq!(export["complete"], true, "{export}");
     assert!(stub.0.lock().unwrap().is_empty(), "Unica answered alone");
 
