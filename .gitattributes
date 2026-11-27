@@ -6,6 +6,9 @@
 # линии закрепляется появлением файла, а не правкой этой строки.
 crates/unica-metadata/src/platform-event-catalog-*.json text eol=lf
 
+# Preserve the exact bytes of the MCP observation from the v0.12.3 release.
+/tests/fixtures/migration/v0.12.3-baseline.json -text
+
 # Preserve upstream license bytes for published asset checksums.
 plugins/unica/third-party/licenses/bsl-analyzer/** -text
 
