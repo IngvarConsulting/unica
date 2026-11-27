@@ -221,11 +221,16 @@ fn body_budget_refusal(
             "source text is over the budget",
         ),
     };
+    let next_subject = if error.next().is_empty() {
+        ""
+    } else {
+        "; read the module by regions and methods"
+    };
     let mut refused = DomainResult::canonical_rejection(
         result.at.clone(),
         RefusalCode::ResultTooLarge,
         format!(
-            "the source text is {text_bytes} bytes, over this client's {budget}-byte response budget; read the module by regions and methods",
+            "the source text is {text_bytes} bytes, over this client's {budget}-byte response budget{next_subject}",
         ),
     );
     if let Some(chunk) = first_body_chunk(result, budget) {

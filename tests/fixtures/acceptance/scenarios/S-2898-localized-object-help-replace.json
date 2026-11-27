@@ -1,0 +1,312 @@
+{
+  "id": "S-2898-localized-object-help-replace",
+  "issue": 2898,
+  "area": "Справка объектов",
+  "task": "Прочитать справку отчёта по языку и заменить одну зарегистрированную страницу с проверкой точных байтов и сохранности соседей.",
+  "workspace": "tests/fixtures/acceptance/workspace-object-help-replace",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.Guide.Help"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Report.Guide.Help.ru"
+        },
+        {
+          "pointer": "/data/items/1/at",
+          "eq": "main:Report.Guide.Help.en"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.Guide.Help.ru"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/sourceText",
+          "eq": "﻿<html><body><p>Прежняя инструкция</p></body></html>\n"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.Guide.Help.ru.Can.help.replace"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/op",
+          "eq": "help.replace"
+        },
+        {
+          "pointer": "/sourceText",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.Guide.Help.ru",
+        "ops": [
+          {
+            "op": "help.replace",
+            "args": {
+              "values": {
+                "html": "<html><body>Stale draft</body></html>"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "staleToken": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Reports/Guide/Ext/Help/ru.html",
+          "eq": "6d65057479418bc439594491971bf3b4eef72b80e467d0f022bbc8af741b84c7"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Reports/Guide/Ext/Help/en.html",
+          "eq": "b1a0fcf299aac945bc4bfe89b909345f4cf4b7921140fa0aa79e4f682dd340d6"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Reports/Guide/Ext/Help.xml",
+          "eq": "733f9637dc38a213cf8e43acffe38c11cbc913b8455663f2e0624bfdaa126748"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Reports/Guide.xml",
+          "eq": "c171cd4738661d01518effd238cc23281a19376d44620281e4d5bf9775114d3d"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.Guide.Help.ru",
+        "ops": [
+          {
+            "op": "help.replace",
+            "args": {
+              "values": {
+                "html": "﻿<html>\r\n<body><p>Новая инструкция</p></body>\r\n</html>\r\n"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "token": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Reports/Guide/Ext/Help/ru.html",
+          "eq": "6d65057479418bc439594491971bf3b4eef72b80e467d0f022bbc8af741b84c7"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Reports/Guide/Ext/Help/en.html",
+          "eq": "b1a0fcf299aac945bc4bfe89b909345f4cf4b7921140fa0aa79e4f682dd340d6"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Reports/Guide/Ext/Help.xml",
+          "eq": "733f9637dc38a213cf8e43acffe38c11cbc913b8455663f2e0624bfdaa126748"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Reports/Guide.xml",
+          "eq": "c171cd4738661d01518effd238cc23281a19376d44620281e4d5bf9775114d3d"
+        }
+      ]
+    },
+    {
+      "tool": "unica.diff",
+      "args": {
+        "executionToken": "$capture.token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/chunks/0/path",
+          "eq": "Reports/Guide/Ext/Help/ru.html"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Reports/Guide/Ext/Help/ru.html",
+          "eq": "6d65057479418bc439594491971bf3b4eef72b80e467d0f022bbc8af741b84c7"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Reports/Guide/Ext/Help/en.html",
+          "eq": "b1a0fcf299aac945bc4bfe89b909345f4cf4b7921140fa0aa79e4f682dd340d6"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Reports/Guide/Ext/Help.xml",
+          "eq": "733f9637dc38a213cf8e43acffe38c11cbc913b8455663f2e0624bfdaa126748"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Reports/Guide.xml",
+          "eq": "c171cd4738661d01518effd238cc23281a19376d44620281e4d5bf9775114d3d"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Reports/Guide/Ext/Help/ru.html",
+          "eq": "dc109ae3168b8ac654f7e10861833ab0e75112f61a1a3b47f6885160c7a114c9"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Reports/Guide/Ext/Help/en.html",
+          "eq": "b1a0fcf299aac945bc4bfe89b909345f4cf4b7921140fa0aa79e4f682dd340d6"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Reports/Guide/Ext/Help.xml",
+          "eq": "733f9637dc38a213cf8e43acffe38c11cbc913b8455663f2e0624bfdaa126748"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Reports/Guide.xml",
+          "eq": "c171cd4738661d01518effd238cc23281a19376d44620281e4d5bf9775114d3d"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.staleToken"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "stale_revision: retained apply preimage changed: Reports/Guide/Ext/Help/ru.html; input `Reports/Guide/Ext/Help/ru.html`: source write target; the plan retains its original stat",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "stale_revision"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Reports/Guide/Ext/Help/ru.html",
+          "eq": "dc109ae3168b8ac654f7e10861833ab0e75112f61a1a3b47f6885160c7a114c9"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Reports/Guide/Ext/Help/en.html",
+          "eq": "b1a0fcf299aac945bc4bfe89b909345f4cf4b7921140fa0aa79e4f682dd340d6"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Reports/Guide/Ext/Help.xml",
+          "eq": "733f9637dc38a213cf8e43acffe38c11cbc913b8455663f2e0624bfdaa126748"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Reports/Guide.xml",
+          "eq": "c171cd4738661d01518effd238cc23281a19376d44620281e4d5bf9775114d3d"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.Guide.Help.ru"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/sourceText",
+          "eq": "﻿<html>\r\n<body><p>Новая инструкция</p></body>\r\n</html>\r\n"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.Guide.Help.en"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/sourceText",
+          "eq": "<html><body><p>Companion help</p></body></html>\n"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.Guide.Help.fr"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: help language is not registered in Help.xml",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "not_found"
+        }
+      ]
+    }
+  ]
+}

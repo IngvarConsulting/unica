@@ -23,6 +23,7 @@ pub enum OperationApplicability {
     Metadata,
     /// A typed metadata object whose descriptor may carry `Ext/Help`.
     MetadataWithHelp,
+    MetadataHelpPage,
     MetadataRelations,
     MetadataOrCommonTemplate,
     MetadataAttribute,
@@ -107,6 +108,7 @@ impl OperationApplicability {
             Self::Metadata => "`Kind.Name`",
             Self::MetadataRelations => "`Kind.Name` of a kind with supported relations",
             Self::MetadataWithHelp => "`Kind.Name` of a kind with a help page",
+            Self::MetadataHelpPage => "`Kind.Name.Help.LanguageCode` in a configuration or extension",
             Self::MetadataOrCommonTemplate => "`Kind.Name` or `CommonTemplate.Name`",
             Self::SupportRule => {
                 "`Configuration` of a configuration, `Kind.Name` or its node with an own support record: `.Form.F`, `.Template.T`, `.Command.C`, `.Attribute.A`, `.TabularSection.T[.Attribute.A]`, `.Dimension.D`, `.Resource.R`; external data source descendants; `Subsystem.A[.Subsystem.B…]`"
@@ -183,6 +185,13 @@ impl OperationApplicability {
             Self::MetadataWithHelp => site
                 .metadata_object()
                 .is_some_and(crate::metadata_kind_has_help),
+            Self::MetadataHelpPage => {
+                matches!(
+                    site.source().kind(),
+                    SourceSetKind::Configuration | SourceSetKind::Extension
+                ) && crate::embedded_help::scope(segments)
+                    .is_some_and(|(_, language)| language.is_some())
+            }
             Self::MetadataRelations => site
                 .metadata_object()
                 .is_some_and(|kind| !crate::metadata_relation_specs(kind).is_empty()),

@@ -100,6 +100,19 @@ pub fn metadata_help_create_input_schema() -> &'static Value {
     })
 }
 
+pub fn metadata_help_replace_input_schema() -> &'static Value {
+    static SCHEMA: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+    SCHEMA.get_or_init(|| {
+        object(
+            &[
+                ("at", text(true)),
+                ("values", object(&[("html", text(true))], &["html"])),
+            ],
+            &["values"],
+        )
+    })
+}
+
 pub fn metadata_relation_input_schema() -> &'static Value {
     static SCHEMA: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
     SCHEMA.get_or_init(|| {
@@ -566,6 +579,18 @@ pub fn metadata_help_create() -> OperationContract {
         notes: "lang is required and contains only ASCII letters and digits, for example ru or en. Creation is refused if help already exists; existing help and forms are preserved. Plan this root-inspecting operation before other changes in the batch.",
         example_args: json!({"values":{"lang":"ru"}}),
         help: METADATA_HELP,
+        format_validators: &[],
+    }
+}
+
+pub fn metadata_help_replace() -> OperationContract {
+    OperationContract {
+        schema: metadata_help_replace_input_schema().clone(),
+        target: "An existing embedded help page: <source-set>:<Kind>.<Name>.Help.<language-code>.",
+        effect: "Replace the complete UTF-8 HTML of one registered page.",
+        notes: "Read the page with unica.view. Pass the complete HTML with the intended byte order mark and line endings. Unica writes the text verbatim and preserves Help.xml, the owner and other pages. An absent page or changed source refuses publication.",
+        example_args: json!({"values":{"html":"<!DOCTYPE html><html><body><p>Updated help</p></body></html>"}}),
+        help: "skills/source-access/SKILL.md",
         format_validators: &[],
     }
 }

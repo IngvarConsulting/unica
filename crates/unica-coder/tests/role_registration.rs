@@ -412,6 +412,7 @@ fn remaining_metadata_registrations_require_their_typed_variants() {
             "Values",
         ),
         ("HelpCreate", "help.create", "MetadataWithHelp", "Values"),
+        ("HelpReplace", "help.replace", "MetadataHelpPage", "Values"),
         ("TemplateAdd", "template.add", "MetadataTemplates", "Items"),
         ("TemplateSet", "template.set", "MetadataTemplate", "Values"),
         (
@@ -530,6 +531,12 @@ fn raw_metadata_guards_follow_literals_while_the_form_family_requires_typed_regi
             "relation.add",
         ),
         ("Metadata", "MetadataWithHelp", "HelpCreate", "help.create"),
+        (
+            "Metadata",
+            "MetadataHelpPage",
+            "HelpReplace",
+            "help.replace",
+        ),
         (
             "Metadata",
             "MetadataTemplate",

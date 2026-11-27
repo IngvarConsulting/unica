@@ -70,6 +70,7 @@ impl NodeKind {
             Self::Group => previous == Some(Self::Interface),
             Self::Type | Self::Property => first == Some(Self::XdtoPackage),
             Self::Right => first == Some(Self::Role) && owners.len() == 1,
+            Self::Help => owners.len() == 1 && owners[0].kind.is_metadata_kind(),
             _ => false,
         }
     }
@@ -80,7 +81,7 @@ impl NodeKind {
     /// СКД: платформа хранит его строкой настроек («По периодам»), а не
     /// идентификатором. Точка в нём по-прежнему экранируется `\.` (#1357).
     pub fn name_is_free_text(self, owners: &[AddressSegment]) -> bool {
-        self == Self::Item && self.name_may_contain_dot(owners)
+        matches!(self, Self::Item | Self::Help) && self.name_may_contain_dot(owners)
     }
 
     // Параметр назван `token`, а не `raw`: `&raw` — это спеллинг оператора

@@ -2,6 +2,41 @@
 use crate::dialect::root_version;
 use roxmltree::Document;
 
+const HELP_NS: &str = "http://v8.1c.ru/8.3/xcf/extrnprops";
+
+pub fn registered_pages(bytes: &[u8]) -> Result<Vec<String>, String> {
+    let text =
+        std::str::from_utf8(bytes).map_err(|error| format!("Help.xml is not UTF-8: {error}"))?;
+    let document = Document::parse(text.trim_start_matches('\u{feff}'))
+        .map_err(|error| format!("Help.xml is not XML: {error}"))?;
+    let root = document.root_element();
+    if !root.has_tag_name((HELP_NS, "Help")) {
+        return Err("Help.xml must have the Designer Help root".into());
+    }
+
+    let mut seen = std::collections::HashSet::new();
+    root.children()
+        .filter(|page| page.has_tag_name((HELP_NS, "Page")))
+        .map(|page| {
+            if page.children().any(|child| child.is_element()) {
+                return Err("Help.xml Page must name one language code".into());
+            }
+            let code = page
+                .children()
+                .filter(|child| child.is_text())
+                .filter_map(|child| child.text())
+                .collect::<String>();
+            unica_metadata::embedded_help::page_file_name(&code).map_err(str::to_owned)?;
+            if !seen.insert(code.to_lowercase()) {
+                return Err(format!(
+                    "Help.xml repeats or ambiguously spells language `{code}`"
+                ));
+            }
+            Ok(code)
+        })
+        .collect()
+}
+
 pub fn help_metadata_xml(lang: &str, format_version: &str) -> String {
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\

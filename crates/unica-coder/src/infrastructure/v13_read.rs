@@ -166,6 +166,7 @@ struct OwnerEdgeCacheKey {
 mod body_syntax_read;
 mod diagnostic_scope;
 mod editability_view;
+mod embedded_help;
 mod exchange_membership;
 pub(crate) use exchange_membership::ExchangeMembership;
 mod configuration_relations;
@@ -553,6 +554,11 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         }
         let route = route_logical_address(at, self.profile)
             .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
+        if let Some((owner, language)) = unica_metadata::embedded_help::scope(at.segments()) {
+            return self
+                .embedded_help_export_path(at, &owner, language)
+                .map(Some);
+        }
         if let [interface] = at.segments() {
             if interface.kind() == NodeKind::OrdinaryInterface {
                 return Ok(interface.name().map(|name| {
@@ -673,7 +679,11 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
             ));
         }
         let inherited = self.inherited_route_part(&route, admitted)?;
-        let projected = if let Some((borrowing, resource)) = &inherited {
+        let projected = if let Some((target, language)) =
+            unica_metadata::embedded_help::scope(at.segments())
+        {
+            self.embedded_help_view(at, &target, language, admitted)?
+        } else if let Some((borrowing, resource)) = &inherited {
             project_inherited_part(&route, borrowing, resource)?
         } else if route.reader() == LogicalReader::Module {
             self.module_view(&route, admitted)?
@@ -939,6 +949,7 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         } else {
             projected
         };
+        let projected = self.with_help_branch(at, projected)?;
         self.read_checkpoint()?;
         if admitted.revision != self.exact_revision()? {
             return Err(ViewError::new(

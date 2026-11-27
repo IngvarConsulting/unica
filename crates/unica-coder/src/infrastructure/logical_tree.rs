@@ -63,6 +63,11 @@ pub fn route_logical_address(
 ) -> Result<LogicalTreeRoute, LogicalTreeError> {
     let class = classify_route(address, profile).ok_or_else(|| not_found(address))?;
     let segments = address.segments();
+    if segments.iter().any(|part| part.kind() == NodeKind::Help) {
+        let (target, _) =
+            unica_metadata::embedded_help::scope(segments).ok_or_else(|| not_found(address))?;
+        return Ok(route(address, LogicalReader::Metadata, Some(target), None));
+    }
     if segments
         .iter()
         .any(|part| part.kind() == NodeKind::Definition)

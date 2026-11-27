@@ -5,8 +5,9 @@ use unica_address::address::{NodeKind, QualifiedAddress};
 use unica_address::source_target::MetadataAddress;
 use unica_metadata::apply_operations::MetadataOperation as RegisteredMetadataOperation;
 use unica_metadata::contracts::{
-    metadata_help_create_input_schema, metadata_object_create_input_schema,
-    metadata_object_remove_input_schema, metadata_relation_input_schema,
+    metadata_help_create_input_schema, metadata_help_replace_input_schema,
+    metadata_object_create_input_schema, metadata_object_remove_input_schema,
+    metadata_relation_input_schema,
 };
 use unica_metadata::descriptor_operations::{PropertiesOperation, PropertiesSite};
 use unica_metadata::{MetaCollection, MetaEditOperation, MetadataKind};
@@ -75,6 +76,11 @@ pub enum MetadataPlanKind {
         target: MetadataAddress,
         name: String,
         lang: String,
+    },
+    HelpReplace {
+        target: MetadataAddress,
+        lang: String,
+        html: String,
     },
     /// Templates live in their own descriptors under `Templates/`, registered
     /// on the owner by name; the typed collection writer does not know that.
@@ -539,6 +545,9 @@ pub fn parse_metadata_plan_operation_in(
             }
             RegisteredMetadataOperation::HelpCreate => {
                 parse_help_create(object, op_index, binding)?
+            }
+            RegisteredMetadataOperation::HelpReplace => {
+                parse_help_replace(object, op_index, binding)?
             }
             RegisteredMetadataOperation::ContentSet => {
                 parse_exchange_content(object, op_index, binding)?
@@ -1115,6 +1124,64 @@ pub fn parse_help_create(
         lang: lang.to_string(),
     })
 }
+fn parse_help_replace(
+    args: &Map<String, Value>,
+    op_index: usize,
+    binding: &MetadataDecodeContext<'_>,
+) -> Result<MetadataPlanKind, ApplyPlanError> {
+    let schema = metadata_help_replace_input_schema();
+    reject_unknown_input_args("help.replace", args, schema, op_index, binding.registry)?;
+    let at = unica_source_contract::proposal::input::qualified_target(
+        args,
+        op_index,
+        binding.source_set_name(),
+    )?;
+    let at_path = format!("ops[{op_index}].args.at");
+    let Some((target, Some(lang))) = unica_metadata::embedded_help::scope(at.segments()) else {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            "help.replace needs the address of one help page",
+        )
+        .at_path(at_path));
+    };
+    unica_metadata::embedded_help::page_file_name(lang).map_err(|message| {
+        ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(at_path)
+    })?;
+
+    let values = required_object(args, "values", op_index)?;
+    let values_path = format!("ops[{op_index}].args.values");
+    if let Some(field) = values.keys().find(|field| *field != "html") {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            format!("help.replace values accept only `html`, not `{field}`"),
+        )
+        .at_path(format!("{values_path}.{field}")));
+    }
+    let html = values
+        .get("html")
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty() && !text.contains('\0'))
+        .ok_or_else(|| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::BadValue,
+                "help.replace requires non-empty `values.html` without NUL",
+            )
+            .at_path(format!("{values_path}.html"))
+        })?;
+    if html.len() > unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            "help.replace HTML exceeds the canonical result bound",
+        )
+        .at_path(format!("{values_path}.html")));
+    }
+    Ok(MetadataPlanKind::HelpReplace {
+        target,
+        lang: lang.to_string(),
+        html: html.to_string(),
+    })
+}
+
 pub fn metadata_owner(
     target: &QualifiedAddress,
     op_index: usize,
