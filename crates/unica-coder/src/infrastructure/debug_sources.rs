@@ -15,7 +15,8 @@ use unica_address::{
 };
 use unica_source_contract::{
     debug_source::{
-        DebugModuleId, DebugModuleMatches, DebugModuleQuery, DebugModuleSource, ResolveDebugModules,
+        DebugModuleId, DebugModuleMatches, DebugModuleQuery, DebugModuleSource,
+        ResolveDebugModules, COMMON_MODULE_PROPERTY_ID, OBJECT_MODULE_PROPERTY_ID,
     },
     read::{FileIdentity, FileStamp, ReadFile, SourceDirectory, SourceSelectionReadPass},
     ProjectSourceSet, SourceFormat, SourceSetKind, SourceSetState,
@@ -504,13 +505,17 @@ fn runtime_ids(query: DebugModuleQuery<'_>) -> Option<&[DebugModuleId]> {
 
 /// Property UUID in the RDBG module identity distinguishes these four module routes.
 fn role_property(role: PlatformXmlModuleRole) -> Option<uuid::Uuid> {
-    Some(uuid::Uuid::from_u128(match role {
-        PlatformXmlModuleRole::Module => 0xd5963243_262e_4398_b4d7_fb16d06484f6,
-        PlatformXmlModuleRole::ManagedApplicationModule => 0xd22e852a_cf8a_4f77_8ccb_3548e7792bea,
-        PlatformXmlModuleRole::ObjectModule => 0xa637f77f_3840_441d_a1c3_699c8c5cb7e0,
-        PlatformXmlModuleRole::FormModule => 0x32e087ab_1491_49b6_aba7_43571b41ac2b,
+    Some(match role {
+        PlatformXmlModuleRole::Module => COMMON_MODULE_PROPERTY_ID,
+        PlatformXmlModuleRole::ManagedApplicationModule => {
+            uuid::Uuid::from_u128(0xd22e852a_cf8a_4f77_8ccb_3548e7792bea)
+        }
+        PlatformXmlModuleRole::ObjectModule => OBJECT_MODULE_PROPERTY_ID,
+        PlatformXmlModuleRole::FormModule => {
+            uuid::Uuid::from_u128(0x32e087ab_1491_49b6_aba7_43571b41ac2b)
+        }
         _ => return None,
-    }))
+    })
 }
 
 fn descriptor_path(metadata: &str) -> Result<std::path::PathBuf> {
@@ -708,6 +713,60 @@ mod tests {
     }
 
     #[test]
+    fn named_processor_frame_verifies_the_registered_object_and_its_saved_bsl() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/acceptance/workspace-resolve-resources");
+        let workspace = tempfile::tempdir().unwrap();
+        crate::infrastructure::test_fixtures::copy_tree(&fixture, workspace.path());
+        let src = workspace.path().join("src");
+        std::fs::write(src.join("Documents/Invoice.xml"), "unrelated broken object").unwrap();
+        let mut resolve = workspace_debug_resolver(workspace.path(), None).unwrap();
+        let id = DebugModuleId {
+            extension: None,
+            object: uuid::Uuid::from_u128(0xf3317000_0000_4000_8000_000000000003),
+            property: OBJECT_MODULE_PROPERTY_ID,
+        };
+        let mut named = |name: &str, id: &DebugModuleId| {
+            let module =
+                DebugFrameModule::from_presentation(name, OBJECT_MODULE_PROPERTY_ID).unwrap();
+            resolve(DebugModuleQuery::Frame {
+                module: &module,
+                id,
+            })
+            .unwrap()
+            .modules
+        };
+        let frame = "Обработка.Processor.МодульОбъекта.Выполнить()";
+        let found = named(frame, &id);
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            found[0].address.to_string(),
+            "main:DataProcessor.Processor.Module.Object"
+        );
+        assert_eq!(found[0].runtime_id, id);
+        for wrong in [
+            DebugModuleId {
+                object: uuid::Uuid::nil(),
+                ..id.clone()
+            },
+            DebugModuleId {
+                property: COMMON_MODULE_PROPERTY_ID,
+                ..id.clone()
+            },
+            DebugModuleId {
+                extension: Some("Another".into()),
+                ..id.clone()
+            },
+        ] {
+            assert!(named(frame, &wrong).is_empty());
+        }
+        // Orphan has the same UUID and a saved object module, but no registration.
+        assert!(named("DataProcessor.Orphan.ObjectModule.Run()", &id).is_empty());
+        std::fs::remove_file(src.join("DataProcessors/Processor/Ext/ObjectModule.bsl")).unwrap();
+        assert!(named(frame, &id).is_empty());
+    }
+
+    #[test]
     fn named_frame_checks_only_the_registered_form_and_its_full_id() {
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/fixtures/acceptance/workspace-resolve-resources");
@@ -722,7 +781,7 @@ mod tests {
         };
         let mut resolve = workspace_debug_resolver(workspace.path(), None).unwrap();
         let mut named = |name: &str, candidate: &DebugModuleId| {
-            let module = DebugFrameModule::from_presentation(name).unwrap();
+            let module = DebugFrameModule::from_presentation(name, candidate.property).unwrap();
             resolve(DebugModuleQuery::Frame {
                 module: &module,
                 id: candidate,
@@ -771,14 +830,16 @@ mod tests {
         }
         std::fs::write(workspace.path().join("v8project.yaml"), "source-set:\n  - {name: main, type: CONFIGURATION, path: base}\n  - {name: other, type: CONFIGURATION, path: copy}\n  - {name: ext, type: EXTENSION, path: extension}\n").unwrap();
         let mut resolve = workspace_debug_resolver(workspace.path(), None).unwrap();
-        let module =
-            DebugFrameModule::from_presentation("DataProcessor.Processor.Form.Main.Form.Open()")
-                .unwrap();
         let mut id = DebugModuleId {
             extension: None,
             object: uuid::Uuid::from_u128(0xf3317000_0000_4000_8000_000000000004),
             property: role_property(PlatformXmlModuleRole::FormModule).unwrap(),
         };
+        let module = DebugFrameModule::from_presentation(
+            "DataProcessor.Processor.Form.Main.Form.Open()",
+            id.property,
+        )
+        .unwrap();
         let mut source_sets = |id: &DebugModuleId| {
             let mut sets: Vec<_> = resolve(DebugModuleQuery::Frame {
                 module: &module,
@@ -912,6 +973,60 @@ mod tests {
         std::fs::remove_file(module_dir.join("Duplicate/Ext/Module.bsl")).unwrap();
         std::fs::write(module_dir.join("Duplicate.xml"), "no saved module").unwrap();
         assert_eq!(matches().len(), 1);
+    }
+
+    #[test]
+    fn named_common_module_frame_checks_only_the_registered_module_in_the_matching_extension() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/acceptance/workspace-borrowed");
+        let workspace = tempfile::tempdir().unwrap();
+        crate::infrastructure::test_fixtures::copy_tree(&fixture, workspace.path());
+        let mut resolve = workspace_debug_resolver(workspace.path(), None).unwrap();
+        let candidate = DebugFrameModule::from_presentation(
+            "КешЗначений.Получить()",
+            COMMON_MODULE_PROPERTY_ID,
+        )
+        .unwrap();
+        for (set, root) in [("main", "cf"), ("ext", "ext")] {
+            let address = format!("{set}:CommonModule.КешЗначений");
+            let id = resolve(DebugModuleQuery::Address(&address))
+                .unwrap()
+                .modules
+                .pop()
+                .unwrap()
+                .runtime_id;
+            let src = workspace.path().join("src").join(root);
+            std::fs::write(
+                src.join("CommonModules/СерверныеФункции.xml"),
+                "unrelated broken module",
+            )
+            .unwrap();
+            let mut find = |id: &DebugModuleId| {
+                resolve(DebugModuleQuery::Frame {
+                    module: &candidate,
+                    id,
+                })
+                .unwrap()
+                .modules
+            };
+            let found = find(&id);
+            assert_eq!(found.len(), 1);
+            assert_eq!(found[0].address.to_string(), address);
+            assert_eq!(found[0].runtime_id, id);
+            assert!(find(&DebugModuleId {
+                object: uuid::Uuid::nil(),
+                ..id.clone()
+            })
+            .is_empty());
+            assert!(find(&DebugModuleId {
+                property: role_property(PlatformXmlModuleRole::FormModule).unwrap(),
+                ..id.clone()
+            })
+            .is_empty());
+            let bsl = src.join("CommonModules/КешЗначений/Ext/Module.bsl");
+            std::fs::remove_file(bsl).unwrap();
+            assert!(find(&id).is_empty());
+        }
     }
 
     #[test]

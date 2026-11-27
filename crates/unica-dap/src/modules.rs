@@ -192,7 +192,11 @@ impl Modules {
         frames: impl Iterator<Item = (Option<&'a DebugModuleId>, &'a str, Option<&'a str>)>,
     ) -> Vec<Option<String>> {
         let frames: Vec<_> = frames
-            .map(|(id, name, hit)| (id, DebugFrameModule::from_presentation(name), hit))
+            .map(|(id, name, hit)| {
+                let module =
+                    id.and_then(|id| DebugFrameModule::from_presentation(name, id.property));
+                (id, module, hit)
+            })
             .collect();
         let mut named = HashMap::new();
         let mut unresolved = HashSet::new();
@@ -570,6 +574,21 @@ mod tests {
         );
         assert_eq!(frames, [None, Some(FIRST.to_owned()), None]);
         assert_eq!(workspace.borrow().reverse, [vec![id.clone()], vec![id]]);
+    }
+
+    #[test]
+    fn short_frame_with_another_property_reuses_the_runtime_match_across_methods() {
+        let (mut modules, workspace) = setup();
+        let id = id(1);
+        for name in ["First.Open()", "Other.Close()"] {
+            assert_eq!(
+                modules.frame_addresses([(Some(&id), name, None)].into_iter()),
+                [Some(FIRST.to_owned())]
+            );
+        }
+        assert!(workspace.borrow().named.is_empty());
+        assert_eq!(workspace.borrow().reverse, [vec![id]]);
+        assert_eq!(workspace.borrow().forward, [FIRST]);
     }
 
     #[test]

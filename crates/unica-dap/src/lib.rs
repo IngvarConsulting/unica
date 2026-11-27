@@ -1228,24 +1228,10 @@ impl Session {
             .children()
             .filter(|node| node.has_tag_name("callStack"))
         {
-            let id = child(entry, "moduleID")
-                .map(|module| -> Result<_> {
-                    Ok(DebugModuleId {
-                        extension: field(module, "extensionName")
-                            .filter(|name| !name.is_empty())
-                            .map(str::to_owned),
-                        object: field(module, "objectID")
-                            .ok_or("missing rdbg object ID")?
-                            .parse()?,
-                        property: field(module, "propertyID")
-                            .ok_or("missing rdbg property ID")?
-                            .parse()?,
-                    })
-                })
-                .transpose()?;
+            let id = child(entry, "moduleID").and_then(workspace_module_id);
             let line = field(entry, "lineNo")
-                .ok_or("missing rdbg stack line")?
-                .parse::<u32>()?;
+                .and_then(|line| line.parse::<u32>().ok())
+                .unwrap_or(0);
             stack.push((line, id, decode(field(entry, "presentation"))?));
         }
         // Only the innermost frame can report a hit on one of the installed lines.
@@ -1295,6 +1281,24 @@ impl Session {
             })
             .collect())
     }
+}
+
+/// Only configuration and extension frames can refer to these saved workspace modules.
+/// An external or system frame can carry the same UUIDs or omit them entirely.
+fn workspace_module_id(module: Node<'_, '_>) -> Option<DebugModuleId> {
+    let extension = field(module, "extensionName").filter(|name| !name.is_empty());
+    match field(module, "type") {
+        Some("ConfigModule") if extension.is_none() => {}
+        Some("ExtensionModule") if extension.is_some() => {}
+        None if field(module, "URL").is_none()
+            && field(module, "extId").is_none_or(|id| id == "0") => {}
+        _ => return None,
+    }
+    Some(DebugModuleId {
+        extension: extension.map(str::to_owned),
+        object: field(module, "objectID")?.parse().ok()?,
+        property: field(module, "propertyID")?.parse().ok()?,
+    })
 }
 
 impl Frame {
