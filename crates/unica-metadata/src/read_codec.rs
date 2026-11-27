@@ -218,6 +218,9 @@ pub trait MetadataReadCodec: Send + Sync {
     /// Заимствование объекта расширением по его дескриптору.
     fn borrowing(&self, descriptor: &[u8]) -> Result<MetaBorrowing, String>;
 
+    /// Признак родительской подсистемы из дескриптора, по которому доказан её UUID.
+    fn parent_subsystem_include(&self, descriptor: &[u8], address: &str) -> Result<bool, String>;
+
     /// Дескриптор заимствует объект родителя. Нечитаемый дескриптор —
     /// не заимствование.
     fn extends_parent(&self, descriptor: &[u8]) -> bool;

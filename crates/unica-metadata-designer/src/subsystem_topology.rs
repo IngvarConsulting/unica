@@ -57,7 +57,19 @@ impl From<io::Error> for SubsystemTopologyError {
 }
 
 pub fn read_registered_subsystem_topology(
+    reader: Box<dyn unica_source_contract::read::RetainedSourceRead>,
+    checkpoint: impl FnMut() -> io::Result<()>,
+) -> Result<SubsystemTopology, SubsystemTopologyError> {
+    read_subsystem_topology_with_parent(reader, None, checkpoint)
+}
+
+type ParentInclude<'a> = dyn FnMut(&str) -> Result<bool, SubsystemTopologyError> + 'a;
+
+/// Для чтения расширения вызывающий передаёт доказательство свойства родителя
+/// по UUID. Полное описание конфигурации всегда требует свой локальный флаг.
+pub fn read_subsystem_topology_with_parent(
     mut reader: Box<dyn unica_source_contract::read::RetainedSourceRead>,
+    mut parent_include: Option<&mut ParentInclude<'_>>,
     mut checkpoint: impl FnMut() -> io::Result<()>,
 ) -> Result<SubsystemTopology, SubsystemTopologyError> {
     let configuration_path = PathBuf::from("Configuration.xml");
@@ -71,9 +83,8 @@ pub fn read_registered_subsystem_topology(
             }
         })?;
     let root_registrations = parse_configuration_registrations(&configuration)?;
-    let mut dependency_paths = vec![configuration_path];
     let mut dependency_documents = vec![SubsystemTopologyDependencyDocument {
-        path: dependency_paths[0].clone(),
+        path: configuration_path,
         bytes: configuration,
     }];
     let roots = build_registered_nodes(
@@ -81,14 +92,17 @@ pub fn read_registered_subsystem_topology(
         &[],
         true,
         reader.as_mut(),
-        &mut dependency_paths,
+        &mut parent_include,
         &mut dependency_documents,
         &mut checkpoint,
     )?;
     reader.complete(&mut checkpoint)?;
     Ok(SubsystemTopology {
         roots,
-        dependency_paths,
+        dependency_paths: dependency_documents
+            .iter()
+            .map(|doc| doc.path.clone())
+            .collect(),
         dependency_documents,
     })
 }
@@ -112,7 +126,7 @@ pub fn command_interface_sections<E>(
                     "registered subsystem descriptor `{logical_path}` is missing"
                 ))
             })?;
-        if parse_subsystem_descriptor(&bytes, &name, &logical_path)?.include {
+        if parse_subsystem_descriptor(&bytes, &name, &logical_path, &mut None)?.include {
             sections.push(name);
         }
     }
@@ -149,6 +163,7 @@ fn parse_subsystem_descriptor(
     bytes: &[u8],
     expected_name: &str,
     logical_path: &str,
+    parent_include: &mut Option<&mut ParentInclude<'_>>,
 ) -> Result<DescriptorFacts, SubsystemTopologyError> {
     let document = parse_document(bytes, logical_path)?;
     let subsystem = single_object(&document, "Subsystem", logical_path)?;
@@ -159,21 +174,7 @@ fn parse_subsystem_descriptor(
             "registered subsystem `{logical_path}` declares Name `{name}` instead of `{expected_name}`"
         )));
     }
-    let include = match single_text_child(
-        properties,
-        "IncludeInCommandInterface",
-        logical_path,
-    )?
-    .as_str()
-    {
-        "true" => true,
-        "false" => false,
-        value => {
-            return Err(SubsystemTopologyError::new(format!(
-                "registered subsystem `{logical_path}` has non-canonical IncludeInCommandInterface `{value}`"
-            )))
-        }
-    };
+    let include = descriptor_include(subsystem, properties, logical_path, parent_include)?;
     let content = content_items(
         single_child(properties, "Content", logical_path)?,
         logical_path,
@@ -185,6 +186,96 @@ fn parse_subsystem_descriptor(
         content,
         children,
     })
+}
+
+const INCLUDE: &str = "IncludeInCommandInterface";
+
+fn has_child(parent: Node<'_, '_>, name: &str) -> bool {
+    parent
+        .children()
+        .any(|node| node.is_element() && node.tag_name().name() == name)
+}
+
+fn descriptor_include(
+    subsystem: Node<'_, '_>,
+    properties: Node<'_, '_>,
+    logical_path: &str,
+    parent_include: &mut Option<&mut ParentInclude<'_>>,
+) -> Result<bool, SubsystemTopologyError> {
+    let Some(lookup) = parent_include else {
+        return local_include(properties, logical_path);
+    };
+    if !has_child(properties, "ObjectBelonging")
+        || proof_scalar(properties, "ObjectBelonging", logical_path)? != "Adopted"
+    {
+        return local_include(properties, logical_path);
+    }
+    let states = if has_child(subsystem, "InternalInfo") {
+        let internal = single_child(subsystem, "InternalInfo", logical_path)?;
+        if internal
+            .children()
+            .filter(|node| node.has_tag_name((READABLE_NS, "PropertyState")))
+            .flat_map(|node| node.descendants())
+            .any(|node| node.is_element() && node.attributes().len() != 0)
+        {
+            return Err(SubsystemTopologyError::new(format!(
+                "`{logical_path}` has attributes on a PropertyState"
+            )));
+        }
+        crate::property_states::read_property_states(internal)
+            .map_err(|reason| SubsystemTopologyError::new(format!("`{logical_path}`: {reason}")))?
+    } else {
+        Default::default()
+    };
+    if has_child(properties, INCLUDE) {
+        return parse_include(
+            &proof_scalar(properties, INCLUDE, logical_path)?,
+            logical_path,
+        );
+    }
+    if states.keys().any(|field| field.trim() == INCLUDE) {
+        return Err(SubsystemTopologyError::new(format!(
+            "`{logical_path}` declares an override for {INCLUDE} without its value"
+        )));
+    }
+    let uuid = proof_scalar(properties, "ExtendedConfigurationObject", logical_path)?;
+    if Uuid::parse_str(&uuid).is_err() {
+        return Err(SubsystemTopologyError::new(format!(
+            "`{logical_path}` has an invalid ExtendedConfigurationObject UUID"
+        )));
+    }
+    lookup(&uuid)
+}
+
+/// Читает скаляр из тех же байтов, по которым вызывающий доказал UUID родителя.
+pub fn parent_subsystem_include(
+    bytes: &[u8],
+    address: &str,
+) -> Result<bool, SubsystemTopologyError> {
+    let document = parse_document(bytes, address)?;
+    let subsystem = single_object(&document, "Subsystem", address)?;
+    let properties = single_child(subsystem, "Properties", address)?;
+    parse_include(&proof_scalar(properties, INCLUDE, address)?, address)
+}
+
+fn local_include(
+    properties: Node<'_, '_>,
+    logical_path: &str,
+) -> Result<bool, SubsystemTopologyError> {
+    parse_include(
+        &single_text_child(properties, INCLUDE, logical_path)?,
+        logical_path,
+    )
+}
+
+fn parse_include(value: &str, logical_path: &str) -> Result<bool, SubsystemTopologyError> {
+    match value {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        value => Err(SubsystemTopologyError::new(format!(
+            "registered subsystem `{logical_path}` has non-canonical {INCLUDE} `{value}`"
+        ))),
+    }
 }
 
 fn content_items(
@@ -234,7 +325,7 @@ fn build_registered_nodes(
     ancestors: &[String],
     ancestors_included: bool,
     reader: &mut dyn unica_source_contract::read::RetainedSourceRead,
-    dependency_paths: &mut Vec<PathBuf>,
+    parent_include: &mut Option<&mut ParentInclude<'_>>,
     dependency_documents: &mut Vec<SubsystemTopologyDependencyDocument>,
     checkpoint: &mut impl FnMut() -> io::Result<()>,
 ) -> Result<Vec<SubsystemTopologyNode>, SubsystemTopologyError> {
@@ -269,8 +360,7 @@ fn build_registered_nodes(
                     SubsystemTopologyError::from(error)
                 }
             })?;
-        dependency_paths.push(PathBuf::from(&logical_path));
-        let facts = parse_subsystem_descriptor(&bytes, name, &logical_path)?;
+        let facts = parse_subsystem_descriptor(&bytes, name, &logical_path, parent_include)?;
         dependency_documents.push(SubsystemTopologyDependencyDocument {
             path: PathBuf::from(&logical_path),
             bytes,
@@ -281,7 +371,7 @@ fn build_registered_nodes(
             &address_names,
             effective_include,
             reader,
-            dependency_paths,
+            parent_include,
             dependency_documents,
             checkpoint,
         )?;
@@ -388,17 +478,11 @@ fn single_text_child(
     name: &str,
     logical_path: &str,
 ) -> Result<String, SubsystemTopologyError> {
-    let child = single_child(parent, name, logical_path)?;
-    if child.children().any(|node| node.is_element()) {
-        return Err(SubsystemTopologyError::new(format!(
-            "`{logical_path}` contains a non-scalar {name}"
-        )));
-    }
-    let scalar = child
-        .children()
-        .filter(|node| node.is_text())
-        .filter_map(|node| node.text())
-        .collect::<String>();
+    let scalar = scalar_text(
+        single_child(parent, name, logical_path)?,
+        name,
+        logical_path,
+    )?;
     let value = scalar.trim();
     if value.is_empty() {
         return Err(SubsystemTopologyError::new(format!(
@@ -406,6 +490,33 @@ fn single_text_child(
         )));
     }
     Ok(value.to_string())
+}
+
+fn proof_scalar(
+    parent: Node<'_, '_>,
+    name: &str,
+    logical_path: &str,
+) -> Result<String, SubsystemTopologyError> {
+    let child = single_child(parent, name, logical_path)?;
+    if child.attributes().len() != 0 {
+        return Err(SubsystemTopologyError::new(format!(
+            "`{logical_path}` has attributes on {name}"
+        )));
+    }
+    scalar_text(child, name, logical_path)
+}
+
+fn scalar_text(
+    child: Node<'_, '_>,
+    name: &str,
+    logical_path: &str,
+) -> Result<String, SubsystemTopologyError> {
+    if child.children().any(|node| node.is_element()) {
+        return Err(SubsystemTopologyError::new(format!(
+            "`{logical_path}` contains a non-scalar {name}"
+        )));
+    }
+    Ok(unica_xml_format::read::direct_text(child))
 }
 
 fn registered_children(

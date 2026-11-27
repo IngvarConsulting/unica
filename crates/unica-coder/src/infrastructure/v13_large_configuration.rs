@@ -13,7 +13,9 @@ use std::sync::{Arc, Mutex};
 use unica_address::address::NodeKind;
 use unica_execution_contract::view_error::ViewError;
 use unica_metadata::subsystem_topology::SubsystemTopology;
-use unica_metadata_designer::subsystem_topology::read_registered_subsystem_topology;
+use unica_metadata_designer::subsystem_topology::{
+    read_subsystem_topology_with_parent, SubsystemTopologyError,
+};
 use unica_metadata_designer::support::SupportState;
 use unica_refusal::RefusalDetail;
 use unica_source_contract::read::{FileStamp, ReadFile, RetainedSourceRead, SourceDirectory};
@@ -337,6 +339,8 @@ impl Default for RegistrationCache {
         }
     }
 }
+
+pub(crate) type ParentSubsystemInclude<'a> = dyn Fn(&str) -> Result<bool, ViewError> + Sync + 'a;
 
 /// The registered subsystem topology with the stamp of every file it was
 /// built from: `Configuration.xml` and each subsystem descriptor.
@@ -673,6 +677,7 @@ impl RegistrationCache {
     pub(crate) fn subsystem_topology(
         &self,
         root: &Arc<SourceDirectory>,
+        parent_include: Option<&ParentSubsystemInclude<'_>>,
         checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
     ) -> Result<Arc<SubsystemTopology>, ViewError> {
         checkpoint()?;
@@ -699,7 +704,29 @@ impl RegistrationCache {
                 io::Error::other(message)
             })
         };
-        let built = read_registered_subsystem_topology(Box::new(reader), &mut io_checkpoint);
+        let mut inherited = false;
+        let mut parent_error = None;
+        let built = if let Some(lookup) = parent_include {
+            let mut resolve = |uuid: &str| {
+                inherited = true;
+                lookup(uuid).map_err(|error| {
+                    let message = error.to_string();
+                    parent_error = Some(error);
+                    SubsystemTopologyError::new(message)
+                })
+            };
+            read_subsystem_topology_with_parent(
+                Box::new(reader),
+                Some(&mut resolve),
+                &mut io_checkpoint,
+            )
+        } else {
+            read_subsystem_topology_with_parent(Box::new(reader), None, &mut io_checkpoint)
+        };
+        if let Some(error) = parent_error {
+            checkpoint()?;
+            return Err(error);
+        }
         if let Some(error) = interrupted {
             return Err(error);
         }
@@ -708,7 +735,9 @@ impl RegistrationCache {
         })?);
         self.parsed();
         let stamps = std::mem::take(&mut *slot_vec(&stamps));
-        let settled = stamps.iter().all(|(_, stamp)| self.retains(stamp));
+        // Стампы принадлежат этому набору. Значение из другого набора
+        // доказывается заново в следующем чтении.
+        let settled = !inherited && stamps.iter().all(|(_, stamp)| self.retains(stamp));
         *slot(&self.subsystems) = settled.then(|| (stamps, Arc::clone(&topology)));
         checkpoint()?;
         Ok(topology)
@@ -2298,13 +2327,19 @@ mod tests {
             .unwrap()
         };
 
-        let first = cache.subsystem_topology(&root, &mut || Ok(())).unwrap();
-        let same = cache.subsystem_topology(&root, &mut || Ok(())).unwrap();
+        let first = cache
+            .subsystem_topology(&root, None, &mut || Ok(()))
+            .unwrap();
+        let same = cache
+            .subsystem_topology(&root, None, &mut || Ok(()))
+            .unwrap();
         assert!(Arc::ptr_eq(&first, &same));
         assert_eq!(first.memberships_of(&module("First"), None).len(), 1);
 
         rewrite_keeping_mtime(&descriptor, subsystem_xml("Library", "Other").as_bytes());
-        let rebuilt = cache.subsystem_topology(&root, &mut || Ok(())).unwrap();
+        let rebuilt = cache
+            .subsystem_topology(&root, None, &mut || Ok(()))
+            .unwrap();
         assert!(!Arc::ptr_eq(&first, &rebuilt));
         assert!(rebuilt.memberships_of(&module("First"), None).is_empty());
         assert_eq!(rebuilt.memberships_of(&module("Other"), None).len(), 1);

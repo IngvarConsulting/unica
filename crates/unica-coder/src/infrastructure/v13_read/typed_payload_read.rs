@@ -93,6 +93,23 @@ impl<'a> LogicalViewReadAuthority<'a> {
         parent_uuid: &str,
         kind: &str,
     ) -> Result<Vec<String>, ViewError> {
+        self.map_borrowed_parents(parent_uuid, kind, |at, _| Ok(at.to_string()))
+    }
+
+    pub fn borrowed_subsystem_parent_includes(&self, uuid: &str) -> Result<Vec<bool>, ViewError> {
+        self.map_borrowed_parents(uuid, "Subsystem", |at, bytes| {
+            crate::infrastructure::family_codecs::metadata_read_codec()
+                .parent_subsystem_include(bytes, at)
+                .map_err(|message| ViewError::detailed(RefusalDetail::SourceUnreadable, message))
+        })
+    }
+
+    fn map_borrowed_parents<T>(
+        &self,
+        parent_uuid: &str,
+        kind: &str,
+        mut observe: impl FnMut(&str, &[u8]) -> Result<T, ViewError>,
+    ) -> Result<Vec<T>, ViewError> {
         let admitted = ViewSourceSnapshot {
             source_set_identity: self.read.source_set_identity().to_string(),
             revision: self.exact_revision()?,
@@ -144,7 +161,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 })?;
                 // A valid registered descriptor must also be readable through the public reader.
                 self.read_exact(&address, &admitted)?;
-                matches.push(at);
+                matches.push(observe(&at, &bytes)?);
             }
         }
         if self.exact_revision()? != admitted.revision {
@@ -325,7 +342,11 @@ impl<'a> LogicalViewReadAuthority<'a> {
             // на соглашении стандартов разработки и называет свой источник.
             if route.reader() == LogicalReader::Subsystem && route.nested_subsystems().is_empty() {
                 let name = target.as_str().split_once('.').map_or("", |(_, name)| name);
-                match self.read.subsystem_topology(&mut || self.read_checkpoint()) {
+                match self
+                    .read
+                    .subsystem_topology(self.parent_subsystem_include, &mut || {
+                        self.read_checkpoint()
+                    }) {
                     Ok(topology) => {
                         if let Some(root) = topology
                             .library_roots()
@@ -423,7 +444,9 @@ impl<'a> LogicalViewReadAuthority<'a> {
     ) -> Result<(Vec<Value>, Vec<Value>), ViewError> {
         let topology = self
             .read
-            .subsystem_topology(&mut || self.read_checkpoint())?;
+            .subsystem_topology(self.parent_subsystem_include, &mut || {
+                self.read_checkpoint()
+            })?;
         let memberships = topology.memberships_of(target, uuid);
         let libraries = topology
             .library_roots()

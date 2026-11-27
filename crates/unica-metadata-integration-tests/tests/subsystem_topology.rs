@@ -731,6 +731,75 @@ mod tests {
 
     /// rule: INV.SOURCE.SUBSYSTEM-REGISTRATION
     #[test]
+    fn borrowed_include_uses_parent_only_for_an_absent_unoverridden_scalar() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().canonicalize().unwrap();
+        write_configuration(&source, &["Отчеты"]);
+        fs::create_dir(source.join("Subsystems")).unwrap();
+        let file = source.join("Subsystems/Отчеты.xml");
+        let overlay = include_str!("../../../tests/fixtures/acceptance/workspace-borrowed-subsystems/src/ext/Subsystems/Отчеты.xml");
+        let include = "IncludeInCommandInterface";
+        let local = |value: &str| format!("<{include}>{value}</{include}>");
+        let with_local = |xml: &str| overlay.replace("<Content>", &format!("{xml}<Content>"));
+        let read =
+            |xml: &str, lookup: &mut dyn FnMut(&str) -> Result<bool, SubsystemTopologyError>| {
+                fs::write(&file, xml).unwrap();
+                let reader = RetainedRootSecureRead::open(
+                    &source,
+                    SecureTreeCaptureLimits {
+                        maximum_depth: SOURCE_TREE_TRAVERSAL_MAX_DEPTH,
+                    },
+                    &mut checkpoint,
+                )
+                .unwrap();
+                read_subsystem_topology_with_parent(Box::new(reader), Some(lookup), checkpoint)
+            };
+
+        for flag in [true, false] {
+            let inherited = read(overlay, &mut |uuid| {
+                assert_eq!(uuid, "26110000-0000-4000-8000-000000000002");
+                Ok(flag)
+            })
+            .unwrap();
+            assert_eq!(inherited.interface_addresses().len(), usize::from(flag));
+
+            let explicit = with_local(&local(&flag.to_string()))
+                .replace(">CommandInterface<", &format!(">{include}<"));
+            let topology = read(&explicit, &mut |_| panic!("local flag needs no parent")).unwrap();
+            assert_eq!(topology.interface_addresses().len(), usize::from(flag));
+        }
+
+        let nil =
+            |tag: &str| overlay.replace(&format!("<{tag}>"), &format!("<{tag} xsi:nil=\"true\">"));
+        for (case, damaged) in [
+            ("duplicate", with_local(&format!("{}{}", local("true"), local("false")))),
+            ("noncanonical", with_local(&local("True"))),
+            ("complex", with_local(&local("<Flag/>"))),
+            ("foreign", with_local(&format!("<xr:{include}>true</xr:{include}>"))),
+            ("nil flag", with_local(&format!("<{include} xsi:nil=\"true\">false</{include}>"))),
+            ("override without value", overlay.replace(">CommandInterface<", &format!(">{include}<"))),
+            ("spaced override without value", overlay.replace(">CommandInterface<", &format!("> {include} <"))),
+            ("foreign state", overlay.replace("xr:State>", "State>")),
+            ("foreign state entry", overlay.replace("xr:PropertyState>", "PropertyState>")),
+            ("duplicate override", overlay.replace("</xr:PropertyState>", "</xr:PropertyState><xr:PropertyState><xr:Property>CommandInterface</xr:Property><xr:State>Extended</xr:State></xr:PropertyState>")),
+            ("invalid parent ID", overlay.replace("26110000-0000-4000-8000-000000000002", "invalid")),
+            ("spaced parent ID", overlay.replace(">26110000-", "> 26110000-")),
+            ("foreign parent ID", overlay.replace("ExtendedConfigurationObject>", "xr:ExtendedConfigurationObject>")),
+            ("own object", overlay.replace(">Adopted<", ">Own<")),
+            ("nil parent ID", nil("ExtendedConfigurationObject")),
+            ("nil belonging", nil("ObjectBelonging")),
+            ("nil state property", nil("xr:Property")),
+            ("nil state", nil("xr:State")),
+        ] {
+            assert!(read(&damaged, &mut |_| panic!("{case}: invalid XML inherited: {damaged}")).is_err(), "{case}: {damaged}");
+        }
+
+        let parent = with_local(&format!("<{include} xsi:nil=\"true\">false</{include}>"));
+        assert!(parent_subsystem_include(parent.as_bytes(), "main:Subsystem.Отчеты").is_err());
+    }
+
+    /// rule: INV.SOURCE.SUBSYSTEM-REGISTRATION
+    #[test]
     fn missing_malformed_and_duplicate_registered_nodes_are_rejected() {
         let missing = tempfile::tempdir().unwrap();
         write_configuration(missing.path(), &["Missing"]);

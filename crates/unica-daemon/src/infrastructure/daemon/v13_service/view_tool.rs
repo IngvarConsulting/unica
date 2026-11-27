@@ -184,6 +184,24 @@ impl CanonicalV13ReadService {
                 )
             }
         };
+        let parent_include = |uuid: &str| {
+            let matches =
+                Self::configuration_parent_matches(invocation, cancellation, |authority| {
+                    authority.borrowed_subsystem_parent_includes(uuid)
+                })?;
+            match matches.as_slice() {
+                [include] => Ok(*include),
+                _ => Err(ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
+                    format!("IncludeInCommandInterface: expected one registered parent subsystem with UUID {uuid}, found {}", matches.len()),
+                )),
+            }
+        };
+        let authority = if source.source_kind() == SourceSetKind::Extension {
+            authority.with_parent_subsystem_include(&parent_include)
+        } else {
+            authority
+        };
         // Ветвь графа вызовов не живёт в дереве исходников, поэтому читатель о
         // ней не знает: страницу собирает служба, а существование владельца
         // доказывает тот же читатель обычным чтением узла метода.
@@ -598,43 +616,14 @@ impl CanonicalV13ReadService {
         else {
             return;
         };
-        let mut matches = Vec::new();
-        let sources = match invocation
-            .admit_borrowing_parent_sources(cancellation)
-            .and_then(|()| {
-                invocation.read_sources().map(|sources| {
-                    sources
-                        .into_iter()
-                        .filter(|source| {
-                            source.source_kind()
-                                == unica_source_contract::SourceSetKind::Configuration
-                        })
-                        .collect::<Vec<_>>()
-                })
-            }) {
-            Ok(sources) if !sources.is_empty() => sources,
-            _ => {
-                props.insert("parentStatus".into(), json!("unavailable"));
-                return;
-            }
+        let Ok(matches) =
+            Self::configuration_parent_matches(invocation, cancellation, |authority| {
+                authority.borrowed_parent_matches(&parent_id, kind)
+            })
+        else {
+            props.insert("parentStatus".into(), json!("unavailable"));
+            return;
         };
-        for source in sources {
-            let candidate = source
-                .logical_view_read_authority(cancellation)
-                .map_err(|_| ())
-                .and_then(|authority| {
-                    authority
-                        .borrowed_parent_matches(&parent_id, kind)
-                        .map_err(|_| ())
-                });
-            match candidate {
-                Ok(found) => matches.extend(found),
-                Err(_) => {
-                    props.insert("parentStatus".into(), json!("unavailable"));
-                    return;
-                }
-            }
-        }
         let status = match matches.as_slice() {
             [parent] => {
                 props.insert("extends".into(), json!(parent));
@@ -644,6 +633,43 @@ impl CanonicalV13ReadService {
             _ => "ambiguous",
         };
         props.insert("parentStatus".into(), json!(status));
+    }
+
+    fn configuration_parent_matches<T>(
+        invocation: &ActorBoundExecution,
+        cancellation: &CancellationToken,
+        mut find: impl FnMut(
+            &crate::infrastructure::v13_read::LogicalViewReadAuthority<'_>,
+        ) -> Result<Vec<T>, ViewError>,
+    ) -> Result<Vec<T>, ViewError> {
+        let unavailable = |_| {
+            ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
+                "configuration parent unavailable for borrowing",
+            )
+        };
+        invocation
+            .admit_borrowing_parent_sources(cancellation)
+            .map_err(unavailable)?;
+        let sources = invocation.read_sources().map_err(unavailable)?;
+        let mut parents = sources
+            .into_iter()
+            .filter(|source| source.source_kind() == SourceSetKind::Configuration)
+            .peekable();
+        if parents.peek().is_none() {
+            return Err(ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
+                "no configuration parent admitted for borrowing",
+            ));
+        }
+        let mut matches = Vec::new();
+        for parent in parents {
+            let authority = parent
+                .logical_view_read_authority(cancellation)
+                .map_err(unavailable)?;
+            matches.extend(find(&authority)?);
+        }
+        Ok(matches)
     }
 
     /// Справочник раскладки одного допущенного набора — тот же, что строит

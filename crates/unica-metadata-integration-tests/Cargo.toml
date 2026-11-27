@@ -24,3 +24,4 @@ tempfile.workspace = true
 [package.metadata.unica]
 component = "integration-tests"
 file-io = "owned"
+inputs = ["tests/fixtures/acceptance/workspace-borrowed-subsystems/src/ext/Subsystems/Отчеты.xml"]

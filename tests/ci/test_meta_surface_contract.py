@@ -232,7 +232,9 @@ class MetaSurfaceContractTests(unittest.TestCase):
         projection = rust_function(info, "pub fn read_typed_meta_info")
         evidence = rust_function(info, "fn typed_subsystem_evidence")
         retained_open = rust_function(info_binding, "fn open_retained_read")
-        topology_read = rust_function(topology, "pub fn read_registered_subsystem_topology")
+        registered_read = rust_function(topology, "pub fn read_registered_subsystem_topology")
+        self.assertIn("read_subsystem_topology_with_parent(reader, None, checkpoint)", registered_read)
+        topology_read = rust_function(topology, "pub fn read_subsystem_topology_with_parent")
         native_read = rust_function(info_binding, "pub(crate) fn read_typed_meta_info")
 
         self.assertIn("MetadataObjectIdentity", projection)
