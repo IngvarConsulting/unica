@@ -10,7 +10,7 @@ id: INV.RUNTIME.RUNNER-ONE-CAPABILITIES
 платформы, а не успешный preview.
 
 Словарь публикует операции, доступные в установленном комплекте Unica. Операции разработки
-`push`, `pull`, `fetch` и `infobase.create` имеют статус `limited` с точной схемой
+`push`, `pull`, `fetch`, `fetch.accept` и `infobase.create` имеют статус `limited` с точной схемой
 аргументов и описанием отсутствующих гарантий. `upload`, `apply` и `reset`
 в каталоге не перечислены: `upload` раннера применяет конфигурацию БД,
 а `push --no-apply`, `apply` и `reset` раннера адаптер ещё не исполняет.

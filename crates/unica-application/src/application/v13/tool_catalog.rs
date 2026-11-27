@@ -158,12 +158,16 @@ impl RunOperation {
             RunIntent::DebugServerStart | RunIntent::DebugServerStop if !self.implemented => {
                 Some("debug-server.start and debug-server.stop require a v8-runner that supports debug-server.start contract version 2")
             }
+            RunIntent::SourceFetch | RunIntent::SourceFetchAccept if !self.implemented => {
+                Some("fetch and fetch.accept require the bundled v8-runner with read-only snapshot support")
+            }
             RunIntent::CfImport | RunIntent::ConfigurationApply | RunIntent::ConfigurationReset => {
                 Some(RUNNER_LOAD_GAP)
             }
             RunIntent::SourceImport => Some("source push applies the database configuration; the generation check covers only the sets the runner loads, force:true overwrites the infobase without it, and noApply:true is unavailable"),
             RunIntent::SourceExport => Some("pull exports one source set with the runner; without force the runner chooses a partial or full export by its memory of earlier exchanges, force:true exports in full and replaces uncommitted and untracked files; Unica keeps no copy of the previous sources, and a failed export may leave a partial target"),
             RunIntent::SourceFetch => Some("fetch exports one source set in full into a snapshot directory under .build/unica/fetch; generation is null when the runner cannot confirm it"),
+            RunIntent::SourceFetchAccept => Some("fetch.accept requires a snapshot with a provider-confirmed generation"),
             RunIntent::InfobaseCreate => Some("creates an absent infobase; a file infobase gets the main configuration of the project from its sources, a cluster infobase is created empty; the answer names whether sources were loaded (initializesSources)"),
             _ => None,
         }
@@ -310,6 +314,7 @@ pub struct RunnerContract {
     pub version: &'static str,
     pub interactive_login: bool,
     pub debug_server_start_v2: bool,
+    pub read_only_snapshots: bool,
 }
 
 pub const DEBUG_SERVER_START_CONTRACT_VERSION: u8 = 2;
@@ -318,6 +323,7 @@ pub const PINNED_RUNNER: RunnerContract = RunnerContract {
     version: "0.19.2",
     interactive_login: true,
     debug_server_start_v2: true,
+    read_only_snapshots: true,
 };
 
 fn client_run_args_schema(supports_interactive_login: bool) -> Value {
@@ -522,7 +528,7 @@ pub fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                 run_dictionary_is_data_not_command_lines: true,
                 empty_optional_result_slots_are_omitted: true,
             },
-            run_dictionary: run_dictionary(PINNED_RUNNER.debug_server_start_v2),
+            run_dictionary: run_dictionary(Some(&PINNED_RUNNER)),
             result_envelope_schema: result_envelope_schema(),
         }),
     }
@@ -610,7 +616,7 @@ fn cursor(description: &'static str) -> Value {
     json!({"type": "string", "description": description})
 }
 
-pub fn run_dictionary(debug_server_start_v2: bool) -> Vec<RunOperation> {
+pub fn run_dictionary(runner: Option<&RunnerContract>) -> Vec<RunOperation> {
     [
         RunIntent::InfobaseCheck,
         RunIntent::InfobaseCreate,
@@ -645,7 +651,12 @@ pub fn run_dictionary(debug_server_start_v2: bool) -> Vec<RunOperation> {
             terminal,
             rejects_sessions: terminal,
             implemented: match intent {
-                RunIntent::DebugServerStart | RunIntent::DebugServerStop => debug_server_start_v2,
+                RunIntent::DebugServerStart | RunIntent::DebugServerStop => {
+                    runner.is_some_and(|runner| runner.debug_server_start_v2)
+                }
+                RunIntent::SourceFetch | RunIntent::SourceFetchAccept => {
+                    runner.is_some_and(|runner| runner.read_only_snapshots)
+                }
                 RunIntent::CfImport
                 | RunIntent::ConfigurationApply
                 | RunIntent::ConfigurationReset => false,

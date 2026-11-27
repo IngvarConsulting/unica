@@ -10,6 +10,7 @@ enum Script {
     /// Выгрузка готова, отказ от публикации принят.
     Exports,
     PreparesMerge,
+    ChangesOrigin,
     DumpInfoIsDirectory,
     OnlyDumpInfo,
     CancelsAfterReady,
@@ -204,6 +205,13 @@ impl ProcessRunner for ProtocolRunner {
                 });
             }
             answer(frame(ready));
+            if self.script == Script::ChangesOrigin {
+                fs::write(
+                    command.cwd.join(LOCAL_CONFIG_NAME),
+                    "infobase:\n  connection: 'File=another'\n",
+                )
+                .unwrap();
+            }
             if self.script == Script::ChecksSnapshotLock {
                 verify_ready_snapshot_cannot_be_dropped(&command.cwd, &stage);
             }
@@ -379,6 +387,26 @@ fn a_refused_or_unconfirmed_fetch_leaves_no_snapshot() {
         assert!(snapshots(root).is_empty(), "{:?}", snapshots(root));
         assert_eq!(tree(&root.join("main")), before);
     }
+}
+
+/// rule: INV.RUNTIME.FETCH-LEAVES-THE-WORKING-COPY
+#[test]
+fn a_fetch_without_generation_refuses_a_changed_origin() {
+    let project = workspace();
+    let root = project.path();
+    let sources = tree(&root.join("main"));
+    let result = run(
+        root,
+        &prepared(root, false),
+        &ProtocolRunner::new(Script::ChangesOrigin),
+    );
+    assert_eq!(
+        result.diagnostics[0]["code"], "concurrent_change",
+        "{result:?}"
+    );
+    assert!(result.changed.is_empty());
+    assert!(snapshots(root).is_empty());
+    assert_eq!(tree(&root.join("main")), sources);
 }
 
 /// rule: INV.RUNTIME.FETCH-LEAVES-THE-WORKING-COPY
@@ -1475,6 +1503,68 @@ fn a_runner_without_safe_snapshot_support_cannot_prepare_or_export_a_project() {
             assert!(!root.join(".build").exists());
         }
     }
+}
+
+/// rule: INV.RUNTIME.FETCH-LEAVES-THE-WORKING-COPY
+#[test]
+fn a_cluster_requires_its_own_read_only_preview_and_never_receives_a_merge_baseline() {
+    let workspace = workspace();
+    let root = workspace.path();
+    let local = "infobase:\n  connection: 'Srvr=localhost;Ref=example'\n";
+    fs::write(root.join(LOCAL_CONFIG_NAME), local).unwrap();
+    let source = tree(&root.join("main"));
+    let mut runner = ProtocolRunner::new(Script::Exports);
+    // The same CLI advertises merge commands for file infobases.
+    runner.help = ProtocolRunner::new(Script::PreparesMerge).help;
+    let dry_run = |target| {
+        json!({"command":"pull","ok":true,"data":{
+            "requested_mode":"FULL","mode":"FULL","source_set":"main","extension":null,
+            "target_path":target,"provider_dispatched":false
+        }})
+    };
+    for plan in [None, Some(dry_run(root.join("different")))] {
+        runner.preview = plan;
+        let refused = run(root, &prepared(root, false), &runner);
+        assert!(!refused.ok, "{refused:?}");
+        let args = runner.args.lock().unwrap().clone();
+        assert!(args.windows(2).any(|pair| pair == ["--infobase", "origin"]));
+        for required in [
+            "--dry-run",
+            "--snapshot-only",
+            "--snapshot-platform-from-sources",
+        ] {
+            assert!(args.iter().any(|arg| arg == required));
+        }
+        assert!(runner.decisions().is_empty());
+        assert!(!root.join(".build").exists());
+    }
+
+    runner.preview = Some(dry_run(root.join("main")));
+    let fetched = run(root, &prepared(root, false), &runner);
+    assert!(fetched.ok, "{fetched:?}");
+    let snapshot = fetched.data.unwrap();
+    assert_eq!(snapshot["generation"], Value::Null);
+    assert!(snapshot["generationReason"].is_string());
+    assert!(snapshot.get("baseSnapshot").is_none());
+    let args = runner.args.lock().unwrap().clone();
+    assert!(args.windows(2).any(|pair| pair == ["--infobase", "origin"]));
+    assert!(args.iter().any(|arg| arg == "--snapshot-only"));
+    assert!(!args.iter().any(|arg| arg == "--prepare-merge-baseline"));
+    for dry_run in [true, false] {
+        let result = accept(
+            root,
+            snapshot["snapshotId"].as_str().unwrap(),
+            dry_run,
+            &runner,
+        );
+        assert_eq!(result.diagnostics[0]["code"], "unsupported_operation");
+        assert_eq!(*runner.args.lock().unwrap(), args);
+    }
+    assert_eq!(tree(&root.join("main")), source);
+    assert_eq!(
+        fs::read_to_string(root.join(LOCAL_CONFIG_NAME)).unwrap(),
+        local
+    );
 }
 
 /// rule: INV.RUNTIME.FETCH-LEAVES-THE-WORKING-COPY

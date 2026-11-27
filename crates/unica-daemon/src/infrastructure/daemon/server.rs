@@ -788,7 +788,7 @@ enum ActorBoundCanonicalInvocationState {
         export: Arc<super::v13_source_export::PreparedSourceExport>,
         source_writes: SourceWriteLane,
         workspace_identity_hash: unica_execution_contract::invocation::SafeIdentityHash,
-        delivery: RunEngineDelivery,
+        delivery: Option<RunEngineDelivery>,
     },
     /// Сборка CF/CFE из исходников: previewApply с забором, известна длинной
     /// по внешнему процессу.
@@ -854,7 +854,7 @@ enum PreparedCanonicalInvocationState {
     SourceExport {
         export: Arc<super::v13_source_export::PreparedSourceExport>,
         source_writes: SourceWriteLane,
-        delivery: RunEngineDelivery,
+        delivery: Option<RunEngineDelivery>,
     },
     ArtifactBuild {
         build: Arc<super::v13_artifact_build::PreparedArtifactBuild>,
@@ -1267,12 +1267,13 @@ impl V5CanonicalInvocationRuntime {
             super::v13_source_export::Preparation::Ready(export) => {
                 let workspace_identity_hash = export.workspace_identity_hash();
                 let source_writes = self.source_write_lane(export.workspace_root())?;
+                let delivery = export.requires_runner().then_some(run_delivery);
                 return Ok(V5ActorBoundCanonicalInvocation(
                     ActorBoundCanonicalInvocationState::SourceExport {
                         export,
                         source_writes,
                         workspace_identity_hash,
-                        delivery: run_delivery.clone(),
+                        delivery,
                     },
                 ));
             }
@@ -1652,15 +1653,20 @@ impl V5PreparedCanonicalInvocation {
                 export,
                 delivery,
                 source_writes,
-            } => Ok(delivery.execute(cancellation, |cancellation| {
-                exclude_source_writes(
-                    &source_writes,
-                    "pull",
-                    !export.holds_source_writes(),
-                    cancellation,
-                    |cancellation| export.execute(cancellation),
-                )
-            })),
+            } => {
+                let Some(delivery) = delivery else {
+                    return Ok(export.execute(cancellation));
+                };
+                Ok(delivery.execute(cancellation, |cancellation| {
+                    exclude_source_writes(
+                        &source_writes,
+                        "pull",
+                        !export.holds_source_writes(),
+                        cancellation,
+                        |cancellation| export.execute(cancellation),
+                    )
+                }))
+            }
             PreparedCanonicalInvocationState::ArtifactBuild {
                 build,
                 delivery,

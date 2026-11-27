@@ -14,6 +14,7 @@ const ACCEPT: &str = "--accept-merge-baseline";
 #[derive(Clone, Copy)]
 pub(super) struct Capabilities {
     pub(super) prepare_merge: bool,
+    pub(super) confirm_cluster_target: bool,
 }
 
 impl Capabilities {
@@ -123,9 +124,17 @@ pub(super) fn capabilities(
     if cancellation.is_cancelled() {
         return Err(cancelled());
     }
-    if origin_kind(root).ok() != Some(OriginKind::File) {
-        return Err(unsupported());
-    }
+    let origin = origin_kind(root).map_err(|_| unsupported())?;
+    let cluster = match origin {
+        OriginKind::File => false,
+        OriginKind::Cluster if operation == FETCH => true,
+        OriginKind::Cluster => return Err(reject_at(
+            operation,
+            RefusalCode::UnsupportedOperation,
+            "fetch.accept requires a confirmed generation; the runner only supplies a read-only comparison for a cluster infobase",
+        )),
+        _ => return Err(unsupported()),
+    };
     let Ok(Some(config)) = read_yaml_config(root, CONFIG_NAME) else {
         return Err(unsupported());
     };
@@ -175,7 +184,8 @@ pub(super) fn capabilities(
         return Err(unsupported());
     }
     Ok(Capabilities {
-        prepare_merge: [PREPARE, CHECK, ACCEPT].into_iter().all(contains),
+        prepare_merge: !cluster && [PREPARE, CHECK, ACCEPT].into_iter().all(contains),
+        confirm_cluster_target: cluster,
     })
 }
 
@@ -365,6 +375,8 @@ fn invoke(
     let mut args = vec![
         "--config".to_string(),
         root.join(CONFIG_NAME).display().to_string(),
+        "--infobase".to_string(),
+        "origin".to_string(),
         "--json-message".to_string(),
         RUNNER_COMMAND.to_string(),
         snapshot.binding.source_set.clone(),

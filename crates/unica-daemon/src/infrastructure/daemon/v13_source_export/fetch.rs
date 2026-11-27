@@ -417,11 +417,14 @@ pub(super) fn execute(
     prepared: &PreparedSourceExport,
     cancellation: CancellationToken,
 ) -> DomainResult {
-    let tool = match resolve_bundled_runner(&prepared.context.cwd) {
-        Ok(resolved) => resolved.tool,
-        Err(absence) => {
-            return missing_runner_rejection(Some(prepared.operation().to_string()), absence)
-        }
+    let Some(tool) =
+        super::super::v13_run_dictionary::installed_snapshot_runner(&prepared.context.cwd)
+    else {
+        return reject_at(
+            prepared.operation(),
+            RefusalCode::UnsupportedOperation,
+            "snapshot operations require the compatible bundled v8-runner",
+        );
     };
     super::super::runner::with_runner_receipt(
         &prepared.context.workspace_root,
@@ -480,10 +483,10 @@ fn execute_with_tool(
             )
         }
     };
-    if prepared.dry_run {
+    if prepared.dry_run || capabilities.confirm_cluster_target {
         let mut request = prepared.clone();
-        request.arguments.source_set = Some(source_set);
-        return preview(
+        request.arguments.source_set = Some(source_set.clone());
+        let plan = preview(
             prepared,
             &request,
             &inputs,
@@ -491,8 +494,11 @@ fn execute_with_tool(
             runner,
             &cancellation,
             tool,
-            &merge::SNAPSHOT_FLAGS,
+            &directory,
         );
+        if prepared.dry_run || !plan.ok {
+            return plan;
+        }
     }
     let storage = match open_storage(&root, true, FETCH) {
         Ok(Some(storage)) => storage,
@@ -557,15 +563,14 @@ fn execute_with_tool(
             return finish_failed_fetch(result, &storage, &id, &stage, None, warnings, &root);
         }
     };
+    if !capture_inputs(prepared).is_ok_and(|current| current == inputs) {
+        let failure = reject_fetch(
+            RefusalCode::ConcurrentChange,
+            "the project recipe changed during the snapshot export; fetch again",
+        );
+        return finish_failed_fetch(failure, &storage, &id, &stage, None, warnings, &root);
+    }
     let metadata = if let Some(runner) = receipt {
-        let current_inputs = capture_inputs(prepared);
-        if !current_inputs.is_ok_and(|current| current == inputs) {
-            let failure = reject_fetch(
-                RefusalCode::ConcurrentChange,
-                "the project recipe changed during the snapshot export; fetch again",
-            );
-            return finish_failed_fetch(failure, &storage, &id, &stage, None, warnings, &root);
-        }
         let metadata = merge::fingerprint(&stage, &cancellation).and_then(|fingerprint| {
             let snapshot = merge::MergeSnapshot {
                 stage_identity: stage.identity().stable_bytes(),
@@ -710,9 +715,16 @@ fn preview(
     runner: &dyn ProcessRunner,
     cancellation: &CancellationToken,
     tool: &BundledTool,
-    flags: &[&str],
+    directory: &Path,
 ) -> DomainResult {
-    let envelope = match invoke_runner(request, tool, runner, cancellation, true, flags) {
+    let envelope = match invoke_runner(
+        request,
+        tool,
+        runner,
+        cancellation,
+        true,
+        &merge::SNAPSHOT_FLAGS,
+    ) {
         Ok(envelope) => envelope,
         Err(result) => return retag(result),
     };
@@ -720,6 +732,9 @@ fn preview(
         Ok(plan) => plan,
         Err(result) => return retag(result),
     };
+    if !same_path(&plan.target_absolute, directory) {
+        return invalid("the runner preview named a different snapshot target");
+    }
     let snapshots = path_text(&SNAPSHOT_ROOT.iter().collect::<PathBuf>());
     let mut result = DomainResult::success(format!(
         "fetch plans a full export of source set `{}` into a new snapshot under {snapshots}",
@@ -768,6 +783,8 @@ fn exchange(
     let mut args = vec![
         "--config".to_string(),
         root.join(CONFIG_NAME).display().to_string(),
+        "--infobase".to_string(),
+        "origin".to_string(),
         RUNNER_COMMAND.to_string(),
         source_set.to_string(),
         "--force".to_string(),

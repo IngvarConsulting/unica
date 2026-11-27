@@ -403,6 +403,10 @@ impl PreparedSourceExport {
         !self.dry_run && !self.fetch
     }
 
+    pub(super) fn requires_runner(&self) -> bool {
+        self.drop.is_none()
+    }
+
     /// The public name of the operation: refusals name it.
     fn operation(&self) -> &'static str {
         if self.drop.is_some() {
@@ -842,9 +846,11 @@ fn invoke_runner(
             .join(CONFIG_NAME)
             .display()
             .to_string(),
-        "--json-message".to_string(),
-        RUNNER_COMMAND.to_string(),
     ];
+    if prepared.fetch {
+        args.extend(["--infobase".to_string(), "origin".to_string()]);
+    }
+    args.extend(["--json-message".to_string(), RUNNER_COMMAND.to_string()]);
     if let Some(source_set) = &prepared.arguments.source_set {
         args.push(source_set.clone());
     }

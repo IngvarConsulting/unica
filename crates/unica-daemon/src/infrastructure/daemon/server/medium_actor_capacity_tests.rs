@@ -14319,9 +14319,14 @@ fn v5_run_dictionary_returns_directly_before_workspace_actor_admission() {
         .filter(|operation| operation.implemented)
         .map(|operation| (operation.name(), operation))
         .collect();
-    // The pinned adapter implements both commands. This installation has no
+    // The pinned adapter implements these commands. This installation has no
     // runner or delivery manifest that could provide them.
-    for conditional in ["debug-server.start", "debug-server.stop"] {
+    for conditional in [
+        "debug-server.start",
+        "debug-server.stop",
+        "fetch",
+        "fetch.accept",
+    ] {
         assert!(
             expected.remove(conditional).is_some(),
             "missing catalog entry {conditional}"
