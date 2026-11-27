@@ -14271,6 +14271,7 @@ fn v5_view_without_at_prepares_root_inspection_without_source_actor_admission() 
 #[test]
 fn v5_run_dictionary_returns_directly_before_workspace_actor_admission() {
     let workspace = tempfile::tempdir().expect("temporary empty workspace");
+    let plugin = tempfile::tempdir().expect("plugin without a runner or a delivery manifest");
     let preparations = Arc::new(AtomicUsize::new(0));
     let runtime = V5CanonicalInvocationRuntime::new(
         Arc::new(CountingPrepareService {
@@ -14288,7 +14289,11 @@ fn v5_run_dictionary_returns_directly_before_workspace_actor_admission() {
     )
     .expect("valid run dictionary request");
 
-    let result = match runtime.bind(request) {
+    let bound =
+        crate::infrastructure::plugin_runtime::with_plugin_root_for_test(plugin.path(), || {
+            runtime.bind(request)
+        });
+    let result = match bound {
         Err(V5CanonicalPrepareError::Direct(result)) => result,
         Ok(_) => panic!("run dictionary must not enter actor admission"),
         Err(other) => panic!("run dictionary returned infrastructure failure: {other:?}"),
@@ -14308,16 +14313,25 @@ fn v5_run_dictionary_returns_directly_before_workspace_actor_admission() {
             "duplicate operation {name}"
         );
     }
-    // Only available operations are listed; an unavailable one keeps
-    // its refusal on call.
-    let available = catalog
+    let mut expected: std::collections::BTreeMap<_, _> = catalog
         .run_dictionary
         .iter()
         .filter(|operation| operation.implemented)
-        .collect::<Vec<_>>();
-    assert_eq!(published.len(), available.len());
-    for operation in available {
-        let name = operation.name();
+        .map(|operation| (operation.name(), operation))
+        .collect();
+    // The pinned adapter implements both commands. This installation has no
+    // runner or delivery manifest that could provide them.
+    for conditional in ["debug-server.start", "debug-server.stop"] {
+        assert!(
+            expected.remove(conditional).is_some(),
+            "missing catalog entry {conditional}"
+        );
+    }
+    assert_eq!(
+        published.keys().collect::<Vec<_>>(),
+        expected.keys().collect::<Vec<_>>()
+    );
+    for (name, operation) in expected {
         let entry = published.get(name).expect("catalog operation is published");
         assert_eq!(entry["description"], operation.description(), "{name}");
         assert_eq!(
@@ -14338,6 +14352,7 @@ fn v5_run_dictionary_returns_directly_before_workspace_actor_admission() {
         assert!(entry.get("ifRevRequiredOnApply").is_none(), "{name}");
     }
     assert_eq!(preparations.load(Ordering::SeqCst), 0);
+    assert_eq!(runtime.workspace_actors.entry_len_for_test().unwrap(), 0);
 }
 
 /// rule: INV.WIRE.RUN-NAMES-ARE-LAYER-AND-DIRECTION
