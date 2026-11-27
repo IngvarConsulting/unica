@@ -332,9 +332,11 @@ Preview и apply возвращают одинаковую типизирова�
 `autoRefreshPeriod`, `choiceFoldersAndItems`, `restoreCurrentRow`,
 `showRoot`, `allowRootChoice`, `updateOnDataChange`,
 `allowGettingCurrentRowURL`) пишутся только с `_dynList: true`; кнопка
-принимает одну команду. Флаги поля ввода `clearButton`, `spinButton`,
-`dropListButton`, `markIncomplete`, `skipOnInput`, `horizontalStretch`,
-`verticalStretch` и `autofill` командной панели принимают только `true`:
+принимает одну команду. Для поля ввода `verticalStretch` принимает
+`true` и `false` и пишет явно заданное значение. `unica.view` возвращает
+это свойство, когда оно есть в XML. Флаги поля ввода `clearButton`,
+`spinButton`, `dropListButton`, `markIncomplete`, `skipOnInput`,
+`horizontalStretch` и `autofill` командной панели принимают только `true`:
 явный `false` платформа отличает от умолчания, а операция его пока
 не пишет.
 

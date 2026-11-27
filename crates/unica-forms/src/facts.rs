@@ -132,6 +132,8 @@ pub struct FormInfoElement {
     pub visible: bool,
     pub enabled: bool,
     pub read_only: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vertical_stretch: Option<bool>,
     pub events: Vec<FormInfoEvent>,
     pub children: Vec<FormInfoElement>,
 }

@@ -1,0 +1,250 @@
+{
+  "id": "S-2906-input-field-vertical-stretch",
+  "issue": 2906,
+  "area": "Формы",
+  "task": "Добавить два многострочных поля ввода. Явное отключение вертикального растягивания сохраняется в XML и читается как false. Поле с настройкой по умолчанию читается без этого свойства.",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "at": {
+          "pointer": "/data/at"
+        },
+        "before": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml"
+        },
+        "owner": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Валюты.xml"
+        },
+        "descriptor": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Валюты/Forms/ФормаЭлемента.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.item.add"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/op",
+          "eq": "item.add"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.at",
+        "ops": [
+          {
+            "op": "item.add",
+            "args": {
+              "items": [
+                {
+                  "name": "AcceptanceStretchOff",
+                  "type": "InputField",
+                  "path": "Объект.Description",
+                  "multiLine": true,
+                  "height": 3,
+                  "verticalStretch": false
+                },
+                {
+                  "name": "AcceptanceStretchDefault",
+                  "type": "InputField",
+                  "path": "Объект.Description",
+                  "multiLine": true,
+                  "height": 3
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "captures": {
+        "token": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        },
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "$capture.owner"
+        },
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента.xml",
+          "kind": "sha256",
+          "eq": "$capture.descriptor"
+        }
+      ]
+    },
+    {
+      "tool": "unica.diff",
+      "args": {
+        "executionToken": "$capture.token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        },
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "$capture.owner"
+        },
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента.xml",
+          "kind": "sha256",
+          "eq": "$capture.descriptor"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/truncated",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "$capture.owner"
+        },
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента.xml",
+          "kind": "sha256",
+          "eq": "$capture.descriptor"
+        },
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "kind": "sha256",
+          "notEq": "$capture.before"
+        },
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/xcf/logform}InputField[@name='AcceptanceStretchOff']/{http://v8.1c.ru/8.3/xcf/logform}DataPath",
+          "eq": [
+            "Объект.Description"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/xcf/logform}InputField[@name='AcceptanceStretchOff']/{http://v8.1c.ru/8.3/xcf/logform}MultiLine",
+          "eq": [
+            "true"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/xcf/logform}InputField[@name='AcceptanceStretchOff']/{http://v8.1c.ru/8.3/xcf/logform}Height",
+          "eq": [
+            "3"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/xcf/logform}InputField[@name='AcceptanceStretchOff']/{http://v8.1c.ru/8.3/xcf/logform}VerticalStretch",
+          "eq": [
+            "false"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/xcf/logform}InputField[@name='AcceptanceStretchDefault']/{http://v8.1c.ru/8.3/xcf/logform}MultiLine",
+          "eq": [
+            "true"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/xcf/logform}InputField[@name='AcceptanceStretchDefault']/{http://v8.1c.ru/8.3/xcf/logform}VerticalStretch",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.AcceptanceStretchOff"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/verticalStretch",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.AcceptanceStretchDefault"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/verticalStretch",
+          "absent": true
+        }
+      ]
+    }
+  ]
+}
