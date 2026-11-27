@@ -97,7 +97,7 @@ fn resolve_path_checks_only_target_and_necessary_owner_on_public_mcp() {
     let false_match =
         mcp.completed_tool_call(call_tool(8, "unica.resolve", json!({"path": false_path})));
     assert_eq!(false_match["ok"], false, "{false_match:#}");
-    assert_eq!(false_match["diagnostics"][0]["code"], "not_found");
+    assert_eq!(false_match["diagnostics"][0]["code"], "outside_source_sets");
 
     let names = mcp.completed_tool_call(call_tool(
         3,
@@ -382,7 +382,10 @@ fn resolve_absolute_xml_ignores_a_broken_foreign_target_and_reports_ambiguous_al
         "unica.resolve",
         json!({"path": std::fs::canonicalize(&outside).unwrap()}),
     ));
-    assert_eq!(outside_result["diagnostics"][0]["code"], "not_found");
+    assert_eq!(
+        outside_result["diagnostics"][0]["code"],
+        "outside_source_sets"
+    );
 
     let missing_collection_member = mcp.completed_tool_call(call_tool(
         5,

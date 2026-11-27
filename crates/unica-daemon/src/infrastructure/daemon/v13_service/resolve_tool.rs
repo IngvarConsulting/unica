@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::infrastructure::daemon::server::ActorReadSourceCapability;
+use crate::infrastructure::v13_find::{classify_path_miss, PathMiss};
 
 impl CanonicalV13ReadService {
     /// Аварийный двусторонний мост в файловую раскладку.
@@ -232,11 +233,35 @@ impl CanonicalV13ReadService {
             .locate_path(layout, path, deadline, cancellation)
             .map_err(|error| Box::new(find_build_error_result(None, error)))?;
         let Some(entry) = entry else {
-            return Err(Box::new(error_result(
+            let miss = classify_path_miss(
+                layout,
+                &invocation.workspace_context().workspace_root,
+                path,
+                deadline,
+                cancellation,
+            )
+            .map_err(|error| Box::new(find_build_error_result(None, error)))?;
+            if miss == PathMiss::OutsideSourceSets {
+                return Err(Box::new(error_result(
+                    None,
+                    RefusalCode::OutsideSourceSets,
+                    format!("`{path}` is outside the admitted source sets"),
+                )));
+            }
+            let mut refusal = error_result(
                 None,
                 RefusalCode::NotFound,
                 format!("no admitted source set places `{path}`"),
-            )));
+            );
+            if let PathMiss::Absent { at, kind } = miss {
+                refusal.diagnostics[0]["candidate"] = json!({
+                    "at": at.to_string(),
+                    "kind": kind.as_str(),
+                    "fileState": "absent",
+                    "verification": "unverified"
+                });
+            }
+            return Err(Box::new(refusal));
         };
         if entry.kind() == NodeKind::Subsystem.as_str() {
             let address = QualifiedAddress::parse(entry.at()).map_err(|error| {
