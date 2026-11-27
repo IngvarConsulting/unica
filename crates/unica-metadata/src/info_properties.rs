@@ -425,7 +425,7 @@ fn mutation_property_is_observable(kind: MetadataKind, key: MetaPropertyKey) -> 
         // Constant Type is observed through MetaInfoDetails, not scalar properties.
         Type | ClientOrdinaryApplication | Key => false,
         // Настройки группы команд читает дополнительный профиль вида.
-        Representation | Category | ToolTip => false,
+        Representation | Category | ToolTip | Picture => false,
         Synonym | Comment => true,
         EditType => matches!(kind, Catalog | InformationRegister),
         ActionPeriod | BasePeriod => kind == CalculationRegister,
@@ -927,6 +927,14 @@ mod tests {
                     .is_none());
                 continue;
             }
+            // Picture is projected by the structured CommandGroup details.
+            if writer.key == MetaPropertyKey::Picture {
+                assert_eq!(writer.allowed_kinds, &[MetadataKind::CommandGroup]);
+                assert!(META_INFO_PROPERTY_PROFILE
+                    .resolve(MetadataKind::CommandGroup, "Picture")
+                    .is_none());
+                continue;
+            }
             for kind in MetadataKind::ALL {
                 if !writer.allowed_kinds.contains(kind) {
                     continue;
@@ -952,8 +960,8 @@ mod tests {
                         MetaPropertyValueKind::UnsignedInteger => {
                             MetaInfoPropertyValueKind::UnsignedInteger
                         }
-                        MetaPropertyValueKind::Type => {
-                            unreachable!("structured Type checked above")
+                        MetaPropertyValueKind::Type | MetaPropertyValueKind::Picture => {
+                            unreachable!("structured details checked above")
                         }
                     }
                 };

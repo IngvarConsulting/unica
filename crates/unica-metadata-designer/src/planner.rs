@@ -526,6 +526,7 @@ pub fn plan_metadata_batch<R: MetadataPlanningRead>(
                 )?;
             }
         }
+        prove_command_group_picture_reference(staged, authority.source_kind(), edit, op_index)?;
         crate::edit_type::guard(
             staged,
             authority.source_kind(),
@@ -1927,6 +1928,52 @@ fn prove_creation_type_references(
             .at_path(path));
         }
     }
+    Ok(())
+}
+
+fn prove_command_group_picture_reference(
+    staged: &mut ApplyProposal<'_>,
+    source_kind: SourceSetKind,
+    operation: &MetaEditOperation,
+    op_index: usize,
+) -> Result<(), ApplyPlanError> {
+    let MetaEditOperation::SetProperties { values } = operation else {
+        return Ok(());
+    };
+    let Some(reference) = values.entries().iter().find_map(|(_, value)| match value {
+        unica_metadata::MetaPropertyValue::Picture(Some(picture))
+            if picture.reference.starts_with("CommonPicture.") =>
+        {
+            Some(picture.reference.as_str())
+        }
+        _ => None,
+    }) else {
+        return Ok(());
+    };
+    let path = format!("ops[{op_index}].args.values.Picture.Ref");
+    let target = MetadataAddress::parse_logical(reference).map_err(|error| {
+        ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.to_string()).at_path(&path)
+    })?;
+    let root_path = Path::new("Configuration.xml");
+    let root = staged
+        .read(root_path)
+        .map_err(|error| ApplyPlanError::staging(error, &path))?
+        .ok_or_else(|| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::NotFound,
+                "Configuration.xml was not found",
+            )
+            .at_path(&path)
+        })?;
+    let registered = unica_source_designer::owner::prove_already_read_source_set_owner(
+        root_path,
+        &root,
+        source_kind,
+    )
+    .map_err(|error| {
+        ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, error.message).at_path(&path)
+    })?;
+    prove_registered_root_reference(staged, source_kind, &registered, &target, reference, &path)?;
     Ok(())
 }
 

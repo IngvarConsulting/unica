@@ -1200,6 +1200,13 @@ mod tests {
                             variants: vec![MetadataTypeVariant::Boolean],
                         }),
                     ),
+                    MetaPropertyValueKind::Picture => (
+                        json!({"Ref":"StdPicture.Print","LoadTransparent":false}),
+                        MetaPropertyValue::Picture(Some(crate::MetaPicture {
+                            reference: "StdPicture.Print".into(),
+                            load_transparent: Some(false),
+                        })),
+                    ),
                     MetaPropertyValueKind::Boolean => {
                         (json!(false), MetaPropertyValue::Boolean(false))
                     }

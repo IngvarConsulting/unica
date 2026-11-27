@@ -1106,6 +1106,11 @@ pub fn typed_operation_effect_value(
                     );
                     continue;
                 }
+                if *key == MetaPropertyKey::Picture {
+                    let node = command_group_picture_node(properties)?;
+                    selected.insert(public_key, serde_json::json!(picture_value(node)?));
+                    continue;
+                }
                 if key.is_localized() {
                     let properties = properties.ok_or_else(|| {
                         synonym_update_error(format!("metadata {public_key} has no Properties"))
@@ -1569,6 +1574,65 @@ pub fn typed_diagnostic(
         None => diagnostic,
     }
 }
+fn picture_error(message: impl Into<String>) -> MetaDiagnostic {
+    typed_diagnostic(
+        MetaDiagnosticCode::InvalidArguments,
+        message,
+        Some("values.Picture"),
+    )
+}
+
+fn command_group_picture_node<'a, 'input>(
+    properties: Option<roxmltree::Node<'a, 'input>>,
+) -> Result<roxmltree::Node<'a, 'input>, MetaDiagnostic> {
+    let properties = properties.ok_or_else(|| picture_error("CommandGroup has no Properties"))?;
+    super::info_projection::direct_meta_info_property(properties, "CommandGroup", "Picture")
+        .map_err(|error| picture_error(error.message))?
+        .ok_or_else(|| picture_error("Picture is not present on this CommandGroup"))
+}
+
+fn picture_value(node: roxmltree::Node<'_, '_>) -> Result<Option<MetaPicture>, MetaDiagnostic> {
+    if node.attributes().len() != 0 {
+        return Err(picture_error("malformed Picture"));
+    }
+    super::info_projection::parse_picture_node(node).map_err(picture_error)
+}
+
+fn render_picture(
+    source: &str,
+    node: roxmltree::Node<'_, '_>,
+    picture: Option<&MetaPicture>,
+) -> Result<String, MetaDiagnostic> {
+    use super::info_projection::READABLE_NAMESPACE;
+
+    let raw = &source[node.range()];
+    let (mut opening, qname) = scalar_element_shell(raw);
+    let observed = picture_value(node)?;
+    let Some(picture) = picture else {
+        return Ok(format!("{opening}/>"));
+    };
+    // A platform export writes the default explicitly even when the input omitted it.
+    let transparent = picture.load_transparent.unwrap_or(true);
+    if observed.is_some_and(|observed| {
+        observed.reference == picture.reference && observed.load_transparent == Some(transparent)
+    }) {
+        return Ok(raw.to_string());
+    }
+    let prefix = if let Some(prefix) = node.lookup_prefix(READABLE_NAMESPACE) {
+        format!("{prefix}:")
+    } else if node.lookup_namespace_uri(None) == Some(READABLE_NAMESPACE) {
+        String::new()
+    } else {
+        opening.push_str(&format!(r#" xmlns:xr="{READABLE_NAMESPACE}""#));
+        "xr:".to_string()
+    };
+    let indent = meta_edit_line_indent(source, node.range().start);
+    let reference = unica_xml_format::text::escape_xml(&picture.reference);
+    Ok(format!(
+        "{opening}>\n{indent}\t<{prefix}Ref>{reference}</{prefix}Ref>\n{indent}\t<{prefix}LoadTransparent>{transparent}</{prefix}LoadTransparent>\n{indent}</{qname}>"
+    ))
+}
+
 pub fn apply_typed_properties(
     xml_text: &mut String,
     changes: &unica_metadata::MetaPropertyChanges,
@@ -1690,6 +1754,8 @@ pub fn apply_typed_properties(
                 continue;
             }
             node
+        } else if *key == MetaPropertyKey::Picture {
+            command_group_picture_node(Some(properties))?
         } else {
             unica_xml_format::read::child_element(properties, tag).ok_or_else(|| {
                 typed_diagnostic(
@@ -1843,6 +1909,9 @@ pub fn apply_typed_properties(
         // namespace declarations, so a prefixed descriptor stays in MDClasses.
         let (opening, qname) = scalar_element_shell(&parsed_body[property.range()]);
         let replacement = match (key, value) {
+            (_, MetaPropertyValue::Picture(picture)) => {
+                render_picture(parsed_body, property, picture.as_ref())?
+            }
             (MetaPropertyKey::CodeType, MetaPropertyValue::String(value))
                 if kind == MetadataKind::ChartOfCalculationTypes
                     && matches!(
@@ -4559,6 +4628,12 @@ mod prefixed_property_writer_tests {
             MetaPropertyValueKind::Type => vec![MetaPropertyValue::Type(
                 MetadataType::new(vec![MetadataTypeVariant::Boolean]).unwrap(),
             )],
+            MetaPropertyValueKind::Picture => vec![MetaPropertyValue::Picture(Some(
+                unica_metadata::MetaPicture {
+                    reference: "StdPicture.Print".into(),
+                    load_transparent: Some(true),
+                },
+            ))],
             MetaPropertyValueKind::Boolean => {
                 vec![MetaPropertyValue::Boolean(current.trim() != "true")]
             }

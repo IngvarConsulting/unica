@@ -1531,7 +1531,9 @@ pub(crate) mod tests {
                 });
 
                 let expected_xml = match value {
-                    MetaPropertyValue::Type(_) | MetaPropertyValue::Localized(_) => {
+                    MetaPropertyValue::Type(_)
+                    | MetaPropertyValue::Picture(_)
+                    | MetaPropertyValue::Localized(_) => {
                         unreachable!("scalar property test matrix")
                     }
                     MetaPropertyValue::String(value) => {
