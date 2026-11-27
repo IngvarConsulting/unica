@@ -29,32 +29,41 @@ pub struct DebugModuleSource {
 pub struct DebugFrameModule(String);
 
 impl DebugFrameModule {
-    pub fn from_presentation(presentation: &str, property: Uuid) -> Option<Self> {
+    pub fn from_presentation(presentation: &str, id: &DebugModuleId) -> Option<Self> {
         let (call, arguments) = presentation.split_once('(')?;
         if !arguments.ends_with(')') {
             return None;
         }
+        let call = match call.split_once(' ') {
+            Some((prefix, call))
+                if !prefix.is_empty() && id.extension.as_deref() == Some(prefix) =>
+            {
+                call
+            }
+            Some(_) => return None,
+            None => call,
+        };
         let (module, method) = call.rsplit_once('.')?;
         let parts: Vec<_> = module.splitn(6, '.').collect();
         if !parts.iter().copied().chain([method]).all(is_identifier) {
             return None;
         }
         match parts.as_slice() {
-            [name] if property == COMMON_MODULE_PROPERTY_ID => {
+            [name] if id.property == COMMON_MODULE_PROPERTY_ID => {
                 Some(Self(format!("CommonModule.{name}")))
             }
             ["МодульУправляемогоПриложения" | "ManagedApplicationModule"] => {
                 Some(Self("Module.ManagedApplication".to_owned()))
             }
             [kind, name, role]
-                if property == COMMON_MODULE_PROPERTY_ID
+                if id.property == COMMON_MODULE_PROPERTY_ID
                     && NodeKind::parse(kind).ok() == Some(NodeKind::CommonModule)
                     && NodeKind::parse(role).ok() == Some(NodeKind::Module) =>
             {
                 Some(Self(format!("CommonModule.{name}")))
             }
             [kind, name, "МодульОбъекта" | "ObjectModule"]
-                if property == OBJECT_MODULE_PROPERTY_ID =>
+                if id.property == OBJECT_MODULE_PROPERTY_ID =>
             {
                 let kind = NodeKind::parse(kind).ok()?;
                 (kind.declaration().root.is_some()
@@ -114,10 +123,21 @@ pub type ResolveDebugModules = Box<
 mod tests {
     use super::*;
 
+    fn configuration_frame(presentation: &str, property: Uuid) -> Option<DebugFrameModule> {
+        DebugFrameModule::from_presentation(
+            presentation,
+            &DebugModuleId {
+                extension: None,
+                object: Uuid::nil(),
+                property,
+            },
+        )
+    }
+
     #[test]
     fn frame_module_parses_the_module_independently_of_method_and_arguments() {
         let form_property = Uuid::from_u128(0x32e087ab_1491_49b6_aba7_43571b41ac2b);
-        let form = DebugFrameModule::from_presentation(
+        let form = configuration_frame(
             "Документ.РеализацияТоваровУслуг.Форма.ФормаДокумента.Форма.ПриСозданииНаСервере(Отказ = Ложь, СтандартнаяОбработка = Истина)",
             form_property,
         )
@@ -127,10 +147,10 @@ mod tests {
             "main:Document.РеализацияТоваровУслуг.Form.ФормаДокумента.Module.Form"
         );
         assert_eq!(
-            DebugFrameModule::from_presentation("Document.РеализацияТоваровУслуг.Form.ФормаДокумента.Form.ПриОткрытии(Объект.Реквизит)", form_property),
+            configuration_frame("Document.РеализацияТоваровУслуг.Form.ФормаДокумента.Form.ПриОткрытии(Объект.Реквизит)", form_property),
             Some(form)
         );
-        let application = DebugFrameModule::from_presentation(
+        let application = configuration_frame(
             "МодульУправляемогоПриложения.ПередНачаломРаботыСистемы()",
             Uuid::from_u128(0xd22e852a_cf8a_4f77_8ccb_3548e7792bea),
         )
@@ -148,13 +168,12 @@ mod tests {
             "ОбщийМодуль.ИсправлениеДокументов.Модуль.ПриСозданииНаСервере()",
             "CommonModule.ИсправлениеДокументов.Module.Open()",
         ] {
-            let module =
-                DebugFrameModule::from_presentation(name, COMMON_MODULE_PROPERTY_ID).unwrap();
+            let module = configuration_frame(name, COMMON_MODULE_PROPERTY_ID).unwrap();
             assert_eq!(
                 module.in_source_set("main").unwrap().to_string(),
                 "main:CommonModule.ИсправлениеДокументов"
             );
-            assert_eq!(DebugFrameModule::from_presentation(name, Uuid::nil()), None);
+            assert_eq!(configuration_frame(name, Uuid::nil()), None);
         }
     }
 
@@ -174,13 +193,9 @@ mod tests {
                 "main:Catalog.Валюты.Module.Object",
             ),
         ] {
-            let module =
-                DebugFrameModule::from_presentation(name, OBJECT_MODULE_PROPERTY_ID).unwrap();
+            let module = configuration_frame(name, OBJECT_MODULE_PROPERTY_ID).unwrap();
             assert_eq!(module.in_source_set("main").unwrap().to_string(), address);
-            assert_eq!(
-                DebugFrameModule::from_presentation(name, COMMON_MODULE_PROPERTY_ID),
-                None
-            );
+            assert_eq!(configuration_frame(name, COMMON_MODULE_PROPERTY_ID), None);
         }
         for name in [
             "РегистрСведений.Цены.МодульОбъекта.Выполнить()",
@@ -189,9 +204,45 @@ mod tests {
             "Проверка.Выполнить()",
         ] {
             assert_eq!(
-                DebugFrameModule::from_presentation(name, OBJECT_MODULE_PROPERTY_ID),
+                configuration_frame(name, OBJECT_MODULE_PROPERTY_ID),
                 None,
                 "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn extension_frame_accepts_only_its_own_platform_prefix() {
+        let id = DebugModuleId {
+            extension: Some("CorpusExtension".into()),
+            object: Uuid::from_u128(0x2acafa86_e100_5e76_b674_040553243539),
+            property: COMMON_MODULE_PROPERTY_ID,
+        };
+        let plain = "ОбщийМодуль.CorpusExtension_OwnProbe.Модуль.Entry()";
+        let prefixed = "CorpusExtension ОбщийМодуль.CorpusExtension_OwnProbe.Модуль.Entry()";
+        let module = DebugFrameModule::from_presentation(prefixed, &id).unwrap();
+        assert_eq!(
+            module.in_source_set("ext").unwrap().to_string(),
+            "ext:CommonModule.CorpusExtension_OwnProbe"
+        );
+        assert_eq!(
+            DebugFrameModule::from_presentation(plain, &id),
+            Some(module)
+        );
+        assert_eq!(configuration_frame(prefixed, id.property), None);
+        for prefix in [
+            "Corpus ",
+            "corpusextension ",
+            "CorpusExtensionX ",
+            "CorpusExtension  ",
+            "CorpusExtension\t",
+            "CorpusExtension.",
+            "CorpusExtension",
+        ] {
+            assert_eq!(
+                DebugFrameModule::from_presentation(&format!("{prefix}{plain}"), &id),
+                None,
+                "{prefix:?}"
             );
         }
     }
@@ -209,7 +260,7 @@ mod tests {
             "Документ.Заказ.Форма.ФормаДокумента.Форма.Открыть(арг",
         ] {
             assert_eq!(
-                DebugFrameModule::from_presentation(presentation, COMMON_MODULE_PROPERTY_ID),
+                configuration_frame(presentation, COMMON_MODULE_PROPERTY_ID),
                 None,
                 "{presentation}"
             );

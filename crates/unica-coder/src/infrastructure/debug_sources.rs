@@ -726,12 +726,11 @@ mod tests {
             object: uuid::Uuid::from_u128(0xf3317000_0000_4000_8000_000000000003),
             property: OBJECT_MODULE_PROPERTY_ID,
         };
-        let mut named = |name: &str, id: &DebugModuleId| {
-            let module =
-                DebugFrameModule::from_presentation(name, OBJECT_MODULE_PROPERTY_ID).unwrap();
+        let mut named = |name: &str, candidate: &DebugModuleId| {
+            let module = DebugFrameModule::from_presentation(name, &id).unwrap();
             resolve(DebugModuleQuery::Frame {
                 module: &module,
-                id,
+                id: candidate,
             })
             .unwrap()
             .modules
@@ -781,7 +780,7 @@ mod tests {
         };
         let mut resolve = workspace_debug_resolver(workspace.path(), None).unwrap();
         let mut named = |name: &str, candidate: &DebugModuleId| {
-            let module = DebugFrameModule::from_presentation(name, candidate.property).unwrap();
+            let module = DebugFrameModule::from_presentation(name, candidate).unwrap();
             resolve(DebugModuleQuery::Frame {
                 module: &module,
                 id: candidate,
@@ -837,7 +836,7 @@ mod tests {
         };
         let module = DebugFrameModule::from_presentation(
             "DataProcessor.Processor.Form.Main.Form.Open()",
-            id.property,
+            &id,
         )
         .unwrap();
         let mut source_sets = |id: &DebugModuleId| {
@@ -982,12 +981,14 @@ mod tests {
         let workspace = tempfile::tempdir().unwrap();
         crate::infrastructure::test_fixtures::copy_tree(&fixture, workspace.path());
         let mut resolve = workspace_debug_resolver(workspace.path(), None).unwrap();
-        let candidate = DebugFrameModule::from_presentation(
-            "КешЗначений.Получить()",
-            COMMON_MODULE_PROPERTY_ID,
-        )
-        .unwrap();
-        for (set, root) in [("main", "cf"), ("ext", "ext")] {
+        for (set, root, frame) in [
+            ("main", "cf", "КешЗначений.Получить()"),
+            (
+                "ext",
+                "ext",
+                "ПриёмочноеРасширение ОбщийМодуль.КешЗначений.Модуль.Получить()",
+            ),
+        ] {
             let address = format!("{set}:CommonModule.КешЗначений");
             let id = resolve(DebugModuleQuery::Address(&address))
                 .unwrap()
@@ -995,6 +996,7 @@ mod tests {
                 .pop()
                 .unwrap()
                 .runtime_id;
+            let candidate = DebugFrameModule::from_presentation(frame, &id).unwrap();
             let src = workspace.path().join("src").join(root);
             std::fs::write(
                 src.join("CommonModules/СерверныеФункции.xml"),

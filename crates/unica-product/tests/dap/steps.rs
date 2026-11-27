@@ -221,15 +221,12 @@ impl Drop for Dap {
     }
 }
 
-fn identity(kind: &str, extension: &str, object: &str, property: &str) -> String {
-    format!("<moduleID><type>{kind}</type><extensionName>{extension}</extensionName><objectID>{object}</objectID><propertyID>{property}</propertyID></moduleID>")
+fn module(kind_fields: &str, object: &str, property: &str, presentation: &str) -> String {
+    format!("<moduleID>{kind_fields}<objectID>{object}</objectID><propertyID>{property}</propertyID></moduleID><presentation>{presentation}</presentation>")
 }
 
-fn frame(id: &str, line: u32) -> String {
-    // The opaque display label encodes Ping(). Source must be established from the wire identity.
-    format!(
-        "<callStack>{id}<presentation>UGluZygp</presentation><lineNo>{line}</lineNo></callStack>"
-    )
+fn frame(module: &str, line: u32) -> String {
+    format!("<callStack>{module}<lineNo>{line}</lineNo></callStack>")
 }
 
 #[test]
@@ -237,15 +234,38 @@ fn step_in_and_out_preserve_sources_across_module_boundaries() {
     let root = step_workspace();
     let peer = Peer::start();
     let mut dap = Dap::open(root.path(), peer.address.port());
-    let cfg = identity("ConfigModule", "", PROBE, COMMON_ROLE);
-    let ext = identity("ExtensionModule", "ProbeExtension", PROBE, COMMON_ROLE);
-    let processor = identity("ConfigModule", "", PROCESSOR, OBJECT_ROLE);
-    let hidden = identity("ConfigModule", "", HIDDEN, COMMON_ROLE);
+    // 1C 8.5.4.2028 sends a Base64-encoded presentation and omits type for the base configuration.
+    // ОбщийМодуль.Probe.Модуль.Run()
+    let cfg = module(
+        "",
+        PROBE,
+        COMMON_ROLE,
+        "0J7QsdGJ0LjQudCc0L7QtNGD0LvRjC5Qcm9iZS7QnNC+0LTRg9C70YwuUnVuKCk=",
+    );
+    // ProbeExtension ОбщийМодуль.Probe.Модуль.Entry()
+    let ext = module(
+        "<type>ExtensionModule</type><extensionName>ProbeExtension</extensionName>",
+        PROBE,
+        COMMON_ROLE,
+        "UHJvYmVFeHRlbnNpb24g0J7QsdGJ0LjQudCc0L7QtNGD0LvRjC5Qcm9iZS7QnNC+0LTRg9C70YwuRW50cnkoKQ==",
+    );
+    // Обработка.Processor.МодульОбъекта.Entry()
+    let processor = module(
+        "",
+        PROCESSOR,
+        OBJECT_ROLE,
+        "0J7QsdGA0LDQsdC+0YLQutCwLlByb2Nlc3Nvci7QnNC+0LTRg9C70YzQntCx0YrQtdC60YLQsC5FbnRyeSgp",
+    );
+    let hidden = module("", HIDDEN, COMMON_ROLE, "UGluZygp");
     // The external module deliberately collides with a saved configuration processor.
-    let external = identity("ExtMDModule", "", PROCESSOR, OBJECT_ROLE)
-        .replace("<objectID>", "<URL>file:///unsaved.epf</URL><objectID>");
+    let external = module(
+        "<type>ExtMDModule</type><URL>file:///unsaved.epf</URL>",
+        PROCESSOR,
+        OBJECT_ROLE,
+        "UGluZygp",
+    );
     let external_url_only =
-        "<moduleID><type>ExtMDModule</type><URL>file:///unsaved.epf</URL></moduleID>";
+        "<moduleID><type>ExtMDModule</type><URL>file:///unsaved.epf</URL></moduleID><presentation>UGluZygp</presentation>";
     let incomplete = format!("<callStack><moduleID><type>ConfigModule</type><objectID>{PROBE}</objectID></moduleID><presentation>UGluZygp</presentation></callStack>");
     let base = Some("main:CommonModule.Probe");
     let overlay = Some("ext:CommonModule.Probe");

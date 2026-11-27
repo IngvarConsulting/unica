@@ -193,8 +193,7 @@ impl Modules {
     ) -> Vec<Option<String>> {
         let frames: Vec<_> = frames
             .map(|(id, name, hit)| {
-                let module =
-                    id.and_then(|id| DebugFrameModule::from_presentation(name, id.property));
+                let module = id.and_then(|id| DebugFrameModule::from_presentation(name, id));
                 (id, module, hit)
             })
             .collect();
