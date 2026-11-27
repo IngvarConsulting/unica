@@ -730,6 +730,29 @@ fn borrowed_shape(text: &str) -> String {
         .join("\n")
 }
 
+/// rule: INV.SOURCE.WRITABLE-PROFILE
+#[test]
+fn first_catalog_borrow_matches_designer_bytes_except_fresh_identities() {
+    use unica_source_contract::format_identity::PlatformLine;
+
+    let corpus = "../../tests/fixtures/formats/platform_xml/2.20";
+    let platform = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(corpus)
+        .join("cfe_borrow_kinds/Catalogs/Валюты.xml");
+    let expected = std::fs::read_to_string(platform).unwrap();
+    let tree = borrow_in(corpus, PlatformLine::new(8, 3, 27), "main:Catalog.Валюты");
+    let actual = std::str::from_utf8(&tree[Path::new("Catalogs/Валюты.xml")]).unwrap();
+    let fresh_ids = regex::Regex::new(
+        r#"(<Catalog uuid="|<xr:(?:TypeId|ValueId)>)[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}"#
+    ).unwrap();
+    assert_eq!(fresh_ids.find_iter(&expected).count(), 11);
+    assert_eq!(fresh_ids.find_iter(actual).count(), 11);
+    assert_eq!(
+        fresh_ids.replace_all(actual, "${1}UUID"),
+        fresh_ids.replace_all(&expected, "${1}UUID")
+    );
+}
+
 /// Every kind Unica borrows is written as 8.3.27 (format 2.20) and 8.5.4
 /// (format 2.22) export it after loading; the corpus `cfe_borrow_kinds`
 /// holds one object of each kind of `all_kinds`.

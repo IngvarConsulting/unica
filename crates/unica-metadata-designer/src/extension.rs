@@ -377,6 +377,30 @@ pub fn cfe_borrow_object_xml(
     identity: &CfeBorrowIdentity,
     fresh_uuid: fn() -> String,
 ) -> Result<String, String> {
+    Ok(cfe_borrow_object_lines(
+        type_name,
+        object_name,
+        source_uuid,
+        source_props,
+        format_version,
+        identity,
+        fresh_uuid,
+    )?
+    .join("\n"))
+}
+
+/// Structural lines of a fresh descriptor. A copied property is kept as one
+/// fragment so choosing the serialization's line ending does not retarget
+/// literal line breaks inside that property.
+pub(crate) fn cfe_borrow_object_lines(
+    type_name: &str,
+    object_name: &str,
+    source_uuid: &str,
+    source_props: Option<roxmltree::Node<'_, '_>>,
+    format_version: &str,
+    identity: &CfeBorrowIdentity,
+    fresh_uuid: fn() -> String,
+) -> Result<Vec<String>, String> {
     let mut lines = Vec::<String>::new();
     lines.push("<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_string());
     lines.push(format!(
@@ -388,7 +412,7 @@ pub fn cfe_borrow_object_xml(
         "\t<{type_name} uuid=\"{}\">",
         identity.wrapper_uuid(fresh_uuid)
     ));
-    lines.push(cfe_borrow_internal_info_xml(
+    lines.extend(cfe_borrow_internal_info_lines(
         type_name,
         object_name,
         "\t\t",
@@ -477,7 +501,7 @@ pub fn cfe_borrow_object_xml(
     }
     lines.push(format!("\t</{type_name}>"));
     lines.push("</MetaDataObject>".to_string());
-    Ok(lines.join("\n"))
+    Ok(lines)
 }
 
 pub fn cfe_borrow_internal_info_xml(
@@ -487,6 +511,19 @@ pub fn cfe_borrow_internal_info_xml(
     identity: &CfeBorrowIdentity,
     fresh_uuid: fn() -> String,
 ) -> Result<String, String> {
+    Ok(
+        cfe_borrow_internal_info_lines(type_name, object_name, indent, identity, fresh_uuid)?
+            .join("\n"),
+    )
+}
+
+fn cfe_borrow_internal_info_lines(
+    type_name: &str,
+    object_name: &str,
+    indent: &str,
+    identity: &CfeBorrowIdentity,
+    fresh_uuid: fn() -> String,
+) -> Result<Vec<String>, String> {
     let types = cfe_borrow_generated_types(type_name).ok_or_else(|| {
         format!(
             "Type '{type_name}' has no proven cfe.borrow InternalInfo profile for platform 1C 8.3.27"
@@ -494,7 +531,7 @@ pub fn cfe_borrow_internal_info_xml(
     })?;
     let extended = cfe_borrow_extended_property(type_name);
     if types.is_empty() && extended.is_none() {
-        return Ok(format!("{indent}<InternalInfo/>"));
+        return Ok(vec![format!("{indent}<InternalInfo/>")]);
     }
     let mut lines = vec![format!("{indent}<InternalInfo>")];
     if let Some(property) = extended {
@@ -522,7 +559,7 @@ pub fn cfe_borrow_internal_info_xml(
         lines.push(format!("{indent}\t</xr:GeneratedType>"));
     }
     lines.push(format!("{indent}</InternalInfo>"));
-    Ok(lines.join("\n"))
+    Ok(lines)
 }
 
 /// The property a borrowed object of `type_name` extends from the moment it

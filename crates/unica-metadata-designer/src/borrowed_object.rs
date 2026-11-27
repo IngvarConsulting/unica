@@ -1,5 +1,5 @@
 //! Pure descriptor planning for explicit top-level borrowing.
-use crate::extension::{cfe_borrow_generated_types, cfe_borrow_object_xml, CfeBorrowIdentity};
+use crate::extension::{cfe_borrow_generated_types, cfe_borrow_object_lines, CfeBorrowIdentity};
 use unica_source_designer::configuration_layout::cfe_borrow_type_dir;
 
 use roxmltree::{Document, Node};
@@ -110,7 +110,7 @@ pub fn plan_borrow_object_with_identity(
         .root_element()
         .attribute("version")
         .ok_or("Parent descriptor has no version")?;
-    let template = cfe_borrow_object_xml(
+    let template = cfe_borrow_object_lines(
         kind,
         name,
         &parent_uuid,
@@ -118,7 +118,8 @@ pub fn plan_borrow_object_with_identity(
         version,
         identity,
         fresh_uuid,
-    )?;
+    )?
+    .join(if existing.is_none() { "\r\n" } else { "\n" });
     let template_doc = Document::parse(&template).map_err(|e| e.to_string())?;
     let template_object = object(&template_doc)?;
     let template_props = required(template_object, MD, "Properties")?;
@@ -278,8 +279,9 @@ pub fn plan_borrow_object_with_identity(
     for (range, replacement) in patches.into_iter().rev() {
         changed.replace_range(range, &replacement);
     }
-    // Byte offsets above refer to BOM-free text; retain the original encoding marker.
-    if existing.is_some_and(|bytes| bytes.starts_with(b"\xef\xbb\xbf")) {
+    // The new descriptor uses the platform's UTF-8 BOM. A refresh keeps
+    // the existing encoding marker, and offsets above remain BOM-free.
+    if initial || existing.is_some_and(|bytes| bytes.starts_with(b"\xef\xbb\xbf")) {
         changed.insert(0, '\u{feff}');
     }
     let check = Document::parse(changed.trim_start_matches('\u{feff}'))
@@ -630,18 +632,49 @@ fn fragment_with(node: Node<'_, '_>, bound: &BTreeSet<(Option<String>, String)>)
     if !node.is_element() {
         return node.document().input_text()[node.range()].to_string();
     }
-    let qname = |namespace: Option<&str>, name: &str| match namespace
-        .and_then(|ns| node.lookup_prefix(ns))
-    {
-        Some(prefix) => format!("{prefix}:{name}"),
-        None => name.to_string(),
-    };
-    let tag = qname(node.tag_name().namespace(), node.tag_name().name());
+    let source = node.document().input_text();
+    let tag = source[node.range().start + 1..]
+        .split([' ', '\t', '\r', '\n', '/', '>'])
+        .next()
+        .expect("the parsed element has an opening name");
+    let tag_prefix = tag.split_once(':').map(|(prefix, _)| prefix);
+    let literal = node.attributes().len() == 0
+        && node
+            .first_child()
+            .filter(|child| child.is_text() && child.next_sibling().is_none())
+            .and_then(|child| child.text())
+            .is_some_and(|text| {
+                let digits = text.strip_prefix('-').unwrap_or(text);
+                matches!(text, "true" | "false")
+                    || (!digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()))
+            });
     let mut result = format!("<{tag}");
     let mut inner = bound.clone();
+    if !node.namespaces().any(|ns| ns.name().is_none())
+        && bound
+            .iter()
+            .any(|(prefix, uri)| prefix.is_none() && !uri.is_empty())
+    {
+        result.push_str(" xmlns=\"\"");
+        inner.retain(|(prefix, _)| prefix.is_some());
+        inner.insert((None, String::new()));
+    }
     for ns in node.namespaces() {
         let binding = (ns.name().map(str::to_string), ns.uri().to_string());
         if bound.contains(&binding) {
+            continue;
+        }
+        // A leaf containing only a boolean or integer can prove that no
+        // inherited prefix is used except its opening name's. Keep local
+        // declarations and any binding in a fragment that can contain QNames.
+        if literal
+            && ns.name().is_some()
+            && ns.name() != tag_prefix
+            && node
+                .parent_element()
+                .and_then(|parent| parent.lookup_namespace_uri(ns.name()))
+                == Some(ns.uri())
+        {
             continue;
         }
         // A prefix rebound here is no longer bound as it was outside.
@@ -661,7 +694,7 @@ fn fragment_with(node: Node<'_, '_>, bound: &BTreeSet<(Option<String>, String)>)
     for attribute in node.attributes() {
         result.push_str(&format!(
             " {}=\"{}\"",
-            qname(attribute.namespace(), attribute.name()),
+            &source[attribute.range_qname()],
             unica_xml_format::text::escape_xml(attribute.value())
         ));
     }

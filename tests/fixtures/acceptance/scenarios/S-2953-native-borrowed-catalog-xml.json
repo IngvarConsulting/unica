@@ -1,0 +1,184 @@
+{
+  "id": "S-2953-native-borrowed-catalog-xml",
+  "issue": 2953,
+  "area": "Расширения конфигурации",
+  "task": "Впервые заимствовать справочник и проверить нативный вид перенесённых свойств в предпросмотре и исходниках.",
+  "workspace": "tests/fixtures/acceptance/workspace-format",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "nosupport:Catalog.Валюты"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "parent": {
+          "kind": "sha256",
+          "file": "src-nosupport/Catalogs/Валюты.xml"
+        },
+        "registration": {
+          "kind": "sha256",
+          "file": "src-ext/Configuration.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "ext:Configuration.Can.object.borrow"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/op",
+          "eq": "object.borrow"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "ext:Configuration",
+        "ops": [
+          {
+            "op": "object.borrow",
+            "args": {
+              "from": "nosupport:Catalog.Валюты"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src-nosupport/Catalogs/Валюты.xml",
+          "eq": "$capture.parent"
+        },
+        {
+          "kind": "sha256",
+          "path": "src-ext/Configuration.xml",
+          "eq": "$capture.registration"
+        },
+        {
+          "kind": "exists",
+          "path": "src-ext/Catalogs/Валюты.xml",
+          "eq": false
+        }
+      ],
+      "captures": {
+        "token": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.diff",
+      "args": {
+        "executionToken": "$capture.token",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/truncated",
+          "eq": false
+        },
+        {
+          "pointer": "/data/chunks/2/path",
+          "eq": "Catalogs/Валюты.xml"
+        },
+        {
+          "pointer": "/data/chunks/2/content",
+          "contains": "\t\t\t<Hierarchical>false</Hierarchical>"
+        },
+        {
+          "pointer": "/data/chunks/2/content",
+          "contains": "\t\t\t<CodeLength>3</CodeLength>"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src-nosupport/Catalogs/Валюты.xml",
+          "eq": "$capture.parent"
+        },
+        {
+          "kind": "sha256",
+          "path": "src-ext/Configuration.xml",
+          "eq": "$capture.registration"
+        },
+        {
+          "kind": "exists",
+          "path": "src-ext/Catalogs/Валюты.xml",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src-nosupport/Catalogs/Валюты.xml",
+          "eq": "$capture.parent"
+        },
+        {
+          "kind": "xml",
+          "path": "src-ext/Catalogs/Валюты.xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Hierarchical",
+          "eq": [
+            "false"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src-ext/Catalogs/Валюты.xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}CodeLength",
+          "eq": [
+            "3"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "ext:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "validators": [
+        "cfe"
+      ]
+    }
+  ]
+}

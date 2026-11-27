@@ -584,6 +584,98 @@ fn common_module_server_override_uses_platform_notify_and_survives_refresh() {
 }
 
 #[test]
+fn initial_catalog_borrow_omits_unused_inherited_namespace_bindings() {
+    let parent = parent("Catalog")
+        .replace(
+            "version=\"2.20\"",
+            "xmlns:pal=\"urn:palette\" version=\"2.20\"",
+        )
+        .replace(
+            "</Properties>",
+            "<Hierarchical>false</Hierarchical><CodeLength>3</CodeLength></Properties>",
+        );
+    let planned = plan_borrow_object(parent.as_bytes(), None, None, fixture_uuid_v4).unwrap();
+    let xml = std::str::from_utf8(&planned.bytes).unwrap();
+    assert!(
+        xml.contains("\t\t\t<Hierarchical>false</Hierarchical>"),
+        "{xml}"
+    );
+    assert!(xml.contains("\t\t\t<CodeLength>3</CodeLength>"), "{xml}");
+    assert!(!xml.contains("xmlns:pal"), "{xml}");
+}
+
+#[test]
+fn first_borrow_formats_the_envelope_without_reformatting_property_text() {
+    let parent = parent("DefinedType")
+        .replace(
+            "version=\"2.20\"",
+            "xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" version=\"2.20\"",
+        )
+        .replace(
+            "</Properties>",
+            "<Type><v8:Type>\r\nxs:string\r\n</v8:Type></Type></Properties>",
+        );
+    let first = plan_borrow_object(parent.as_bytes(), None, None, fixture_uuid_v4).unwrap();
+    let xml = std::str::from_utf8(&first.bytes).unwrap();
+    assert!(xml.starts_with("\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n"));
+    assert!(xml.contains("<v8:Type>\nxs:string\n</v8:Type>"), "{xml}");
+    assert!(!xml.contains("\r\r\n"));
+    assert!(xml.ends_with("</MetaDataObject>"));
+
+    let legacy = xml.trim_start_matches('\u{feff}').replace("\r\n", "\n");
+    let parent = parent.replace("xs:string", "xs:boolean");
+    let refresh = plan_borrow_object(
+        parent.as_bytes(),
+        Some(legacy.as_bytes()),
+        None,
+        fixture_uuid_v4,
+    )
+    .unwrap();
+    let xml = std::str::from_utf8(&refresh.bytes).unwrap();
+    assert!(xml.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"));
+    assert!(xml.contains("<v8:Type>\nxs:boolean\n</v8:Type>"), "{xml}");
+    assert!(!xml.contains("\r"));
+}
+
+#[test]
+fn projected_fragment_preserves_lexical_prefixes_and_local_rebinding() {
+    let source = Document::parse(concat!(
+        r#"<source xmlns:p="urn:outer" xmlns:first="urn:both" xmlns:second="urn:both""#,
+        r#" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">"#,
+        r#"<first:Value second:attr="p:Original" xsi:type="p:Original">"#,
+        r#"<second:Item xmlns:p="urn:inner">p:Local</second:Item>"#,
+        r#"<first:Item xmlns="">p:Outer</first:Item>"#,
+        r#"</first:Value></source>"#
+    ))
+    .unwrap();
+    let destination =
+        Document::parse(r#"<target xmlns="urn:target" xmlns:p="urn:destination"/>"#).unwrap();
+    let node = source.root_element().first_element_child().unwrap();
+    let result = fragment_in(node, destination.root_element());
+    let wrapped =
+        format!(r#"<target xmlns="urn:target" xmlns:p="urn:destination">{result}</target>"#);
+    let result_doc = Document::parse(&wrapped).unwrap();
+    let value = result_doc.root_element().first_element_child().unwrap();
+    assert!(result.starts_with("<first:Value "), "{result}");
+    assert!(result.contains(" second:attr=\"p:Original\""), "{result}");
+    assert!(result.contains("<second:Item"), "{result}");
+    assert_eq!(value.lookup_namespace_uri(Some("p")), Some("urn:outer"));
+    let children = value
+        .children()
+        .filter(Node::is_element)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        children[0].lookup_namespace_uri(Some("p")),
+        Some("urn:inner")
+    );
+    assert_eq!(
+        children[1].lookup_namespace_uri(Some("p")),
+        Some("urn:outer")
+    );
+    assert_ne!(children[1].lookup_namespace_uri(None), Some("urn:target"));
+}
+
+#[test]
 fn changed_qname_binding_refreshes_type_even_when_its_text_is_unchanged() {
     let parent = parent("DefinedType").replace("version=\"2.20\"", "xmlns:p=\"urn:parent:one\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" version=\"2.20\"").replace("</Properties>", "<Type><v8:Type>p:Example</v8:Type></Type></Properties>");
     let first = plan_borrow_object(parent.as_bytes(), None, None, fixture_uuid_v4).unwrap();
@@ -687,12 +779,12 @@ fn repeated_borrowing_completes_a_descriptor_borrowed_in_part() {
         (
             "CommonTemplate",
             "<TemplateType>SpreadsheetDocument</TemplateType>",
-            "\t\t\t<TemplateType>SpreadsheetDocument</TemplateType>\n",
+            "\t\t\t<TemplateType>SpreadsheetDocument</TemplateType>\r\n",
         ),
         (
             "Subsystem",
             "<Content><xr:Item xsi:type=\"xr:MDObjectRef\">Catalog.Orders</xr:Item></Content>",
-            "\t\t\t<Content/>\n",
+            "\t\t\t<Content/>\r\n",
         ),
     ] {
         let parent = format!(
@@ -774,7 +866,7 @@ fn repeated_borrowing_completes_the_internal_info_of_an_earlier_borrowing() {
         let full = seeded_borrow(&parent, None).unwrap();
         let legacy = without_lines(&full, "<InternalInfo>", "</InternalInfo>").replacen(
             "\t\t<Properties>",
-            "\t\t<InternalInfo/>\n\t\t<Properties>",
+            "\t\t<InternalInfo/>\r\n\t\t<Properties>",
             1,
         );
         assert!(legacy.contains("<InternalInfo/>"), "{kind}: {legacy}");
@@ -800,8 +892,8 @@ fn repeated_borrowing_completes_a_common_template_of_format_2_22() {
     );
     let full = seeded_borrow(&parent, None).unwrap();
     let missing = [
-        "\t\t\t<TemplateType>SpreadsheetDocument</TemplateType>\n",
-        "\t\t\t<ActionOnConfigurationExtensionChangeError>Warning</ActionOnConfigurationExtensionChangeError>\n",
+        "\t\t\t<TemplateType>SpreadsheetDocument</TemplateType>\r\n",
+        "\t\t\t<ActionOnConfigurationExtensionChangeError>Warning</ActionOnConfigurationExtensionChangeError>\r\n",
     ];
     let legacy = missing
         .iter()
@@ -811,8 +903,8 @@ fn repeated_borrowing_completes_a_common_template_of_format_2_22() {
     let one_line = {
         let start = legacy.find("\t\t\t<ObjectBelonging>").unwrap();
         let end = legacy.find("\t\t</Properties>").unwrap();
-        let joined = legacy[start..end].replace(['\n', '\t'], "");
-        format!("{}\t\t\t{joined}\n{}", &legacy[..start], &legacy[end..])
+        let joined = legacy[start..end].replace(['\r', '\n', '\t'], "");
+        format!("{}\t\t\t{joined}\r\n{}", &legacy[..start], &legacy[end..])
     };
     let completed = seeded_borrow(&parent, Some(&one_line)).unwrap();
     let doc = Document::parse(&completed).unwrap();
