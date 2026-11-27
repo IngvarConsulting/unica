@@ -2,7 +2,7 @@ use super::*;
 use unica_source_contract::debug_source::DebugServerUrl;
 
 impl PreparedDebugServer {
-    pub(super) fn prepare(
+    pub(super) fn start(
         &self,
         tool: &BundledTool,
         runner: &dyn ProcessRunner,
@@ -10,27 +10,25 @@ impl PreparedDebugServer {
         owner_pid: u32,
     ) -> DomainResult {
         let args = vec!["--owner-pid".to_owned(), owner_pid.to_string()];
-        let data = match self.invoke(tool, runner, PREPARE, args, self.dry_run, cancellation) {
+        let data = match self.invoke(tool, runner, START, args, self.dry_run, cancellation) {
             Ok(data) => data,
             Err(result) => return result,
         };
         let invalid = || {
             failure(
-                PREPARE,
+                START,
                 RefusalCode::InvalidResult,
                 "runner did not confirm the debug server preparation",
             )
         };
         if self.dry_run {
-            if data["action"] != "planned"
-                || ["url", "scope", "release"]
-                    .iter()
-                    .any(|field| !data[*field].is_null())
-            {
+            if data != json!({"action":"planned"}) {
                 return invalid();
             }
             let mut result = DomainResult::success("debug server preparation planned");
-            result.data = Some(json!({"op":PREPARE, "contractVersion":1, "action":"planned"}));
+            result.data = Some(
+                json!({"op":START, "contractVersion":DEBUG_SERVER_START_CONTRACT_VERSION, "action":"planned"}),
+            );
             return result;
         }
         if data["action"] != "prepared" {
@@ -45,11 +43,10 @@ impl PreparedDebugServer {
         if data["owner"] == "runner" && !is_loopback(raw_url) {
             return invalid();
         }
-        let lease = match release_lease(&data, owner_pid) {
-            Ok(lease) => lease,
-            Err(()) => return invalid(),
+        let Some((owner, lease)) = start_authority(&data, owner_pid) else {
+            return invalid();
         };
-        if let Some(mut result) = ready_endpoint(&data, url, lease) {
+        if let Some(mut result) = ready_endpoint(&data, url, owner, lease) {
             if cancellation.handoff_with_gate(|| Ok(())).is_ok() {
                 if lease.is_some() {
                     result
@@ -60,27 +57,20 @@ impl PreparedDebugServer {
             }
         }
         if let Some(session) = lease {
-            // Each prepare owns one new lease, including reuse of an existing
+            // Each start owns one new lease, including reuse of an existing
             // process. Releasing this token leaves any previously handed-off
             // lease under the caller's control.
-            let release = self.stop(
-                tool,
-                runner,
-                session,
-                false,
-                true,
-                &CancellationToken::new(),
-            );
+            let release = self.stop(tool, runner, session, false, &CancellationToken::new());
             if !release.ok {
-                let mut result = failure(PREPARE, RefusalCode::ProviderFailed,
+                let mut result = failure(START, RefusalCode::ProviderFailed,
                     "debug server preparation was not handed off and lease release was not confirmed");
-                result.data = Some(json!({"op":PREPARE, "release":release_operation(session)}));
+                result.data = Some(json!({"op":START, "release":release_operation(session)}));
                 return result;
             }
         }
         if cancellation.is_cancelled() {
             failure(
-                PREPARE,
+                START,
                 RefusalCode::Cancelled,
                 "debug server preparation cancelled",
             )
@@ -90,27 +80,29 @@ impl PreparedDebugServer {
     }
 }
 
-fn release_lease(data: &Value, owner_pid: u32) -> Result<Option<&str>, ()> {
-    match data["owner"].as_str() {
-        Some("cluster" | "standalone" | "external")
-            if data.get("release") == Some(&Value::Null) =>
+fn start_authority(data: &Value, owner_pid: u32) -> Option<(&str, Option<&str>)> {
+    let owner = data["owner"].as_str()?;
+    let lease = match owner {
+        "cluster" | "standalone" | "external"
+            if data.get("release") == Some(&Value::Null) && data["owner_pid"].is_null() =>
         {
-            Ok(None)
+            None
         }
-        Some("runner") if data["owner_pid"] == owner_pid => {
-            let release = data["release"].as_object().ok_or(())?;
+        "runner" if data["owner_pid"] == owner_pid => {
+            let release = data["release"].as_object()?;
             if release.len() != 2 || release.get("action").and_then(Value::as_str) != Some("stop") {
-                return Err(());
+                return None;
             }
-            release
-                .get("session")
-                .and_then(Value::as_str)
-                .filter(|session| valid_session(session))
-                .map(Some)
-                .ok_or(())
+            Some(
+                release
+                    .get("session")?
+                    .as_str()
+                    .filter(|session| valid_session(session))?,
+            )
         }
-        _ => Err(()),
-    }
+        _ => return None,
+    };
+    Some((owner, lease))
 }
 
 fn release_operation(session: &str) -> Value {
@@ -126,7 +118,12 @@ fn is_loopback(raw_url: &str) -> bool {
     })
 }
 
-fn ready_endpoint(data: &Value, url: DebugServerUrl, lease: Option<&str>) -> Option<DomainResult> {
+fn ready_endpoint(
+    data: &Value,
+    url: DebugServerUrl,
+    owner: &str,
+    lease: Option<&str>,
+) -> Option<DomainResult> {
     let alias = data["infobase_alias"]
         .as_str()
         .filter(|alias| !alias.trim().is_empty() && !alias.chars().any(char::is_control))?;
@@ -137,9 +134,9 @@ fn ready_endpoint(data: &Value, url: DebugServerUrl, lease: Option<&str>) -> Opt
     };
     let mut result = DomainResult::success("debug server endpoint prepared");
     result.data = Some(
-        json!({"op":PREPARE, "contractVersion":1, "action":"prepared",
+        json!({"op":START, "contractVersion":DEBUG_SERVER_START_CONTRACT_VERSION, "action":"prepared",
         "url":url.to_string(), "infoBaseAlias":alias, "scope":scope,
-        "release":lease.map(release_operation)}),
+        "owner":owner, "release":lease.map(release_operation)}),
     );
     Some(result)
 }

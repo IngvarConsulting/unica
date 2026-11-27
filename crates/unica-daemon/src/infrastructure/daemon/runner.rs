@@ -242,10 +242,20 @@ pub(super) fn with_bundled_runner(
     cancellation: CancellationToken,
     run: impl FnOnce(&PinnedRunner, CancellationToken) -> DomainResult,
 ) -> DomainResult {
-    let runner = PinnedRunner::default();
     let Ok(resolved) = super::v13_infobase_exports::resolve_bundled_runner(cwd) else {
-        return run(&runner, cancellation);
+        return run(&PinnedRunner::default(), cancellation);
     };
+    with_resolved_runner(root, &resolved.tool.program, at, cancellation, run)
+}
+
+pub(super) fn with_resolved_runner(
+    root: &Path,
+    program: &Path,
+    at: &str,
+    cancellation: CancellationToken,
+    run: impl FnOnce(&PinnedRunner, CancellationToken) -> DomainResult,
+) -> DomainResult {
+    let runner = PinnedRunner::default();
     let agents = super::live_agent::live_agents();
     agents.touch(root, std::time::Instant::now());
     let mut result = with_prepared_working_copy(root, at, cancellation, |cancellation| {
@@ -255,12 +265,7 @@ pub(super) fn with_bundled_runner(
     let Some(mut agent) = runner.agent() else {
         return result;
     };
-    let after = agents.after_command(
-        root,
-        &resolved.tool.program,
-        &agent,
-        std::time::Instant::now(),
-    );
+    let after = agents.after_command(root, program, &agent, std::time::Instant::now());
     // Holding and letting go take the runner lock of a working copy: they run
     // apart from the answer, which another command of that copy could hold up.
     if !after.marks.is_empty() {

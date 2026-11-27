@@ -27,27 +27,18 @@ from scripts.ci.temp_tree import temp_tree
 BUILD_ENV = "UNICA_DBGS_PLATFORM_BUILD"
 START = "debug-server.start"
 STOP = "debug-server.stop"
-PREPARE = "debug-server.prepare"
 EXIT_SECONDS = 30
 
 
-def bind_wire(scenario, owner_pid, occupied_port):
+def bind_wire(scenario, owner_pid, supported):
     if type(owner_pid) is not int or not 1 <= owner_pid <= 0xFFFFFFFF:
         raise ValueError("expected a live owner PID")
-    if type(occupied_port) is not int or not 1 <= occupied_port <= 65535:
-        raise ValueError("expected an occupied TCP port")
     wire = deepcopy(scenario["wire"])
-    for step in wire:
-        args = step["args"].get("args", {})
-        if args.get("ownerPid") == "$dbgsOwnerPid":
-            args["ownerPid"] = owner_pid
-        if args.get("port") == "$dbgsOccupiedPort":
-            args["port"] = occupied_port
-        for assertion in step.get("assertions", []):
-            if assertion.get("eq") == "$dbgsOwnerPid":
-                assertion["eq"] = owner_pid
-            if isinstance(assertion.get("contains"), str):
-                assertion["contains"] = assertion["contains"].replace("$dbgsOccupiedPort", str(occupied_port))
+    if not supported:
+        # On the old package the driver checks both refusals before creating any IB.
+        return {**scenario, "wire": wire[:1]}
+    for step in wire[1:]:
+        step["args"]["args"]["ownerPid"] = owner_pid
     return {**scenario, "wire": wire}
 
 
@@ -71,20 +62,39 @@ def rdbg_ready(port, host="127.0.0.1"):
         connection.close()
 
 
-def acquired_server(result, owner_pid):
-    data = result.get("data") or {}
-    pid, port, session = (data.get(key) for key in ("pid", "port", "session"))
+def owned_endpoint(data):
+    release = data.get("release") or {}
+    session = release.get("args", {}).get("session")
+    endpoint = urlsplit(data.get("url", ""))
     if not (
-        result.get("ok") is True and data.get("op") == START and data.get("contractVersion") == 1
-        and data.get("action") == "started" and data.get("owner") == "runner"
-        and data.get("ownerPid") == owner_pid and type(pid) is int and 0 < pid <= 0xFFFFFFFF
-        and pid != owner_pid and type(port) is int and 1 <= port <= 65535
-        and data.get("url") == f"http://127.0.0.1:{port}" and data.get("infoBaseAlias") == "DefAlias"
-        and data.get("providerDispatched") is True
+        data.get("op") == START and data.get("contractVersion") == 2
+        and data.get("action") == "prepared" and data.get("owner") == "runner"
+        and data.get("scope") == "clientAndServer" and data.get("infoBaseAlias") == "DefAlias"
+        and endpoint.scheme == "http" and endpoint.port and endpoint.hostname
+        and (endpoint.hostname == "localhost" or ipaddress.ip_address(endpoint.hostname).is_loopback)
         and isinstance(session, str) and re.fullmatch(r"[0-9a-f]{32}", session)
+        and release == {"op": STOP, "args": {"session": session}}
     ):
-        raise AssertionError("expected matching owned debug-server.start receipt")
-    return pid, port, session
+        raise AssertionError("expected a v2 file debugger endpoint with an individual stop lease")
+    return endpoint, session
+
+
+def listening_pid(endpoint):
+    # Obtain the identity independently of the MCP receipt, which grants a lease.
+    response = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+         f"@(Get-NetTCPConnection -State Listen -LocalPort {endpoint.port} -ErrorAction Stop | "
+         "Select-Object -Property LocalAddress,OwningProcess) | ConvertTo-Json -Compress"],
+        check=True, capture_output=True, text=True, timeout=20,
+    )
+    addresses = {endpoint.hostname} if endpoint.hostname != "localhost" else {"127.0.0.1", "::1"}
+    listeners = json.loads(response.stdout)
+    if isinstance(listeners, dict):
+        listeners = [listeners]
+    processes = {row["OwningProcess"] for row in listeners if row["LocalAddress"] in addresses}
+    if len(processes) != 1:
+        raise AssertionError("expected one process listening on the prepared loopback endpoint")
+    return processes.pop()
 
 
 def tcp_listening(port, host="127.0.0.1"):
@@ -138,84 +148,20 @@ def close_owner(owner):
     return owner.wait(timeout=10)
 
 
-def check_public_prepare(test, server, operations, runner_binary, owner_pid):
-    # The installed CLI provides an independent witness for discovery. Only
-    # the acceptance test reads help; the product uses its pinned contract.
+def call_debug(server, op, args, dry_run=False):
+    return tool_result(completed_delivery_call(
+        server, "unica.run", {"op": op, "args": args, "dryRun": dry_run}, op, retry_pending_index=False,
+    ))
+
+
+def runner_has_automatic_start(binary):
+    # The old CLI permits a manual port. Examine the real staged provider,
+    # independently of what the MCP server advertises or what its tag is called.
     help_text = subprocess.run(
-        [str(runner_binary), "debug-server", "--help"], check=True, capture_output=True,
+        [str(binary), "debug-server", "start", "--help"], check=True, capture_output=True,
         text=True, encoding="utf-8", timeout=10,
     ).stdout
-    supports_prepare = re.search(r"^\s*prepare(?:\s|$)", help_text, re.MULTILINE) is not None
-    advertised = [entry for entry in operations if entry["op"] == PREPARE]
-    test.assertEqual(len(advertised), int(supports_prepare))
-    args = {"ownerPid": owner_pid}
-    preview = tool_result(completed_delivery_call(
-        server, "unica.run", {"op": PREPARE, "args": args, "dryRun": True},
-        "preview debug-server.prepare", retry_pending_index=False,
-    ))
-    if not supports_prepare:
-        test.assertFalse(preview["ok"], preview)
-        test.assertEqual(preview["diagnostics"][0]["code"], "unsupported_operation")
-        refused = tool_result(completed_delivery_call(
-            server, "unica.run", {"op": PREPARE, "args": args, "dryRun": False},
-            "request prepare with an older runner", retry_pending_index=False,
-        ))
-        test.assertFalse(refused["ok"], refused)
-        test.assertEqual(refused["diagnostics"][0]["code"], "unsupported_operation")
-        for result in (preview, refused):
-            test.assertNotIn("release", result.get("data") or {})
-            test.assertNotIn("url", result.get("data") or {})
-        return
-    test.assertTrue(advertised[0]["terminal"])
-    test.assertFalse(advertised[0]["dryRunRequired"])
-    test.assertEqual(set(advertised[0]["argsSchema"]["properties"]), {"ownerPid"})
-    test.assertTrue(preview["ok"], preview)
-    test.assertEqual(preview["data"], {"op": PREPARE, "contractVersion": 1, "action": "planned"})
-
-    def release(session):
-        result = run_operation(server, STOP, {"session": session}, "release the preparation lease")
-        test.assertEqual(result["data"]["session"], session)
-        return result["data"]
-
-    def acquire():
-        data = run_operation(server, PREPARE, args, "prepare debugger for dedicated file infobase")["data"]
-        test.assertEqual(set(data["release"]), {"op", "args"})
-        test.assertEqual(data["release"]["op"], STOP)
-        test.assertEqual(set(data["release"]["args"]), {"session"})
-        session = data["release"]["args"]["session"]
-        test.assertRegex(session, r"^[0-9a-f]{32}$")
-        return session, data
-
-    first, prepared = acquire()
-    pending = [first]
-    try:
-        second, reused = acquire()
-        pending.append(second)
-        test.assertNotEqual(first, second)
-        for data in (prepared, reused):
-            test.assertEqual(data["op"], PREPARE)
-            test.assertEqual(data["action"], "prepared")
-            test.assertEqual(data["contractVersion"], 1)
-            test.assertEqual(data["scope"], "clientAndServer")
-            test.assertEqual(data["infoBaseAlias"], "DefAlias")
-        test.assertEqual(prepared["url"], reused["url"])
-        endpoint = urlsplit(prepared["url"])
-        test.assertEqual(endpoint.scheme, "http")
-        test.assertIsNotNone(endpoint.port)
-        if endpoint.hostname != "localhost":
-            test.assertTrue(ipaddress.ip_address(endpoint.hostname).is_loopback)
-        test.assertTrue(rdbg_ready(endpoint.port, endpoint.hostname))
-        test.assertEqual(release(first)["action"], "released")
-        pending.remove(first)
-        test.assertTrue(rdbg_ready(endpoint.port, endpoint.hostname))
-        test.assertEqual(release(second)["action"], "stopped")
-        pending.remove(second)
-        test.assertFalse(tcp_listening(endpoint.port, endpoint.hostname))
-        test.assertEqual(release(second)["action"], "nothing_to_stop")
-    finally:
-        with ExitStack() as cleanup:
-            for session in pending:
-                cleanup.callback(release, session)
+    return "--owner-pid" in help_text and "--port" not in help_text
 
 
 class NativeDbgsCase(unittest.TestCase):
@@ -238,12 +184,7 @@ class NativeDbgsCase(unittest.TestCase):
             plugin = stage_tools(Path(raw) / "plugin", ("v8-runner",))
             manifest = json.loads((plugin / "third-party/manifest.json").read_text(encoding="utf-8"))
             staged_version = manifest["tools"][0]["version"]
-            listener = resources.enter_context(socket.socket(socket.AF_INET, socket.SOCK_STREAM))
-            listener.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
-            listener.settimeout(3)
-            listener.bind(("127.0.0.1", 0))
-            listener.listen(4)
-            occupied = listener.getsockname()[1]
+            supported = runner_has_automatic_start(plugin / manifest["tools"][0]["binaryPath"])
             owner = subprocess.Popen(
                 [sys.executable, "-I", "-B", "-c", "import sys; sys.stdin.buffer.read()"],
                 stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -263,66 +204,117 @@ class NativeDbgsCase(unittest.TestCase):
             # fallback also runs if it fails before entering its run loop.
             resources.callback(cleanup)
 
-            def watch(result):
-                pid, port, session = acquired_server(result, owner.pid)
+            def watch(data):
+                endpoint, session = owned_endpoint(data)
+                pid = listening_pid(endpoint)
+                self.assertNotEqual(pid, owner.pid)
                 witness = ProcessWitness(pid)
                 witnesses.append(witness)
                 self.assertEqual(witness.image.name.lower(), "dbgs.exe")
                 self.assertIn(build, witness.image.parts, "DBGS image must belong to the selected build")
-                self.assertFalse(witness.exited(), "started receipt refers to an exited process")
-                self.assertTrue(rdbg_ready(port), "server did not answer the pinned readiness protocol")
-                return witness, port, session
+                self.assertFalse(witness.exited())
+                self.assertTrue(rdbg_ready(endpoint.port, endpoint.hostname))
+                return endpoint, session, witness
 
             def prepare(server, _scenario):
-                configure_workspace(server.workspace, build)
+                args = {"ownerPid": owner.pid}
                 connection = f'File="{(server.workspace / "ib").as_posix()}"'
-                (server.workspace / "v8project.local.yaml").write_text(
-                    "infobases:\n  origin:\n    connection: " + json.dumps(connection) + "\n",
-                    encoding="utf-8",
-                )
-                run_operation(server, "infobase.create", {}, "prepare dedicated file infobase")
-                ib = server.workspace / "ib/1Cv8.1CD"
-                with ib.open("rb") as stream:
-                    before = hashlib.file_digest(stream, "sha256").hexdigest()
+                local = server.workspace / "v8project.local.yaml"
+                if supported:
+                    configure_workspace(server.workspace, build)
+                    local.write_text(
+                        "infobases:\n  origin:\n    connection: " + json.dumps(connection) + "\n",
+                        encoding="utf-8",
+                    )
+                    run_operation(server, "infobase.create", {}, "prepare dedicated file infobase")
+                    ib = server.workspace / "ib/1Cv8.1CD"
+                    with ib.open("rb") as stream:
+                        before = hashlib.file_digest(stream, "sha256").hexdigest()
 
                 def finish(verification):
-                    dictionary, _, start = [step["result"] for step in verification]
+                    operations = {row["op"]: row for row in verification[0]["result"]["data"]["operations"]}
+                    self.assertNotIn("debug-server.prepare", operations)
+                    if not supported:
+                        for operation, inputs in [(START, args), (STOP, {"session": "0" * 32})]:
+                            self.assertNotIn(operation, operations)
+                            for preview in (True, False):
+                                refused = call_debug(server, operation, inputs, preview)
+                                self.assertFalse(refused["ok"], refused)
+                                self.assertEqual(refused["diagnostics"][0]["code"], "unsupported_operation")
+                                for field in ("url", "release"):
+                                    self.assertNotIn(field, refused.get("data") or {})
+                        return
                     for operation in (START, STOP):
-                        row, = [entry for entry in dictionary["data"]["operations"] if entry["op"] == operation]
-                        self.assertTrue(row["terminal"])
-                        self.assertEqual(row["support"]["adapter"], f"v8-runner/{staged_version}")
-                    with socket.create_connection(("127.0.0.1", occupied), timeout=3):
-                        connection, _ = listener.accept()
-                        connection.close()
-                    witness, port, session = watch(start)
-                    released = run_operation(server, STOP, {"session": session}, "release own debug-server session")
-                    data = released.get("data") or {}
-                    self.assertTrue(data.get("session") == session, "stop returned a different session")
-                    self.assertEqual(data.get("action"), "stopped")
-                    self.assertIs(data.get("knownSession"), True)
-                    self.assertTrue(witness.exited(EXIT_SECONDS), "own stop did not release dbgs")
-                    self.assertFalse(tcp_listening(port))
-                    self.assertIsNone(owner.poll(), "own stop killed the owner")
+                        self.assertTrue(operations[operation]["terminal"])
+                        self.assertEqual(operations[operation]["support"]["adapter"], f"v8-runner/{staged_version}")
+                    row = operations[START]
+                    self.assertEqual(row["contractVersion"], 2)
+                    self.assertEqual(set(row["argsSchema"]["properties"]), {"ownerPid"})
+                    self.assertEqual(verification[1]["result"]["data"], {
+                        "op": START, "contractVersion": 2, "action": "planned",
+                    })
+                    first = verification[2]["result"]["data"]
+                    endpoint, first_lease, witness = watch(first)
 
-                    check_public_prepare(
-                        self, server, dictionary["data"]["operations"],
-                        plugin / manifest["tools"][0]["binaryPath"], owner.pid,
-                    )
-                    second = run_operation(server, START, {"ownerPid": owner.pid}, "start owner-exit control")
-                    witness, port, session = watch(second)
+                    def release(session, action):
+                        response = run_operation(server, STOP, {"session": session}, "release the debugger lease")["data"]
+                        self.assertEqual(response["session"], session)
+                        self.assertEqual(response["action"], action, response)
+                        return response
+
+                    second = run_operation(server, START, args, "acquire a second file debugger lease")["data"]
+                    second_endpoint, second_lease = owned_endpoint(second)
+                    self.assertEqual(endpoint, second_endpoint)
+                    self.assertNotEqual(first_lease, second_lease)
+                    self.assertFalse(witness.exited())
+
+                    # The owner can explicitly choose this running server for the same file IB.
+                    profile = local.read_bytes()
+                    def choose_url(url):
+                        marker = b"  origin:"
+                        self.assertEqual(profile.count(marker), 1)
+                        local.write_bytes(profile.replace(marker, marker + f"\n    debug:\n      url: {json.dumps(url)}".encode(), 1))
+                    try:
+                        choose_url(first["url"])
+                        borrowed = run_operation(server, START, args, "use the explicitly selected dbgs")["data"]
+                        self.assertEqual(borrowed, {
+                            "op": START, "contractVersion": 2, "action": "prepared", "owner": "external",
+                            "scope": "clientAndServer", "url": first["url"], "infoBaseAlias": "DefAlias", "release": None,
+                        })
+                        # Bound without listen: a stable connection refusal at this exact local address.
+                        with socket.socket() as unavailable:
+                            unavailable.bind(("127.0.0.1", 0))
+                            choose_url(f"http://127.0.0.1:{unavailable.getsockname()[1]}")
+                            refusal = call_debug(server, START, args)
+                        self.assertFalse(refusal["ok"], refusal)
+                        self.assertEqual(refusal["data"]["runnerCode"], "debug_server_external_unavailable")
+                        self.assertNotIn("release", refusal["data"])
+                        self.assertNotIn("url", refusal["data"])
+                    finally:
+                        local.write_bytes(profile)
+                    self.assertFalse(witness.exited(), "the configured external server was replaced")
+                    self.assertIs(release(first_lease, "released")["knownSession"], True)
+                    self.assertFalse(witness.exited())
+                    self.assertTrue(rdbg_ready(endpoint.port, endpoint.hostname))
+                    self.assertIs(release(second_lease, "stopped")["knownSession"], True)
+                    self.assertTrue(witness.exited(EXIT_SECONDS))
+                    self.assertFalse(tcp_listening(endpoint.port, endpoint.hostname))
+                    self.assertIs(release(second_lease, "nothing_to_stop")["knownSession"], False)
+                    self.assertIsNone(owner.poll())
+
+                    owned = run_operation(server, START, args, "start owner-exit control")["data"]
+                    endpoint, session, witness = watch(owned)
                     self.assertEqual(close_owner(owner), 0)
                     self.assertTrue(witness.exited(EXIT_SECONDS), "dbgs survived its owner")
-                    self.assertFalse(tcp_listening(port))
+                    self.assertFalse(tcp_listening(endpoint.port, endpoint.hostname))
                     self.assertIsNone(server.process.poll(), "MCP exited during owner-exit control")
-                    reaped = run_operation(server, STOP, {"session": session}, "clear expired session")
-                    self.assertEqual(reaped["data"]["action"], "nothing_to_stop")
-                    self.assertIs(reaped["data"]["staleRecord"], True)
+                    release(session, "nothing_to_stop")
                     with ib.open("rb") as stream:
                         self.assertEqual(hashlib.file_digest(stream, "sha256").hexdigest(), before)
                 return finish
 
             acceptance.run_corpus(
-                self, {**corpus, "scenarios": [bind_wire(scenario, owner.pid, occupied)]},
+                self, {**corpus, "scenarios": [bind_wire(scenario, owner.pid, supported)]},
                 plugin, scenario_driver=prepare, fixture_cleanup=cleanup,
             )
 
@@ -330,13 +322,31 @@ class NativeDbgsCase(unittest.TestCase):
 class NativeDbgsCaseLogic(unittest.TestCase):
     def test_declaration_binds_only_owned_values_and_keeps_the_wire_frozen(self):
         scenario, = select_profile(load_acceptance_corpus(), DBGS_PROFILE)["scenarios"]
-        result = bind_wire(scenario, 71, 21177)
-        self.assertEqual(result["wire"][1]["args"]["args"], {"ownerPid": 71, "port": 21177})
-        self.assertIn("21177", result["wire"][1]["assertions"][1]["contains"])
-        self.assertEqual(result["wire"][2]["assertions"][2]["eq"], 71)
+        result = bind_wire(scenario, 71, True)
+        for step in result["wire"][1:]:
+            self.assertEqual(step["args"]["args"], {"ownerPid": 71})
+        self.assertEqual([s["args"]["dryRun"] for s in result["wire"][1:]], [True, False])
         self.assertEqual(scenario["wire"][1]["args"]["args"]["ownerPid"], "$dbgsOwnerPid")
-        with self.assertRaisesRegex(ValueError, "occupied TCP port"):
-            bind_wire(scenario, 71, 0)
+        self.assertEqual(bind_wire(scenario, 71, False)["wire"], scenario["wire"][:1])
+        with self.assertRaisesRegex(ValueError, "owner PID"):
+            bind_wire(scenario, 0, True)
+
+    def test_file_endpoint_requires_an_individual_lease_and_the_v2_scope(self):
+        token = "f" * 32
+        receipt = {
+            "op": START, "action": "prepared", "contractVersion": 2, "owner": "runner",
+            "scope": "clientAndServer", "infoBaseAlias": "DefAlias", "url": "http://127.0.0.1:1550",
+            "release": {"op": STOP, "args": {"session": token}},
+        }
+        endpoint, session = owned_endpoint(receipt)
+        self.assertEqual((endpoint.port, session), (1550, token))
+        for field, value in [
+            ("owner", "external"), ("contractVersion", 1), ("scope", "client"), ("release", None),
+            ("release", {"op": STOP, "args": {"session": "not-a-token"}}),
+            ("url", "http://192.0.2.1:1550"),
+        ]:
+            with self.subTest(field=field), self.assertRaises(AssertionError):
+                owned_endpoint({**receipt, field: value})
 
     def test_protocol_match_rejects_arbitrary_http_responses(self):
         witness = b'{"exception":"virtual-resource-system: Exception"}'

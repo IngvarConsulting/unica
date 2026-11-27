@@ -157,12 +157,10 @@ pub(super) fn prepare(request: &InvocationRequest) -> Preparation {
                 .map(PreparedTerminalRun::Web)
         }
         Some(OPERATION) => PreparedClientRun::parse(request).map(PreparedTerminalRun::Client),
-        Some(
-            operation @ (super::v13_debug_server::PREPARE
-            | super::v13_debug_server::START
-            | super::v13_debug_server::STOP),
-        ) => super::v13_debug_server::PreparedDebugServer::parse(request, operation)
-            .map(PreparedTerminalRun::DebugServer),
+        Some(operation @ (super::v13_debug_server::START | super::v13_debug_server::STOP)) => {
+            super::v13_debug_server::PreparedDebugServer::parse(request, operation)
+                .map(PreparedTerminalRun::DebugServer)
+        }
         _ => return Preparation::NotApplicable,
     };
     match prepared {

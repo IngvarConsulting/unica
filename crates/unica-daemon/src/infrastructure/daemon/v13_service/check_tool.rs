@@ -341,7 +341,9 @@ impl CanonicalV13ReadService {
         let arguments = invocation.arguments();
         let catalog = catalog_for(SurfaceRelease::V13).expect("canonical catalog exists");
         let Some(op) = arguments.get("op") else {
-            return super::super::v13_run_dictionary::run_dictionary_result();
+            return super::super::v13_run_dictionary::run_dictionary_result(
+                &invocation.workspace_context().cwd,
+            );
         };
         let Some(op) = op.as_str() else {
             return error_result(None, RefusalCode::BadValue, "run op must be a string");

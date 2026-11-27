@@ -1,7 +1,14 @@
 use super::protocol::InvocationRequest;
 use crate::application::tool_contracts::SurfaceRelease;
-use crate::application::v13::tool_catalog::{catalog_for, RunIntent};
+use crate::application::v13::tool_catalog::{
+    catalog_for, run_dictionary, RunIntent, RunnerContract, DEBUG_SERVER_START_CONTRACT_VERSION,
+    PINNED_RUNNER,
+};
+use crate::infrastructure::bundled_tools::{declared_tool_at_version, DeclaredTool};
+use crate::infrastructure::plugin_runtime::find_plugin_root;
 use serde_json::{json, Value};
+use std::path::Path;
+use unica_artifact_delivery::engine::BundledTool;
 use unica_execution::invocation_store::ToolIdentity;
 use unica_execution_contract::invocation::DomainResult;
 use unica_refusal::RefusalCode;
@@ -23,7 +30,9 @@ pub(super) fn execute_run_dictionary(request: &InvocationRequest) -> Option<Doma
         ));
     }
     match request.arguments().get("op") {
-        None if request.arguments().is_empty() => Some(run_dictionary_result()),
+        None if request.arguments().is_empty() => {
+            Some(run_dictionary_result(Path::new(request.workspace_hint())))
+        }
         None => Some(DomainResult::canonical_rejection(
             None,
             RefusalCode::BadValue,
@@ -39,7 +48,8 @@ pub(super) fn execute_run_dictionary(request: &InvocationRequest) -> Option<Doma
                 .iter()
                 .any(|operation| operation.name() == op)
             {
-                reject_unavailable_run_before_admission(request)
+                // The handler checks the installed bytes immediately before use.
+                reject_unavailable_run_for(request, || PINNED_RUNNER.debug_server_start_v2)
             } else {
                 Some(reject_run_operation(
                     op,
@@ -53,6 +63,16 @@ pub(super) fn execute_run_dictionary(request: &InvocationRequest) -> Option<Doma
 
 pub(super) fn reject_unavailable_run_before_admission(
     request: &InvocationRequest,
+) -> Option<DomainResult> {
+    reject_unavailable_run_for(request, || {
+        debug_server_for(Path::new(request.workspace_hint()), &PINNED_RUNNER)
+            .is_some_and(DeclaredTool::available)
+    })
+}
+
+fn reject_unavailable_run_for(
+    request: &InvocationRequest,
+    debug_server_available: impl FnOnce() -> bool,
 ) -> Option<DomainResult> {
     if request.tool() != ToolIdentity::Run {
         return None;
@@ -78,10 +98,10 @@ pub(super) fn reject_unavailable_run_before_admission(
     if is_test_seam_operation(op) {
         return None;
     }
-    let catalog = catalog_for(SurfaceRelease::V13).expect("canonical catalog exists");
-    match catalog
-        .run_dictionary
-        .iter()
+    let debug_server = matches!(op.as_str(), "debug-server.start" | "debug-server.stop")
+        && debug_server_available();
+    match run_dictionary(debug_server)
+        .into_iter()
         .find(|operation| operation.name() == op)
     {
         Some(operation) if operation.implemented => None,
@@ -114,11 +134,29 @@ const fn is_test_seam_operation(_op: &str) -> bool {
     false
 }
 
-pub(super) fn run_dictionary_result() -> DomainResult {
-    let catalog = catalog_for(SurfaceRelease::V13).expect("canonical catalog exists");
-    let operations = catalog
-        .run_dictionary
-        .iter()
+pub(super) fn installed_debug_server_runner(cwd: &Path) -> Option<BundledTool> {
+    debug_server_for(cwd, &PINNED_RUNNER)?.verified_tool()
+}
+
+pub(super) fn debug_server_declared(cwd: &Path) -> bool {
+    debug_server_for(cwd, &PINNED_RUNNER).is_some()
+}
+
+fn debug_server_for(cwd: &Path, runner: &RunnerContract) -> Option<DeclaredTool> {
+    if !runner.debug_server_start_v2 {
+        return None;
+    }
+    let root = find_plugin_root(cwd)?;
+    declared_tool_at_version(&root, "v8-runner", runner.version)
+}
+
+pub(super) fn run_dictionary_result(cwd: &Path) -> DomainResult {
+    dictionary_for(cwd, &PINNED_RUNNER)
+}
+
+fn dictionary_for(cwd: &Path, runner: &RunnerContract) -> DomainResult {
+    let operations = run_dictionary(debug_server_for(cwd, runner).is_some_and(DeclaredTool::available))
+        .into_iter()
         // An unavailable operation is not listed; its call keeps its refusal.
         .filter(|operation| operation.implemented)
         .map(|operation| {
@@ -140,18 +178,22 @@ pub(super) fn run_dictionary_result() -> DomainResult {
                     | RunIntent::ConfigurationReset
                     | RunIntent::ExtensionActivate
             );
-            json!({
+            let mut entry = json!({
                 "op": operation.name(),
                 "description": operation.description(),
                 "argsSchema": operation.args_schema(),
                 "execution": operation.execution(),
                 "effects": operation.effects(),
-                "support": {"adapter":format!("v8-runner/{}", super::runner::VERSION), "state": if operation.support_reason().is_some() {"limited"} else {"supported"}, "reason":operation.support_reason(), "supportedInfobases":["origin"], "supportedArgs": operation.args_schema()},
+                "support": {"adapter":format!("v8-runner/{}", runner.version), "state": if operation.support_reason().is_some() {"limited"} else {"supported"}, "reason":operation.support_reason(), "supportedInfobases":["origin"], "supportedArgs": operation.args_schema()},
                 "terminal": operation.terminal,
                 "rejectsSessions": operation.rejects_sessions,
                 "previewRequired": false,
                 "dryRunRequired": dry_run_required,
-            })
+            });
+            if operation.intent == RunIntent::DebugServerStart {
+                entry["contractVersion"] = json!(DEBUG_SERVER_START_CONTRACT_VERSION);
+            }
+            entry
         })
         .collect::<Vec<_>>();
     let mut result = DomainResult::success("canonical run operation dictionary returned");
@@ -168,33 +210,129 @@ fn reject_run_operation(op: &str, message: impl Into<String>) -> DomainResult {
 }
 
 #[cfg(test)]
+mod medium_tests {
+    use super::*;
+    use crate::infrastructure::plugin_runtime::with_plugin_root_for_test;
+    use sha2::{Digest, Sha256};
+    use std::fs;
+
+    /// rule: INV.RUNTIME.RUNNER-ONE-CAPABILITIES
+    #[test]
+    fn debug_server_start_v2_requires_the_matching_installed_provider() {
+        let plugin = tempfile::tempdir().unwrap();
+        let manifest = plugin.path().join("third-party/manifest.json");
+        fs::create_dir(manifest.parent().unwrap()).unwrap();
+        let binary = plugin.path().join("runner-test-file");
+        // These bytes cannot be executed as a CLI on any supported host.
+        let provider_bytes = b"compatible runner test fixture";
+        let checksum = format!("{:x}", Sha256::digest(provider_bytes));
+        let compatible = RunnerContract {
+            version: "test-with-start-v2",
+            interactive_login: true,
+            debug_server_start_v2: true,
+        };
+        let cwd = Path::new("/workspace-does-not-exist");
+        with_plugin_root_for_test(plugin.path(), || {
+            for (version, contents, available) in [
+                (compatible.version, provider_bytes.as_slice(), true),
+                ("0.19.1", provider_bytes.as_slice(), false),
+                (compatible.version, b"replaced runner".as_slice(), false),
+            ] {
+                fs::write(&binary, contents).unwrap();
+                fs::write(
+                    &manifest,
+                    json!({"tools":[{"name":"v8-runner","version":version,
+                    "binaryPath":"runner-test-file","sha256":checksum}]})
+                    .to_string(),
+                )
+                .unwrap();
+                let declared = debug_server_for(cwd, &compatible);
+                assert_eq!(declared.is_some(), compatible.version == version);
+                let installed = declared.and_then(DeclaredTool::verified_tool);
+                assert_eq!(
+                    installed.map(|tool| tool.program),
+                    available.then(|| binary.clone())
+                );
+                let dictionary = dictionary_for(cwd, &compatible);
+                let operations = dictionary.data.as_ref().unwrap()["operations"]
+                    .as_array()
+                    .unwrap();
+                assert!(operations.iter().any(|row| row["op"] == "launch"));
+                assert!(!operations
+                    .iter()
+                    .any(|row| row["op"] == "debug-server.prepare"));
+                for op in ["debug-server.start", "debug-server.stop"] {
+                    let entry = operations.iter().find(|row| row["op"] == op);
+                    assert_eq!(entry.is_some(), available);
+                    if let Some(row) = entry {
+                        assert_eq!(row["execution"], "terminal");
+                        if op == "debug-server.start" {
+                            assert_eq!(row["contractVersion"], 2);
+                            assert_eq!(row["argsSchema"]["required"], json!(["ownerPid"]));
+                        } else {
+                            assert!(row.get("contractVersion").is_none());
+                        }
+                    }
+                    let request = InvocationRequest::new(
+                        ToolIdentity::Run,
+                        json!({"op":op,"args":{}}),
+                        cwd.to_string_lossy(),
+                        7000,
+                    )
+                    .unwrap();
+                    let refusal = reject_unavailable_run_for(&request, || {
+                        debug_server_for(cwd, &compatible).is_some_and(DeclaredTool::available)
+                    });
+                    assert_eq!(refusal.is_none(), available);
+                    if let Some(refusal) = refusal {
+                        assert_eq!(refusal.diagnostics[0]["code"], "unsupported_operation");
+                    }
+                }
+            }
+        });
+    }
+}
+
+#[cfg(test)]
 mod runner_one_tests {
     use super::*;
     /// rule: INV.RUNTIME.RUNNER-ONE-CAPABILITIES
     #[test]
-    fn runner_019_does_not_offer_debug_server_prepare() {
-        let dictionary = run_dictionary_result();
+    fn runner_0191_does_not_offer_debug_server_operations() {
+        let cwd = Path::new("/workspace-does-not-exist");
+        let dictionary = run_dictionary_result(cwd);
         let operations = dictionary.data.as_ref().unwrap()["operations"]
             .as_array()
             .unwrap();
-        assert!(!operations
-            .iter()
-            .any(|op| op["op"] == "debug-server.prepare"));
-        for name in ["debug-server.start", "debug-server.stop"] {
-            assert!(operations.iter().any(|op| op["op"] == name));
-        }
-        for dry_run in [true, false] {
-            let request = InvocationRequest::new(
-                ToolIdentity::Run,
-                json!({"op":"debug-server.prepare","args":{"ownerPid":42},"dryRun":dry_run}),
-                "/workspace-does-not-exist",
-                7000,
-            )
-            .unwrap();
-            let result =
-                execute_run_dictionary(&request).expect("refused before workspace admission");
-            assert_eq!(result.diagnostics[0]["code"], "unsupported_operation");
-            assert!(result.summary.contains("v8-runner"), "{}", result.summary);
+        let launch = operations.iter().find(|op| op["op"] == "launch").unwrap();
+        assert_eq!(launch["support"]["adapter"], "v8-runner/0.19.1");
+        assert!(launch["argsSchema"]["properties"]["interactiveLogin"].is_object());
+        for (op, args, reason) in [
+            ("debug-server.start", json!({"ownerPid":42}), "version 2"),
+            (
+                "debug-server.stop",
+                json!({"session":"a".repeat(32)}),
+                "version 2",
+            ),
+            (
+                "debug-server.prepare",
+                json!({"ownerPid":42}),
+                "unknown canonical run operation",
+            ),
+        ] {
+            assert!(!operations.iter().any(|row| row["op"] == op));
+            for dry_run in [true, false] {
+                let request = InvocationRequest::new(
+                    ToolIdentity::Run,
+                    json!({"op":op,"args":args,"dryRun":dry_run}),
+                    cwd.to_string_lossy(),
+                    7000,
+                )
+                .unwrap();
+                let result = execute_run_dictionary(&request).expect("refused before admission");
+                assert_eq!(result.diagnostics[0]["code"], "unsupported_operation");
+                assert!(result.summary.contains(reason), "{}", result.summary);
+            }
         }
     }
 
@@ -217,6 +355,10 @@ mod runner_one_tests {
                 execute_run_dictionary(&request).is_none(),
                 "{op} must reach its typed compatibility handler"
             );
+            assert!(reject_unavailable_run_for(&request, || {
+                panic!("{op} must not resolve the debug server executable")
+            })
+            .is_none());
         }
     }
 
@@ -227,7 +369,7 @@ mod runner_one_tests {
     /// rule: INV.RUNTIME.RUNNER-ONE-CAPABILITIES
     #[test]
     fn runner_015_refuses_upload_apply_and_reset_naming_the_gap() {
-        let dictionary = run_dictionary_result();
+        let dictionary = run_dictionary_result(Path::new("/workspace-does-not-exist"));
         let operations = dictionary.data.as_ref().unwrap()["operations"]
             .as_array()
             .unwrap();
@@ -305,7 +447,7 @@ mod runner_one_tests {
             .unwrap();
             assert!(execute_run_dictionary(&request).is_none());
         }
-        let dictionary = run_dictionary_result();
+        let dictionary = run_dictionary_result(Path::new("/workspace-does-not-exist"));
         let operations = dictionary.data.as_ref().unwrap()["operations"]
             .as_array()
             .unwrap();

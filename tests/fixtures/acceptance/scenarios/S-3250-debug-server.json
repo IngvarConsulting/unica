@@ -2,7 +2,7 @@
   "id": "S-3250-debug-server",
   "issue": 3250,
   "area": "Отладка",
-  "task": "Запустить принадлежащий временной файловой ИБ сервер отладки и получить понятный отказ на занятый порт",
+  "task": "Подготовить отладку файловой ИБ, повторно использовать сервер и освободить только свою аренду",
   "workspace": "tests/fixtures/acceptance/workspace-xdto-rename",
   "profile": "research-dbgs",
   "driver": "native-windows-dbgs",
@@ -19,28 +19,28 @@
       "args": {
         "op": "debug-server.start",
         "args": {
-          "ownerPid": "$dbgsOwnerPid",
-          "port": "$dbgsOccupiedPort"
-        }
+          "ownerPid": "$dbgsOwnerPid"
+        },
+        "dryRun": true
       },
       "expect": [
-        "provider"
+        "ok"
       ],
       "assertions": [
         {
-          "pointer": "/diagnostics/0/code",
-          "eq": "provider_unavailable"
+          "pointer": "/data/contractVersion",
+          "eq": 2
         },
         {
-          "pointer": "/diagnostics/0/message",
-          "contains": "debug server port $dbgsOccupiedPort is occupied; choose a different port or omit port"
+          "pointer": "/data/action",
+          "eq": "planned"
         },
         {
-          "pointer": "/data/session",
+          "pointer": "/data/url",
           "absent": true
         },
         {
-          "pointer": "/changed",
+          "pointer": "/data/release",
           "absent": true
         }
       ]
@@ -51,31 +51,36 @@
         "op": "debug-server.start",
         "args": {
           "ownerPid": "$dbgsOwnerPid"
-        }
+        },
+        "dryRun": false
       },
       "expect": [
         "ok"
       ],
       "assertions": [
         {
+          "pointer": "/data/contractVersion",
+          "eq": 2
+        },
+        {
           "pointer": "/data/action",
-          "eq": "started"
+          "eq": "prepared"
+        },
+        {
+          "pointer": "/data/scope",
+          "eq": "clientAndServer"
         },
         {
           "pointer": "/data/owner",
           "eq": "runner"
         },
         {
-          "pointer": "/data/ownerPid",
-          "eq": "$dbgsOwnerPid"
-        },
-        {
           "pointer": "/data/infoBaseAlias",
           "eq": "DefAlias"
         },
         {
-          "pointer": "/data/providerDispatched",
-          "eq": true
+          "pointer": "/data/release/op",
+          "eq": "debug-server.stop"
         }
       ]
     }

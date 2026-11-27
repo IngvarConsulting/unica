@@ -53,7 +53,6 @@ pub enum RunIntent {
     InfobaseImport,
     ClientRun,
     WebPublish,
-    DebugServerPrepare,
     DebugServerStart,
     DebugServerStop,
     ExtensionList,
@@ -89,7 +88,6 @@ impl RunOperation {
             RunIntent::InfobaseImport => "infobase.restore",
             RunIntent::ClientRun => "launch",
             RunIntent::WebPublish => "web.publish",
-            RunIntent::DebugServerPrepare => "debug-server.prepare",
             RunIntent::DebugServerStart => "debug-server.start",
             RunIntent::DebugServerStop => "debug-server.stop",
             RunIntent::ExtensionList => "extensions.list",
@@ -135,16 +133,15 @@ impl RunOperation {
             RunIntent::ConfigurationReset => "Discard pending configuration changes in the infobase, restoring its database configuration.",
             RunIntent::ClientRun => "Launch an interactive 1C client session.",
             RunIntent::WebPublish => "Prepare or verify a web publication for HTTP debugging before launching the browser.",
-            RunIntent::DebugServerPrepare => "Prepare the debugger for the origin infobase. The result identifies the server URL, infobase alias and confirmed debugging scope. If this session owns a resource, release it using the returned operation.",
-            RunIntent::DebugServerStart => "Start an owned ready local debug server for the project file infobase.",
-            RunIntent::DebugServerStop => "Release the owned debug server of this working copy by session identifier.",
+            RunIntent::DebugServerStart => "Get the debugger URL, infobase alias and confirmed debugging scope for origin. The owner identifies who provides the server: runner, cluster, standalone or external. Use the returned release operation for a lease in this session.",
+            RunIntent::DebugServerStop => "Release the lease returned by debug-server.start for this working copy.",
         }
     }
 
     pub const fn support_reason(&self) -> Option<&'static str> {
         match self.intent {
-            RunIntent::DebugServerPrepare if !self.implemented => {
-                Some("the pinned v8-runner does not support debug-server prepare")
+            RunIntent::DebugServerStart | RunIntent::DebugServerStop if !self.implemented => {
+                Some("debug-server.start and debug-server.stop require a v8-runner that supports debug-server.start contract version 2")
             }
             RunIntent::CfImport | RunIntent::ConfigurationApply | RunIntent::ConfigurationReset => {
                 Some(RUNNER_LOAD_GAP)
@@ -177,9 +174,7 @@ impl RunOperation {
             | RunIntent::InfobaseImport => &["infobase"],
             RunIntent::ClientRun => &["clientSession"],
             RunIntent::WebPublish => &["webPublication"],
-            RunIntent::DebugServerPrepare
-            | RunIntent::DebugServerStart
-            | RunIntent::DebugServerStop => &["debugServerSession"],
+            RunIntent::DebugServerStart | RunIntent::DebugServerStop => &["debugServerSession"],
             RunIntent::InfobaseCheck | RunIntent::ExtensionList => &["infobaseRead"],
             RunIntent::ExtensionActivate
             | RunIntent::ConfigurationApply
@@ -271,19 +266,14 @@ impl RunOperation {
                 "type":"object","additionalProperties":false,"required":["prepareDebug"],
                 "properties":{"prepareDebug":{"type":"string","pattern":"^http://(?:127[.]0[.]0[.]1|localhost):[0-9]+/?$","description":"IDE HTTP debugger endpoint with an explicit port. The receipt separately names the address for the web client."}}
             })),
-            RunIntent::DebugServerPrepare => Some(json!({
+            RunIntent::DebugServerStart => Some(json!({
                 "type":"object","additionalProperties":false,"required":["ownerPid"],
                 "properties":{"ownerPid":{"type":"integer","minimum":1,"maximum":u32::MAX,
                     "description":"Process ID of the long-lived IDE that owns any local debug server created for this session."}}
             })),
-            RunIntent::DebugServerStart => Some(json!({
-                "type":"object","additionalProperties":false,"required":["ownerPid"],
-                "properties":{"ownerPid":{"type":"integer","minimum":1,"maximum":u32::MAX},
-                    "port":{"type":"integer","minimum":1,"maximum":u16::MAX}}
-            })),
             RunIntent::DebugServerStop => Some(json!({
                 "type":"object","additionalProperties":false,"required":["session"],
-                "properties":{"session":{"type":"string","pattern":"^[0-9a-f]{32}$"}}
+                "properties":{"session":{"type":"string","pattern":"^[0-9a-f]{32}$","description":"Lease token from the release operation returned by debug-server.start."}}
             })),
             RunIntent::ClientRun => Some(client_run_args_schema(PINNED_RUNNER.interactive_login)),
         }
@@ -294,13 +284,15 @@ impl RunOperation {
 pub struct RunnerContract {
     pub version: &'static str,
     pub interactive_login: bool,
-    pub debug_server_prepare: bool,
+    pub debug_server_start_v2: bool,
 }
+
+pub const DEBUG_SERVER_START_CONTRACT_VERSION: u8 = 2;
 
 pub const PINNED_RUNNER: RunnerContract = RunnerContract {
     version: "0.19.1",
     interactive_login: true,
-    debug_server_prepare: false,
+    debug_server_start_v2: false,
 };
 
 fn client_run_args_schema(supports_interactive_login: bool) -> Value {
@@ -505,7 +497,7 @@ pub fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                 run_dictionary_is_data_not_command_lines: true,
                 empty_optional_result_slots_are_omitted: true,
             },
-            run_dictionary: run_dictionary(),
+            run_dictionary: run_dictionary(PINNED_RUNNER.debug_server_start_v2),
             result_envelope_schema: result_envelope_schema(),
         }),
     }
@@ -593,7 +585,7 @@ fn cursor(description: &'static str) -> Value {
     json!({"type": "string", "description": description})
 }
 
-fn run_dictionary() -> Vec<RunOperation> {
+pub fn run_dictionary(debug_server_start_v2: bool) -> Vec<RunOperation> {
     [
         RunIntent::InfobaseCheck,
         RunIntent::InfobaseCreate,
@@ -607,7 +599,6 @@ fn run_dictionary() -> Vec<RunOperation> {
         RunIntent::InfobaseImport,
         RunIntent::ClientRun,
         RunIntent::WebPublish,
-        RunIntent::DebugServerPrepare,
         RunIntent::DebugServerStart,
         RunIntent::DebugServerStop,
         RunIntent::ExtensionList,
@@ -619,17 +610,14 @@ fn run_dictionary() -> Vec<RunOperation> {
     .map(|intent| {
         let terminal = matches!(
             intent,
-            RunIntent::ClientRun
-                | RunIntent::DebugServerPrepare
-                | RunIntent::DebugServerStart
-                | RunIntent::DebugServerStop
+            RunIntent::ClientRun | RunIntent::DebugServerStart | RunIntent::DebugServerStop
         );
         RunOperation {
             intent,
             terminal,
             rejects_sessions: terminal,
             implemented: match intent {
-                RunIntent::DebugServerPrepare => PINNED_RUNNER.debug_server_prepare,
+                RunIntent::DebugServerStart | RunIntent::DebugServerStop => debug_server_start_v2,
                 RunIntent::CfImport
                 | RunIntent::ConfigurationApply
                 | RunIntent::ConfigurationReset => false,
@@ -727,7 +715,6 @@ mod tests {
                 "infobase.restore",
                 "launch",
                 "web.publish",
-                "debug-server.prepare",
                 "debug-server.start",
                 "debug-server.stop",
                 "extensions.list",
@@ -874,12 +861,12 @@ mod tests {
 
     /// rule: INV.RUNTIME.RUNNER-ONE-CAPABILITIES
     #[test]
-    fn debug_server_prepare_accepts_only_the_session_owner() {
+    fn debug_server_start_v2_accepts_only_the_session_owner() {
         let catalog = catalog_for(SurfaceRelease::V13).unwrap();
         let op = catalog
             .run_dictionary
             .iter()
-            .find(|op| op.intent == RunIntent::DebugServerPrepare)
+            .find(|op| op.intent == RunIntent::DebugServerStart)
             .unwrap();
         assert_eq!(op.execution(), "terminal");
         assert_eq!(op.effects(), &["debugServerSession"]);
@@ -1191,7 +1178,6 @@ mod tests {
                 RunIntent::InfobaseImport,
                 RunIntent::ClientRun,
                 RunIntent::WebPublish,
-                RunIntent::DebugServerPrepare,
                 RunIntent::DebugServerStart,
                 RunIntent::DebugServerStop,
                 RunIntent::ExtensionList,
@@ -1230,8 +1216,6 @@ mod tests {
                 "infobase.restore",
                 "launch",
                 "web.publish",
-                "debug-server.start",
-                "debug-server.stop",
                 "extensions.list",
                 "extensions.set",
             ],
@@ -1355,7 +1339,6 @@ mod tests {
                 "infobase.restore",
                 "launch",
                 "web.publish",
-                "debug-server.prepare",
                 "debug-server.start",
                 "debug-server.stop",
                 "extensions.list",
@@ -1398,8 +1381,6 @@ mod tests {
                 "infobase.restore",
                 "launch",
                 "web.publish",
-                "debug-server.start",
-                "debug-server.stop",
                 "extensions.list",
                 "extensions.set",
             ],
@@ -1428,7 +1409,7 @@ mod tests {
                 .iter()
                 .filter(|operation| operation.implemented)
                 .count()
-                == 15,
+                == 13,
             "the implemented runtime dictionary includes the infobase login probe"
         );
     }

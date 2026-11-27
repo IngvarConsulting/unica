@@ -309,9 +309,14 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
         self.assertTrue(result["ok"], result)
         self.assertNotIn("rev", result)
         operations = {operation["op"]: operation for operation in result["data"]["operations"]}
-        required_terminal = {"launch", "debug-server.start", "debug-server.stop"}
-        self.assertLessEqual(required_terminal, operations.keys())
-        terminal_operations = required_terminal | {"debug-server.prepare"}
+        self.assertIn("launch", operations)
+        self.assertEqual("debug-server.start" in operations, "debug-server.stop" in operations)
+        self.assertNotIn("debug-server.prepare", operations)
+        if "debug-server.start" in operations:
+            start = operations["debug-server.start"]
+            self.assertEqual(start["contractVersion"], 2)
+            self.assertEqual(set(start["argsSchema"]["properties"]), {"ownerPid"})
+        terminal_operations = {"launch", "debug-server.start", "debug-server.stop"}
         for name, contract in operations.items():
             with self.subTest(operation=name, contract="execution mode"):
                 self.assertEqual(contract["execution"], "terminal" if name in terminal_operations else "previewApply")

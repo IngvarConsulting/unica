@@ -307,6 +307,107 @@ fn read_manifest(plugin_root: &Path) -> Option<BundledManifest> {
     serde_json::from_slice(&fs::read(manifest_path).ok()?).ok()
 }
 
+/// The core manifest names the binary. A cold bootstrap installation also
+/// needs an exact order for this binary in its release manifest.
+pub enum DeclaredTool {
+    Installed { tool: BundledTool, sha256: String },
+    AwaitingDelivery,
+}
+
+impl DeclaredTool {
+    pub fn verified_tool(self) -> Option<BundledTool> {
+        let Self::Installed { tool, sha256 } = self else {
+            return None;
+        };
+        let checksum = sha256_file(&tool.program).ok()?;
+        checksum.eq_ignore_ascii_case(&sha256).then_some(tool)
+    }
+
+    pub fn available(self) -> bool {
+        matches!(self, Self::AwaitingDelivery) || self.verified_tool().is_some()
+    }
+}
+
+pub fn declared_tool_at_version(
+    plugin_root: &Path,
+    tool_name: &str,
+    expected: &str,
+) -> Option<DeclaredTool> {
+    let target = current_target_id().ok()?;
+    let cache = std::env::var_os(ARTIFACT_CACHE_ENV).map(PathBuf::from);
+    declared_tool_at_version_in(
+        plugin_root,
+        cache.as_deref(),
+        tool_name,
+        target,
+        expected,
+        || {
+            super::engine_delivery::order_for(plugin_root, tool_name)
+                .map(|order| order.manifest_path)
+        },
+    )
+}
+
+fn declared_tool_at_version_in(
+    plugin_root: &Path,
+    cache: Option<&Path>,
+    tool_name: &str,
+    target: &str,
+    expected: &str,
+    delivery_manifest: impl FnOnce() -> Option<PathBuf>,
+) -> Option<DeclaredTool> {
+    let manifest = read_manifest(plugin_root)?;
+    let mut entries = manifest.tools.iter().filter(|tool| tool.name == tool_name);
+    let tool = entries.next()?;
+    if manifest.source_manifest
+        || tool.version.as_deref() != Some(expected)
+        || entries.next().is_some()
+    {
+        return None;
+    }
+    let binary = manifest_binary(&manifest, tool_name, target).ok()?;
+    if binary.sha256.len() != 64 || !binary.sha256.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    let installed = resolve_bundled_tool_in(plugin_root, cache, tool_name, target, false).ok()?;
+    if installed.warnings.is_empty() && installed.missing.is_none() {
+        return Some(DeclaredTool::Installed {
+            tool: installed,
+            sha256: binary.sha256,
+        });
+    }
+
+    // Both layouts must really be absent. A damaged existing installation
+    // cannot be advertised as a pending download.
+    let cache = cache?;
+    let artifact = tool.artifact.as_deref().unwrap_or(tool_name);
+    let asset = manifest.artifact_assets.get(artifact)?;
+    let key = artifact_delivery_key(&manifest, artifact, expected).ok()?;
+    let cached_target = manifest_relative_path(cache, artifact)
+        .ok()?
+        .join(key)
+        .join(target);
+    let adjacent = manifest_relative_path(plugin_root, &binary.binary_path).ok()?;
+    if !path_is_absent(&cached_target) || !path_is_absent(&adjacent) {
+        return None;
+    }
+    let runtime = unica_artifact_delivery::RuntimeManifest::load(&delivery_manifest()?).ok()?;
+    runtime.validate(env!("CARGO_PKG_VERSION")).ok()?;
+    let order = runtime.artifact(artifact).ok()?;
+    if order.role != unica_artifact_delivery::ArtifactRole::Engine || order.version != expected {
+        return None;
+    }
+    let host = order.targets.get(target)?;
+    let includes_binary = host.files.iter().any(|file| {
+        file.executable && file.path == binary.delivered() && file.sha256 == binary.sha256
+    });
+    (host.asset.sha256 == asset.sha256 && includes_binary).then_some(DeclaredTool::AwaitingDelivery)
+}
+
+fn path_is_absent(path: &Path) -> bool {
+    matches!(fs::symlink_metadata(path), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
+}
+
 /// Движок в кеше артефактов:
 /// `<кеш>/<артефакт>/<версия--sha256-поставки>/<цель>/<путь>`.
 /// Отсутствие установки — не ошибка: её ещё могут доставить, и решает это
@@ -833,6 +934,39 @@ mod medium_tests {
     }
 
     #[test]
+    fn installed_version_requires_manifest_evidence_even_with_a_matching_tools_lock() {
+        let root = temp_plugin_root("installed-version-evidence");
+        write_manifest_with_bsl_analyzer(&root);
+        let path = root.join("third-party/manifest.json");
+        let original = fs::read(&path).unwrap();
+        let mut manifest: serde_json::Value = serde_json::from_slice(&original).unwrap();
+        fs::write(
+            root.join("third-party/tools.lock.json"),
+            r#"{"targets":{},"tools":[{"name":"bsl-analyzer","version":"test","binaryName":"bsl-analyzer"}]}"#,
+        ).unwrap();
+        let declared = || declared_tool_at_version(&root, "bsl-analyzer", "test");
+        assert!(declared().and_then(DeclaredTool::verified_tool).is_some());
+        manifest["tools"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("version");
+        fs::write(&path, manifest.to_string()).unwrap();
+        assert_eq!(bundled_tool_version(&root, "bsl-analyzer").unwrap(), "test");
+        assert!(declared().is_none());
+
+        let mut manifest: serde_json::Value = serde_json::from_slice(&original).unwrap();
+        let duplicate = manifest["tools"][0].clone();
+        manifest["tools"].as_array_mut().unwrap().push(duplicate);
+        fs::write(&path, manifest.to_string()).unwrap();
+        assert!(declared().is_none());
+
+        let mut manifest: serde_json::Value = serde_json::from_slice(&original).unwrap();
+        manifest["sourceManifest"] = serde_json::json!(true);
+        fs::write(&path, manifest.to_string()).unwrap();
+        assert!(declared().is_none());
+    }
+
+    #[test]
     fn dry_run_resolves_expected_binary_path_from_tools_lock_for_source_manifest() {
         let plugin_root = temp_plugin_root("source-manifest");
         fs::write(
@@ -914,6 +1048,23 @@ mod medium_tests {
         .unwrap();
 
         assert_eq!(tool.program, installed.join("bsl-analyzer"));
+        let verified = || {
+            declared_tool_at_version_in(
+                &plugin_root,
+                Some(&cache),
+                "bsl-analyzer",
+                "darwin-arm64",
+                "test",
+                || panic!("an installed engine does not need a delivery order"),
+            )
+            .and_then(DeclaredTool::verified_tool)
+        };
+        assert_eq!(verified().unwrap().program, tool.program);
+        fs::write(installed.join("bsl-analyzer"), "stale cached engine").unwrap();
+        assert!(
+            verified().is_none(),
+            "the adjacent copy cannot vouch for a damaged cached engine"
+        );
     }
 
     #[test]
@@ -1074,6 +1225,74 @@ mod medium_tests {
 mod medium_delivery_tests {
     use super::*;
     use std::fs;
+
+    fn assert_cold_engine_requires_the_matching_order(
+        plugin: &Path,
+        cache: &Path,
+        runtime: &unica_artifact_delivery::RuntimeManifest,
+        target: &str,
+    ) {
+        let runtime_path = plugin.join("runtime-manifest.json");
+        let declared = || {
+            declared_tool_at_version_in(
+                plugin,
+                Some(cache),
+                "archive-tool-server",
+                target,
+                "1.33.0",
+                || Some(runtime_path.clone()),
+            )
+        };
+        let valid = serde_json::to_value(runtime).unwrap();
+        let artifact = "/artifacts/archive-tools";
+        let host = format!("{artifact}/targets/{target}");
+        for (field, value) in [
+            (format!("{artifact}/version"), serde_json::json!("older")),
+            (
+                format!("{host}/asset/sha256"),
+                serde_json::json!("b".repeat(64)),
+            ),
+            (
+                format!("{host}/files/0/sha256"),
+                serde_json::json!("b".repeat(64)),
+            ),
+            (
+                format!("{host}/files/0/executable"),
+                serde_json::json!(false),
+            ),
+        ] {
+            let mut mismatched = valid.clone();
+            *mismatched.pointer_mut(&field).unwrap() = value;
+            fs::write(&runtime_path, mismatched.to_string()).unwrap();
+            assert!(declared().is_none(), "{field}");
+        }
+        let mut missing = valid.clone();
+        missing["artifacts"]["archive-tools"]["targets"]
+            .as_object_mut()
+            .unwrap()
+            .remove(target);
+        fs::write(&runtime_path, missing.to_string()).unwrap();
+        assert!(declared().is_none());
+
+        fs::write(&runtime_path, valid.to_string()).unwrap();
+        assert!(matches!(declared(), Some(DeclaredTool::AwaitingDelivery)));
+        let order = &runtime.artifacts["archive-tools"];
+        let release = &order.targets[target];
+        let install_root = cache
+            .join("archive-tools")
+            .join(format!("{}--{}", order.version, release.asset.sha256))
+            .join(target);
+        // Discovery left the cache untouched. An incomplete existing installation
+        // or a file with different bytes must not turn back into a pending order.
+        assert!(!install_root.exists());
+        fs::create_dir_all(&install_root).unwrap();
+        assert!(declared().is_none());
+        let program = install_root.join(&release.files[0].path);
+        fs::write(&program, b"different engine").unwrap();
+        assert!(!declared().unwrap().available());
+        fs::remove_file(program).unwrap();
+        fs::remove_dir(install_root).unwrap();
+    }
 
     #[test]
     fn installer_and_runtime_resolve_both_tools_from_one_immutable_delivery() {
@@ -1249,6 +1468,7 @@ mod medium_delivery_tests {
                 plugin_manifest.to_string(),
             )
             .unwrap();
+            assert_cold_engine_requires_the_matching_order(&plugin, &cache, &runtime, target);
             let installed = installer
                 .ensure_artifact(&runtime, "archive-tools", host, &SilentDownload)
                 .unwrap();
