@@ -1266,13 +1266,27 @@ fn exchange_refusal(
         || "the selected source sets".to_string(),
         |set| format!("source set `{set}`"),
     );
+    // The pinned runner reports this distinction in prose. Keep the reason without
+    // returning its command line or paths.
+    let unusable_memory = divergence == BaseDivergence::Untracked
+        && error["message"].as_str().is_some_and(|message| {
+            message.contains(concat!(
+                "; the memory kept under its name was written for another ",
+                "infobase or source directory, or cannot be read, and is not used."
+            ))
+        });
     let message = if divergence == BaseDivergence::MovedAhead {
         format!(
             "push loaded nothing: the infobase moved ahead of this working copy's record of the last exchange for {subject} (its configuration generation differs from the recorded one; both are in data), so loading would overwrite changes made in the infobase. Choose: pull the infobase into the source set, or overwrite the infobase with push force:true"
         )
     } else {
+        let reason = if unusable_memory {
+            "The memory stored under the selected infobase name belongs to another infobase or source directory, or could not be read. Check the infobase name and localPath before choosing how to proceed."
+        } else {
+            "The runner does not carry over what it remembered before an upgrade, or this copy has never exchanged with this infobase."
+        };
         format!(
-            "push loaded nothing: this working copy has no memory of the infobase for {subject} — the runner does not carry over what it remembered before an upgrade, or this copy has never exchanged with this infobase — so nothing proves that the sources derive from its state. Next: pull the infobase into the source set in full once (preview it first; uncommitted work in the set is asked about), then push as usual. Only if the sources, not the infobase, hold the right state: overwrite the infobase with push force:true"
+            "push loaded nothing: this working copy has no usable memory of the infobase for {subject}, so nothing proves that the sources derive from its state. {reason} Next: pull the infobase into the source set in full once (preview it first; uncommitted work in the set is asked about), then push as usual. Only if the sources, not the infobase, hold the right state: overwrite the infobase with push force:true"
         )
     };
     let mut rejection =
@@ -1299,7 +1313,12 @@ fn exchange_refusal(
         "reason": "if the sources hold the right state: preview push with force:true, which loads every set in full and overwrites the infobase; changes made in the infobase since this working copy's last exchange are lost"
     }));
     if let (false, Some(source_set)) = (prepared.dry_run, &source_set) {
-        let choice = base_divergence_choice(source_set, push_args, pull_args);
+        let mut choice = base_divergence_choice(source_set, push_args, pull_args);
+        if unusable_memory {
+            choice.question.push_str(
+                " Сохранённая память относится к другой базе или каталогу исходников либо не читается. Перед выбором проверьте имя базы и localPath.",
+            );
+        }
         rejection.human_choice = Some(Box::new(choice));
     }
     rejection
@@ -2621,6 +2640,50 @@ pub(super) mod tests {
             result.next[1]["args"]["args"],
             json!({"force": true, "sourceSet": "main"})
         );
+    }
+
+    /// rule: INV.RUNTIME.RUNNER-BASE-REFUSALS
+    #[test]
+    fn untracked_push_explains_why_existing_memory_was_not_used() {
+        let root = workspace();
+        let mut envelope = captured_017("push-untracked-base-preview.json");
+        envelope["error"]["message"] = json!(
+            "cannot push: this working copy has no memory of file infobase '/private/ib' \
+             for source-set 'main'; the memory kept under its name was written for another \
+             infobase or source directory, or cannot be read, and is not used. \
+             See `v8-runner --config /private/v8project.yaml pull main`."
+        );
+        for dry_run in [true, false] {
+            let runner = SequenceRunner::new(vec![process(envelope.clone(), false)]);
+            let result = run(
+                root.path(),
+                &prepared(root.path(), Some("main"), false, dry_run),
+                &runner,
+            );
+            assert!(!result.ok, "{result:?}");
+            assert_eq!(result.diagnostics[0]["code"], "invalid_state");
+            assert_eq!(
+                result.data.as_ref().unwrap()["runnerCode"],
+                "untracked_base"
+            );
+            assert!(
+                result.summary.contains(
+                    "belongs to another infobase or source directory, or could not be read"
+                ),
+                "{result:?}"
+            );
+            assert!(!result.summary.contains("/private"), "{result:?}");
+            assert!(!result.summary.contains("v8-runner --config"), "{result:?}");
+            assert!(result.changed.is_empty(), "{result:?}");
+            if dry_run {
+                assert!(result.human_choice.is_none());
+            } else {
+                let question = &result.human_choice.as_ref().unwrap().question;
+                assert!(question.contains("другой базе или каталогу"), "{question}");
+                assert!(question.contains("localPath"), "{question}");
+                assert!(!question.contains("/private"), "{question}");
+            }
+        }
     }
 
     /// Исполняемый `push` с `force:true` идёт только с согласия человека.
