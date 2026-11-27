@@ -211,6 +211,7 @@ fn reject_run_operation(op: &str, message: impl Into<String>) -> DomainResult {
 
 #[cfg(test)]
 mod medium_tests {
+    use super::super::v13_client_run::{prepare, Preparation};
     use super::*;
     use crate::infrastructure::plugin_runtime::with_plugin_root_for_test;
     use sha2::{Digest, Sha256};
@@ -226,17 +227,12 @@ mod medium_tests {
         // These bytes cannot be executed as a CLI on any supported host.
         let provider_bytes = b"compatible runner test fixture";
         let checksum = format!("{:x}", Sha256::digest(provider_bytes));
-        let compatible = RunnerContract {
-            version: "test-with-start-v2",
-            interactive_login: true,
-            debug_server_start_v2: true,
-        };
         let cwd = Path::new("/workspace-does-not-exist");
         with_plugin_root_for_test(plugin.path(), || {
             for (version, contents, available) in [
-                (compatible.version, provider_bytes.as_slice(), true),
+                (PINNED_RUNNER.version, provider_bytes.as_slice(), true),
                 ("0.19.1", provider_bytes.as_slice(), false),
-                (compatible.version, b"replaced runner".as_slice(), false),
+                (PINNED_RUNNER.version, b"replaced runner".as_slice(), false),
             ] {
                 fs::write(&binary, contents).unwrap();
                 fs::write(
@@ -246,14 +242,13 @@ mod medium_tests {
                     .to_string(),
                 )
                 .unwrap();
-                let declared = debug_server_for(cwd, &compatible);
-                assert_eq!(declared.is_some(), compatible.version == version);
-                let installed = declared.and_then(DeclaredTool::verified_tool);
+                assert_eq!(debug_server_declared(cwd), PINNED_RUNNER.version == version);
+                let installed = installed_debug_server_runner(cwd);
                 assert_eq!(
                     installed.map(|tool| tool.program),
                     available.then(|| binary.clone())
                 );
-                let dictionary = dictionary_for(cwd, &compatible);
+                let dictionary = run_dictionary_result(cwd);
                 let operations = dictionary.data.as_ref().unwrap()["operations"]
                     .as_array()
                     .unwrap();
@@ -280,32 +275,55 @@ mod medium_tests {
                         7000,
                     )
                     .unwrap();
-                    let refusal = reject_unavailable_run_for(&request, || {
-                        debug_server_for(cwd, &compatible).is_some_and(DeclaredTool::available)
-                    });
+                    let refusal = reject_unavailable_run_before_admission(&request);
                     assert_eq!(refusal.is_none(), available);
                     if let Some(refusal) = refusal {
                         assert_eq!(refusal.diagnostics[0]["code"], "unsupported_operation");
                     }
                 }
+                if version == "0.19.1" {
+                    assert_debug_server_calls_are_unavailable(cwd);
+                }
             }
         });
     }
-}
-
-#[cfg(test)]
-mod runner_one_tests {
-    use super::*;
     /// rule: INV.RUNTIME.RUNNER-ONE-CAPABILITIES
     #[test]
-    fn runner_0191_does_not_offer_debug_server_operations() {
-        let cwd = Path::new("/workspace-does-not-exist");
+    fn source_manifest_does_not_offer_debug_server_operations() {
+        let plugin = tempfile::tempdir().unwrap();
+        let tools = plugin.path().join("third-party");
+        fs::create_dir(&tools).unwrap();
+        fs::write(
+            tools.join("manifest.json"),
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../plugins/unica/third-party/manifest.json"
+            )),
+        )
+        .unwrap();
+        fs::write(
+            tools.join("tools.lock.json"),
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../plugins/unica/third-party/tools.lock.json"
+            )),
+        )
+        .unwrap();
+        with_plugin_root_for_test(plugin.path(), || {
+            assert_debug_server_calls_are_unavailable(Path::new("/workspace-does-not-exist"));
+        });
+    }
+
+    fn assert_debug_server_calls_are_unavailable(cwd: &Path) {
         let dictionary = run_dictionary_result(cwd);
         let operations = dictionary.data.as_ref().unwrap()["operations"]
             .as_array()
             .unwrap();
         let launch = operations.iter().find(|op| op["op"] == "launch").unwrap();
-        assert_eq!(launch["support"]["adapter"], "v8-runner/0.19.1");
+        assert_eq!(
+            launch["support"]["adapter"],
+            format!("v8-runner/{}", PINNED_RUNNER.version)
+        );
         assert!(launch["argsSchema"]["properties"]["interactiveLogin"].is_object());
         for (op, args, reason) in [
             ("debug-server.start", json!({"ownerPid":42}), "version 2"),
@@ -329,13 +347,22 @@ mod runner_one_tests {
                     7000,
                 )
                 .unwrap();
-                let result = execute_run_dictionary(&request).expect("refused before admission");
+                let result = execute_run_dictionary(&request).unwrap_or_else(|| {
+                    let Preparation::Rejected(refusal) = prepare(&request) else {
+                        panic!("{op} must be refused before workspace admission");
+                    };
+                    *refusal
+                });
                 assert_eq!(result.diagnostics[0]["code"], "unsupported_operation");
                 assert!(result.summary.contains(reason), "{}", result.summary);
             }
         }
     }
+}
 
+#[cfg(test)]
+mod runner_one_tests {
+    use super::*;
     /// rule: INV.RUNTIME.RUNNER-ONE-CAPABILITIES
     #[test]
     fn development_cycle_admits_the_explicit_compatibility_subset() {

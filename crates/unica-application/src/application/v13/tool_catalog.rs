@@ -290,9 +290,9 @@ pub struct RunnerContract {
 pub const DEBUG_SERVER_START_CONTRACT_VERSION: u8 = 2;
 
 pub const PINNED_RUNNER: RunnerContract = RunnerContract {
-    version: "0.19.1",
+    version: "0.19.2",
     interactive_login: true,
-    debug_server_start_v2: false,
+    debug_server_start_v2: true,
 };
 
 fn client_run_args_schema(supports_interactive_login: bool) -> Value {
@@ -1216,6 +1216,8 @@ mod tests {
                 "infobase.restore",
                 "launch",
                 "web.publish",
+                "debug-server.start",
+                "debug-server.stop",
                 "extensions.list",
                 "extensions.set",
             ],
@@ -1342,7 +1344,7 @@ mod tests {
                 "debug-server.start",
                 "debug-server.stop",
                 "extensions.list",
-                            "extensions.set",
+                "extensions.set",
                 "apply",
                 "reset",
             ],
@@ -1381,6 +1383,8 @@ mod tests {
                 "infobase.restore",
                 "launch",
                 "web.publish",
+                "debug-server.start",
+                "debug-server.stop",
                 "extensions.list",
                 "extensions.set",
             ],
@@ -1409,7 +1413,7 @@ mod tests {
                 .iter()
                 .filter(|operation| operation.implemented)
                 .count()
-                == 13,
+                == 15,
             "the implemented runtime dictionary includes the infobase login probe"
         );
     }
