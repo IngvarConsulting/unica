@@ -1019,6 +1019,7 @@ fn reject_absent_runner(absence: RunnerAbsence) -> DomainResult {
 
 #[cfg(test)]
 mod tests {
+    use super::super::runner::VERSION;
     use super::super::v13_infobase_exports::map_runner_code;
     use super::*;
     use std::fs;
@@ -1317,7 +1318,7 @@ mod tests {
                 &runner,
                 CancellationToken::new(),
                 &tool(root.path()),
-                "0.19.0",
+                VERSION,
             );
             assert!(result.ok, "{result:?}");
             assert_eq!(
@@ -1376,7 +1377,7 @@ mod tests {
             &runner,
             CancellationToken::new(),
             &tool(root.path()),
-            "0.19.0",
+            VERSION,
         );
         assert!(result.ok, "{result:?}");
         let data = result.data.unwrap();
@@ -1424,7 +1425,7 @@ mod tests {
                 &runner,
                 CancellationToken::new(),
                 &tool(root.path()),
-                "0.19.0",
+                VERSION,
             );
             assert!(!result.ok, "{behavior}: {result:?}");
             let expected_code = match behavior {
@@ -1474,7 +1475,7 @@ mod tests {
                 &runner,
                 CancellationToken::new(),
                 &tool(root.path()),
-                "0.19.0",
+                VERSION,
             )
         });
         assert!(!result.ok, "{result:?}");
@@ -1542,7 +1543,7 @@ mod tests {
                                 &runner,
                                 worker_cancellation,
                                 &runner_tool,
-                                "0.19.0",
+                                VERSION,
                             )
                         },
                     )

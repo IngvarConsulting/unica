@@ -285,8 +285,8 @@ pub struct RunnerContract {
 }
 
 pub const PINNED_RUNNER: RunnerContract = RunnerContract {
-    version: "0.19.0",
-    interactive_login: false,
+    version: "0.19.1",
+    interactive_login: true,
 };
 
 fn client_run_args_schema(supports_interactive_login: bool) -> Value {

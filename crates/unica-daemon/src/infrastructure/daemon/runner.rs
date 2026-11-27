@@ -1549,7 +1549,7 @@ source-set:
     #[test]
     fn unknown_runner_versions_are_not_probed_by_executing_an_operation() {
         assert!(check_version(VERSION).is_ok());
-        assert!(check_version("0.19.0").is_ok());
+        assert!(check_version("0.19.1").is_ok());
         for version in [
             "0.9.0",
             "0.11.3",
@@ -1572,6 +1572,7 @@ source-set:
             "0.18.0",
             "0.18.1",
             "0.18.2",
+            "0.19.0",
             "1.0.0",
             "1.0.0-rc.1",
             "",
