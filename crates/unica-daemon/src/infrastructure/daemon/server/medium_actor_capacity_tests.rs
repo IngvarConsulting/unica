@@ -3484,6 +3484,7 @@ fn canonical_delivery_fixture_binary() -> Option<(std::path::PathBuf, String)> {
     Some((binary, expected))
 }
 
+/// rule: INV.RUNTIME.RUNNER-ONE-CAPABILITIES
 #[test]
 fn canonical_run_and_role_search_deliver_engines_and_run_supported_providers() {
     const CHILD: &str = "UNICA_CANONICAL_DELIVERY_SUCCESS_CHILD";
@@ -3526,6 +3527,15 @@ use std::io::{self, BufRead, Write};
 fn main() {
     let marker = std::path::PathBuf::from(std::env::var("UNICA_TEST_PROVIDER_MARKER_DIR").unwrap());
     let args = std::env::args().collect::<Vec<_>>();
+    if args.windows(2).any(|pair| pair == ["debug-server", "start"]) {
+        assert!(args.iter().any(|argument| argument == "--dry-run"));
+        assert!(args.windows(2).any(|pair| pair == ["--infobase", "origin"]));
+        assert!(args.windows(2).any(|pair| pair[0] == "--owner-pid" && pair[1].parse::<u32>().is_ok_and(|pid| pid > 0)));
+        let mut first_start = std::fs::File::create_new(marker.join("debug-start")).unwrap();
+        write!(first_start, "{}", std::env::current_exe().unwrap().display()).unwrap();
+        println!("{}", r#"{"ok":true,"command":"debug-server start","data":{"action":"planned"}}"#);
+        return;
+    }
     if args.iter().any(|argument| argument == "push") {
         assert!(args.iter().any(|argument| argument == "--dry-run"));
         assert!(args.iter().any(|argument| argument == "main"));
@@ -3648,6 +3658,72 @@ fn main() {
         .with_delivery_downloader_for_test(downloader.clone());
         assert!(!cache.join("v8-runner").exists());
         assert!(!cache.join("bsl-analyzer").exists());
+
+        let supports_start =
+            crate::application::v13::tool_catalog::PINNED_RUNNER.debug_server_start_v2;
+        let dictionary = submit_canonical(
+            &runtime,
+            &workspace,
+            ToolIdentity::Run,
+            serde_json::json!({}),
+        );
+        let operations = dictionary.data.as_ref().unwrap()["operations"]
+            .as_array()
+            .unwrap();
+        let start = operations
+            .iter()
+            .find(|row| row["op"] == "debug-server.start");
+        assert_eq!(start.is_some(), supports_start);
+        if let Some(start) = start {
+            assert_eq!(start["contractVersion"], 2);
+        }
+        assert_eq!(
+            operations
+                .iter()
+                .any(|row| row["op"] == "debug-server.stop"),
+            supports_start
+        );
+        assert_eq!(downloader.1.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(
+            !cache.join("v8-runner").exists(),
+            "discovery installed the runner"
+        );
+        let request = InvocationRequest::new(
+            ToolIdentity::Run,
+            serde_json::json!({"op":"debug-server.start","args":{"ownerPid":std::process::id()},"dryRun":true}),
+            workspace.display().to_string(),
+            7_000,
+        ).unwrap();
+        if supports_start {
+            let start = runtime
+                .bind(request)
+                .unwrap()
+                .prepare()
+                .unwrap()
+                .execute(CancellationToken::new())
+                .unwrap();
+            assert!(start.ok, "{start:?}");
+            let data = start.data.as_ref().unwrap();
+            assert_eq!(data["op"], "debug-server.start");
+            assert_eq!(data["contractVersion"], 2);
+            assert_eq!(data["action"], "planned");
+            let program = cache
+                .join("v8-runner")
+                .join(format!("{RUNNER_VERSION}--{digest}"))
+                .join(target)
+                .join(format!("bin/{target}/v8-runner{suffix}"));
+            let executed = std::fs::read_to_string(root.join("debug-start")).unwrap();
+            assert_eq!(
+                std::fs::canonicalize(executed).unwrap(),
+                std::fs::canonicalize(program).unwrap()
+            );
+            assert_eq!(downloader.1.load(std::sync::atomic::Ordering::SeqCst), 1);
+        } else {
+            let start = direct_v5(&runtime, request).unwrap();
+            assert_eq!(start.diagnostics[0]["code"], "unsupported_operation");
+            assert!(!root.join("debug-start").exists());
+            assert_eq!(downloader.1.load(std::sync::atomic::Ordering::SeqCst), 0);
+        }
 
         let request = InvocationRequest::new(
             ToolIdentity::Run,
@@ -14195,6 +14271,7 @@ fn v5_view_without_at_prepares_root_inspection_without_source_actor_admission() 
 #[test]
 fn v5_run_dictionary_returns_directly_before_workspace_actor_admission() {
     let workspace = tempfile::tempdir().expect("temporary empty workspace");
+    let plugin = tempfile::tempdir().expect("plugin without a runner or a delivery manifest");
     let preparations = Arc::new(AtomicUsize::new(0));
     let runtime = V5CanonicalInvocationRuntime::new(
         Arc::new(CountingPrepareService {
@@ -14212,7 +14289,11 @@ fn v5_run_dictionary_returns_directly_before_workspace_actor_admission() {
     )
     .expect("valid run dictionary request");
 
-    let result = match runtime.bind(request) {
+    let bound =
+        crate::infrastructure::plugin_runtime::with_plugin_root_for_test(plugin.path(), || {
+            runtime.bind(request)
+        });
+    let result = match bound {
         Err(V5CanonicalPrepareError::Direct(result)) => result,
         Ok(_) => panic!("run dictionary must not enter actor admission"),
         Err(other) => panic!("run dictionary returned infrastructure failure: {other:?}"),
@@ -14232,16 +14313,25 @@ fn v5_run_dictionary_returns_directly_before_workspace_actor_admission() {
             "duplicate operation {name}"
         );
     }
-    // Only available operations are listed; an unavailable one keeps
-    // its refusal on call.
-    let available = catalog
+    let mut expected: std::collections::BTreeMap<_, _> = catalog
         .run_dictionary
         .iter()
         .filter(|operation| operation.implemented)
-        .collect::<Vec<_>>();
-    assert_eq!(published.len(), available.len());
-    for operation in available {
-        let name = operation.name();
+        .map(|operation| (operation.name(), operation))
+        .collect();
+    // The pinned adapter implements both commands. This installation has no
+    // runner or delivery manifest that could provide them.
+    for conditional in ["debug-server.start", "debug-server.stop"] {
+        assert!(
+            expected.remove(conditional).is_some(),
+            "missing catalog entry {conditional}"
+        );
+    }
+    assert_eq!(
+        published.keys().collect::<Vec<_>>(),
+        expected.keys().collect::<Vec<_>>()
+    );
+    for (name, operation) in expected {
         let entry = published.get(name).expect("catalog operation is published");
         assert_eq!(entry["description"], operation.description(), "{name}");
         assert_eq!(
@@ -14262,6 +14352,7 @@ fn v5_run_dictionary_returns_directly_before_workspace_actor_admission() {
         assert!(entry.get("ifRevRequiredOnApply").is_none(), "{name}");
     }
     assert_eq!(preparations.load(Ordering::SeqCst), 0);
+    assert_eq!(runtime.workspace_actors.entry_len_for_test().unwrap(), 0);
 }
 
 /// rule: INV.WIRE.RUN-NAMES-ARE-LAYER-AND-DIRECTION

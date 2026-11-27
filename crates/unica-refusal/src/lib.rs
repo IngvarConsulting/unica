@@ -347,6 +347,8 @@ pub enum RefusalDetail {
     /// Точка входа, к которой обращается поставщик, не ответила или назвалась
     /// чужим ключом.
     EndpointUnreachable,
+    /// Точка входа ответила, но не подтвердила связь с выбранной ИБ.
+    EndpointTargetUnverified,
     /// Демон занят: очередь, ёмкость рабочего пространства или владельца.
     BackendBusy,
     /// Демон несовместим: протокол, ядро, права.
@@ -369,6 +371,7 @@ impl RefusalDetail {
             Self::CachePoisoned => "cache_poisoned",
             Self::CredentialsRejected => "credentials_rejected",
             Self::EndpointUnreachable => "endpoint_unreachable",
+            Self::EndpointTargetUnverified => "endpoint_target_unverified",
             Self::BackendBusy => "backend_busy",
             Self::BackendIncompatible => "backend_incompatible",
             Self::BackendBroken => "backend_broken",
@@ -386,7 +389,8 @@ impl RefusalDetail {
             | Self::WrongSourceKind
             | Self::CachePoisoned
             | Self::CredentialsRejected
-            | Self::EndpointUnreachable => RefusalCode::ProviderUnavailable,
+            | Self::EndpointUnreachable
+            | Self::EndpointTargetUnverified => RefusalCode::ProviderUnavailable,
             Self::BackendBusy | Self::BackendIncompatible | Self::BackendBroken => {
                 RefusalCode::TaskBackendFailed
             }
@@ -401,7 +405,9 @@ impl RefusalDetail {
             Self::ProviderAbsent | Self::BackendIncompatible => Outcome::NeedsHuman,
             // Настройку подключения правит человек: ни повтор, ни правка
             // аргументов вызова её не меняют.
-            Self::CredentialsRejected | Self::EndpointUnreachable => Outcome::NeedsHuman,
+            Self::CredentialsRejected
+            | Self::EndpointUnreachable
+            | Self::EndpointTargetUnverified => Outcome::NeedsHuman,
             Self::DeliveryInProgress | Self::DependencyPending => Outcome::RetryAsIs,
             Self::WrongSourceKind => Outcome::FixCall,
             Self::BackendBusy => Outcome::RetryAsIs,
@@ -416,7 +422,7 @@ impl RefusalDetail {
     }
 
     /// Все уточнения — для проверок полноты.
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::SourceUnreadable,
         Self::SourceTemporarilyUnavailable,
         Self::ProviderAbsent,
@@ -426,6 +432,7 @@ impl RefusalDetail {
         Self::CachePoisoned,
         Self::CredentialsRejected,
         Self::EndpointUnreachable,
+        Self::EndpointTargetUnverified,
         Self::BackendBusy,
         Self::BackendIncompatible,
         Self::BackendBroken,

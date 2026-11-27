@@ -278,8 +278,8 @@ def select_profile(corpus, profile):
         elif current == DBGS_PROFILE:
             expected = [
                 {},
-                {"op": "debug-server.start", "args": {"ownerPid": "$dbgsOwnerPid", "port": "$dbgsOccupiedPort"}},
-                {"op": "debug-server.start", "args": {"ownerPid": "$dbgsOwnerPid"}},
+                {"op": "debug-server.start", "args": {"ownerPid": "$dbgsOwnerPid"}, "dryRun": True},
+                {"op": "debug-server.start", "args": {"ownerPid": "$dbgsOwnerPid"}, "dryRun": False},
             ]
             if (
                 scenario["id"] != "S-3250-debug-server" or driver != "native-windows-dbgs"
@@ -287,7 +287,7 @@ def select_profile(corpus, profile):
                 or "evaluation" in scenario or "formats" in scenario
                 or any(step["tool"] != "unica.run" for step in scenario["wire"])
                 or [step["args"] for step in scenario["wire"]] != expected
-                or [step["expect"] for step in scenario["wire"]] != [["ok"], ["provider"], ["ok"]]
+                or [step["expect"] for step in scenario["wire"]] != [["ok"], ["ok"], ["ok"]]
             ):
                 raise ValueError(f"{scenario['id']}: invalid native Windows DBGS case")
         else:

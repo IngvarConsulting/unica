@@ -133,13 +133,16 @@ impl RunOperation {
             RunIntent::ConfigurationReset => "Discard pending configuration changes in the infobase, restoring its database configuration.",
             RunIntent::ClientRun => "Launch an interactive 1C client session.",
             RunIntent::WebPublish => "Prepare or verify a web publication for HTTP debugging before launching the browser.",
-            RunIntent::DebugServerStart => "Start an owned ready local debug server for the project file infobase.",
-            RunIntent::DebugServerStop => "Release the owned debug server of this working copy by session identifier.",
+            RunIntent::DebugServerStart => "Get the debugger URL, infobase alias and confirmed debugging scope for origin. The owner identifies who provides the server: runner, cluster, standalone or external. Use the returned release operation for a lease in this session.",
+            RunIntent::DebugServerStop => "Release the lease returned by debug-server.start for this working copy.",
         }
     }
 
     pub const fn support_reason(&self) -> Option<&'static str> {
         match self.intent {
+            RunIntent::DebugServerStart | RunIntent::DebugServerStop if !self.implemented => {
+                Some("debug-server.start and debug-server.stop require a v8-runner that supports debug-server.start contract version 2")
+            }
             RunIntent::CfImport | RunIntent::ConfigurationApply | RunIntent::ConfigurationReset => {
                 Some(RUNNER_LOAD_GAP)
             }
@@ -151,11 +154,10 @@ impl RunOperation {
     }
 
     pub const fn execution(&self) -> &'static str {
-        match self.intent {
-            RunIntent::ClientRun | RunIntent::DebugServerStart | RunIntent::DebugServerStop => {
-                "terminal"
-            }
-            _ => "previewApply",
+        if self.terminal {
+            "terminal"
+        } else {
+            "previewApply"
         }
     }
 
@@ -266,12 +268,12 @@ impl RunOperation {
             })),
             RunIntent::DebugServerStart => Some(json!({
                 "type":"object","additionalProperties":false,"required":["ownerPid"],
-                "properties":{"ownerPid":{"type":"integer","minimum":1,"maximum":u32::MAX},
-                    "port":{"type":"integer","minimum":1,"maximum":u16::MAX}}
+                "properties":{"ownerPid":{"type":"integer","minimum":1,"maximum":u32::MAX,
+                    "description":"Process ID of the long-lived IDE that owns any local debug server created for this session."}}
             })),
             RunIntent::DebugServerStop => Some(json!({
                 "type":"object","additionalProperties":false,"required":["session"],
-                "properties":{"session":{"type":"string","pattern":"^[0-9a-f]{32}$"}}
+                "properties":{"session":{"type":"string","pattern":"^[0-9a-f]{32}$","description":"Lease token from the release operation returned by debug-server.start."}}
             })),
             RunIntent::ClientRun => Some(client_run_args_schema(PINNED_RUNNER.interactive_login)),
         }
@@ -282,11 +284,15 @@ impl RunOperation {
 pub struct RunnerContract {
     pub version: &'static str,
     pub interactive_login: bool,
+    pub debug_server_start_v2: bool,
 }
 
+pub const DEBUG_SERVER_START_CONTRACT_VERSION: u8 = 2;
+
 pub const PINNED_RUNNER: RunnerContract = RunnerContract {
-    version: "0.19.1",
+    version: "0.19.2",
     interactive_login: true,
+    debug_server_start_v2: true,
 };
 
 fn client_run_args_schema(supports_interactive_login: bool) -> Value {
@@ -491,7 +497,7 @@ pub fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                 run_dictionary_is_data_not_command_lines: true,
                 empty_optional_result_slots_are_omitted: true,
             },
-            run_dictionary: run_dictionary(),
+            run_dictionary: run_dictionary(PINNED_RUNNER.debug_server_start_v2),
             result_envelope_schema: result_envelope_schema(),
         }),
     }
@@ -579,7 +585,7 @@ fn cursor(description: &'static str) -> Value {
     json!({"type": "string", "description": description})
 }
 
-fn run_dictionary() -> Vec<RunOperation> {
+pub fn run_dictionary(debug_server_start_v2: bool) -> Vec<RunOperation> {
     [
         RunIntent::InfobaseCheck,
         RunIntent::InfobaseCreate,
@@ -601,23 +607,23 @@ fn run_dictionary() -> Vec<RunOperation> {
         RunIntent::ConfigurationReset,
     ]
     .into_iter()
-    .map(|intent| RunOperation {
-        intent,
-        terminal: matches!(
+    .map(|intent| {
+        let terminal = matches!(
             intent,
             RunIntent::ClientRun | RunIntent::DebugServerStart | RunIntent::DebugServerStop
-        ),
-        rejects_sessions: matches!(
+        );
+        RunOperation {
             intent,
-            RunIntent::ClientRun | RunIntent::DebugServerStart | RunIntent::DebugServerStop
-        ),
-        // The pinned runner has push --no-apply, apply and reset, but its upload still applies
-        // the database configuration and the adapter does not run apply or reset yet
-        // (#1246): these are not listed, and their call is refused with that reason.
-        implemented: !matches!(
-            intent,
-            RunIntent::CfImport | RunIntent::ConfigurationApply | RunIntent::ConfigurationReset
-        ),
+            terminal,
+            rejects_sessions: terminal,
+            implemented: match intent {
+                RunIntent::DebugServerStart | RunIntent::DebugServerStop => debug_server_start_v2,
+                RunIntent::CfImport
+                | RunIntent::ConfigurationApply
+                | RunIntent::ConfigurationReset => false,
+                _ => true,
+            },
+        }
     })
     .collect()
 }
@@ -850,6 +856,35 @@ mod tests {
             assert!(op.implemented);
             assert_eq!(op.execution(), "previewApply");
             assert_eq!(op.args_schema().unwrap()["additionalProperties"], false);
+        }
+    }
+
+    /// rule: INV.RUNTIME.RUNNER-ONE-CAPABILITIES
+    #[test]
+    fn debug_server_start_v2_accepts_only_the_session_owner() {
+        let catalog = catalog_for(SurfaceRelease::V13).unwrap();
+        let op = catalog
+            .run_dictionary
+            .iter()
+            .find(|op| op.intent == RunIntent::DebugServerStart)
+            .unwrap();
+        assert_eq!(op.execution(), "terminal");
+        assert_eq!(op.effects(), &["debugServerSession"]);
+        let schema = op.args_schema().unwrap();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        for owner in [1, u32::MAX] {
+            assert!(validator.is_valid(&json!({"ownerPid": owner})));
+        }
+        for args in [
+            json!({}),
+            json!({"ownerPid": 0}),
+            json!({"ownerPid": u64::from(u32::MAX) + 1}),
+            json!({"ownerPid": "1"}),
+            json!({"ownerPid": 1, "mode": "client"}),
+            json!({"ownerPid": 1, "debugServerUrl": "http://localhost:1550"}),
+            json!({"ownerPid": 1, "port": 1550}),
+        ] {
+            assert!(!validator.is_valid(&args), "{args}");
         }
     }
 
@@ -1309,7 +1344,7 @@ mod tests {
                 "debug-server.start",
                 "debug-server.stop",
                 "extensions.list",
-                            "extensions.set",
+                "extensions.set",
                 "apply",
                 "reset",
             ],
