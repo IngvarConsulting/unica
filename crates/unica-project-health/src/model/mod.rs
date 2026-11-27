@@ -239,6 +239,10 @@ pub enum ProjectHealthFact {
         name: String,
         count: usize,
     },
+    AutodetectedMainConflict {
+        selected_path: String,
+        skipped_paths: Vec<String>,
+    },
     SourceFormatInvalid {
         source_set: String,
         evidence: Vec<String>,
@@ -685,6 +689,7 @@ enum RemediationKind {
     SeparateSourceRoot,
     CorrectSourcePath,
     UniqueSourceSetNames,
+    ConfigureAutodetectedSourceNames,
     ResolveSourceFormat,
     MoveCacheOutsideSource,
     RemoveGeneratedBuild,
@@ -942,6 +947,24 @@ fn diagnostic_seed(fact: &ProjectHealthFact) -> DiagnosticSeed {
             "Source-set name is not unique",
             vec![format!("name: {name}")],
             RemediationKind::UniqueSourceSetNames,
+        ),
+        AutodetectedMainConflict {
+            selected_path,
+            skipped_paths,
+        } => seed(
+            "source_set.autodetected_main_conflict",
+            DiagnosticSeverity::Warning,
+            ProjectCheckId::SourceDiscovery,
+            None,
+            std::iter::once(selected_path.clone())
+                .chain(skipped_paths.iter().cloned())
+                .collect(),
+            skipped_paths.len(),
+            "Other autodetected source sets were skipped because main is already selected",
+            std::iter::once(format!("selected: {selected_path}"))
+                .chain(skipped_paths.iter().map(|path| format!("skipped: {path}")))
+                .collect(),
+            RemediationKind::ConfigureAutodetectedSourceNames,
         ),
         SourceFormatInvalid {
             source_set,
@@ -1404,6 +1427,15 @@ fn remediation_for(
                 "Rename duplicate source-set entries in v8project.yaml without changing their type or path unintentionally".into(),
                 "Update callers that select a source set by name".into(),
                 "Run unica.view with an empty object again".into(),
+            ],
+            commands: Vec::new(),
+        },
+        RemediationKind::ConfigureAutodetectedSourceNames => Remediation {
+            summary: "Give each source set a different name".into(),
+            steps: vec![
+                "Declare the selected and skipped roots with unique names and their correct types and paths in v8project.yaml".into(),
+                "Alternatively, change the extension directory names or layout so autodetection gives them different names".into(),
+                "Run unica.check with an empty object again".into(),
             ],
             commands: Vec::new(),
         },

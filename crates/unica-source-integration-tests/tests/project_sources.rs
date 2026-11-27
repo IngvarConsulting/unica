@@ -1,4 +1,6 @@
 //! Existing real source discovery tests across Designer and the workspace owner.
+#[path = "project_sources/autodetected_main_conflict.rs"]
+mod autodetected_main_conflict;
 use std::path::Path;
 use std::sync::Arc;
 use unica_source_contract::ProjectSourceMap;
