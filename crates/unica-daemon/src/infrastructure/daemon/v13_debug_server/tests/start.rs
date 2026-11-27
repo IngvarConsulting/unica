@@ -115,9 +115,12 @@ fn start_never_tries_another_server_after_refusal_or_invalid_evidence() {
         assert_eq!(result.diagnostics[0]["code"], "invalid_result");
         assert_eq!(runner.calls.borrow().len(), 1);
     }
-    for code in [
-        "debug_server_external_unavailable",
-        "debug_server_external_target_unverified",
+    for (code, detail) in [
+        ("debug_server_external_unavailable", "endpoint_unreachable"),
+        (
+            "debug_server_external_target_unverified",
+            "endpoint_target_unverified",
+        ),
     ] {
         let runner = Provider {
             calls: RefCell::default(),
@@ -127,6 +130,10 @@ fn start_never_tries_another_server_after_refusal_or_invalid_evidence() {
         };
         let refused = prepared.start(&tool, &runner, &CancellationToken::new(), 42);
         assert_eq!(refused.data.unwrap(), json!({"runnerCode":code}));
+        let diagnostic = &refused.diagnostics[0];
+        assert_eq!(diagnostic["code"], "provider_unavailable");
+        assert_eq!(diagnostic["detailCode"], detail);
+        assert_eq!(diagnostic["outcome"], "needsHuman");
         assert!(!refused.summary.contains("private connection"));
         assert_eq!(runner.calls.borrow().len(), 1);
     }

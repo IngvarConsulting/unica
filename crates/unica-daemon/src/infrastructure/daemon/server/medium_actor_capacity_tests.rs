@@ -3484,6 +3484,7 @@ fn canonical_delivery_fixture_binary() -> Option<(std::path::PathBuf, String)> {
     Some((binary, expected))
 }
 
+/// rule: INV.RUNTIME.RUNNER-ONE-CAPABILITIES
 #[test]
 fn canonical_run_and_role_search_deliver_engines_and_run_supported_providers() {
     const CHILD: &str = "UNICA_CANONICAL_DELIVERY_SUCCESS_CHILD";
@@ -3658,7 +3659,6 @@ fn main() {
         assert!(!cache.join("v8-runner").exists());
         assert!(!cache.join("bsl-analyzer").exists());
 
-        // rule: INV.RUNTIME.RUNNER-ONE-CAPABILITIES
         let supports_start =
             crate::application::v13::tool_catalog::PINNED_RUNNER.debug_server_start_v2;
         let dictionary = submit_canonical(

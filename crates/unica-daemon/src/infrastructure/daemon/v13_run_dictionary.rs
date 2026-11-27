@@ -292,25 +292,38 @@ mod medium_tests {
     fn source_manifest_does_not_offer_debug_server_operations() {
         let plugin = tempfile::tempdir().unwrap();
         let tools = plugin.path().join("third-party");
+        let target = crate::infrastructure::current_target_id().unwrap();
+        let suffix = std::env::consts::EXE_SUFFIX;
+        let version = PINNED_RUNNER.version;
         fs::create_dir(&tools).unwrap();
         fs::write(
             tools.join("manifest.json"),
-            include_bytes!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../plugins/unica/third-party/manifest.json"
-            )),
+            json!({"schemaVersion":2,"sourceManifest":true,"tools":[]}).to_string(),
         )
         .unwrap();
         fs::write(
             tools.join("tools.lock.json"),
-            include_bytes!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../plugins/unica/third-party/tools.lock.json"
-            )),
+            json!({
+                "schemaVersion":2,
+                "targets":{(target):{"exe":suffix}},
+                "tools":[{"name":"v8-runner","version":version,"binaryName":"v8-runner",
+                    "assets":{(target):{"assetName":"runner.tar.gz","sha256":"a".repeat(64)}}}]
+            })
+            .to_string(),
         )
         .unwrap();
+        assert_eq!(
+            crate::infrastructure::bundled_tools::bundled_tool_version(plugin.path(), "v8-runner")
+                .unwrap(),
+            version
+        );
         with_plugin_root_for_test(plugin.path(), || {
-            assert_debug_server_calls_are_unavailable(Path::new("/workspace-does-not-exist"));
+            let cwd = Path::new("/workspace-does-not-exist");
+            assert_debug_server_calls_are_unavailable(cwd);
+            let bin = plugin.path().join("bin").join(target);
+            fs::create_dir_all(&bin).unwrap();
+            fs::write(bin.join(format!("v8-runner{suffix}")), b"unverified binary").unwrap();
+            assert_debug_server_calls_are_unavailable(cwd);
         });
     }
 

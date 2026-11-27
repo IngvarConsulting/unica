@@ -319,12 +319,22 @@ impl PreparedDebugServer {
                     | "debug_server_external_target_unverified"),
                 ) = envelope["error"]["code"].as_str()
                 {
-                    let message = if code == "debug_server_external_unavailable" {
-                        "the configured debug server is unavailable"
+                    let (detail, message) = if code == "debug_server_external_unavailable" {
+                        (
+                            RefusalDetail::EndpointUnreachable,
+                            "the configured debug server is unavailable",
+                        )
                     } else {
-                        "the configured debug server did not confirm the selected infobase"
+                        (
+                            RefusalDetail::EndpointTargetUnverified,
+                            "the configured debug server did not confirm the selected infobase",
+                        )
                     };
-                    let mut result = failure(START, RefusalCode::ProviderUnavailable, message);
+                    let mut result = DomainResult::canonical_rejection_detailed(
+                        Some(START.into()),
+                        detail,
+                        message,
+                    );
                     result.data = Some(json!({"runnerCode":code}));
                     return Err(result);
                 }
