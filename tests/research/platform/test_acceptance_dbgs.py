@@ -8,6 +8,7 @@ from ctypes import wintypes
 from copy import deepcopy
 import hashlib
 import http.client
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -16,15 +17,17 @@ import socket
 import subprocess
 import sys
 import unittest
+from urllib.parse import urlsplit
 
-from tests.ci.acceptance_controls import load_acceptance_corpus
+from tests.ci.acceptance_controls import load_acceptance_corpus, tool_result
 from tests.ci.acceptance_platform import configure_workspace, run_operation
-from tests.ci.acceptance_profiles import DBGS_PROFILE, select_profile, stage_tools
+from tests.ci.acceptance_profiles import DBGS_PROFILE, completed_delivery_call, select_profile, stage_tools
 from scripts.ci.temp_tree import temp_tree
 
 BUILD_ENV = "UNICA_DBGS_PLATFORM_BUILD"
 START = "debug-server.start"
 STOP = "debug-server.stop"
+PREPARE = "debug-server.prepare"
 EXIT_SECONDS = 30
 
 
@@ -52,10 +55,10 @@ def rdbg_answer(status, payload):
     return status == 400 and b"virtual-resource-system" in payload and b"Exception" in payload
 
 
-def rdbg_ready(port):
+def rdbg_ready(port, host="127.0.0.1"):
     # Same read-only RDBG probe as v8-runner 0.18.1. http.client does not use
     # shell proxy settings or follow redirects. The body is deliberately empty.
-    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+    connection = http.client.HTTPConnection(host, port, timeout=3)
     try:
         connection.request("POST", "/e1crdbg/rdbg?cmd=getDbgTargets", b"", {
             "Content-Type": "application/xml", "Accept": "application/json",
@@ -84,9 +87,9 @@ def acquired_server(result, owner_pid):
     return pid, port, session
 
 
-def tcp_listening(port):
+def tcp_listening(port, host="127.0.0.1"):
     try:
-        with socket.create_connection(("127.0.0.1", port), timeout=2):
+        with socket.create_connection((host, port), timeout=2):
             return True
     except OSError:
         return False
@@ -133,6 +136,55 @@ def close_owner(owner):
     if not owner.stdin.closed:
         owner.stdin.close()
     return owner.wait(timeout=10)
+
+
+def check_public_prepare(test, server, operations, runner_binary, owner_pid):
+    # The installed CLI provides an independent witness for discovery. Only
+    # the acceptance test reads help; the product uses its pinned contract.
+    help_text = subprocess.run(
+        [str(runner_binary), "debug-server", "--help"], check=True, capture_output=True,
+        text=True, encoding="utf-8", timeout=10,
+    ).stdout
+    supports_prepare = re.search(r"^\s*prepare(?:\s|$)", help_text, re.MULTILINE) is not None
+    advertised = [entry for entry in operations if entry["op"] == PREPARE]
+    test.assertEqual(len(advertised), int(supports_prepare))
+    args = {"ownerPid": owner_pid}
+    preview = tool_result(completed_delivery_call(
+        server, "unica.run", {"op": PREPARE, "args": args, "dryRun": True},
+        "preview debug-server.prepare", retry_pending_index=False,
+    ))
+    if not supports_prepare:
+        test.assertFalse(preview["ok"], preview)
+        test.assertEqual(preview["diagnostics"][0]["code"], "unsupported_operation")
+        return
+    test.assertTrue(advertised[0]["terminal"])
+    test.assertFalse(advertised[0]["dryRunRequired"])
+    test.assertEqual(set(advertised[0]["argsSchema"]["properties"]), {"ownerPid"})
+    test.assertTrue(preview["ok"], preview)
+    test.assertEqual(preview["data"], {"op": PREPARE, "contractVersion": 1, "action": "planned"})
+
+    prepared = run_operation(server, PREPARE, args, "prepare debugger for dedicated file infobase")
+    data = prepared["data"]
+    release = data["release"]
+    test.assertEqual(release["op"], STOP)
+    session = release["args"]["session"]
+    test.assertRegex(session, r"^[0-9a-f]{32}$")
+    try:
+        test.assertEqual(data["action"], "prepared")
+        test.assertEqual(data["contractVersion"], 1)
+        test.assertEqual(data["scope"], "clientAndServer")
+        test.assertTrue(data["infoBaseAlias"])
+        endpoint = urlsplit(data["url"])
+        test.assertEqual(endpoint.scheme, "http")
+        test.assertIsNotNone(endpoint.port)
+        if endpoint.hostname != "localhost":
+            test.assertTrue(ipaddress.ip_address(endpoint.hostname).is_loopback)
+        test.assertTrue(rdbg_ready(endpoint.port, endpoint.hostname))
+    finally:
+        released = run_operation(server, STOP, {"session": session}, "release the preparation lease")
+    test.assertEqual(released["data"]["action"], "stopped")
+    test.assertEqual(released["data"]["session"], session)
+    test.assertFalse(tcp_listening(endpoint.port, endpoint.hostname))
 
 
 class NativeDbgsCase(unittest.TestCase):
@@ -221,6 +273,10 @@ class NativeDbgsCase(unittest.TestCase):
                     self.assertFalse(tcp_listening(port))
                     self.assertIsNone(owner.poll(), "own stop killed the owner")
 
+                    check_public_prepare(
+                        self, server, dictionary["data"]["operations"],
+                        plugin / manifest["tools"][0]["binaryPath"], owner.pid,
+                    )
                     second = run_operation(server, START, {"ownerPid": owner.pid}, "start owner-exit control")
                     witness, port, session = watch(second)
                     self.assertEqual(close_owner(owner), 0)
