@@ -40,7 +40,6 @@ ROOT = Path(__file__).resolve().parents[2]
 CODE_SUFFIXES = (".rs", ".py", ".sh", ".ps1", ".yml", ".yaml", ".toml", ".js", ".ts", ".bsl")
 # Слово и скобка разделены, чтобы этот файл сам не нёс пометки.
 OPENER = "TODO" + "("
-GREP_PATTERN = r"\bTODO\("
 MARK = re.compile(r"\bTODO\(([^)\n]*)\)?")
 NUMBER = re.compile(r"#([1-9]\d*)")
 # Ключевые слова GitHub, закрывающие задачу при влитии PR: ссылка `#N`,
@@ -75,26 +74,30 @@ def parse(path: str, line: int, text: str) -> list[Mark]:
     return found
 
 
-def grep(root: Path, rev: Optional[str]) -> str:
-    """Строки с пометками в исходниках ревизии `rev` (или рабочего дерева) в виде `путь:строка:текст`."""
-    command = ["git", "grep", "-n", "-I", "--no-color", "-E", GREP_PATTERN]
+def marks(root: Path, rev: Optional[str] = None) -> list[Mark]:
+    # Git only finds candidate lines; parse() applies the word boundary.
+    command = ["git", "grep", "-n", "-z", "-I", "--no-color", "-F", OPENER]
     if rev:
         command.append(rev)
     command += ["--", *(f"*{suffix}" for suffix in CODE_SUFFIXES)]
-    completed = subprocess.run(command, cwd=root, capture_output=True, text=True, encoding="utf-8", check=False)
+    completed = subprocess.run(command, cwd=root, capture_output=True, check=False)
     if completed.returncode == 1 and not completed.stdout:
-        return ""  # совпадений нет
+        return []
     if completed.returncode != 0:
-        raise RuntimeError(f"git grep завершился с кодом {completed.returncode}: {completed.stderr.strip()}")
-    prefix = f"{rev}:" if rev else ""
-    return "".join(line.removeprefix(prefix) + "\n" for line in completed.stdout.splitlines())
+        error = completed.stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"git grep завершился с кодом {completed.returncode}: {error}")
 
-
-def marks(root: Path, rev: Optional[str] = None) -> list[Mark]:
+    prefix = os.fsencode(f"{rev}:") if rev else b""
     found = []
-    for row in grep(root, rev).splitlines():
-        path, line, text = row.split(":", 2)
-        found += parse(path, int(line), text)
+    # NUL separates the path and line number even if the path contains
+    # a colon or newline. Git terminates the matched source line with LF.
+    rows = iter(completed.stdout.split(b"\0"))
+    path = next(rows)
+    while path:
+        pathname = os.fsdecode(path.removeprefix(prefix))
+        line = int(next(rows))
+        text, path = next(rows).split(b"\n", 1)
+        found.extend(parse(pathname, line, text.decode("utf-8")))
     return found
 
 
