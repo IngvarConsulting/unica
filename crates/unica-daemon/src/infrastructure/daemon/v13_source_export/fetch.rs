@@ -80,7 +80,7 @@ enum Frame {
         source_set: String,
         target_path: PathBuf,
         stage_path: PathBuf,
-        merge_baseline: Option<merge::RunnerBaseline>,
+        merge_baseline: Option<Box<merge::RunnerBaseline>>,
     },
     Terminal {
         version: u32,
@@ -728,7 +728,7 @@ fn preview(
         Ok(envelope) => envelope,
         Err(result) => return retag(result),
     };
-    let plan = match validate_envelope(prepared, inputs, root, &envelope, false) {
+    let plan = match validate_envelope(request, inputs, root, &envelope, false) {
         Ok(plan) => plan,
         Err(result) => return retag(result),
     };
@@ -869,7 +869,7 @@ fn exchange(
                             "v8-runner prepared a different operation, mode, extension, source set, target or stage",
                         ));
                     }
-                    receipt = merge_baseline;
+                    receipt = merge_baseline.map(|baseline| *baseline);
                     // Публикации нет ни в каком случае: снимок — сама стадия.
                     reply(&nonce, "ready", "rejected")
                 }

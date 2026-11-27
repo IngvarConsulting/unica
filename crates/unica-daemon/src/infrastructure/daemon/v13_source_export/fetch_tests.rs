@@ -1479,6 +1479,33 @@ fn fetch_accept_rejects_unowned_modified_or_unconfirmed_snapshots() {
 
 /// rule: INV.RUNTIME.FETCH-LEAVES-THE-WORKING-COPY
 #[test]
+fn expired_pending_snapshots_and_new_generations_preserve_the_local_merge() {
+    let project = workspace();
+    let root = project.path();
+    let runner = ProtocolRunner::new(Script::PreparesMerge);
+    let snapshot = prepared_merge(root, &runner);
+    let id = snapshot["snapshotId"].as_str().unwrap();
+    fs::write(root.join("main/Local.bsl"), "chosen changes").unwrap();
+    let merged = tree(&root.join("main"));
+    for (code, expected) in [
+        ("invalid_argument", "bad_value"),
+        ("non_fast_forward", "concurrent_change"),
+    ] {
+        for dry_run in [true, false] {
+            runner.merges.lock().unwrap().push(json!({
+                "command":"pull", "ok":false,
+                "error":{"code":code,"message":"the merge baseline is no longer available; fetch again"}
+            }));
+            let result = accept(root, id, dry_run, &runner);
+            assert_eq!(result.diagnostics[0]["code"], expected, "{result:?}");
+            assert!(result.summary.contains("fetch again"), "{result:?}");
+            assert_eq!(tree(&root.join("main")), merged);
+        }
+    }
+}
+
+/// rule: INV.RUNTIME.FETCH-LEAVES-THE-WORKING-COPY
+#[test]
 fn a_runner_without_safe_snapshot_support_cannot_prepare_or_export_a_project() {
     for help in [
         None,
@@ -1510,6 +1537,12 @@ fn a_runner_without_safe_snapshot_support_cannot_prepare_or_export_a_project() {
 fn a_cluster_requires_its_own_read_only_preview_and_never_receives_a_merge_baseline() {
     let workspace = workspace();
     let root = workspace.path();
+    let base = fs::read_to_string(root.join(CONFIG_NAME)).unwrap();
+    fs::write(
+        root.join(CONFIG_NAME),
+        base + "  - name: second\n    type: EXTENSION\n    path: ext\n",
+    )
+    .unwrap();
     let local = "infobase:\n  connection: 'Srvr=localhost;Ref=example'\n";
     fs::write(root.join(LOCAL_CONFIG_NAME), local).unwrap();
     let source = tree(&root.join("main"));
@@ -1522,9 +1555,15 @@ fn a_cluster_requires_its_own_read_only_preview_and_never_receives_a_merge_basel
             "target_path":target,"provider_dispatched":false
         }})
     };
-    for plan in [None, Some(dry_run(root.join("different")))] {
+    let mut different_set = dry_run(root.join("main"));
+    different_set["data"]["source_set"] = json!("second");
+    for plan in [
+        None,
+        Some(dry_run(root.join("different"))),
+        Some(different_set),
+    ] {
         runner.preview = plan;
-        let refused = run(root, &prepared(root, false), &runner);
+        let refused = run(root, &prepared_with_args(root, json!({}), false), &runner);
         assert!(!refused.ok, "{refused:?}");
         let args = runner.args.lock().unwrap().clone();
         assert!(args.windows(2).any(|pair| pair == ["--infobase", "origin"]));
