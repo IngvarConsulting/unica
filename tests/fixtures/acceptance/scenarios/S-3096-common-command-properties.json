@@ -1,0 +1,35 @@
+{
+  "id": "S-3096-common-command-properties",
+  "issue": 3096,
+  "area": "Навигация по исходникам",
+  "task": "Найти общую команду в выгрузке 1С и прочитать настройки справки и поведения при недоступности основного сервера. Чтение сохраняет исходные файлы.",
+  "workspace": "tests/fixtures/acceptance/workspace-all-kinds",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {"at": "main:CommonCommand"},
+      "expect": ["ok"],
+      "assertions": [
+        {"pointer": "/data/items/0/at", "eq": "main:CommonCommand.Probe"}
+      ],
+      "captures": {
+        "command": {"pointer": "/data/items/0/at"},
+        "descriptor": {"file": "src/CommonCommands/Probe.xml", "kind": "sha256"},
+        "configuration": {"file": "src/Configuration.xml", "kind": "sha256"}
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {"at": "$capture.command"},
+      "expect": ["ok"],
+      "assertions": [
+        {"pointer": "/data/props/IncludeHelpInContents", "eq": false},
+        {"pointer": "/data/props/OnMainServerUnavalableBehavior", "eq": "Auto"}
+      ],
+      "fileAssertions": [
+        {"path": "src/CommonCommands/Probe.xml", "kind": "sha256", "eq": "$capture.descriptor"},
+        {"path": "src/Configuration.xml", "kind": "sha256", "eq": "$capture.configuration"}
+      ]
+    }
+  ]
+}
