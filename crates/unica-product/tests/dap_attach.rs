@@ -6,66 +6,73 @@ use std::{fs, thread};
 
 use serde_json::{json, Value};
 
+#[path = "dap/steps.rs"]
+mod steps;
+
 const EMPTY_CONFIGURATION: &str = include_str!(
     "../../../tests/fixtures/formats/platform_xml/2.20/empty_configuration/src/Configuration.xml"
 );
 
-/// The server records commands actually received from the product. An empty connection
-/// wakes the listener when the adapter has exited, including after a rejected attach.
+/// An empty connection wakes the listener after the adapter has exited.
+fn serve_rdbg(listener: TcpListener, mut respond: impl FnMut(&str, &str) -> String) -> Vec<String> {
+    let mut commands = Vec::new();
+    for request in listener.incoming() {
+        let mut socket = request.unwrap();
+        let mut reader = BufReader::new(&socket);
+        let mut line = String::new();
+        if reader.read_line(&mut line).unwrap() == 0 {
+            break;
+        }
+        let target = line.split_whitespace().nth(1).unwrap();
+        let url = url::Url::parse("http://localhost")
+            .unwrap()
+            .join(target)
+            .unwrap();
+        assert_eq!(url.path(), "/e1crdbg/rdbg");
+        let cmd = url
+            .query_pairs()
+            .find(|(key, _)| key == "cmd")
+            .unwrap()
+            .1
+            .into_owned();
+        let mut length = 0;
+        loop {
+            line.clear();
+            assert_ne!(reader.read_line(&mut line).unwrap(), 0);
+            if line == "\r\n" {
+                break;
+            }
+            let (name, value) = line.split_once(':').unwrap();
+            if name.eq_ignore_ascii_case("content-length") {
+                length = value.trim().parse().unwrap();
+            }
+        }
+        let mut body = vec![0; length];
+        reader.read_exact(&mut body).unwrap();
+        let response = respond(&cmd, std::str::from_utf8(&body).unwrap());
+        commands.push(cmd);
+        write!(
+            socket,
+            "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{response}",
+            response.len()
+        )
+        .unwrap();
+    }
+    commands
+}
+
+fn registration_response(command: &str) -> String {
+    if command == "attachDebugUI" {
+        "<response><result>registered</result></response>".into()
+    } else {
+        "<response/>".into()
+    }
+}
+
 fn attach(root: &Path, set: &str) -> (Vec<Value>, Vec<String>) {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let address = listener.local_addr().unwrap();
-    let server = thread::spawn(move || {
-        let mut commands = Vec::new();
-        for request in listener.incoming() {
-            let mut socket = request.unwrap();
-            let mut reader = BufReader::new(&socket);
-            let mut line = String::new();
-            if reader.read_line(&mut line).unwrap() == 0 {
-                break;
-            }
-            let target = line.split_whitespace().nth(1).unwrap();
-            let url = url::Url::parse("http://localhost")
-                .unwrap()
-                .join(target)
-                .unwrap();
-            assert_eq!(url.path(), "/e1crdbg/rdbg");
-            let cmd = url
-                .query_pairs()
-                .find(|(key, _)| key == "cmd")
-                .unwrap()
-                .1
-                .into_owned();
-            let mut length = 0;
-            loop {
-                line.clear();
-                assert_ne!(reader.read_line(&mut line).unwrap(), 0);
-                if line == "\r\n" {
-                    break;
-                }
-                let (name, value) = line.split_once(':').unwrap();
-                if name.eq_ignore_ascii_case("content-length") {
-                    length = value.trim().parse().unwrap();
-                }
-            }
-            let mut body = vec![0; length];
-            reader.read_exact(&mut body).unwrap();
-            let response = if cmd == "attachDebugUI" {
-                "<response><result>registered</result></response>"
-            } else {
-                "<response/>"
-            };
-            commands.push(cmd);
-            write!(
-                socket,
-                "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{response}",
-                response.len()
-            )
-            .unwrap();
-        }
-        commands
-    });
-
+    let server = thread::spawn(move || serve_rdbg(listener, |cmd, _| registration_response(cmd)));
     let mut dap = Command::new(env!("CARGO_BIN_EXE_unica"))
         .arg("dap")
         .stdin(Stdio::piped())
