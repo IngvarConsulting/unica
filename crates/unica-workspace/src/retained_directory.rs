@@ -7,8 +7,8 @@ use super::apply::{
 
 mod collection;
 use crate::platform::filesystem::{
-    portable_permissions, stable_path_identity_bytes, CheckedReadError, FileIdentity,
-    PortablePermissions, RetainedChildCapability, RetainedDirectoryCapability,
+    is_windows_access_denied, portable_permissions, stable_path_identity_bytes, CheckedReadError,
+    FileIdentity, PortablePermissions, RetainedChildCapability, RetainedDirectoryCapability,
     RetainedRegularFileCapability,
 };
 use sha2::{Digest, Sha256};
@@ -17,6 +17,7 @@ use std::ffi::{OsStr, OsString};
 use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
+use unica_source_contract::portable_path::PortablePathExt;
 use unica_work_control::cancellation::CancellationToken;
 use unica_work_control::provider_deadline::ProviderDeadline;
 
@@ -379,8 +380,19 @@ impl DirectoryRemoval {
             }),
             Err(error) => {
                 let (error, artifact) = error.into_parts();
+                let error = if artifact.is_none() && is_windows_access_denied(&error) {
+                    ApplyStagingError::new(
+                        ApplyStagingErrorKind::UnsupportedProvider,
+                        format!(
+                            "could not rename source directory `{}` for removal. {error}. Check for open files in the directory and verify access permissions before retrying",
+                            self.relative.portable(),
+                        ),
+                    )
+                } else {
+                    io_error(error)
+                };
                 Err(DirectoryPublishFailure {
-                    error: io_error(error),
+                    error,
                     artifact: artifact.map(|(recovery, name, _)| {
                         Box::new(PublishedDirectoryRemoval {
                             plan: self.clone(),

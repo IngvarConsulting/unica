@@ -250,3 +250,51 @@ fn displaced_file_growth_is_a_revision_conflict_and_is_never_cleaned() {
     );
     assert!(published.recovery.path().join("Ext/Empty").is_dir());
 }
+
+#[cfg(feature = "test-support")]
+#[test]
+fn blocked_directory_rename_identifies_source_and_preserves_preimage() {
+    let (_temp, root, plan) = fixture();
+    let before = crate::test_support::tree_snapshot(&root);
+    let Some(held_file) =
+        crate::platform::testing::hold_regular_file_without_delete_sharing_for_test(
+            &root.join("Payload/Ext/Module.bsl"),
+        )
+        .unwrap()
+    else {
+        unica_process::test_support::skip_without_host_capability(
+            unica_process::test_support::HostCapability::WindowsPathSyntax,
+            "requires Windows refusing a directory rename with an open descendant",
+        );
+        return;
+    };
+
+    let failure = match plan.publish() {
+        Ok(_) => panic!("directory rename succeeded with an open descendant"),
+        Err(failure) => failure,
+    };
+    assert!(failure.artifact.is_none());
+    assert_eq!(
+        failure.error.kind(),
+        ApplyStagingErrorKind::UnsupportedProvider
+    );
+    assert_eq!(crate::test_support::tree_snapshot(&root), before);
+    let diagnostic = failure.error.to_string();
+    assert!(diagnostic.contains("rename"), "{diagnostic}");
+    assert!(diagnostic.contains("`Payload`"), "{diagnostic}");
+    assert!(diagnostic.contains("os error 5"), "{diagnostic}");
+    assert!(diagnostic.contains("open files"), "{diagnostic}");
+    assert!(diagnostic.contains("permissions"), "{diagnostic}");
+    assert!(
+        !diagnostic.contains(root.to_string_lossy().as_ref()),
+        "{diagnostic}"
+    );
+
+    drop(held_file);
+    let published = plan
+        .publish()
+        .unwrap_or_else(|failure| panic!("{}", failure.error));
+    assert!(!root.join("Payload").exists());
+    published.rollback().unwrap();
+    assert_eq!(crate::test_support::tree_snapshot(&root), before);
+}
