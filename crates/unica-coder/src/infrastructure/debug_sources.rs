@@ -24,8 +24,10 @@ use unica_source_contract::{
 use unica_source_designer::{
     layout::metadata_descriptor_relative,
     module_layout::{
-        logical_module_from_metadata, platform_xml_module_relative, PlatformXmlModuleRole,
+        logical_module_from_metadata, module_relative, platform_xml_module_relative,
+        PlatformXmlModuleRole,
     },
+    owner::prove_already_read_source_set_owner,
     registration::root_child_objects,
 };
 use unica_workspace::{
@@ -107,7 +109,9 @@ fn resolve_modules(
 ) -> Result<(Vec<DebugModuleSource>, Vec<DebugSourceRoot>)> {
     let address = match query {
         DebugModuleQuery::Address(text) => Some(QualifiedAddress::parse(text)?),
-        DebugModuleQuery::Frame { .. } | DebugModuleQuery::Runtime(_) => None,
+        DebugModuleQuery::Frame { .. }
+        | DebugModuleQuery::ExternalProcessorFrame { .. }
+        | DebugModuleQuery::Runtime(_) => None,
     };
     let requested_set = address.as_ref().map(QualifiedAddress::source_set);
     let admission =
@@ -121,7 +125,9 @@ fn resolve_modules(
             || set.source_state != SourceSetState::Supported
             || !matches!(
                 set.kind,
-                SourceSetKind::Configuration | SourceSetKind::Extension
+                SourceSetKind::Configuration
+                    | SourceSetKind::Extension
+                    | SourceSetKind::ExternalProcessor
             )
         {
             continue;
@@ -137,6 +143,15 @@ fn resolve_modules(
         if requested_set.is_some_and(|name| name != set.name) {
             continue;
         }
+        let external = match (query, set.kind) {
+            (
+                DebugModuleQuery::ExternalProcessorFrame { name, id },
+                SourceSetKind::ExternalProcessor,
+            ) => Some((name, id)),
+            (DebugModuleQuery::ExternalProcessorFrame { .. }, _)
+            | (_, SourceSetKind::ExternalProcessor) => continue,
+            _ => None,
+        };
         let frame_address = if let DebugModuleQuery::Frame { module, id } = query {
             if id.extension.is_some() != (set.kind == SourceSetKind::Extension) {
                 continue;
@@ -150,18 +165,74 @@ fn resolve_modules(
         if identity != Some(root.identity()) {
             return Err(format!("debug source set {} changed during discovery", set.name).into());
         }
-        read_modules(
-            &root,
-            set,
-            query,
-            address.as_ref().or(frame_address.as_ref()),
-            &mut modules,
-            previous,
-            observed,
-        )?;
+        if let Some((name, id)) = external {
+            if let Some(source) = external_processor_source(&root, set, name, id)? {
+                modules.push(source);
+            }
+        } else {
+            read_modules(
+                &root,
+                set,
+                query,
+                address.as_ref().or(frame_address.as_ref()),
+                &mut modules,
+                previous,
+                observed,
+            )?;
+        }
         root.validate_named_identity()?;
     }
     Ok((modules, roots))
+}
+
+fn external_processor_source(
+    root: &SourceDirectory,
+    set: &ProjectSourceSet,
+    name: &str,
+    id: &DebugModuleId,
+) -> Result<Option<DebugModuleSource>> {
+    let inventory = super::external_artifact_inventory::read_inventory_with_limit(
+        root,
+        set.kind,
+        Some(MAX_DESCRIPTOR_BYTES),
+        &mut || Ok(()),
+    )
+    .map_err(|error| error.to_string())?;
+    let Some(binding) = inventory.get(name) else {
+        return Ok(None);
+    };
+    let descriptor = root.retain_regular_child(binding.descriptor().as_os_str())?;
+    let xml = read_descriptor_file(&mut descriptor.try_clone_file()?)?;
+    let evidence =
+        prove_already_read_source_set_owner(binding.descriptor(), xml.as_bytes(), set.kind)
+            .map_err(|error| error.message)?;
+    let Some(object) = evidence
+        .artifact_uuid()
+        .and_then(|uuid| uuid.parse::<uuid::Uuid>().ok())
+    else {
+        return Ok(None);
+    };
+    let runtime_id = DebugModuleId {
+        extension: None,
+        object,
+        property: OBJECT_MODULE_PROPERTY_ID,
+    };
+    if evidence.artifact_name() != Some(name) || object.is_nil() || &runtime_id != id {
+        return Ok(None);
+    }
+    let metadata =
+        MetadataAddress::parse_logical(&format!("{}.{name}.ObjectModule", binding.kind()))?;
+    let path = binding.physical_path(&module_relative(&metadata, set.kind)?)?;
+    if root.relative_file_stamp(&path)?.is_none() {
+        return Ok(None);
+    }
+    descriptor.validate_named_identity_relative()?;
+    let logical = logical_module_from_metadata(metadata.as_str())
+        .ok_or("invalid external processor module address")?;
+    Ok(Some(DebugModuleSource {
+        address: QualifiedAddress::parse(&format!("{}:{logical}", set.name))?,
+        runtime_id,
+    }))
 }
 
 fn read_modules(
@@ -486,6 +557,7 @@ impl SourceSetModules<'_> {
             DebugModuleQuery::Frame { id, .. } => {
                 source.runtime_id == *id && self.address == Some(&source.address)
             }
+            DebugModuleQuery::ExternalProcessorFrame { .. } => false,
             DebugModuleQuery::Runtime(expected) => expected.contains(&source.runtime_id),
         };
         if matches {
@@ -498,7 +570,8 @@ impl SourceSetModules<'_> {
 fn runtime_ids(query: DebugModuleQuery<'_>) -> Option<&[DebugModuleId]> {
     match query {
         DebugModuleQuery::Address(_) => None,
-        DebugModuleQuery::Frame { id, .. } => Some(std::slice::from_ref(id)),
+        DebugModuleQuery::Frame { id, .. }
+        | DebugModuleQuery::ExternalProcessorFrame { id, .. } => Some(std::slice::from_ref(id)),
         DebugModuleQuery::Runtime(ids) => Some(ids),
     }
 }
@@ -529,19 +602,20 @@ fn descriptor(root: &SourceDirectory, path: &Path) -> Result<String> {
     read_descriptor_file(&mut root.open_relative_regular_nofollow(path)?)
 }
 
+// resource-limit: dap.saved-descriptor-bytes
+// class: step
+// unit: bytes
+// scope: file
+// value: 16777216
+// resource: Размер одного XML-дескриптора, читаемого целиком для привязки модуля DAP.
+// status: unproven
+// origin: 8e72f5805
+// problem: неизвестно
+// on-reach: Workspace отказывает в чтении дескриптора, attach возвращает ошибку.
+// issue: #1119
+const MAX_DESCRIPTOR_BYTES: usize = 16 * 1024 * 1024;
+
 fn read_descriptor_file(file: &mut ReadFile) -> Result<String> {
-    // resource-limit: dap.saved-descriptor-bytes
-    // class: step
-    // unit: bytes
-    // scope: file
-    // value: 16777216
-    // resource: Размер одного XML-дескриптора, читаемого целиком для привязки модуля DAP.
-    // status: unproven
-    // origin: 8e72f5805
-    // problem: неизвестно
-    // on-reach: Workspace отказывает в чтении дескриптора, attach возвращает ошибку.
-    // issue: #1119
-    const MAX_DESCRIPTOR_BYTES: usize = 16 * 1024 * 1024;
     let mut contents = Vec::new();
     file.take(MAX_DESCRIPTOR_BYTES as u64 + 1)
         .read_to_end(&mut contents)?;
@@ -710,6 +784,125 @@ mod tests {
         assert_eq!(after.address, before.address);
         std::fs::remove_file(src.join("CommonModules/Probe/Ext/Module.bsl")).unwrap();
         assert!(resolve().is_empty());
+    }
+
+    const EXTERNAL_PROCESSOR_PROJECT: &str = "format: DESIGNER\nsource-set:\n  - {name: processor, type: EXTERNAL_DATA_PROCESSORS, path: epf}\n  - {name: main, type: CONFIGURATION, path: cfg}\n";
+
+    fn workspace_with_external_processor() -> (tempfile::TempDir, PathBuf) {
+        let fixtures =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/acceptance");
+        let workspace = tempfile::tempdir().unwrap();
+        let external = fixtures.join("workspace-external-alias/epf");
+        crate::infrastructure::test_fixtures::copy_tree(&external, &workspace.path().join("epf"));
+        crate::infrastructure::test_fixtures::copy_tree(
+            &fixtures.join("workspace-resolve-resources/src"),
+            &workspace.path().join("cfg"),
+        );
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            EXTERNAL_PROCESSOR_PROJECT,
+        )
+        .unwrap();
+        (workspace, external)
+    }
+
+    #[test]
+    fn external_processor_frame_resolves_an_aliased_export_and_rechecks_its_registration() {
+        let (workspace, fixture) = workspace_with_external_processor();
+        let path = workspace.path();
+        let source = path.join("epf");
+        let manifest = path.join("v8project.yaml");
+        let mut resolve = workspace_debug_resolver(path, Some("main")).unwrap();
+        let id = DebugModuleId {
+            extension: None,
+            object: uuid::Uuid::from_u128(0x2df5362f_05be_5a3f_8bb8_c422d5b52470),
+            property: OBJECT_MODULE_PROPERTY_ID,
+        };
+        let name = "SyntheticProcessor";
+        let frame = DebugModuleQuery::ExternalProcessorFrame { name, id: &id };
+        let selected = resolve(frame).unwrap();
+        assert_eq!(selected.modules.len(), 1);
+        assert_eq!(
+            selected.modules[0].address.to_string(),
+            "processor:ExternalDataProcessor.SyntheticProcessor.Module.Object"
+        );
+        assert_eq!(selected.modules[0].runtime_id, id);
+
+        let internal = resolve(DebugModuleQuery::Runtime(std::slice::from_ref(&id))).unwrap();
+        assert!(internal.modules.is_empty());
+        assert_eq!(internal.source_sets_revision, selected.source_sets_revision);
+        assert!(resolve(DebugModuleQuery::ExternalProcessorFrame {
+            name,
+            id: &DebugModuleId {
+                object: uuid::Uuid::from_u128(17),
+                ..id.clone()
+            }
+        })
+        .unwrap()
+        .modules
+        .is_empty());
+
+        // A second declared set with the same owner has two candidates, regardless of physical names.
+        crate::infrastructure::test_fixtures::copy_tree(&fixture, &path.join("second"));
+        std::fs::write(
+            &manifest,
+            format!(
+                "{EXTERNAL_PROCESSOR_PROJECT}  - {{name: copy, type: EXTERNAL_DATA_PROCESSORS, path: second}}\n"
+            ),
+        )
+        .unwrap();
+        let duplicate = resolve(frame).unwrap();
+        assert_eq!(duplicate.modules.len(), 2);
+        assert_ne!(
+            duplicate.source_sets_revision,
+            selected.source_sets_revision
+        );
+        std::fs::write(&manifest, EXTERNAL_PROCESSOR_PROJECT).unwrap();
+        std::fs::remove_file(source.join("source/Ext/ObjectModule.bsl")).unwrap();
+        assert!(resolve(frame).unwrap().modules.is_empty());
+        std::fs::copy(
+            fixture.join("source/Ext/ObjectModule.bsl"),
+            source.join("source/Ext/ObjectModule.bsl"),
+        )
+        .unwrap();
+        assert_eq!(resolve(frame).unwrap().modules.len(), 1);
+        // Files on disk retain the UUID. The current manifest has withdrawn the external set.
+        std::fs::write(
+            &manifest,
+            "source-set:\n  - {name: main, type: CONFIGURATION, path: cfg}\n",
+        )
+        .unwrap();
+        assert!(resolve(frame).unwrap().modules.is_empty());
+    }
+
+    #[test]
+    fn external_processor_frame_refuses_a_linked_or_ambiguous_owner() {
+        let (workspace, fixture) = workspace_with_external_processor();
+        let source = workspace.path().join("epf");
+        let mut resolve = workspace_debug_resolver(workspace.path(), Some("main")).unwrap();
+        let id = DebugModuleId {
+            extension: None,
+            object: uuid::Uuid::from_u128(0x2df5362f_05be_5a3f_8bb8_c422d5b52470),
+            property: OBJECT_MODULE_PROPERTY_ID,
+        };
+        let frame = DebugModuleQuery::ExternalProcessorFrame {
+            name: "SyntheticProcessor",
+            id: &id,
+        };
+        let second = source.join("duplicate.xml");
+        std::fs::copy(source.join("source.xml"), &second).unwrap();
+        assert!(resolve(frame).is_err());
+        std::fs::remove_file(second).unwrap();
+        let bsl = source.join("source/Ext/ObjectModule.bsl");
+        std::fs::remove_file(&bsl).unwrap();
+        if crate::infrastructure::test_fixtures::file_link_or_skip(
+            fixture.join("source/Ext/ObjectModule.bsl"),
+            bsl,
+        ) {
+            if let Ok(found) = resolve(frame) {
+                assert!(found.modules.is_empty());
+            }
+        }
     }
 
     #[test]

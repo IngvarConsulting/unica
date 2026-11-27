@@ -20,7 +20,9 @@ use modules::Modules;
 use rdbg::{child, field, Rdbg, TargetAttachment};
 use roxmltree::{Document, Node};
 use serde_json::{json, Value};
-use unica_source_contract::debug_source::{DebugModuleId, ResolveDebugModules};
+use unica_source_contract::debug_source::{
+    external_processor_frame_name, DebugModuleId, ResolveDebugModules, OBJECT_MODULE_PROPERTY_ID,
+};
 use uuid::Uuid;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -273,6 +275,13 @@ struct Frame {
     evaluated_children: HashMap<u64, Vec<ContextVariable>>,
     collection_paths: HashSet<u64>,
     snapshots: HashMap<u64, SnapshotNode>,
+}
+
+struct StackEntry {
+    line: u32,
+    name: String,
+    workspace_module: Option<DebugModuleId>,
+    external_source: Option<String>,
 }
 
 struct SnapshotNode {
@@ -1223,55 +1232,45 @@ impl Session {
     }
 
     fn read_frames(&mut self, result: Node<'_, '_>, breakpoint_stop: bool) -> Result<Vec<Frame>> {
-        let mut stack = Vec::new();
-        for entry in result
-            .children()
-            .filter(|node| node.has_tag_name("callStack"))
-        {
-            let id = child(entry, "moduleID").and_then(workspace_module_id);
-            let line = field(entry, "lineNo")
-                .and_then(|line| line.parse::<u32>().ok())
-                .unwrap_or(0);
-            stack.push((line, id, decode(field(entry, "presentation"))?));
-        }
+        let stack = read_stack_entries(result, &mut self.modules)?;
         // Only the innermost frame can report a hit on one of the installed lines.
-        let mut hit = stack
-            .last()
-            .filter(|_| breakpoint_stop)
-            .and_then(|(line, id, _)| {
-                let module = id.as_ref()?;
-                self.breakpoints
-                    .iter()
-                    .find_map(|(at, (installed, points))| {
-                        (installed == module && points.iter().any(|point| point.line == *line))
-                            .then_some(at.as_str())
-                    })
-            });
-        let sources = self.modules.frame_addresses(
-            stack
+        let mut hit = stack.last().filter(|_| breakpoint_stop).and_then(|entry| {
+            let module = entry.workspace_module.as_ref()?;
+            self.breakpoints
                 .iter()
-                .rev()
-                .map(|(_, id, name)| (id.as_ref(), name.as_str(), hit.take())),
-        );
+                .find_map(|(at, (installed, points))| {
+                    (installed == module && points.iter().any(|point| point.line == entry.line))
+                        .then_some(at.as_str())
+                })
+        });
+        let sources = self
+            .modules
+            .frame_addresses(stack.iter().rev().map(|entry| {
+                (
+                    entry.workspace_module.as_ref(),
+                    entry.name.as_str(),
+                    hit.take(),
+                )
+            }));
         Ok(stack
             .into_iter()
             .rev()
             .zip(sources)
             .enumerate()
-            .map(|(level, ((line, frame_module, name), source))| {
+            .map(|(level, (entry, source))| {
                 self.next_id += 1;
                 let id = self.next_id;
                 let mut body = json!({
-                    "id":id,"name":name,
-                    "line":line,"column":1
+                    "id":id,"name":entry.name,
+                    "line":entry.line,"column":1
                 });
-                if let Some(address) = source {
+                if let Some(address) = source.or(entry.external_source) {
                     body["source"] = json!({"name":address,"path":address});
                 }
                 Frame {
                     id,
                     level,
-                    module: frame_module,
+                    module: entry.workspace_module,
                     body,
                     variable_paths: HashMap::new(),
                     evaluated_children: HashMap::new(),
@@ -1283,22 +1282,69 @@ impl Session {
     }
 }
 
-/// Only configuration and extension frames can refer to these saved workspace modules.
-/// An external or system frame can carry the same UUIDs or omit them entirely.
-fn workspace_module_id(module: Node<'_, '_>) -> Option<DebugModuleId> {
-    let extension = field(module, "extensionName").filter(|name| !name.is_empty());
-    match field(module, "type") {
-        Some("ConfigModule") if extension.is_none() => {}
-        Some("ExtensionModule") if extension.is_some() => {}
-        None if field(module, "URL").is_none()
-            && field(module, "extId").is_none_or(|id| id == "0") => {}
-        _ => return None,
+fn read_stack_entries(result: Node<'_, '_>, modules: &mut Modules) -> Result<Vec<StackEntry>> {
+    let mut stack = Vec::new();
+    let mut external_sources = HashMap::new();
+    for entry in result
+        .children()
+        .filter(|node| node.has_tag_name("callStack"))
+    {
+        let name = decode(field(entry, "presentation"))?;
+        let (workspace_module, external_source) =
+            match child(entry, "moduleID").and_then(frame_module) {
+                Some(FrameModule::Workspace(id)) => (Some(id), None),
+                Some(FrameModule::ExternalProcessor(id)) => {
+                    let source = external_processor_frame_name(&name, &id).and_then(|owner| {
+                        external_sources
+                            .entry((id, owner.to_owned()))
+                            .or_insert_with_key(|(id, owner)| {
+                                modules.external_processor_address(id, owner)
+                            })
+                            .clone()
+                    });
+                    (None, source)
+                }
+                None => (None, None),
+            };
+        let line = field(entry, "lineNo")
+            .and_then(|line| line.parse::<u32>().ok())
+            .unwrap_or(0);
+        stack.push(StackEntry {
+            line,
+            name,
+            workspace_module,
+            external_source,
+        });
     }
-    Some(DebugModuleId {
+    Ok(stack)
+}
+
+enum FrameModule {
+    Workspace(DebugModuleId),
+    ExternalProcessor(DebugModuleId),
+}
+
+/// External and internal modules can share both UUIDs. Only the wire type selects their source.
+fn frame_module(module: Node<'_, '_>) -> Option<FrameModule> {
+    let extension = field(module, "extensionName").filter(|name| !name.is_empty());
+    let id = DebugModuleId {
         extension: extension.map(str::to_owned),
         object: field(module, "objectID")?.parse().ok()?,
         property: field(module, "propertyID")?.parse().ok()?,
-    })
+    };
+    match field(module, "type") {
+        Some("ConfigModule") if extension.is_none() => Some(FrameModule::Workspace(id)),
+        Some("ExtensionModule") if extension.is_some() => Some(FrameModule::Workspace(id)),
+        Some("ExtMDModule") if extension.is_none() && id.property == OBJECT_MODULE_PROPERTY_ID => {
+            Some(FrameModule::ExternalProcessor(id))
+        }
+        None if field(module, "URL").is_none()
+            && field(module, "extId").is_none_or(|id| id == "0") =>
+        {
+            Some(FrameModule::Workspace(id))
+        }
+        _ => None,
+    }
 }
 
 impl Frame {
@@ -1609,6 +1655,103 @@ fn event(name: &str, body: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_stop_looks_up_an_external_owner_once_across_recursive_frames_and_methods() {
+        use std::{cell::RefCell, rc::Rc};
+        use unica_address::address::QualifiedAddress;
+        use unica_source_contract::debug_source::{
+            DebugModuleMatches, DebugModuleQuery, DebugModuleSource,
+        };
+
+        fn frame(owner: &str, object: Uuid, method: &str) -> String {
+            let name =
+                STANDARD.encode(format!("ВнешняяОбработка.{owner}.МодульОбъекта.{method}()"));
+            format!("<callStack><moduleID><type>ExtMDModule</type><objectID>{object}</objectID><propertyID>{OBJECT_MODULE_PROPERTY_ID}</propertyID></moduleID><presentation>{name}</presentation></callStack>")
+        }
+        let object = Uuid::from_u128(17);
+        let other_object = Uuid::from_u128(18);
+        let expected = "epf:ExternalDataProcessor.Probe.Module.Object";
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let recorded = Rc::clone(&calls);
+        let mut modules = Modules::new(Box::new(move |query| {
+            let DebugModuleQuery::ExternalProcessorFrame { name, id } = query else {
+                panic!("external module reached internal lookup")
+            };
+            recorded.borrow_mut().push((name.to_owned(), id.object));
+            let modules = if name == "Probe" && id.object == object {
+                vec![DebugModuleSource {
+                    address: QualifiedAddress::parse(expected).unwrap(),
+                    runtime_id: id.clone(),
+                }]
+            } else {
+                vec![]
+            };
+            Ok(DebugModuleMatches {
+                modules,
+                source_sets_revision: 1,
+            })
+        }));
+        let mut stack = String::from("<result>");
+        for i in 0..20 {
+            stack.push_str(&frame(
+                "Probe",
+                object,
+                if i % 2 == 0 { "Enter" } else { "Recurse" },
+            ));
+        }
+        for method in ["Enter", "Recurse"] {
+            stack.push_str(&frame("Missing", object, method));
+            stack.push_str(&frame("Probe", other_object, method));
+        }
+        stack.push_str("</result>");
+        let doc = Document::parse(&stack).unwrap();
+        for _ in 0..2 {
+            let frames = read_stack_entries(doc.root_element(), &mut modules).unwrap();
+            assert_eq!(frames.len(), 24);
+            assert!(frames[..20]
+                .iter()
+                .all(|frame| frame.external_source.as_deref() == Some(expected)));
+            assert!(frames[20..]
+                .iter()
+                .all(|frame| frame.external_source.is_none()));
+            assert_eq!(
+                calls.take(),
+                [
+                    ("Probe".to_owned(), object),
+                    ("Missing".to_owned(), object),
+                    ("Probe".to_owned(), other_object)
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn external_object_frames_keep_their_wire_type_even_when_internal_uuids_match() {
+        fn parse(kind: &str, extension: &str, property: Uuid) -> Option<FrameModule> {
+            let object = Uuid::from_u128(17);
+            let xml = format!(
+                "<moduleID><type>{kind}</type><extensionName>{extension}</extensionName>
+                <objectID>{object}</objectID><propertyID>{property}</propertyID>
+                <URL>e1cib/tempstorage/test-handle</URL></moduleID>"
+            );
+            frame_module(Document::parse(&xml).unwrap().root_element())
+        }
+        let Some(FrameModule::ExternalProcessor(external)) =
+            parse("ExtMDModule", "", OBJECT_MODULE_PROPERTY_ID)
+        else {
+            panic!("external object must keep its external identity");
+        };
+        let Some(FrameModule::Workspace(internal)) =
+            parse("ConfigModule", "", OBJECT_MODULE_PROPERTY_ID)
+        else {
+            panic!("expected configuration identity");
+        };
+        assert_eq!(external, internal);
+        assert!(parse("SystemModule", "", OBJECT_MODULE_PROPERTY_ID).is_none());
+        assert!(parse("ExtMDModule", "Extension", OBJECT_MODULE_PROPERTY_ID).is_none());
+        assert!(parse("ExtMDModule", "", Uuid::from_u128(1)).is_none());
+    }
 
     #[test]
     fn indexed_values_keep_platform_count_and_order() {
