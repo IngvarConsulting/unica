@@ -628,6 +628,115 @@ fn the_product_service_serves_an_editor_folder_over_the_mcp_workspace_actor() {
     assert!(!editor.lost.load(Ordering::Acquire));
 }
 
+/// rule: INV.LSP.NO-WRITES
+/// rule: INV.SOURCE.CODE-REPLACE-TEXT-REVISION
+#[test]
+fn medium_lsp_opens_empty_logical_modules_and_reads_the_first_mcp_write() {
+    let daemon = LiveV5Daemon::start_with_product_lsp(canonical_v13_service());
+    let owner = daemon.owner();
+    let workspace = catalog_workspace();
+    let root = std::fs::canonicalize(workspace.path()).unwrap();
+    let source = root.join("src");
+    let session_file = source.join("Ext/SessionModule.bsl");
+    let unreadable = source.join("Catalogs/Items/Ext/ObjectModule.bsl");
+    std::fs::create_dir_all(unreadable.parent().unwrap()).unwrap();
+    std::fs::write(unreadable, [0xff]).unwrap();
+    let before = unica_workspace::test_support::tree_snapshot(&source);
+
+    let mut editor = Editor::start(&daemon);
+    let initialized = editor.request(
+        "initialize",
+        json!({"workspaceFolders":[{"uri":url::Url::from_file_path(&root).unwrap(),"name":"Work"}]}),
+    );
+    let space = initialized["result"]["capabilities"]["experimental"]["unica"]["workspaces"][0]
+        ["space"]
+        .as_str()
+        .expect("the workspace is admitted");
+    let content = |editor: &mut Editor, body| {
+        editor.request(
+            "workspace/textDocumentContent",
+            json!({"uri":format!("unica://{space}/{body}")}),
+        )
+    };
+    let mcp = |tool, args| {
+        let request = InvocationRequest::new(tool, args, root.to_string_lossy(), 7_000).unwrap();
+        let V5Submission::Direct(response) = daemon.submit(&owner, &request) else {
+            panic!("a source-only invocation answers directly");
+        };
+        assert!(response.ok, "{response:?}");
+        response
+    };
+
+    let body = "main:Module.Session.Body";
+    let empty_rev = unica_source_contract::read::module_text_revision(b"");
+    let viewed = mcp(ToolIdentity::View, json!({"at":body}));
+    assert_eq!(viewed.source_text.as_deref(), Some(""));
+    assert_eq!(viewed.rev.as_ref(), Some(&empty_rev));
+    for module in [
+        "main/Module.Session.Body",
+        "main/Catalog.Items.Module.Manager.Body",
+    ] {
+        let reply = content(&mut editor, module);
+        assert_eq!(
+            reply["result"],
+            json!({"text":"","rev":empty_rev}),
+            "{reply}"
+        );
+    }
+    for invalid in [
+        "main/Module.Session",
+        "main/Catalog.Ghost.Module.Manager.Body",
+        "main/Catalog.Items.Module.Session.Body",
+        "other/Module.Session.Body",
+    ] {
+        assert_eq!(
+            content(&mut editor, invalid)["error"]["message"],
+            "unica: lsp_document_unknown"
+        );
+    }
+    assert_eq!(
+        content(&mut editor, "main/Catalog.Items.Module.Object.Body")["error"]["message"],
+        "unica: lsp_unavailable"
+    );
+    assert_eq!(
+        unica_workspace::test_support::tree_snapshot(&source),
+        before
+    );
+
+    let text = "Procedure SessionBody()\nEndProcedure\n";
+    let planned = mcp(
+        ToolIdentity::Apply,
+        json!({"at":body,"ops":[{"op":"code.replace","args":{"text":text,"ifRev":empty_rev}}]}),
+    )
+    .data
+    .unwrap();
+    assert_eq!(planned["mode"], "preview");
+    mcp(
+        ToolIdentity::Diff,
+        json!({"executionToken":planned["executionToken"]}),
+    );
+    assert!(!session_file.exists());
+    assert_eq!(
+        unica_workspace::test_support::tree_snapshot(&source),
+        before
+    );
+    let published = mcp(
+        ToolIdentity::Apply,
+        json!({"executionToken":planned["executionToken"]}),
+    );
+    let published = published.data.unwrap();
+    assert_eq!(published["mode"], "published");
+    assert_eq!(published["planHash"], planned["planHash"]);
+
+    let saved = std::fs::read_to_string(&session_file).unwrap();
+    assert_eq!(saved.trim_start_matches('\u{feff}'), text);
+    let saved_rev = unica_source_contract::read::module_text_revision(saved.as_bytes());
+    assert_eq!(
+        content(&mut editor, "main/Module.Session.Body")["result"],
+        json!({"text":text,"rev":saved_rev}),
+    );
+}
+
 #[test]
 fn a_session_the_daemon_no_longer_serves_ends_the_frontend() {
     let host = Arc::new(HeldHost::default());

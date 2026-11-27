@@ -7,8 +7,8 @@
 //! и акторами сама.
 
 use crate::{
-    AdmittedWorkspace, LspActor, LspModuleReads, LspWorkspaces, ModuleSourceRead, SourceSetLayout,
-    UnicaLspHost,
+    AdmittedWorkspace, LspActor, LspModuleReads, LspWorkspaces, ModuleDocument, ModuleSourceRead,
+    SourceSetLayout, UnicaLspHost,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -25,6 +25,8 @@ use unica_lsp_contract::protocol::{
 use unica_source_contract::workspace::WorkspaceContext;
 use unica_source_contract::{SourceFormat, SourceProfile, SourceSetKind};
 use unica_source_designer::module_layout::module_relative;
+use unica_work_control::cancellation::CancellationToken;
+use unica_work_control::provider_deadline::ProviderDeadline;
 use unica_workspace::actor::{
     ProviderRootBinding, WorkspaceActor, WorkspaceActorRegistry, WorkspaceSourceSetInput,
 };
@@ -117,6 +119,16 @@ struct DiskReads {
 impl LspModuleReads for DiskReads {
     fn saved(&self, source_set: &str) -> Result<Box<dyn ModuleSourceRead>, V5LspFailure> {
         self.read(SAVED_ONLY, source_set)
+    }
+
+    fn read_missing_document(
+        &self,
+        _source_set: &str,
+        _module: &ModuleDocument,
+        _deadline: ProviderDeadline,
+        _cancellation: &CancellationToken,
+    ) -> Result<String, V5LspFailure> {
+        Err(V5LspFailure::DocumentUnknown)
     }
 
     fn read(

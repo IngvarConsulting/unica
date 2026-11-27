@@ -249,6 +249,32 @@ impl LspModuleReads for ProductModuleReads {
                 .with_documents(documents),
         ))
     }
+
+    fn read_missing_document(
+        &self,
+        source_set: &str,
+        module: &ModuleDocument,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<String, V5LspFailure> {
+        let (_, binding, artifacts) = self.0.bound(source_set)?;
+        let profile = bsl_profile_for_source(binding.source_profile())
+            .ok_or(V5LspFailure::WorkspaceUnavailable)?;
+        let module =
+            QualifiedAddress::parse(module.module()).map_err(|_| V5LspFailure::DocumentUnknown)?;
+        LogicalViewReadAuthority::read_missing_editor_module(
+            cancellation,
+            self.0.saved_read(binding).with_artifacts(artifacts),
+            profile,
+            deadline,
+            &module,
+        )
+        .map_err(|error| match error.code() {
+            RefusalCode::NotFound => V5LspFailure::DocumentUnknown,
+            RefusalCode::DeadlineExceeded => V5LspFailure::DeadlineExceeded,
+            _ => V5LspFailure::Unavailable,
+        })
+    }
 }
 
 /// Completion over the session's view of a source set and the global
