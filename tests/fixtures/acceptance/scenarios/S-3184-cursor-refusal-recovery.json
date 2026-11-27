@@ -1,0 +1,522 @@
+{
+  "id": "S-3184-cursor-refusal-recovery",
+  "issue": 3184,
+  "area": "Навигация и чтение",
+  "task": "Повторить страницу, исправить отказ продолжения и начать новую выдачу через следующий вызов. Чужой адрес и новый размер различимы, повреждённый курсор не раскрывает сохранённый ответ.",
+  "workspace": "tests/fixtures/acceptance/workspace-xdto-check",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage",
+        "limit": 1
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:XDTOPackage.Control"
+        }
+      ],
+      "captures": {
+        "cursor": {
+          "pointer": "/cursor"
+        },
+        "settings": {
+          "kind": "sha256",
+          "file": "v8project.yaml"
+        },
+        "package": {
+          "kind": "sha256",
+          "file": "src/XDTOPackages/Unsupported/Ext/Package.bin"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage",
+        "limit": 1,
+        "cursor": "$capture.cursor"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:XDTOPackage.Unsupported"
+        }
+      ],
+      "captures": {
+        "second": {
+          "pointer": "/data/items"
+        },
+        "successor": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage",
+        "limit": 1,
+        "cursor": "$capture.cursor"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": "$capture.second"
+        },
+        {
+          "pointer": "/cursor",
+          "eq": "$capture.successor"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage",
+        "limit": 2,
+        "cursor": "$capture.cursor"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_cursor: The `limit` page size differs from the question bound to this cursor. Use the original `limit` to continue.",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "invalid_cursor"
+        },
+        {
+          "pointer": "/diagnostics/0/outcome",
+          "eq": "fixCall"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "eq": "The `limit` page size differs from the question bound to this cursor. Use the original `limit` to continue."
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        },
+        {
+          "pointer": "/cursor",
+          "absent": true
+        },
+        {
+          "pointer": "/next",
+          "eq": [
+            {
+              "tool": "unica.view",
+              "args": {
+                "at": "main:XDTOPackage",
+                "limit": 2
+              },
+              "reason": "Start a new first page. Its results may differ from the previous snapshot."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration",
+        "limit": 2,
+        "cursor": "$capture.cursor"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_cursor: The `at` address differs from the question bound to this cursor. Use the original `at` to continue.",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "invalid_cursor"
+        },
+        {
+          "pointer": "/diagnostics/0/outcome",
+          "eq": "fixCall"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "eq": "The `at` address differs from the question bound to this cursor. Use the original `at` to continue."
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        },
+        {
+          "pointer": "/cursor",
+          "absent": true
+        },
+        {
+          "pointer": "/next",
+          "eq": [
+            {
+              "tool": "unica.view",
+              "args": {
+                "at": "main:Configuration",
+                "limit": 2
+              },
+              "reason": "Start a new first page. Its results may differ from the previous snapshot."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage",
+        "limit": 1,
+        "cursor": "damaged-synthetic-cursor"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_cursor: The previous continuation is unavailable in the current service.",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "invalid_cursor"
+        },
+        {
+          "pointer": "/diagnostics/0/outcome",
+          "eq": "fixCall"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "eq": "The previous continuation is unavailable in the current service."
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        },
+        {
+          "pointer": "/cursor",
+          "absent": true
+        },
+        {
+          "pointer": "/next",
+          "eq": [
+            {
+              "tool": "unica.view",
+              "args": {
+                "at": "main:XDTOPackage",
+                "limit": 1
+              },
+              "reason": "Start a new first page. Its results may differ from the previous snapshot."
+            }
+          ]
+        }
+      ],
+      "captures": {
+        "at": {
+          "pointer": "/next/0/args/at"
+        },
+        "limit": {
+          "pointer": "/next/0/args/limit"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.at",
+        "limit": "$capture.limit"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:XDTOPackage.Control"
+        }
+      ],
+      "captures": {
+        "fresh": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage",
+        "limit": 1,
+        "cursor": "$capture.fresh"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": "$capture.second"
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:XDTOPackage.Unsupported",
+        "limit": 2
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/diagnosticCount",
+          "eq": 7
+        },
+        {
+          "pointer": "/next/0/tool",
+          "eq": "unica.check"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:XDTOPackage.Unsupported"
+        },
+        {
+          "pointer": "/next/0/args/limit",
+          "eq": 2
+        }
+      ],
+      "captures": {
+        "checkCursor": {
+          "pointer": "/cursor"
+        },
+        "nextCursor": {
+          "pointer": "/next/0/args/cursor"
+        }
+      },
+      "status": "passed",
+      "validators": [
+        "xdto"
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:XDTOPackage.Unsupported",
+        "limit": 2,
+        "cursor": "$capture.nextCursor"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/diagnosticCount",
+          "eq": 7
+        },
+        {
+          "pointer": "/data/diagnostics/2",
+          "absent": true
+        }
+      ],
+      "captures": {
+        "savedFindings": {
+          "pointer": "/data/diagnostics"
+        },
+        "checkSuccessor": {
+          "pointer": "/cursor"
+        }
+      },
+      "status": "passed",
+      "validators": [
+        "xdto"
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:XDTOPackage.Unsupported",
+        "limit": 2,
+        "cursor": "$capture.checkCursor"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/diagnostics",
+          "eq": "$capture.savedFindings"
+        },
+        {
+          "pointer": "/cursor",
+          "eq": "$capture.checkSuccessor"
+        }
+      ],
+      "status": "passed",
+      "validators": [
+        "xdto"
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:XDTOPackage.Control",
+        "limit": 2,
+        "cursor": "$capture.checkCursor"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_cursor: The `at` address differs from the question bound to this cursor. Use the original `at` to continue.",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "invalid_cursor"
+        },
+        {
+          "pointer": "/diagnostics/0/outcome",
+          "eq": "fixCall"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "eq": "The `at` address differs from the question bound to this cursor. Use the original `at` to continue."
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        },
+        {
+          "pointer": "/cursor",
+          "absent": true
+        },
+        {
+          "pointer": "/next",
+          "eq": [
+            {
+              "tool": "unica.check",
+              "args": {
+                "at": "main:XDTOPackage.Control",
+                "limit": 2
+              },
+              "reason": "Start a new first page. Its results may differ from the previous snapshot."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:XDTOPackage.Unsupported",
+        "limit": 3,
+        "cursor": "$capture.checkCursor"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_cursor: The `limit` page size differs from the question bound to this cursor. Use the original `limit` to continue.",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "invalid_cursor"
+        },
+        {
+          "pointer": "/diagnostics/0/outcome",
+          "eq": "fixCall"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "eq": "The `limit` page size differs from the question bound to this cursor. Use the original `limit` to continue."
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        },
+        {
+          "pointer": "/cursor",
+          "absent": true
+        },
+        {
+          "pointer": "/next",
+          "eq": [
+            {
+              "tool": "unica.check",
+              "args": {
+                "at": "main:XDTOPackage.Unsupported",
+                "limit": 3
+              },
+              "reason": "Start a new first page. Its results may differ from the previous snapshot."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:XDTOPackage.Unsupported",
+        "limit": 2,
+        "cursor": "damaged-synthetic-cursor"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_cursor: The previous continuation is unavailable in the current service.",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "invalid_cursor"
+        },
+        {
+          "pointer": "/diagnostics/0/outcome",
+          "eq": "fixCall"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "eq": "The previous continuation is unavailable in the current service."
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        },
+        {
+          "pointer": "/cursor",
+          "absent": true
+        },
+        {
+          "pointer": "/next",
+          "eq": [
+            {
+              "tool": "unica.check",
+              "args": {
+                "at": "main:XDTOPackage.Unsupported",
+                "limit": 2
+              },
+              "reason": "Start a new first page. Its results may differ from the previous snapshot."
+            }
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "$capture.settings"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/XDTOPackages/Unsupported/Ext/Package.bin",
+          "eq": "$capture.package"
+        }
+      ]
+    }
+  ]
+}

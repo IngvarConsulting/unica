@@ -296,7 +296,7 @@
       "expect": [
         "refused"
       ],
-      "refusal": "invalid_cursor: view cursor is invalid, expired, or belongs to another question"
+      "refusal": "invalid_cursor: The `at` address differs from the question bound to this cursor. Use the original `at` to continue."
     },
     {
       "tool": "unica.check",
@@ -308,7 +308,7 @@
       "expect": [
         "refused"
       ],
-      "refusal": "invalid_cursor: view cursor is invalid, expired, or belongs to another question"
+      "refusal": "invalid_cursor: The previous continuation is unavailable in the current service."
     },
     {
       "tool": "unica.check",
@@ -320,7 +320,7 @@
       "expect": [
         "refused"
       ],
-      "refusal": "invalid_cursor: view cursor is invalid, expired, or belongs to another question"
+      "refusal": "invalid_cursor: The `limit` page size differs from the question bound to this cursor. Use the original `limit` to continue."
     },
     {
       "tool": "unica.check",

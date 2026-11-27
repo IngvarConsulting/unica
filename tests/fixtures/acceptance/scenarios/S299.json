@@ -15,7 +15,7 @@
       "expect": [
         "refused"
       ],
-      "refusal": "invalid_cursor: view cursor is invalid, expired, or belongs to another question",
+      "refusal": "invalid_cursor: The previous continuation is unavailable in the current service.",
       "assertions": [
         {
           "pointer": "/ok",
@@ -27,7 +27,7 @@
             {
               "code": "invalid_cursor",
               "outcome": "fixCall",
-              "message": "view cursor is invalid, expired, or belongs to another question"
+              "message": "The previous continuation is unavailable in the current service."
             }
           ]
         }
