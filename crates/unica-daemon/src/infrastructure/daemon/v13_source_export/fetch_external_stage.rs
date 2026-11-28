@@ -371,6 +371,7 @@ mod medium_tests {
         let binary = [255, 0, 128, 13, 10, 7].repeat(16 * 1024);
         fs::write(source.path().join("Catalog97/resource.bin"), &binary).unwrap();
         let retain = |path: &Path| {
+            let path = normalize_path_identity(path).unwrap();
             StateDirectory::open(path.parent().unwrap())
                 .unwrap()
                 .retain_directory_child(path.file_name().unwrap())
