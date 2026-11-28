@@ -21,6 +21,8 @@ use unica_workspace::state_fs::{DirectoryCursor, StateDirectory, StateFile};
 #[path = "fetch_storage.rs"]
 mod storage;
 use storage::{CleanupFailure, DropTarget, RememberFailure, SnapshotStorage};
+#[path = "fetch_external_stage.rs"]
+mod external_stage;
 #[path = "fetch_merge.rs"]
 mod merge;
 
@@ -547,17 +549,25 @@ fn execute_with_tool(
             return finish_failed_fetch(result, &storage, &id, &stage, None, warnings, &root);
         }
     };
-    let (envelope, receipt) = match exchange(
-        prepared,
-        &root,
-        &source_set,
-        &directory,
-        &stage,
-        runner,
-        &cancellation,
-        tool,
-        capabilities,
-    ) {
+    let export = |provider_stage: &StateDirectory| {
+        exchange(
+            prepared,
+            &root,
+            &source_set,
+            &directory,
+            provider_stage,
+            runner,
+            &cancellation,
+            tool,
+            capabilities,
+        )
+    };
+    let result = if same_path(&root, &directory) {
+        external_stage::export(&root, &stage, &cancellation, export)
+    } else {
+        export(&stage)
+    };
+    let (envelope, receipt) = match result {
         Ok(envelope) => envelope,
         Err(result) => {
             return finish_failed_fetch(result, &storage, &id, &stage, None, warnings, &root);
@@ -1173,11 +1183,13 @@ fn same_path(reported: &Path, expected: &Path) -> bool {
 }
 
 fn relative(path: &Path, root: &Path) -> String {
-    path_text(
-        unica_workspace::paths::host_path_relative_to(path, root)
-            .as_deref()
-            .unwrap_or(path),
-    )
+    let relative = unica_workspace::paths::host_path_relative_to(path, root);
+    let path = relative.as_deref().unwrap_or(path);
+    if path.as_os_str().is_empty() {
+        ".".to_string()
+    } else {
+        path_text(path)
+    }
 }
 
 fn unreadable(path: &Path, root: &Path, error: &std::io::Error) -> DomainResult {

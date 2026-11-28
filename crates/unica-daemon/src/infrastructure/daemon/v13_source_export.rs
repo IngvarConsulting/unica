@@ -1676,7 +1676,7 @@ fn validate_envelope(
         )
     })?;
     let target = unica_workspace::paths::host_path_relative_to(&target_absolute, root_identity)
-        .filter(|relative| !relative.as_os_str().is_empty())
+        .filter(|relative| !relative.as_os_str().is_empty() || prepared.fetch)
         .ok_or_else(|| {
             reject(
                 RefusalCode::InvalidResult,
@@ -1697,7 +1697,11 @@ fn validate_envelope(
     })?;
     Ok(ExportPlan {
         source_set,
-        target,
+        target: if target.as_os_str().is_empty() {
+            PathBuf::from(".")
+        } else {
+            target
+        },
         existed: target_absolute.is_dir(),
         target_absolute,
         performed_mode,

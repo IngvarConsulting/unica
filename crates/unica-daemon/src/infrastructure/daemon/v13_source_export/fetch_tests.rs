@@ -33,6 +33,8 @@ struct ProtocolRunner {
     args: Mutex<Vec<String>>,
     preview: Option<Value>,
     help: Option<&'static str>,
+    root_set: bool,
+    stages: Mutex<Vec<PathBuf>>,
     merges: Mutex<Vec<Value>>,
     merge_base_generation: Option<String>,
 }
@@ -44,6 +46,8 @@ impl ProtocolRunner {
             replies: Mutex::new(Vec::new()),
             args: Mutex::new(Vec::new()),
             preview: None,
+            root_set: false,
+            stages: Mutex::new(Vec::new()),
             help: Some(if script == Script::PreparesMerge {
                 "--snapshot-only --snapshot-platform-from-sources --prepare-merge-baseline --check-merge-baseline --accept-merge-baseline"
             } else {
@@ -131,8 +135,13 @@ impl ProcessRunner for ProtocolRunner {
             .position(|arg| arg == "--publication-stdio")
             .unwrap();
         let stage = PathBuf::from(&command.args[position + 1]);
+        self.stages.lock().unwrap().push(stage.clone());
         let set = command.args[position - 2].clone();
-        let target = command.cwd.join(&set);
+        let target = if self.root_set {
+            command.cwd.clone()
+        } else {
+            command.cwd.join(&set)
+        };
         let extension = command
             .args
             .windows(2)
@@ -182,6 +191,11 @@ impl ProcessRunner for ProtocolRunner {
                     "<base/>"
                 };
                 fs::write(stage.join("Configuration.xml"), dump).unwrap();
+            }
+            if self.root_set {
+                let nested = stage.join("Ext").join("Forms");
+                fs::create_dir_all(&nested).unwrap();
+                fs::write(nested.join("Module.bsl"), "from infobase").unwrap();
             }
             let dump_info = stage.join("ConfigDumpInfo.xml");
             if self.script == Script::DumpInfoIsDirectory {
@@ -1529,6 +1543,83 @@ fn a_runner_without_safe_snapshot_support_cannot_prepare_or_export_a_project() {
             assert!(!root.join(LOCAL_CONFIG_NAME).exists());
             assert!(!root.join(".build").exists());
         }
+    }
+}
+
+/// rule: INV.RUNTIME.FETCH-LEAVES-THE-WORKING-COPY
+#[test]
+fn file_and_server_root_sets_publish_the_completed_external_tree_and_clean_it_up() {
+    for (connection, script) in [
+        ("File=ib", Script::PreparesMerge),
+        ("Srvr=localhost;Ref=test", Script::Exports),
+    ] {
+        let workspace = tempfile::tempdir().unwrap();
+        let root = workspace.path();
+        let config = format!("format: DESIGNER\ninfobase:\n  connection: '{connection}'\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: .\n");
+        fs::write(root.join(CONFIG_NAME), &config).unwrap();
+        fs::write(root.join("Local.bsl"), "local changes").unwrap();
+        let mut runner = ProtocolRunner::new(script);
+        runner.root_set = true;
+        runner.preview = Some(json!({"command":"pull","ok":true,"data":{
+            "requested_mode":"FULL","mode":"FULL","source_set":"main","extension":null,
+            "target_path":root,"provider_dispatched":false
+        }}));
+        let preview = run(root, &prepared(root, true), &runner);
+        assert!(preview.ok, "{preview:?}");
+        assert_eq!(preview.data.unwrap()["plan"]["target"], ".");
+        assert!(!root.join(".build/unica/fetch").exists());
+        let result = run(root, &prepared(root, false), &runner);
+        assert!(result.ok, "{result:?}");
+        let data = result.data.unwrap();
+        assert_eq!(data["target"], ".");
+        assert_eq!(
+            data["generation"].is_string(),
+            script == Script::PreparesMerge
+        );
+        let published = root.join(data["snapshot"].as_str().unwrap());
+        assert_eq!(
+            fs::read_to_string(published.join("Ext/Forms/Module.bsl")).unwrap(),
+            "from infobase"
+        );
+        assert_eq!(
+            fs::read_to_string(published.join("Configuration.xml")).unwrap(),
+            "<base/>"
+        );
+        assert!(!published.join("ConfigDumpInfo.xml").exists());
+        assert_eq!(fs::read_to_string(root.join(CONFIG_NAME)).unwrap(), config);
+        assert_eq!(
+            fs::read_to_string(root.join("Local.bsl")).unwrap(),
+            "local changes"
+        );
+        assert!(!root.join("Ext").exists());
+        let stages = runner.stages.lock().unwrap();
+        assert_eq!(stages.len(), 1);
+        assert!(!stages[0].starts_with(root));
+        assert!(!stages[0].parent().unwrap().exists());
+    }
+}
+
+/// rule: INV.RUNTIME.FETCH-LEAVES-THE-WORKING-COPY
+#[test]
+fn a_refused_or_cancelled_root_export_cleans_both_stages() {
+    for script in [Script::RefusesBeforeReady, Script::CancelsAfterReady] {
+        let workspace = tempfile::tempdir().unwrap();
+        let root = workspace.path();
+        fs::write(root.join(CONFIG_NAME), "format: DESIGNER\ninfobase:\n  connection: 'File=ib'\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: .\n").unwrap();
+        fs::write(root.join("Local.bsl"), "local changes").unwrap();
+        let mut runner = ProtocolRunner::new(script);
+        runner.root_set = true;
+        let result = run(root, &prepared(root, false), &runner);
+        assert!(!result.ok, "{result:?}");
+        assert!(snapshots(root).is_empty());
+        assert_eq!(
+            fs::read_to_string(root.join("Local.bsl")).unwrap(),
+            "local changes"
+        );
+        assert!(!root.join("Ext").exists());
+        let stages = runner.stages.lock().unwrap();
+        assert_eq!(stages.len(), 1);
+        assert!(!stages[0].parent().unwrap().exists());
     }
 }
 
