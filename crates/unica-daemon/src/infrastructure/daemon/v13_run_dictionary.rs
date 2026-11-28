@@ -48,8 +48,10 @@ pub(super) fn execute_run_dictionary(request: &InvocationRequest) -> Option<Doma
                 .iter()
                 .any(|operation| operation.name() == op)
             {
-                // The handler checks the installed bytes immediately before use.
-                reject_unavailable_run_for(request, || PINNED_RUNNER.debug_server_start_v2)
+                // Delivery may still be pending. Each handler verifies the installed bytes before use.
+                reject_unavailable_run_for(request, || {
+                    declared_runner(Path::new(request.workspace_hint()), &PINNED_RUNNER).is_some()
+                })
             } else {
                 Some(reject_run_operation(
                     op,
@@ -65,14 +67,14 @@ pub(super) fn reject_unavailable_run_before_admission(
     request: &InvocationRequest,
 ) -> Option<DomainResult> {
     reject_unavailable_run_for(request, || {
-        debug_server_for(Path::new(request.workspace_hint()), &PINNED_RUNNER)
+        declared_runner(Path::new(request.workspace_hint()), &PINNED_RUNNER)
             .is_some_and(DeclaredTool::available)
     })
 }
 
 fn reject_unavailable_run_for(
     request: &InvocationRequest,
-    debug_server_available: impl FnOnce() -> bool,
+    compatible_runner: impl FnOnce() -> bool,
 ) -> Option<DomainResult> {
     if request.tool() != ToolIdentity::Run {
         return None;
@@ -98,9 +100,12 @@ fn reject_unavailable_run_for(
     if is_test_seam_operation(op) {
         return None;
     }
-    let debug_server = matches!(op.as_str(), "debug-server.start" | "debug-server.stop")
-        && debug_server_available();
-    match run_dictionary(debug_server)
+    let requires_verified_runner = matches!(
+        op.as_str(),
+        "debug-server.start" | "debug-server.stop" | "fetch" | "fetch.accept"
+    );
+    let runner = (requires_verified_runner && compatible_runner()).then_some(&PINNED_RUNNER);
+    match run_dictionary(runner)
         .into_iter()
         .find(|operation| operation.name() == op)
     {
@@ -138,6 +143,13 @@ pub(super) fn installed_debug_server_runner(cwd: &Path) -> Option<BundledTool> {
     debug_server_for(cwd, &PINNED_RUNNER)?.verified_tool()
 }
 
+pub(super) fn installed_snapshot_runner(cwd: &Path) -> Option<BundledTool> {
+    if !PINNED_RUNNER.read_only_snapshots {
+        return None;
+    }
+    declared_runner(cwd, &PINNED_RUNNER)?.verified_tool()
+}
+
 pub(super) fn debug_server_declared(cwd: &Path) -> bool {
     debug_server_for(cwd, &PINNED_RUNNER).is_some()
 }
@@ -146,8 +158,11 @@ fn debug_server_for(cwd: &Path, runner: &RunnerContract) -> Option<DeclaredTool>
     if !runner.debug_server_start_v2 {
         return None;
     }
-    let root = find_plugin_root(cwd)?;
-    declared_tool_at_version(&root, "v8-runner", runner.version)
+    declared_runner(cwd, runner)
+}
+
+fn declared_runner(cwd: &Path, runner: &RunnerContract) -> Option<DeclaredTool> {
+    declared_tool_at_version(&find_plugin_root(cwd)?, "v8-runner", runner.version)
 }
 
 pub(super) fn run_dictionary_result(cwd: &Path) -> DomainResult {
@@ -155,7 +170,8 @@ pub(super) fn run_dictionary_result(cwd: &Path) -> DomainResult {
 }
 
 fn dictionary_for(cwd: &Path, runner: &RunnerContract) -> DomainResult {
-    let operations = run_dictionary(debug_server_for(cwd, runner).is_some_and(DeclaredTool::available))
+    let available = declared_runner(cwd, runner).is_some_and(DeclaredTool::available);
+    let operations = run_dictionary(available.then_some(runner))
         .into_iter()
         // An unavailable operation is not listed; its call keeps its refusal.
         .filter(|operation| operation.implemented)
@@ -168,6 +184,9 @@ fn dictionary_for(cwd: &Path, runner: &RunnerContract) -> DomainResult {
                     | RunIntent::SourceImport
                     | RunIntent::SourceExport
                     | RunIntent::SourceReexport
+                    | RunIntent::SourceFetch
+                    | RunIntent::SourceFetchDrop
+                    | RunIntent::SourceFetchAccept
                     | RunIntent::ArtifactBuild
                     | RunIntent::CfExport
                     | RunIntent::CfImport
@@ -253,6 +272,22 @@ mod medium_tests {
                     .as_array()
                     .unwrap();
                 assert!(operations.iter().any(|row| row["op"] == "launch"));
+                assert!(operations.iter().any(|row| row["op"] == "fetch.drop"));
+                for op in ["fetch", "fetch.accept"] {
+                    assert_eq!(operations.iter().any(|row| row["op"] == op), available);
+                    let request = InvocationRequest::new(
+                        ToolIdentity::Run,
+                        json!({"op":op,"args":{},"dryRun":true}),
+                        cwd.to_string_lossy(),
+                        7000,
+                    )
+                    .unwrap();
+                    let refusal = reject_unavailable_run_before_admission(&request);
+                    assert_eq!(refusal.is_none(), available);
+                    if let Some(refusal) = refusal {
+                        assert_eq!(refusal.diagnostics[0]["code"], "unsupported_operation");
+                    }
+                }
                 assert!(!operations
                     .iter()
                     .any(|row| row["op"] == "debug-server.prepare"));

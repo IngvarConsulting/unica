@@ -20,6 +20,7 @@ pub enum FactualOutcomeAuthority {
     AnsweredInterrupt,
     StartedExternalProcess,
     CommittedWorkspaceApply,
+    PublishedWorkspaceSnapshot,
 }
 
 /// How many times a token was cancelled: the first cancel interrupts work, a
@@ -211,6 +212,30 @@ impl CancellationToken {
         Ok(())
     }
 
+    /// Publish a complete snapshot and record the factual result before a
+    /// concurrent cancellation can replace its receipt. None means the
+    /// caller cancelled before the commit and still owns the stage.
+    pub fn publish_snapshot_with_gate<E>(
+        &self,
+        publish: impl FnOnce() -> Result<(), E>,
+    ) -> Option<Result<(), E>> {
+        let _gate = self
+            .dispatch_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.is_cancelled() {
+            return None;
+        }
+        let result = publish();
+        if result.is_ok() {
+            self.factual_outcome.store(
+                FactualOutcomeAuthority::PublishedWorkspaceSnapshot as u8,
+                Ordering::Release,
+            );
+        }
+        Some(result)
+    }
+
     /// Records an already confirmed actor publication. This is unconditional:
     /// cancellation cannot erase an effect that has actually committed.
     pub fn record_committed_apply(&self) {
@@ -224,6 +249,8 @@ impl CancellationToken {
         let recorded = self.factual_outcome.load(Ordering::Acquire);
         if recorded == FactualOutcomeAuthority::CommittedWorkspaceApply as u8 {
             FactualOutcomeAuthority::CommittedWorkspaceApply
+        } else if recorded == FactualOutcomeAuthority::PublishedWorkspaceSnapshot as u8 {
+            FactualOutcomeAuthority::PublishedWorkspaceSnapshot
         } else if self.protected_process_started() {
             FactualOutcomeAuthority::StartedExternalProcess
         } else if recorded == FactualOutcomeAuthority::AnsweredInterrupt as u8 {
@@ -390,6 +417,39 @@ mod tests {
         released.handoff_with_gate(|| Ok(())).unwrap();
         released.cancel();
         assert!(released.protected_process_started());
+    }
+
+    /// rule: INV.RUNTIME.FETCH-LEAVES-THE-WORKING-COPY
+    #[test]
+    fn only_a_committed_snapshot_survives_late_cancellation() {
+        use super::FactualOutcomeAuthority;
+        let token = CancellationToken::new();
+        assert_eq!(
+            token.publish_snapshot_with_gate(|| Err("cannot register")),
+            Some(Err("cannot register"))
+        );
+        assert_eq!(
+            token.factual_outcome_authority(),
+            FactualOutcomeAuthority::Cancellable
+        );
+        let invocation = token.clone();
+        assert_eq!(
+            invocation.publish_snapshot_with_gate(|| Ok::<_, ()>(())),
+            Some(Ok(()))
+        );
+        token.cancel();
+        assert!(invocation.is_cancelled());
+        assert!(!token.protected_process_started());
+        assert_eq!(
+            token.factual_outcome_authority(),
+            FactualOutcomeAuthority::PublishedWorkspaceSnapshot
+        );
+        assert_eq!(
+            invocation.publish_snapshot_with_gate(|| -> Result<(), ()> {
+                panic!("cancelled publication")
+            }),
+            None
+        );
     }
 
     #[test]

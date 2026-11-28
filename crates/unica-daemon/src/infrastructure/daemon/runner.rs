@@ -176,6 +176,18 @@ impl ProcessRunner for PinnedRunner {
         self.note(&output);
         Ok((output, handoff))
     }
+
+    /// The runner's line protocol (`--publication-stdio`) under the same lock
+    /// as its other commands; waiting for the lock is not a failed launch.
+    fn run_controlled_streaming_staged(
+        &self,
+        command: &ProcessCommand,
+        max_line_bytes: usize,
+        on_line: &mut dyn FnMut(usize, &[u8]) -> unica_process::ProcessLineReply,
+    ) -> Result<unica_process::runner::ProcessStreamOutput, ProcessStreamFailure> {
+        let _lock = lock_for(command).map_err(ProcessStreamFailure::Run)?;
+        BreakawayProcessRunner.run_controlled_streaming_staged(command, max_line_bytes, on_line)
+    }
 }
 
 /// `data.agent` from the runner's answer: whether the command took a live
@@ -255,12 +267,23 @@ pub(super) fn with_resolved_runner(
     cancellation: CancellationToken,
     run: impl FnOnce(&PinnedRunner, CancellationToken) -> DomainResult,
 ) -> DomainResult {
+    with_runner_receipt(root, program, |runner| {
+        with_prepared_working_copy(root, at, cancellation, |cancellation| {
+            run(runner, cancellation)
+        })
+    })
+}
+
+/// Records the runner's agent and warnings for operations with their own preparation.
+pub(super) fn with_runner_receipt(
+    root: &Path,
+    program: &Path,
+    run: impl FnOnce(&PinnedRunner) -> DomainResult,
+) -> DomainResult {
     let runner = PinnedRunner::default();
     let agents = super::live_agent::live_agents();
     agents.touch(root, std::time::Instant::now());
-    let mut result = with_prepared_working_copy(root, at, cancellation, |cancellation| {
-        run(&runner, cancellation)
-    });
+    let mut result = run(&runner);
     result.warnings.extend(abandoned_warning(root, &runner));
     let Some(mut agent) = runner.agent() else {
         return result;
@@ -773,6 +796,27 @@ pub(super) enum OriginKind {
 }
 
 pub(super) fn origin_kind(root: &Path) -> Result<OriginKind, String> {
+    let Some(origin) = effective_origin(root)? else {
+        return Ok(OriginKind::Undeclared);
+    };
+    if origin
+        .get("standalone")
+        .is_some_and(|value| !value.is_null())
+    {
+        return Ok(OriginKind::Standalone);
+    }
+    let file = origin
+        .get("connection")
+        .and_then(Value::as_str)
+        .and_then(file_infobase_path);
+    Ok(if file.is_some() {
+        OriginKind::File
+    } else {
+        OriginKind::Cluster
+    })
+}
+
+pub(super) fn effective_origin(root: &Path) -> Result<Option<Value>, String> {
     let mut origin: Option<Value> = None;
     for file in [BASE_NAME, LOCAL_NAME] {
         let Some(mut layer) = read_yaml_config(root, file)? else {
@@ -785,51 +829,47 @@ pub(super) fn origin_kind(root: &Path) -> Result<OriginKind, String> {
             }
         }
     }
-    let Some(origin) = origin else {
-        return Ok(OriginKind::Undeclared);
-    };
-    if origin
-        .get("standalone")
-        .is_some_and(|value| !value.is_null())
-    {
-        return Ok(OriginKind::Standalone);
-    }
-    let file = origin
-        .get("connection")
-        .and_then(Value::as_str)
-        .is_some_and(declares_a_file_infobase);
-    Ok(if file {
-        OriginKind::File
-    } else {
-        OriginKind::Cluster
-    })
+    Ok(origin)
 }
 
-/// The runner's reading of a declared connection (`declared_parameters`):
-/// non-empty `;` parts, each `key=value` with the key trimmed and compared
-/// without case; a part without `=` makes the string undeclared, and a file
-/// infobase has a non-empty `File` value. Raw argv names it with `/F`.
-fn declares_a_file_infobase(connection: &str) -> bool {
+/// The runner accepts a File parameter or a quoted path following /F or -F.
+/// Only the infobase directory is returned. Other connection fields stay private.
+pub(super) fn file_infobase_path(connection: &str) -> Option<String> {
     let text = connection.trim();
     if text.starts_with(['/', '-']) {
-        return text
-            .split_whitespace()
-            .any(|token| token.eq_ignore_ascii_case("/F"));
+        let mut quoted = false;
+        let mut tokens = text
+            .split(|character: char| {
+                if character == '"' {
+                    quoted = !quoted;
+                }
+                !quoted && character.is_whitespace()
+            })
+            .filter(|token| !token.trim_matches('"').is_empty());
+        tokens.find(|token| {
+            let token = token.trim_matches('"');
+            token.eq_ignore_ascii_case("/f") || token.eq_ignore_ascii_case("-f")
+        })?;
+        return tokens.next().map(|path| path.replace('"', ""));
     }
-    let parts: Option<Vec<(String, &str)>> = text
+    let parts = text
         .split(';')
         .map(str::trim)
-        .filter(|part| !part.is_empty())
-        .map(|part| {
-            part.split_once('=')
-                .map(|(key, value)| (key.trim().to_ascii_lowercase(), value.trim()))
-        })
-        .collect();
-    parts.is_some_and(|parts| {
-        parts
-            .iter()
-            .any(|(key, value)| key == "file" && !value.is_empty())
-    })
+        .filter(|part| !part.is_empty());
+    let mut file = None;
+    for part in parts {
+        let (key, value) = part.split_once('=')?;
+        if file.is_none() && key.trim().eq_ignore_ascii_case("file") {
+            let value = value.trim();
+            let unquoted = value
+                .strip_prefix('"')
+                .and_then(|v| v.strip_suffix('"'))
+                .or_else(|| value.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')))
+                .unwrap_or(value);
+            file = Some(unquoted);
+        }
+    }
+    file.filter(|path| !path.is_empty()).map(str::to_owned)
 }
 
 /// The runner's own layer merge: mappings merge key by key, anything else is
@@ -1547,8 +1587,20 @@ source-set:
             ("Srvr=srv;Ref=demo", false),
             ("/F /abs/ib", true),
         ] {
-            assert_eq!(declares_a_file_infobase(connection), file, "{connection}");
+            assert_eq!(
+                file_infobase_path(connection).is_some(),
+                file,
+                "{connection}"
+            );
         }
+        assert_eq!(
+            file_infobase_path(r#"/L ru -f "dir/my infobase""#).as_deref(),
+            Some("dir/my infobase")
+        );
+        assert_eq!(
+            file_infobase_path(" File = 'dir/my infobase' ;").as_deref(),
+            Some("dir/my infobase")
+        );
     }
 
     #[test]

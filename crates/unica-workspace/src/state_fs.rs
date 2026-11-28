@@ -6,6 +6,7 @@ use std::ffi::{OsStr, OsString};
 use std::io::{self, Seek, SeekFrom, Write};
 use std::path::Path;
 
+pub use crate::platform::filesystem::retained_tree_removal::StateTreeRemovalError;
 pub use crate::platform::filesystem::FileIdentity;
 pub use physical::{PublicationCertainty, PublicationFailure, PublishMode};
 
@@ -54,6 +55,33 @@ impl StateDirectory {
         self.retained
             .create_directory_child(name)
             .map(|retained| Self { retained })
+    }
+
+    /// Removes a retained child through owner-only quarantine. A failure
+    /// reports a surviving path only when that directory's identity is verified.
+    pub fn remove_retained_directory_tree_child(
+        &self,
+        name: &OsStr,
+        expected: &Self,
+    ) -> Result<(), StateTreeRemovalError> {
+        filesystem::retained_tree_removal::remove(&self.retained, name, &expected.retained)
+    }
+
+    pub fn retain_cleanup_area(&self, create: bool) -> io::Result<Self> {
+        let retained = if create {
+            filesystem::retained_tree_removal::open_quarantine(&self.retained)?
+        } else {
+            filesystem::retained_tree_removal::retain_quarantine(&self.retained)?
+        };
+        Ok(Self { retained })
+    }
+
+    pub fn remove_quarantined_directory_child(
+        &self,
+        name: &OsStr,
+        expected: &Self,
+    ) -> Result<(), StateTreeRemovalError> {
+        filesystem::retained_tree_removal::resume(&self.retained, name, &expected.retained)
     }
 
     pub fn retain_regular_child(&self, name: &OsStr) -> io::Result<StateFile> {
@@ -419,6 +447,12 @@ pub struct RetainedPublicationFailure {
     error: filesystem::RetainedPublicationError,
 }
 
+pub enum RetainedPublicationObservation {
+    NoArtifact,
+    Expected(StateFile),
+    Unexpected,
+}
+
 impl RetainedPublicationFailure {
     pub fn into_parts(self) -> (io::Error, Option<StateFile>) {
         let (error, published) = self.error.into_parts();
@@ -427,6 +461,18 @@ impl RetainedPublicationFailure {
 
     pub fn io_error(&self) -> &io::Error {
         self.error.io_error()
+    }
+
+    pub fn into_observation(self) -> (io::Error, RetainedPublicationObservation) {
+        let (error, artifact, unexpected) = self.error.into_observation();
+        let observation = match (artifact, unexpected) {
+            (_, true) => RetainedPublicationObservation::Unexpected,
+            (Some(retained), false) => {
+                RetainedPublicationObservation::Expected(StateFile { retained })
+            }
+            (None, false) => RetainedPublicationObservation::NoArtifact,
+        };
+        (error, observation)
     }
 }
 

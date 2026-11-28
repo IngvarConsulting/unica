@@ -345,6 +345,29 @@ impl ProcessRunner for BreakawayProcessRunner {
     ) -> Result<(ProcessOutput, PendingProcessHandoff), ProcessStreamFailure> {
         run_pending_handoff_staged_in(command, JobPolicy::AllowsBreakaway)
     }
+
+    /// The runner's line protocol in the same group and with the same cancel
+    /// as its other commands: a live agent it starts may leave the group, and
+    /// a cancel interrupts the runner instead of ending the tree at once.
+    fn run_controlled_streaming_staged(
+        &self,
+        command: &ProcessCommand,
+        max_line_bytes: usize,
+        on_line: &mut dyn FnMut(usize, &[u8]) -> ProcessLineReply,
+    ) -> Result<ProcessStreamOutput, ProcessStreamFailure> {
+        #[cfg(any(test, feature = "test-support"))]
+        process_launch_probe::record(&command.cwd, command.program.as_ref());
+        let mut child = ManagedChild::spawn_staged_in(
+            managed_command(command),
+            JobPolicy::AllowsBreakaway,
+            CancelPolicy::Interrupt,
+        )
+        .map_err(ProcessStreamFailure::from_spawn)?;
+        let output = child
+            .wait_for_controlled_line_output(max_line_bytes, on_line)
+            .map_err(ProcessStreamFailure::Run)?;
+        Ok(map_managed_line_output(output))
+    }
 }
 
 fn run_staged_in(

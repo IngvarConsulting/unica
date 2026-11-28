@@ -38,13 +38,36 @@ fn bound_source_writes(bound: V5ActorBoundCanonicalInvocation) -> (SourceWriteLa
             source_writes,
             export,
             ..
-        } => (source_writes, export.is_preview()),
+        } => (source_writes, !export.holds_source_writes()),
         ActorBoundCanonicalInvocationState::ArtifactBuild {
             source_writes,
             build,
             ..
         } => (source_writes, build.is_preview()),
         _ => panic!("a runtime writer bound to another state"),
+    }
+}
+
+/// rule: INV.RUNTIME.FETCH-LEAVES-THE-WORKING-COPY
+#[test]
+fn dropping_a_snapshot_does_not_require_engine_delivery() {
+    let workspace = runtime_writer_workspace();
+    let runtime = bootstrap_runtime();
+    for preview in [true, false] {
+        let args = serde_json::json!({"snapshotId": "1".repeat(32)});
+        let bound = runtime.bind(run_request(workspace.path(), "fetch.drop", args, preview)).unwrap();
+        assert!(matches!(
+            &bound.0,
+            ActorBoundCanonicalInvocationState::SourceExport { delivery: None, .. }
+        ));
+        let result = bound.prepare().unwrap().execute(CancellationToken::new()).unwrap();
+        assert!(result.ok, "{result:?}");
+        let data = result.data.unwrap();
+        if preview {
+            assert_eq!(data["plan"]["exists"], false);
+        } else {
+            assert_eq!(data["removed"], false);
+        }
     }
 }
 

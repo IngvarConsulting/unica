@@ -207,7 +207,7 @@ pub fn sharing_violation_error_cases_for_test() -> [(io::Error, bool); 2] {
 /// Буфер точки через `FSCTL_SET_REPARSE_POINT` здесь не собирается: сборка
 /// в `unsafe` рискует тонкой ошибкой, из-за которой тест замигает вместо
 /// того, чтобы упасть, — а это ровно то, что такие проверки и лечат.
-#[cfg(all(test, windows))]
+#[cfg(all(any(test, feature = "test-support"), windows))]
 pub fn create_directory_junction_for_test(target: &Path, link: &Path) -> io::Result<()> {
     use std::os::windows::fs::MetadataExt;
     use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
@@ -266,6 +266,25 @@ pub fn create_directory_link_fixture_for_test(
     target: impl AsRef<Path>,
 ) -> io::Result<FileLinkFixtureOutcome> {
     classify_file_link_fixture_result(create_dir_symlink_for_test(source, target))
+}
+
+/// Creates a directory redirection fixture without requiring Windows symlink privileges.
+pub fn create_directory_link_or_junction_for_test(target: &Path, link: &Path) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        let target: PathBuf = target.components().collect();
+        let link: PathBuf = link.components().collect();
+        create_directory_junction_for_test(&target, &link)
+    }
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(target, link)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (target, link);
+        Err(io::ErrorKind::Unsupported.into())
+    }
 }
 
 pub fn file_identity_for_test(path: &Path) -> io::Result<Option<String>> {
