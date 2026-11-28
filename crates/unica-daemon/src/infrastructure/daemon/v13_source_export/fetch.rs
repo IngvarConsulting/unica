@@ -23,6 +23,8 @@ mod storage;
 use storage::{CleanupFailure, DropTarget, RememberFailure, SnapshotStorage};
 #[path = "fetch_external_stage.rs"]
 mod external_stage;
+#[path = "fetch_paths.rs"]
+mod input_paths;
 #[path = "fetch_merge.rs"]
 mod merge;
 
@@ -306,6 +308,14 @@ pub(super) fn drop_snapshot(
             Err(error) => return storage_refusal(FETCH_DROP, error),
         }
     }
+    let external = match storage
+        .as_ref()
+        .map(|storage| storage.external_record(id))
+        .transpose()
+    {
+        Ok(record) => record.flatten(),
+        Err(error) => return storage_refusal(FETCH_DROP, error),
+    };
     if prepared.dry_run {
         let exists = matches!(&owned, Some(DropTarget::Ready(_)));
         let mut result = DomainResult::success(match &owned {
@@ -313,6 +323,7 @@ pub(super) fn drop_snapshot(
             Some(DropTarget::Preparing(_) | DropTarget::Retiring(_)) => format!(
                 "fetch.drop found an unfinished snapshot record for {id}; execution will verify any remaining directory under the snapshot lock"
             ),
+            None if external.is_some() => format!("fetch.drop will verify the remaining temporary export for {id}"),
             None => format!("fetch.drop finds no snapshot {snapshot}; there is nothing to delete"),
         });
         result.data = Some(json!({
@@ -327,12 +338,35 @@ pub(super) fn drop_snapshot(
         }));
         return result;
     }
+    let removed_external = match external
+        .as_ref()
+        .map(|record| external_stage::resume(&root, id, record))
+        .transpose()
+    {
+        Ok(removed) => removed.unwrap_or(false),
+        Err(error) => {
+            let mut result = reject_at(
+                FETCH_DROP,
+                cleanup_refusal_code(&error),
+                format!("fetch.drop could not remove the temporary export ({error})"),
+            );
+            result.warnings.push(snapshot_cleanup_warning(
+                &root,
+                id,
+                "fetch.drop could not finish removing the temporary export",
+                &error,
+            ));
+            return result;
+        }
+    };
     let (Some(storage), Some(owned)) = (storage, owned) else {
-        let mut result = DomainResult::success(format!(
-            "fetch.drop found no snapshot {snapshot}; it is already deleted"
-        ));
+        let mut result = DomainResult::success(if removed_external {
+            format!("fetch.drop deleted the remaining temporary export for {id}")
+        } else {
+            format!("fetch.drop found no snapshot {snapshot}; it is already deleted")
+        });
         result.data = Some(json!({
-            "op": FETCH_DROP, "dryRun": false, "snapshotId": id, "snapshot": snapshot, "removed": false,
+            "op": FETCH_DROP, "dryRun": false, "snapshotId": id, "snapshot": snapshot, "removed": removed_external,
         }));
         return result;
     };
@@ -502,6 +536,11 @@ fn execute_with_tool(
             return plan;
         }
     }
+    let runner_paths = match input_paths::RunnerPaths::read(&root) {
+        Ok(paths) => paths,
+        Err(error) => return reject_fetch(RefusalCode::InvalidState, error),
+    };
+    let excludes = runner_paths.fingerprint_excludes(&root, &directory);
     let storage = match open_storage(&root, true, FETCH) {
         Ok(Some(storage)) => storage,
         Ok(None) => {
@@ -518,7 +557,7 @@ fn execute_with_tool(
     };
     // Если набор невозможно прочитать, прежние снимки не удаляются.
     // Отпечаток снимается до выгрузки: правка набора во время неё — уже расхождение.
-    let fingerprint = match source_fingerprint(&root, &directory, &cancellation) {
+    let fingerprint = match source_fingerprint(&root, &directory, &excludes, &cancellation) {
         Ok(fingerprint) => fingerprint,
         Err(result) => return result,
     };
@@ -563,7 +602,15 @@ fn execute_with_tool(
         )
     };
     let result = if same_path(&root, &directory) {
-        external_stage::export(&root, &stage, &cancellation, export)
+        external_stage::export(
+            &root,
+            &id,
+            &storage,
+            &runner_paths,
+            &stage,
+            &cancellation,
+            export,
+        )
     } else {
         export(&stage)
     };
@@ -670,6 +717,12 @@ fn execute_with_tool(
         "sourceFingerprint": fingerprint,
         "generation": metadata.as_ref().map(|snapshot| &snapshot.runner.generation),
     });
+    if !excludes.is_empty() {
+        data["sourceFingerprintExcludes"] = json!(excludes
+            .iter()
+            .map(|path| path_text(path))
+            .collect::<Vec<_>>());
+    }
     if let Some(base) = base {
         data["baseSnapshot"] = json!(base);
     }
@@ -1008,9 +1061,14 @@ fn remove_legacy_dump_info(stage: &StateDirectory) -> Result<(), DomainResult> {
 pub(super) fn source_fingerprint(
     root: &Path,
     directory: &Path,
+    excludes: &[PathBuf],
     cancellation: &CancellationToken,
 ) -> Result<String, DomainResult> {
     let cache = root.join(GENERATED_DIR_NAME);
+    let excluded = excludes
+        .iter()
+        .map(|relative| directory.join(relative))
+        .collect::<Vec<_>>();
     let mut files = Vec::new();
     let mut pending = vec![directory.to_path_buf()];
     while let Some(current) = pending.pop() {
@@ -1030,6 +1088,12 @@ pub(super) fn source_fingerprint(
         for entry in entries {
             let entry = entry.map_err(|error| unreadable(&current, root, &error))?;
             let path = entry.path();
+            if excluded
+                .iter()
+                .any(|item| unica_workspace::paths::same_host_path(item, &path))
+            {
+                continue;
+            }
             let metadata = entry
                 .metadata()
                 .map_err(|error| unreadable(&path, root, &error))?;

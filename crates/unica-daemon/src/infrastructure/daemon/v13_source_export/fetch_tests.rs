@@ -347,6 +347,7 @@ fn fetch_returns_a_snapshot_and_leaves_the_sources_as_they_were() {
     let fingerprint = source_fingerprint(
         &normalize_path_identity(root).unwrap(),
         &root.join("main"),
+        &[],
         &CancellationToken::new(),
     )
     .unwrap();
@@ -675,7 +676,7 @@ fn the_fingerprint_follows_the_content_and_skips_git_and_the_cache() {
     let none = CancellationToken::new();
     let empty = format!("sha256:{:x}", Sha256::digest(b""));
     assert_eq!(
-        source_fingerprint(&root, &root.join("absent"), &none).unwrap(),
+        source_fingerprint(&root, &root.join("absent"), &[], &none).unwrap(),
         empty
     );
 
@@ -689,25 +690,25 @@ fn the_fingerprint_follows_the_content_and_skips_git_and_the_cache() {
         expected.update(format!("{:x}", Sha256::digest(content.as_bytes())).as_bytes());
         expected.update(b"\n");
     }
-    let first = source_fingerprint(&root, &root.join("set"), &none).unwrap();
+    let first = source_fingerprint(&root, &root.join("set"), &[], &none).unwrap();
     assert_eq!(first, format!("sha256:{:x}", expected.finalize()));
 
     fs::create_dir_all(root.join("set/.git")).unwrap();
     fs::write(root.join("set/.git/HEAD"), "ref").unwrap();
     assert_eq!(
-        source_fingerprint(&root, &root.join("set"), &none).unwrap(),
+        source_fingerprint(&root, &root.join("set"), &[], &none).unwrap(),
         first
     );
     // Набор — корень рабочего пространства: кеш Unica в отпечаток не входит.
     fs::create_dir_all(root.join(".build/unica")).unwrap();
     fs::write(root.join(".build/unica/x"), "cache").unwrap();
-    let whole = source_fingerprint(&root, &root, &none).unwrap();
+    let whole = source_fingerprint(&root, &root, &[], &none).unwrap();
     fs::write(root.join(".build/unica/y"), "more cache").unwrap();
-    assert_eq!(source_fingerprint(&root, &root, &none).unwrap(), whole);
+    assert_eq!(source_fingerprint(&root, &root, &[], &none).unwrap(), whole);
 
     fs::write(root.join("set/a.xml"), "changed").unwrap();
     assert_ne!(
-        source_fingerprint(&root, &root.join("set"), &none).unwrap(),
+        source_fingerprint(&root, &root.join("set"), &[], &none).unwrap(),
         first
     );
 }
@@ -1621,6 +1622,103 @@ fn a_refused_or_cancelled_root_export_cleans_both_stages() {
         assert_eq!(stages.len(), 1);
         assert!(!stages[0].parent().unwrap().exists());
     }
+}
+
+/// rule: INV.RUNTIME.FETCH-LEAVES-THE-WORKING-COPY
+#[test]
+fn the_fingerprint_skips_the_selected_runner_paths_and_the_actual_file_infobase() {
+    let workspace = tempfile::tempdir().unwrap();
+    let root = normalize_path_identity(workspace.path()).unwrap();
+    fs::write(root.join(CONFIG_NAME), "format: DESIGNER\nworkPath: generated\nlocalPath: old\ninfobase:\n  connection: 'File=data'\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: .\n").unwrap();
+    fs::write(root.join(LOCAL_CONFIG_NAME), "localPath: personal\n").unwrap();
+    fs::create_dir(root.join("data")).unwrap();
+    fs::write(root.join("data/1Cv8.1CD"), [1, 2, 3]).unwrap();
+    fs::write(root.join("data/Module.bsl"), "keep").unwrap();
+    fs::write(root.join("1Cv8.1CD"), "a user file with the same name").unwrap();
+    let mut runner = ProtocolRunner::new(Script::PreparesMerge);
+    runner.root_set = true;
+    let fetched = run(&root, &prepared(&root, false), &runner);
+    assert!(fetched.ok, "{fetched:?}");
+    let data = fetched.data.unwrap();
+    assert_eq!(
+        data["sourceFingerprintExcludes"],
+        json!(["data/1Cv8.1CD", "generated", "personal"])
+    );
+    let excludes = input_paths::RunnerPaths::read(&root)
+        .unwrap()
+        .fingerprint_excludes(&root, &root);
+    let observed =
+        || source_fingerprint(&root, &root, &excludes, &CancellationToken::new()).unwrap();
+    let initial = observed();
+    assert_eq!(initial, data["sourceFingerprint"]);
+    fs::create_dir_all(root.join("generated/temp")).unwrap();
+    fs::write(root.join("generated/temp/working-receipt"), "runner only").unwrap();
+    fs::create_dir(root.join("personal")).unwrap();
+    fs::write(root.join("personal/owner"), "runner only").unwrap();
+    fs::write(root.join("data/1Cv8.1CD"), [3, 2, 1]).unwrap();
+    assert_eq!(initial, observed());
+    for path in [
+        "data/Module.bsl",
+        "1Cv8.1CD",
+        CONFIG_NAME,
+        LOCAL_CONFIG_NAME,
+    ] {
+        let path = root.join(path);
+        let original = fs::read(&path).unwrap();
+        fs::write(&path, "changed").unwrap();
+        assert_ne!(initial, observed(), "{path:?}");
+        fs::write(path, original).unwrap();
+    }
+}
+
+/// rule: INV.RUNTIME.FETCH-LEAVES-THE-WORKING-COPY
+#[test]
+fn drop_can_recover_a_blocked_external_export_but_leaves_a_replacement_alone() {
+    let workspace = tempfile::tempdir().unwrap();
+    let root = workspace.path();
+    fs::write(root.join(CONFIG_NAME), "format: DESIGNER\ninfobase:\n  connection: 'File=ib'\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: .\n").unwrap();
+    let mut runner = ProtocolRunner::new(Script::RefusesAndBlocksStageCleanup);
+    runner.root_set = true;
+    let result = run(root, &prepared(root, false), &runner);
+    assert!(!result.ok);
+    let warning = result
+        .warnings
+        .iter()
+        .find(|warning| warning["code"] == SNAPSHOT_KEPT_WARNING)
+        .unwrap();
+    let id = warning["snapshotId"].as_str().unwrap();
+    let surviving = PathBuf::from(warning["path"].as_str().unwrap());
+    assert!(surviving.is_absolute() && !surviving.starts_with(root));
+    let retry = PreparedSourceExport::parse_fetch_drop(&drop_request(
+        root,
+        json!({"snapshotId":id}),
+        false,
+    ))
+    .unwrap();
+    let blocked = retry.execute(CancellationToken::new());
+    assert!(!blocked.ok && surviving.is_dir(), "{blocked:?}");
+    unica_workspace::test_support::remove_dir_symlink_for_test(surviving.join("unexpected-link"))
+        .unwrap();
+    let original_stage = runner.stages.lock().unwrap()[0].clone();
+    let owner = original_stage.parent().unwrap();
+    let moved = owner.with_extension("original");
+    fs::rename(owner, &moved).unwrap();
+    fs::create_dir(owner).unwrap();
+    fs::write(owner.join("keep"), b"foreign").unwrap();
+    let refused = retry.execute(CancellationToken::new());
+    assert!(!refused.ok, "{refused:?}");
+    assert_eq!(fs::read(owner.join("keep")).unwrap(), b"foreign");
+    fs::remove_file(owner.join("keep")).unwrap();
+    fs::remove_dir(owner).unwrap();
+    fs::rename(moved, owner).unwrap();
+    let done = retry.execute(CancellationToken::new());
+    assert!(done.ok, "{done:?}");
+    assert_eq!(done.data.unwrap()["removed"], true);
+    assert!(!owner.exists());
+    assert_eq!(
+        retry.execute(CancellationToken::new()).data.unwrap()["removed"],
+        false
+    );
 }
 
 /// rule: INV.RUNTIME.FETCH-LEAVES-THE-WORKING-COPY

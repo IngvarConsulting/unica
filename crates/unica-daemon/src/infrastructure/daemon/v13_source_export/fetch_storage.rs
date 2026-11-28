@@ -76,7 +76,7 @@ pub(super) enum CleanupFailure {
 }
 
 impl CleanupFailure {
-    fn ownership(error: io::Error, directory: Option<&StateDirectory>) -> Self {
+    pub(super) fn ownership(error: io::Error, directory: Option<&StateDirectory>) -> Self {
         let path = directory
             .filter(|directory| directory.validate_named_identity().is_ok())
             .map(|directory| directory.path().to_path_buf());
@@ -322,6 +322,26 @@ impl SnapshotStorage {
             Some(records) => optional_child(records.retain_regular_child(OsStr::new(name))),
             None => Ok(None),
         }
+    }
+
+    pub(super) fn external_record(&self, id: &str) -> io::Result<Option<StateFile>> {
+        self.record(&format!("{id}.external"))
+    }
+
+    pub(super) fn remember_external(&self, id: &str, bytes: &[u8]) -> io::Result<StateFile> {
+        let record = self
+            .require_records()?
+            .create_regular_child_atomically(
+                OsStr::new(&marker_stage_name()),
+                OsStr::new(&format!("{id}.external")),
+                bytes,
+            )
+            .map_err(|failure| failure.into_observation().0)?;
+        record.validate_named_identity()?;
+        if record.read_bounded(bytes.len())? != bytes {
+            return Err(ownership_changed());
+        }
+        Ok(record)
     }
 
     fn confirm_record(
@@ -651,7 +671,7 @@ fn ownership_changed() -> io::Error {
     io::Error::other("fetch snapshot ownership could not be confirmed")
 }
 
-fn optional_child<T>(result: io::Result<T>) -> io::Result<Option<T>> {
+pub(super) fn optional_child<T>(result: io::Result<T>) -> io::Result<Option<T>> {
     match result {
         Ok(child) => Ok(Some(child)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
